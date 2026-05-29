@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MewClaw API 使用文档</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+            color: #1a1a1a;
+        }
+        
+        h2 {
+            font-size: 24px;
+            margin-top: 40px;
+            margin-bottom: 16px;
+            color: #1a1a1a;
+            border-bottom: 2px solid #3b82f6;
+            padding-bottom: 8px;
+        }
+        
+        h3 {
+            font-size: 18px;
+            margin-top: 24px;
+            margin-bottom: 12px;
+            color: #1a1a1a;
+        }
+        
+        h4 {
+            font-size: 16px;
+            margin-top: 16px;
+            margin-bottom: 8px;
+            color: #1a1a1a;
+        }
+        
+        p {
+            margin-bottom: 12px;
+        }
+        
+        code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            color: #e01e5a;
+        }
+        
+        pre {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 16px 0;
+            position: relative;
+        }
+        
+        pre code {
+            background: none;
+            color: inherit;
+            padding: 0;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        
+        .copy-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            padding: 4px 12px;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        
+        .copy-btn:hover {
+            background: #2563eb;
+        }
+        
+        .copy-btn.copied {
+            background: #10b981;
+        }
+        
+        .warning {
+            background: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            padding: 12px 16px;
+            margin: 16px 0;
+            border-radius: 4px;
+        }
+        
+        .info {
+            background: #dbeafe;
+            border-left: 4px solid #3b82f6;
+            padding: 12px 16px;
+            margin: 16px 0;
+            border-radius: 4px;
+        }
+        
+        ul, ol {
+            margin-left: 24px;
+            margin-bottom: 12px;
+        }
+        
+        li {
+            margin-bottom: 8px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0;
+        }
+        
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        
+        th {
+            background: #f9fafb;
+            font-weight: 600;
+        }
+        
+        a {
+            color: #3b82f6;
+            text-decoration: none;
+        }
+        
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MewClaw API 使用文档</h1>
+        <p style="color: #6b7280; margin-bottom: 32px;">OpenAI 兼容的 LLM API 服务</p>
+
+        <div class="info">
+            <strong>📘 OpenAI 兼容 API</strong><br>
+            MewClaw 提供了与 OpenAI 完全兼容的 API 接口，您可以使用 OpenAI SDK 或任何支持 OpenAI API 的工具。
+        </div>
+
+        <h2>快速开始</h2>
+
+        <h3>1. 创建 API Key</h3>
+        <ol>
+            <li>登录 MewClaw 桌面应用</li>
+            <li>点击右上角用户头像，选择「返回应用」</li>
+            <li>在左侧菜单选择「账户」</li>
+            <li>滚动到「API Keys」部分</li>
+            <li>点击「创建 API Key」按钮</li>
+            <li>输入一个便于识别的名称（如：<code>生产环境</code>）</li>
+        </ol>
+
+        <div class="warning">
+            <strong>⚠️ 重要提示</strong><br>
+            API Key 只会在创建时显示一次，关闭窗口后无法再次查看完整密钥。请立即复制并安全保存。
+        </div>
+
+        <h3>2. API 端点</h3>
+        <pre><code>http://localhost:8000/v1</code></pre>
+        <p>或您的服务器地址：<code>https://your-domain.com/v1</code></p>
+
+        <h3>3. 认证方式</h3>
+        <p>在请求头中添加 Authorization 字段：</p>
+        <pre><code>Authorization: Bearer sk-proj-YOUR_API_KEY</code></pre>
+
+        <h2>Python 示例</h2>
+
+        <h3>安装依赖</h3>
+        <pre><code>pip install openai</code></pre>
+
+        <h3>基础用法</h3>
+        <pre><code>from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-proj-YOUR_API_KEY",
+    base_url="http://localhost:8000/v1"
+)
+
+# 非流式对话
+response = client.chat.completions.create(
+    model="claude-opus-4-6-thinking",
+    messages=[
+        {"role": "user", "content": "你好，请介绍一下你自己"}
+    ]
+)
+
+print(response.choices[0].message.content)</code></pre>
+
+        <h3>流式对话</h3>
+        <pre><code>stream = client.chat.completions.create(
+    model="claude-opus-4-6-thinking",
+    messages=[
+        {"role": "user", "content": "讲一个关于程序员的笑话"}
+    ],
+    stream=True
+)
+
+for chunk in stream:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)</code></pre>
+
+        <h2>curl 示例</h2>
+
+        <h3>非流式请求</h3>
+        <pre><code>curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer sk-proj-YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-opus-4-6-thinking",
+    "messages": [
+      {"role": "user", "content": "你好！"}
+    ],
+    "stream": false
+  }'</code></pre>
+
+        <h3>流式请求</h3>
+        <pre><code>curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer sk-proj-YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-opus-4-6-thinking",
+    "messages": [
+      {"role": "user", "content": "讲个笑话"}
+    ],
+    "stream": true
+  }'</code></pre>
+
+        <h2>可用端点</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>端点</th>
+                    <th>方法</th>
+                    <th>描述</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>/v1/models</code></td>
+                    <td>GET</td>
+                    <td>获取可用模型列表</td>
+                </tr>
+                <tr>
+                    <td><code>/v1/chat/completions</code></td>
+                    <td>POST</td>
+                    <td>聊天对话接口（支持流式和非流式）</td>
+                </tr>
+                <tr>
+                    <td><code>/v1/images/generations</code></td>
+                    <td>POST</td>
+                    <td>图像生成接口</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>请求参数</h2>
+
+        <h3>Chat Completions</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>参数</th>
+                    <th>类型</th>
+                    <th>必填</th>
+                    <th>说明</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>model</code></td>
+                    <td>string</td>
+                    <td>是</td>
+                    <td>模型名称</td>
+                </tr>
+                <tr>
+                    <td><code>messages</code></td>
+                    <td>array</td>
+                    <td>是</td>
+                    <td>对话消息列表</td>
+                </tr>
+                <tr>
+                    <td><code>temperature</code></td>
+                    <td>float</td>
+                    <td>否</td>
+                    <td>随机性（0-2）</td>
+                </tr>
+                <tr>
+                    <td><code>max_tokens</code></td>
+                    <td>int</td>
+                    <td>否</td>
+                    <td>最大生成 token 数</td>
+                </tr>
+                <tr>
+                    <td><code>stream</code></td>
+                    <td>boolean</td>
+                    <td>否</td>
+                    <td>是否流式输出（默认 false）</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>错误处理</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>状态码</th>
+                    <th>原因</th>
+                    <th>解决方法</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>401</code></td>
+                    <td>API Key 无效或已禁用</td>
+                    <td>检查 API Key 是否正确，是否已启用</td>
+                </tr>
+                <tr>
+                    <td><code>402</code></td>
+                    <td>余额不足</td>
+                    <td>充值账户余额</td>
+                </tr>
+                <tr>
+                    <td><code>400</code></td>
+                    <td>请求参数错误</td>
+                    <td>检查请求格式和参数</td>
+                </tr>
+                <tr>
+                    <td><code>500</code></td>
+                    <td>服务器内部错误</td>
+                    <td>联系技术支持</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>安全建议</h2>
+
+        <ul>
+            <li>不要将 API Key 提交到 Git 仓库</li>
+            <li>使用环境变量存储 API Key</li>
+            <li>定期轮换 API Key</li>
+            <li>为不同环境创建不同的 API Key（开发、测试、生产）</li>
+            <li>不再使用的 API Key 及时删除或禁用</li>
+        </ul>
+
+        <h2>相关资源</h2>
+
+        <ul>
+            <li><a href="https://platform.openai.com/docs/api-reference" target="_blank">OpenAI API 参考文档</a></li>
+            <li><a href="https://github.com/openai/openai-python" target="_blank">OpenAI Python SDK</a></li>
+            <li>完整文档：项目根目录 <code>API_USAGE_GUIDE.md</code></li>
+        </ul>
+
+        <div style="margin-top: 48px; padding-top: 24px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 14px; text-align: center;">
+            MewClaw API 使用文档 | 最后更新：2026-04-04
+        </div>
+    </div>
+
+    <script>
+        // 添加复制按钮到所有代码块
+        document.querySelectorAll('pre').forEach(pre => {
+            const button = document.createElement('button');
+            button.className = 'copy-btn';
+            button.textContent = '复制';
+            button.onclick = () => {
+                const code = pre.querySelector('code').textContent;
+                navigator.clipboard.writeText(code).then(() => {
+                    button.textContent = '已复制';
+                    button.classList.add('copied');
+                    setTimeout(() => {
+                        button.textContent = '复制';
+                        button.classList.remove('copied');
+                    }, 2000);
+                });
+            };
+            pre.style.position = 'relative';
+            pre.appendChild(button);
+        });
+    </script>
+</body>
+</html>

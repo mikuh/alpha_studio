@@ -1,0 +1,19 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MewClaw logo v2">
+  <rect x="14" y="14" width="228" height="228" rx="56" fill="#EAF5FF"/>
+
+  <path d="M101 86L114 60L128 86H101Z" fill="#4E9EE4"/>
+  <path d="M128 86L142 60L155 86H128Z" fill="#4E9EE4"/>
+
+  <g stroke="#2A7FCC" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="128" cy="116" rx="32" ry="24"/>
+    <ellipse cx="102" cy="146" rx="32" ry="24" transform="rotate(-28 102 146)"/>
+    <ellipse cx="154" cy="146" rx="32" ry="24" transform="rotate(28 154 146)"/>
+  </g>
+
+  <circle cx="72" cy="132" r="12" fill="#77BDF9"/>
+  <circle cx="184" cy="132" r="12" fill="#77BDF9"/>
+  <circle cx="68" cy="128" r="4" fill="#F6FBFF"/>
+  <circle cx="76" cy="128" r="4" fill="#F6FBFF"/>
+  <circle cx="180" cy="128" r="4" fill="#F6FBFF"/>
+  <circle cx="188" cy="128" r="4" fill="#F6FBFF"/>
+</svg>

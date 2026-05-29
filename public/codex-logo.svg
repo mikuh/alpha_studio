@@ -1,0 +1,21 @@
+<svg width="640" height="640" viewBox="0 0 640 640" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Codex engine logo">
+  <defs>
+    <linearGradient id="cloud" x1="320" y1="90" x2="320" y2="560" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#A9A7F6"/>
+      <stop offset="1" stop-color="#3A4BFF"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="640" height="640" rx="90" fill="#F1F1F1"/>
+
+  <g fill="url(#cloud)">
+    <circle cx="270" cy="245" r="128"/>
+    <circle cx="420" cy="255" r="122"/>
+    <circle cx="205" cy="355" r="124"/>
+    <circle cx="425" cy="385" r="126"/>
+    <circle cx="300" cy="435" r="126"/>
+  </g>
+
+  <path d="M210 252L274 348L210 444" stroke="white" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="318" y="332" width="146" height="34" rx="17" fill="white"/>
+</svg>

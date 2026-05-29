@@ -1,0 +1,30 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MewClaw logo v4">
+  <rect x="14" y="14" width="228" height="228" rx="56" fill="#EDF7FF"/>
+
+  <path d="M101 84L114 60L128 84H101Z" fill="#4198DE"/>
+  <path d="M128 84L142 60L155 84H128Z" fill="#4198DE"/>
+
+  <g fill="#53AAEE">
+    <circle cx="128" cy="142" r="60"/>
+    <rect x="112" y="78" width="32" height="104" rx="16"/>
+    <rect x="112" y="78" width="32" height="104" rx="16" transform="rotate(60 128 128)"/>
+    <rect x="112" y="78" width="32" height="104" rx="16" transform="rotate(120 128 128)"/>
+  </g>
+
+  <g fill="#EDF7FF">
+    <ellipse cx="128" cy="153" rx="22" ry="16"/>
+    <circle cx="104" cy="127" r="8"/>
+    <circle cx="120" cy="117" r="8"/>
+    <circle cx="136" cy="117" r="8"/>
+    <circle cx="152" cy="127" r="8"/>
+  </g>
+
+  <g fill="#4198DE">
+    <rect x="46" y="132" width="40" height="5" rx="2.5"/>
+    <rect x="44" y="142" width="42" height="5" rx="2.5"/>
+    <rect x="46" y="152" width="40" height="5" rx="2.5"/>
+    <rect x="170" y="132" width="40" height="5" rx="2.5"/>
+    <rect x="170" y="142" width="42" height="5" rx="2.5"/>
+    <rect x="170" y="152" width="40" height="5" rx="2.5"/>
+  </g>
+</svg>

@@ -1,0 +1,22 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MewClaw logo v3">
+  <rect x="14" y="14" width="228" height="228" rx="56" fill="#EDF7FF"/>
+
+  <path d="M101 86L114 60L128 86H101Z" fill="#4198DE"/>
+  <path d="M128 86L142 60L155 86H128Z" fill="#4198DE"/>
+
+  <g fill="#53AAEE">
+    <rect x="118" y="74" width="20" height="84" rx="10"/>
+    <rect x="118" y="74" width="20" height="84" rx="10" transform="rotate(60 128 128)"/>
+    <rect x="118" y="74" width="20" height="84" rx="10" transform="rotate(120 128 128)"/>
+  </g>
+
+  <circle cx="128" cy="128" r="22" fill="#EDF7FF"/>
+  <circle cx="128" cy="128" r="8" fill="#8DCAFA"/>
+
+  <circle cx="72" cy="134" r="12" fill="#7EC2F7"/>
+  <circle cx="184" cy="134" r="12" fill="#7EC2F7"/>
+  <circle cx="68" cy="130" r="4" fill="#F7FCFF"/>
+  <circle cx="76" cy="130" r="4" fill="#F7FCFF"/>
+  <circle cx="180" cy="130" r="4" fill="#F7FCFF"/>
+  <circle cx="188" cy="130" r="4" fill="#F7FCFF"/>
+</svg>
