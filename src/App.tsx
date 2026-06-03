@@ -1,45 +1,69 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type {
+  ChangeEvent,
+  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   AlertCircle,
+  ArrowDownAZ,
+  ArrowDownUp,
   ArrowUp,
   Bot,
   Briefcase,
+  CalendarDays,
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  Clock3,
+  Copy,
+  Cpu,
+  Expand,
   FileText,
   Folder,
+  FolderInput,
   FolderOpen,
   FolderPlus,
+  History,
+  Info,
   Loader2,
   Mail,
   MessageCircle,
   MessageSquare,
   Mic,
   Moon,
+  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
-  RefreshCw,
   Search,
   Settings,
   ShieldCheck,
+  Shrink,
+  SlidersHorizontal,
   Smartphone,
   Square,
+  SquarePen,
   Star,
   Sun,
+  Terminal,
   Trash2,
   Users,
   Workflow,
   X,
   Zap,
 } from 'lucide-react';
-import { isTauriRuntime, subscribeCodexEvents } from './codexBridge';
+import { isTauriRuntime, revealPath, subscribeCodexEvents } from './codexBridge';
 import { coworkers } from './coworkers';
 import {
   EFFORT_OPTIONS,
@@ -52,7 +76,7 @@ import {
   type Speed,
 } from './models';
 import { useChatStore, useCurrentConversation } from './store';
-import type { ChatMessage, Conversation, Holding, MessageBlock, Project, SandboxMode, WatchItem } from './types';
+import type { ChatMessage, Conversation, Holding, MessageBlock, Project, ProjectSort, SandboxMode, WatchItem } from './types';
 
 type RightPanel = 'none' | 'coworker' | 'portfolio';
 
@@ -64,15 +88,74 @@ export function App() {
   const setCurrentConversation = useChatStore((state) => state.setCurrentConversation);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof window === 'undefined') return SIDEBAR_DEFAULT_WIDTH;
+    const saved = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    return Number.isFinite(saved) && saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH
+      ? saved
+      : SIDEBAR_DEFAULT_WIDTH;
+  });
   const [rightPanel, setRightPanel] = useState<RightPanel>('none');
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    if (typeof window === 'undefined') return 'dark';
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (saved === 'dark' || saved === 'light') return saved;
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+  const [windowFocused, setWindowFocused] = useState(true);
 
   const toggleRightPanel = (panel: Exclude<RightPanel, 'none'>) =>
     setRightPanel((current) => (current === panel ? 'none' : panel));
+  const toggleTheme = () => setTheme((value) => (value === 'dark' ? 'light' : 'dark'));
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem(THEME_KEY, theme);
+    if (isTauriRuntime()) {
+      void import('@tauri-apps/api/window')
+        .then(({ getCurrentWindow }) => getCurrentWindow().setTheme(theme))
+        .catch(() => {
+          /* set-theme may be unavailable in some webviews */
+        });
+    }
   }, [theme]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    let disposed = false;
+    let cleanup: (() => void) | null = null;
+
+    if (isTauriRuntime()) {
+      void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+        if (disposed) return;
+        void getCurrentWindow()
+          .onFocusChanged(({ payload: focused }) => setWindowFocused(focused))
+          .then((unlisten) => {
+            if (disposed) unlisten();
+            else cleanup = unlisten;
+          });
+      });
+    } else {
+      const onFocus = () => setWindowFocused(true);
+      const onBlur = () => setWindowFocused(false);
+      setWindowFocused(document.hasFocus());
+      window.addEventListener('focus', onFocus);
+      window.addEventListener('blur', onBlur);
+      cleanup = () => {
+        window.removeEventListener('focus', onFocus);
+        window.removeEventListener('blur', onBlur);
+      };
+    }
+
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!currentConversationId && conversations[0]) {
@@ -95,14 +178,25 @@ export function App() {
   }, [handleCodexEvent]);
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${windowFocused ? '' : 'window-inactive'}`}
+      style={{ ['--sidebar-width']: `${sidebarWidth}px` } as CSSProperties}
+    >
       <Sidebar
         collapsed={sidebarCollapsed}
-        theme={theme}
-        onToggleTheme={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
+        onCollapse={() => setSidebarCollapsed(true)}
         portfolioOpen={rightPanel === 'portfolio'}
         onOpenPortfolio={() => toggleRightPanel('portfolio')}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
+      {!sidebarCollapsed && (
+        <SidebarResizer
+          min={SIDEBAR_MIN_WIDTH}
+          max={SIDEBAR_MAX_WIDTH}
+          defaultWidth={SIDEBAR_DEFAULT_WIDTH}
+          onCommit={setSidebarWidth}
+        />
+      )}
       <main className="main-stage">
         <TopBar
           sidebarCollapsed={sidebarCollapsed}
@@ -116,7 +210,92 @@ export function App() {
       </main>
       {rightPanel === 'coworker' && <FinanceCoworkerPanel onClose={() => setRightPanel('none')} />}
       {rightPanel === 'portfolio' && <PortfolioPanel onClose={() => setRightPanel('none')} />}
+      <SettingsPage
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
     </div>
+  );
+}
+
+const SIDEBAR_WIDTH_KEY = 'alpha:codex-sidebar-width';
+const THEME_KEY = 'alpha:codex-theme';
+const SIDEBAR_MIN_WIDTH = 244;
+const SIDEBAR_MAX_WIDTH = 420;
+const SIDEBAR_DEFAULT_WIDTH = 294;
+
+function SidebarResizer({
+  min,
+  max,
+  defaultWidth,
+  onCommit,
+}: {
+  min: number;
+  max: number;
+  defaultWidth: number;
+  onCommit: (width: number) => void;
+}) {
+  const [active, setActive] = useState(false);
+  const drag = useRef<{ x: number; w: number; shell: HTMLElement | null }>({ x: 0, w: 0, shell: null });
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const handle = event.currentTarget;
+    const shell = handle.closest('.app-shell') as HTMLElement | null;
+    if (!shell) return;
+    const sidebar = shell.querySelector('.sidebar') as HTMLElement | null;
+    drag.current = {
+      x: event.clientX,
+      w: sidebar ? sidebar.getBoundingClientRect().width : defaultWidth,
+      shell,
+    };
+    setActive(true);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      /* pointer capture unsupported */
+    }
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const { shell, w, x } = drag.current;
+    if (!shell) return;
+    const next = Math.min(max, Math.max(min, w + (event.clientX - x)));
+    shell.style.setProperty('--sidebar-width', `${next}px`);
+  };
+
+  const finishDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const shell = drag.current.shell;
+    if (!shell) return;
+    drag.current.shell = null;
+    setActive(false);
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    const resolved = parseFloat(getComputedStyle(shell).getPropertyValue('--sidebar-width'));
+    onCommit(Math.round(Number.isFinite(resolved) ? resolved : defaultWidth));
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      /* pointer already released */
+    }
+  };
+
+  return (
+    <div
+      className={`sidebar-resizer ${active ? 'active' : ''}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="拖动调整侧栏宽度"
+      title="拖动调整宽度 · 双击复位"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={finishDrag}
+      onPointerCancel={finishDrag}
+      onDoubleClick={() => onCommit(defaultWidth)}
+    />
   );
 }
 
@@ -124,16 +303,16 @@ export function App() {
 
 function Sidebar({
   collapsed,
-  theme,
-  onToggleTheme,
+  onCollapse,
   portfolioOpen,
   onOpenPortfolio,
+  onOpenSettings,
 }: {
   collapsed: boolean;
-  theme: 'dark' | 'light';
-  onToggleTheme: () => void;
+  onCollapse: () => void;
   portfolioOpen: boolean;
   onOpenPortfolio: () => void;
+  onOpenSettings: () => void;
 }) {
   const conversations = useChatStore((state) => state.conversations);
   const projects = useChatStore((state) => state.projects);
@@ -141,33 +320,70 @@ function Sidebar({
   const createConversation = useChatStore((state) => state.createConversation);
   const setCurrentConversation = useChatStore((state) => state.setCurrentConversation);
   const deleteConversation = useChatStore((state) => state.deleteConversation);
+  const renameConversation = useChatStore((state) => state.renameConversation);
+  const toggleConversationPin = useChatStore((state) => state.toggleConversationPin);
   const createProject = useChatStore((state) => state.createProject);
   const renameProject = useChatStore((state) => state.renameProject);
   const setProjectCwd = useChatStore((state) => state.setProjectCwd);
+  const toggleProjectPin = useChatStore((state) => state.toggleProjectPin);
   const deleteProject = useChatStore((state) => state.deleteProject);
+  const projectSort = useChatStore((state) => state.projectSort);
+  const setProjectSort = useChatStore((state) => state.setProjectSort);
+  const conversationSort = useChatStore((state) => state.conversationSort);
+  const setConversationSort = useChatStore((state) => state.setConversationSort);
 
+  const pinnedConversations = useMemo(
+    () => sortConversations(conversations.filter((conversation) => conversation.pinned), conversationSort),
+    [conversations, conversationSort],
+  );
   const standalone = useMemo(
-    () => conversations.filter((conversation) => !conversation.projectId),
+    () => conversations.filter((conversation) => !conversation.projectId && !conversation.pinned),
     [conversations],
   );
-  const groups = useMemo(() => groupConversationsByDate(standalone), [standalone]);
+  const conversationGroups = useMemo(
+    () => groupStandaloneConversations(standalone, conversationSort),
+    [standalone, conversationSort],
+  );
+  const sortedProjects = useMemo(() => sortProjects(projects, projectSort), [projects, projectSort]);
 
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [menu, setMenu] = useState<SidebarMenu | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [automationOpen, setAutomationOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
+  const [conversationsCollapsed, setConversationsCollapsed] = useState(false);
+
+  const closeMenu = () => setMenu(null);
+  const anyExpanded = projects.some((project) => expanded[project.id]);
+  const collapseAll = () => setExpanded({});
+  const expandAll = () =>
+    setExpanded(Object.fromEntries(projects.map((project) => [project.id, true])));
+
+  useEffect(() => {
+    const handleKeyDown = (event: WindowEventMap['keydown']) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const toggleProject = (id: string) =>
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
 
   const handleNewBlankProject = () => {
-    setAddMenuOpen(false);
+    closeMenu();
     const id = createProject();
     setExpanded((prev) => ({ ...prev, [id]: true }));
     setEditingProjectId(id);
   };
 
   const handleUseExistingFolder = async () => {
-    setAddMenuOpen(false);
+    closeMenu();
     const dir = await pickFolder();
     if (!dir) return;
     const id = createProject({ name: basename(dir), cwd: dir });
@@ -175,152 +391,394 @@ function Sidebar({
     createConversation(id);
   };
 
+  const chooseProjectFolder = async (project: Project) => {
+    const dir = await pickFolder();
+    if (dir) setProjectCwd(project.id, dir);
+  };
+
+  const openProjectInFinder = async (project: Project) => {
+    if (project.cwd && (await revealPath(project.cwd))) return;
+    await chooseProjectFolder(project);
+  };
+
+  const openNewProjectMenu = (event: ReactMouseEvent) => {
+    setMenu({
+      owner: 'add',
+      ...anchorFromButton(event),
+      items: [
+        { kind: 'item', icon: <FolderPlus size={15} />, label: '新建空白项目', onSelect: handleNewBlankProject },
+        { kind: 'item', icon: <FolderOpen size={15} />, label: '使用现有文件夹', onSelect: () => void handleUseExistingFolder() },
+      ],
+    });
+  };
+
+  const openSectionMenu = (event: ReactMouseEvent) => {
+    setMenu({
+      owner: 'section',
+      ...anchorFromButton(event),
+      items: [
+        { kind: 'item', icon: <Shrink size={15} />, label: '全部收起', onSelect: collapseAll },
+        { kind: 'item', icon: <Expand size={15} />, label: '全部展开', onSelect: expandAll },
+        { kind: 'separator' },
+        {
+          kind: 'submenu',
+          icon: <ArrowDownUp size={15} />,
+          label: '排序条件',
+          children: [
+            { kind: 'radio', icon: <Clock3 size={15} />, label: '更新时间', checked: projectSort === 'updated', onSelect: () => setProjectSort('updated') },
+            { kind: 'radio', icon: <CalendarDays size={15} />, label: '创建时间', checked: projectSort === 'created', onSelect: () => setProjectSort('created') },
+            { kind: 'radio', icon: <ArrowDownAZ size={15} />, label: '名称', checked: projectSort === 'name', onSelect: () => setProjectSort('name') },
+          ],
+        },
+      ],
+    });
+  };
+
+  const openConversationSectionMenu = (event: ReactMouseEvent) => {
+    setMenu({
+      owner: 'conv-section',
+      ...anchorFromButton(event),
+      items: [
+        {
+          kind: 'item',
+          icon: conversationsCollapsed ? <Expand size={15} /> : <Shrink size={15} />,
+          label: conversationsCollapsed ? '展开列表' : '收起列表',
+          onSelect: () => setConversationsCollapsed((value) => !value),
+        },
+        { kind: 'separator' },
+        {
+          kind: 'submenu',
+          icon: <ArrowDownUp size={15} />,
+          label: '排序条件',
+          children: [
+            { kind: 'radio', icon: <Clock3 size={15} />, label: '更新时间', checked: conversationSort === 'updated', onSelect: () => setConversationSort('updated') },
+            { kind: 'radio', icon: <CalendarDays size={15} />, label: '创建时间', checked: conversationSort === 'created', onSelect: () => setConversationSort('created') },
+            { kind: 'radio', icon: <ArrowDownAZ size={15} />, label: '名称', checked: conversationSort === 'name', onSelect: () => setConversationSort('name') },
+          ],
+        },
+      ],
+    });
+  };
+
+  const openConversationMenu = (conversation: Conversation, anchor: MenuAnchor) => {
+    setMenu({
+      owner: conversation.id,
+      ...anchor,
+      items: [
+        {
+          kind: 'item',
+          icon: conversation.pinned ? <PinOff size={15} /> : <Pin size={15} />,
+          label: conversation.pinned ? '取消置顶' : '置顶对话',
+          onSelect: () => toggleConversationPin(conversation.id),
+        },
+        {
+          kind: 'item',
+          icon: <FolderOpen size={15} />,
+          label: '在访达中打开',
+          disabled: !conversation.cwd,
+          onSelect: () => void revealPath(conversation.cwd),
+        },
+        { kind: 'item', icon: <Pencil size={15} />, label: '重命名', onSelect: () => setEditingConversationId(conversation.id) },
+        { kind: 'separator' },
+        { kind: 'item', icon: <Trash2 size={15} />, label: '删除对话', danger: true, onSelect: () => deleteConversation(conversation.id) },
+      ],
+    });
+  };
+
+  const commitConversationRename = (id: string, name: string) => {
+    renameConversation(id, name);
+    setEditingConversationId(null);
+  };
+  const cancelConversationRename = () => setEditingConversationId(null);
+
+  const openProjectMenu = (project: Project, anchor: MenuAnchor) => {
+    setMenu({
+      owner: project.id,
+      ...anchor,
+      items: [
+        {
+          kind: 'item',
+          icon: project.pinned ? <PinOff size={15} /> : <Pin size={15} />,
+          label: project.pinned ? '取消置顶' : '置顶项目',
+          onSelect: () => toggleProjectPin(project.id),
+        },
+        { kind: 'item', icon: <FolderOpen size={15} />, label: '在访达中打开', onSelect: () => void openProjectInFinder(project) },
+        { kind: 'item', icon: <FolderInput size={15} />, label: '设置工作目录', onSelect: () => void chooseProjectFolder(project) },
+        { kind: 'item', icon: <Pencil size={15} />, label: '重命名项目', onSelect: () => setEditingProjectId(project.id) },
+        {
+          kind: 'item',
+          icon: <SquarePen size={15} />,
+          label: '新建对话',
+          onSelect: () => {
+            setExpanded((prev) => ({ ...prev, [project.id]: true }));
+            createConversation(project.id);
+          },
+        },
+        { kind: 'separator' },
+        { kind: 'item', icon: <Trash2 size={15} />, label: '移除项目', danger: true, onSelect: () => deleteProject(project.id) },
+      ],
+    });
+  };
+
+  const openProjectFromSearch = (projectId: string) => {
+    const latest = conversations
+      .filter((conversation) => conversation.projectId === projectId)
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (latest) {
+      setCurrentConversation(latest.id);
+    } else {
+      createConversation(projectId);
+    }
+    setExpanded((prev) => ({ ...prev, [projectId]: true }));
+  };
+
   return (
-    <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`} aria-hidden={collapsed}>
-      <div className="sidebar-traffic" data-tauri-drag-region />
-      <div className="sidebar-scroll">
-        <button className="nav-item" type="button" onClick={() => createConversation()}>
-          <Plus size={15} />
-          <span className="nav-label">新对话</span>
-        </button>
-        <button className="nav-item" type="button" disabled>
-          <Search size={15} />
-          <span className="nav-label">搜索</span>
-        </button>
-        <button className="nav-item" type="button" disabled>
-          <Workflow size={15} />
-          <span className="nav-label">自动化</span>
-        </button>
-        <button className="nav-item" type="button" disabled>
-          <Smartphone size={15} />
-          <span className="nav-label">Alpha 移动版</span>
-        </button>
-
-        <SectionLabel>资产 · 视图</SectionLabel>
-        <button className="nav-item" type="button" disabled>
-          <FileText size={15} />
-          <span className="nav-label">晨报</span>
-          <span className="nav-badge">待接入</span>
-        </button>
-        <button className="nav-item" type="button" disabled>
-          <Zap size={15} />
-          <span className="nav-label">操作清单</span>
-          <span className="nav-badge">18</span>
-        </button>
-        <button
-          className={`nav-item ${portfolioOpen ? 'active' : ''}`}
-          type="button"
-          onClick={onOpenPortfolio}
-        >
-          <Briefcase size={15} />
-          <span className="nav-label">持仓 / 自选</span>
-        </button>
-
-        <div className="sidebar-section-head">
-          <span className="sidebar-section-label">项目</span>
+    <>
+      <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`} aria-hidden={collapsed}>
+        <div className="sidebar-traffic" data-tauri-drag-region>
           <button
-            className="section-add"
+            className="sidebar-collapse-btn"
             type="button"
-            onClick={() => setAddMenuOpen((value) => !value)}
-            aria-label="新建项目"
-            title="新建项目"
+            onClick={onCollapse}
+            aria-label="收起侧栏"
+            title="收起侧栏"
           >
-            <FolderPlus size={14} />
+            <PanelLeftClose size={16} />
           </button>
-          {addMenuOpen && (
-            <>
-              <button
-                className="menu-backdrop"
-                type="button"
-                aria-label="关闭菜单"
-                onClick={() => setAddMenuOpen(false)}
-              />
-              <div className="add-menu" role="menu">
-                <button type="button" role="menuitem" onClick={handleNewBlankProject}>
-                  <FolderPlus size={14} />
-                  <span>新建空白项目</span>
-                </button>
-                <button type="button" role="menuitem" onClick={() => void handleUseExistingFolder()}>
-                  <FolderOpen size={14} />
-                  <span>使用现有文件夹</span>
-                </button>
+        </div>
+        <div className="sidebar-scroll">
+          <div className="sidebar-menu-panel nav-menu">
+            <button className="nav-item primary" type="button" onClick={() => createConversation()}>
+              <SquarePen size={15} />
+              <span className="nav-label">新对话</span>
+            </button>
+            <button className={`nav-item ${searchOpen ? 'active' : ''}`} type="button" onClick={() => setSearchOpen(true)}>
+              <Search size={15} />
+              <span className="nav-label">搜索</span>
+            </button>
+            <button
+              className={`nav-item ${automationOpen ? 'active' : ''}`}
+              type="button"
+              onClick={() => setAutomationOpen(true)}
+            >
+              <Workflow size={15} />
+              <span className="nav-label">自动化</span>
+              <span className="nav-badge">0</span>
+            </button>
+            <button
+              className={`nav-item ${mobileOpen ? 'active' : ''}`}
+              type="button"
+              onClick={() => setMobileOpen(true)}
+            >
+              <Smartphone size={15} />
+              <span className="nav-label">Alpha 移动版</span>
+            </button>
+          </div>
+
+          {pinnedConversations.length > 0 && (
+            <div className="pinned-conversations" aria-label="置顶对话">
+              <div className="sidebar-section-label">置顶</div>
+              <div className="sidebar-menu-panel conv-group pinned">
+                {pinnedConversations.map((conversation) => (
+                  <ConversationRow
+                    key={conversation.id}
+                    conversation={conversation}
+                    active={conversation.id === currentConversationId}
+                    menuOpen={menu?.owner === conversation.id}
+                    editing={editingConversationId === conversation.id}
+                    showPinIndicator={false}
+                    onSelect={() => setCurrentConversation(conversation.id)}
+                    onOpenMenu={(anchor) => openConversationMenu(conversation, anchor)}
+                    onCommitRename={(name) => commitConversationRename(conversation.id, name)}
+                    onCancelRename={cancelConversationRename}
+                  />
+                ))}
               </div>
-            </>
+            </div>
+          )}
+
+          <SectionLabel>资产 · 视图</SectionLabel>
+          <div className="sidebar-menu-panel nav-menu">
+            <button className="nav-item" type="button" onClick={() => setAutomationOpen(true)}>
+              <FileText size={15} />
+              <span className="nav-label">晨报</span>
+              <span className="nav-badge">草稿</span>
+            </button>
+            <button className="nav-item" type="button" onClick={() => setAutomationOpen(true)}>
+              <Zap size={15} />
+              <span className="nav-label">操作清单</span>
+              <span className="nav-badge">18</span>
+            </button>
+            <button
+              className={`nav-item ${portfolioOpen ? 'active' : ''}`}
+              type="button"
+              onClick={onOpenPortfolio}
+            >
+              <Briefcase size={15} />
+              <span className="nav-label">持仓 / 自选</span>
+            </button>
+          </div>
+
+        <div className={`sidebar-group-head ${menu?.owner === 'section' || menu?.owner === 'add' ? 'menu-open' : ''}`}>
+          <span className="sidebar-group-label">项目</span>
+          <span className="sidebar-group-actions">
+            <button
+              className="group-action"
+              type="button"
+              onClick={anyExpanded ? collapseAll : expandAll}
+              aria-label={anyExpanded ? '全部收起' : '全部展开'}
+              title={anyExpanded ? '全部收起' : '全部展开'}
+            >
+              {anyExpanded ? <Shrink size={15} /> : <Expand size={15} />}
+            </button>
+            <button
+              className={`group-action ${menu?.owner === 'section' ? 'active' : ''}`}
+              type="button"
+              onClick={openSectionMenu}
+              aria-label="排序与整理"
+              title="排序与整理"
+            >
+              <MoreHorizontal size={15} />
+            </button>
+            <button
+              className={`group-action ${menu?.owner === 'add' ? 'active' : ''}`}
+              type="button"
+              onClick={openNewProjectMenu}
+              aria-label="新建项目"
+              title="新建项目"
+            >
+              <SquarePen size={15} />
+            </button>
+          </span>
+        </div>
+        <div className="sidebar-menu-panel project-menu">
+          {projects.length === 0 ? (
+            <div className="sidebar-hint">用项目把对话固定到一个工作目录</div>
+          ) : (
+            sortedProjects.map((project) => (
+              <ProjectItem
+                key={project.id}
+                project={project}
+                expanded={Boolean(expanded[project.id])}
+                editing={editingProjectId === project.id}
+                menuOpen={menu?.owner === project.id}
+                conversations={conversations.filter((conversation) => conversation.projectId === project.id && !conversation.pinned)}
+                currentConversationId={currentConversationId}
+                activeMenuId={menu?.owner ?? null}
+                editingConversationId={editingConversationId}
+                onToggle={() => toggleProject(project.id)}
+                onSelectConversation={setCurrentConversation}
+                onNewConversation={() => {
+                  setExpanded((prev) => ({ ...prev, [project.id]: true }));
+                  createConversation(project.id);
+                }}
+                onOpenConversationMenu={openConversationMenu}
+                onCommitConversationRename={commitConversationRename}
+                onCancelConversationRename={cancelConversationRename}
+                onCommitRename={(name) => {
+                  renameProject(project.id, name);
+                  setEditingProjectId(null);
+                }}
+                onCancelRename={() => setEditingProjectId(null)}
+                onOpenMenu={(anchor) => openProjectMenu(project, anchor)}
+              />
+            ))
           )}
         </div>
-        {projects.length === 0 ? (
-          <div className="sidebar-hint">用项目把对话固定到一个工作目录</div>
-        ) : (
-          projects.map((project) => (
-            <ProjectItem
-              key={project.id}
-              project={project}
-              expanded={Boolean(expanded[project.id])}
-              editing={editingProjectId === project.id}
-              conversations={conversations.filter((conversation) => conversation.projectId === project.id)}
-              currentConversationId={currentConversationId}
-              onToggle={() => toggleProject(project.id)}
-              onSelectConversation={setCurrentConversation}
-              onNewConversation={() => {
-                setExpanded((prev) => ({ ...prev, [project.id]: true }));
-                createConversation(project.id);
-              }}
-              onDeleteConversation={deleteConversation}
-              onStartRename={() => setEditingProjectId(project.id)}
-              onCommitRename={(name) => {
-                renameProject(project.id, name);
-                setEditingProjectId(null);
-              }}
-              onCancelRename={() => setEditingProjectId(null)}
-              onChooseFolder={async () => {
-                const dir = await pickFolder();
-                if (dir) setProjectCwd(project.id, dir);
-              }}
-              onDelete={() => deleteProject(project.id)}
-            />
-          ))
-        )}
 
-        <SectionLabel>对话</SectionLabel>
-        {groups.length === 0 ? (
+        <div className={`sidebar-group-head ${menu?.owner === 'conv-section' ? 'menu-open' : ''}`}>
+          <span className="sidebar-group-label">对话</span>
+          <span className="sidebar-group-actions">
+            <button
+              className="group-action"
+              type="button"
+              onClick={() => setConversationsCollapsed((value) => !value)}
+              aria-label={conversationsCollapsed ? '展开列表' : '收起列表'}
+              title={conversationsCollapsed ? '展开列表' : '收起列表'}
+            >
+              {conversationsCollapsed ? <Expand size={15} /> : <Shrink size={15} />}
+            </button>
+            <button
+              className={`group-action ${menu?.owner === 'conv-section' ? 'active' : ''}`}
+              type="button"
+              onClick={openConversationSectionMenu}
+              aria-label="排序与整理"
+              title="排序与整理"
+            >
+              <MoreHorizontal size={15} />
+            </button>
+            <button
+              className="group-action"
+              type="button"
+              onClick={() => createConversation()}
+              aria-label="新建对话"
+              title="新建对话"
+            >
+              <SquarePen size={15} />
+            </button>
+          </span>
+        </div>
+        {conversationsCollapsed ? null : conversationGroups.length === 0 ? (
           <div className="sidebar-hint">暂无未归类的对话</div>
         ) : (
-          groups.map((group) => (
-            <div key={group.label} style={{ marginBottom: 6 }}>
-              <div className="sidebar-section-label">{group.label}</div>
-              {group.items.map((conversation) => (
-                <ConversationRow
-                  key={conversation.id}
-                  conversation={conversation}
-                  active={conversation.id === currentConversationId}
-                  deletable={conversations.length > 1}
-                  onSelect={() => setCurrentConversation(conversation.id)}
-                  onDelete={() => deleteConversation(conversation.id)}
-                />
-              ))}
+          conversationGroups.map((group) => (
+            <div key={group.label} className="conversation-date-group">
+              {group.label && <div className="sidebar-section-label">{group.label}</div>}
+              <div className="sidebar-menu-panel conv-group">
+                {group.items.map((conversation) => (
+                  <ConversationRow
+                    key={conversation.id}
+                    conversation={conversation}
+                    active={conversation.id === currentConversationId}
+                    menuOpen={menu?.owner === conversation.id}
+                    editing={editingConversationId === conversation.id}
+                    onSelect={() => setCurrentConversation(conversation.id)}
+                    onOpenMenu={(anchor) => openConversationMenu(conversation, anchor)}
+                    onCommitRename={(name) => commitConversationRename(conversation.id, name)}
+                    onCancelRename={cancelConversationRename}
+                  />
+                ))}
+              </div>
             </div>
           ))
         )}
-      </div>
-      <div className="sidebar-footer">
-        <button className="nav-item" type="button" disabled title="首版只做投研对话，不接交易、不写审计归档。">
-          <ShieldCheck size={15} />
-          <span className="nav-label">合规边界</span>
-        </button>
-        <button
-          className="icon-btn"
-          type="button"
-          onClick={onToggleTheme}
-          aria-label="切换主题"
-          title="切换主题"
-        >
-          {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-        </button>
-        <button className="icon-btn" type="button" disabled aria-label="设置" title="设置">
-          <Settings size={15} />
-        </button>
-      </div>
-    </aside>
+        </div>
+        <div className="sidebar-footer">
+          <button
+            className="nav-item settings-entry"
+            type="button"
+            aria-label="设置"
+            title="设置"
+            onClick={onOpenSettings}
+          >
+            <Settings size={15} />
+            <span className="nav-label">设置</span>
+          </button>
+        </div>
+      </aside>
+      {menu && <ContextMenu menu={menu} onClose={closeMenu} />}
+      <SearchDialog
+        open={searchOpen}
+        conversations={conversations}
+        projects={projects}
+        currentConversationId={currentConversationId}
+        onClose={() => setSearchOpen(false)}
+        onSelectConversation={(id) => {
+          setCurrentConversation(id);
+          setSearchOpen(false);
+        }}
+        onOpenProject={(id) => {
+          openProjectFromSearch(id);
+          setSearchOpen(false);
+        }}
+        onNewConversation={() => {
+          createConversation();
+          setSearchOpen(false);
+        }}
+      />
+      <AutomationDialog open={automationOpen} onClose={() => setAutomationOpen(false)} />
+      <MobileDialog open={mobileOpen} onClose={() => setMobileOpen(false)} />
+    </>
   );
 }
 
@@ -328,98 +786,657 @@ function SectionLabel({ children }: { children: ReactNode }) {
   return <div className="sidebar-section-label" style={{ marginTop: 14 }}>{children}</div>;
 }
 
+function SearchDialog({
+  open,
+  conversations,
+  projects,
+  currentConversationId,
+  onClose,
+  onSelectConversation,
+  onOpenProject,
+  onNewConversation,
+}: {
+  open: boolean;
+  conversations: Conversation[];
+  projects: Project[];
+  currentConversationId: string | null;
+  onClose: () => void;
+  onSelectConversation: (id: string) => void;
+  onOpenProject: (id: string) => void;
+  onNewConversation: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setQuery('');
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: WindowEventMap['keydown']) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
+  const normalized = query.trim().toLowerCase();
+  const conversationResults = useMemo(() => {
+    const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt);
+    if (!normalized) return sorted.slice(0, 7);
+    return sorted
+      .filter((conversation) => {
+        const project = projects.find((item) => item.id === conversation.projectId);
+        return [conversation.title, conversation.cwd, project?.name]
+          .filter(Boolean)
+          .some((value) => value!.toLowerCase().includes(normalized));
+      })
+      .slice(0, 8);
+  }, [conversations, normalized, projects]);
+
+  const projectResults = useMemo(() => {
+    if (!normalized) return projects.slice(0, 5);
+    return projects
+      .filter((project) =>
+        [project.name, project.cwd]
+          .filter(Boolean)
+          .some((value) => value!.toLowerCase().includes(normalized)),
+      )
+      .slice(0, 6);
+  }, [normalized, projects]);
+
+  if (!open) return null;
+
+  return (
+    <div className="dialog-layer" role="presentation">
+      <button className="dialog-backdrop" type="button" aria-label="关闭搜索" onClick={onClose} />
+      <section className="command-dialog" role="dialog" aria-modal="true" aria-label="搜索">
+        <div className="command-input-row">
+          <Search size={16} />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索对话、项目或工作目录"
+          />
+          <button type="button" className="icon-mini" onClick={onClose} aria-label="关闭搜索">
+            <X size={14} />
+          </button>
+        </div>
+
+        <div className="command-content">
+          <button type="button" className="command-result new" onClick={onNewConversation}>
+            <Plus size={15} />
+            <span>
+              <strong>新对话</strong>
+              <em>从空白上下文开始</em>
+            </span>
+          </button>
+
+          {projectResults.length > 0 && (
+            <div className="command-section">
+              <div className="command-section-label">项目</div>
+              {projectResults.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  className="command-result"
+                  onClick={() => onOpenProject(project.id)}
+                >
+                  <Folder size={15} />
+                  <span>
+                    <strong>{project.name}</strong>
+                    <em>{project.cwd ? shortenPath(project.cwd) : '未指定目录'}</em>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {conversationResults.length > 0 && (
+            <div className="command-section">
+              <div className="command-section-label">{normalized ? '匹配对话' : '最近对话'}</div>
+              {conversationResults.map((conversation) => (
+                <button
+                  key={conversation.id}
+                  type="button"
+                  className={`command-result ${conversation.id === currentConversationId ? 'active' : ''}`}
+                  onClick={() => onSelectConversation(conversation.id)}
+                >
+                  {conversation.status === 'streaming' ? (
+                    <Loader2 size={15} className="spin" />
+                  ) : (
+                    <MessageSquare size={15} />
+                  )}
+                  <span>
+                    <strong>{conversation.title}</strong>
+                    <em>
+                      {conversation.cwd ? shortenPath(conversation.cwd) : '未指定目录'} · {formatRelative(conversation.updatedAt)}
+                    </em>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {projectResults.length === 0 && conversationResults.length === 0 && (
+            <div className="command-empty">
+              <Search size={16} />
+              <span>没有匹配结果</span>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AutomationDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  if (!open) return null;
+
+  return (
+    <UtilityDialog icon={<Workflow size={16} />} title="自动化" onClose={onClose}>
+      <div className="utility-list">
+        <UtilityRow
+          icon={<Clock3 size={15} />}
+          title="每日晨报"
+          description="盘前主线、持仓风险和待跟踪问题"
+          badge="草稿"
+        />
+        <UtilityRow
+          icon={<Briefcase size={15} />}
+          title="持仓监控"
+          description="价格、新闻和基本面变化的本地提醒队列"
+          badge="未启用"
+        />
+        <UtilityRow
+          icon={<History size={15} />}
+          title="复盘提醒"
+          description="把已完成对话沉淀为下一次检查点"
+          badge="未启用"
+        />
+      </div>
+    </UtilityDialog>
+  );
+}
+
+function MobileDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  if (!open) return null;
+
+  return (
+    <UtilityDialog icon={<Smartphone size={16} />} title="Alpha 移动版" onClose={onClose}>
+      <div className="utility-list">
+        <UtilityRow
+          icon={<MessageCircle size={15} />}
+          title="移动会话"
+          description="延续桌面线程和项目上下文"
+          badge="计划中"
+        />
+        <UtilityRow
+          icon={<ShieldCheck size={15} />}
+          title="只读投研"
+          description="移动端保留合规边界，不接交易执行"
+          badge="本地"
+        />
+      </div>
+    </UtilityDialog>
+  );
+}
+
+const SETTINGS_SECTIONS = [
+  { id: 'general', label: '常规', icon: <SlidersHorizontal size={15} /> },
+  { id: 'model', label: '模型与推理', icon: <Cpu size={15} /> },
+  { id: 'appearance', label: '外观', icon: <Sun size={15} /> },
+  { id: 'about', label: '关于', icon: <Info size={15} /> },
+] as const;
+
+type SettingsSection = (typeof SETTINGS_SECTIONS)[number]['id'];
+
+function SettingsPage({
+  open,
+  onClose,
+  theme,
+  onToggleTheme,
+}: {
+  open: boolean;
+  onClose: () => void;
+  theme: 'dark' | 'light';
+  onToggleTheme: () => void;
+}) {
+  const model = useChatStore((state) => state.model);
+  const reasoningEffort = useChatStore((state) => state.reasoningEffort);
+  const speed = useChatStore((state) => state.speed);
+  const sandboxMode = useChatStore((state) => state.sandboxMode);
+  const setModel = useChatStore((state) => state.setModel);
+  const setReasoningEffort = useChatStore((state) => state.setReasoningEffort);
+  const setSpeed = useChatStore((state) => state.setSpeed);
+  const setSandboxMode = useChatStore((state) => state.setSandboxMode);
+  const codexStatus = useChatStore((state) => state.codexStatus);
+  const isCheckingCodex = useChatStore((state) => state.isCheckingCodex);
+  const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
+
+  const [section, setSection] = useState<SettingsSection>('general');
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: WindowEventMap['keydown']) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const activeLabel = SETTINGS_SECTIONS.find((item) => item.id === section)?.label ?? '设置';
+  const codexReady = Boolean(codexStatus?.installed && codexStatus.loggedIn);
+
+  return (
+    <div className="settings-page" role="dialog" aria-modal="true" aria-label="设置">
+      <nav className="settings-page-nav">
+        <div className="settings-page-traffic" data-tauri-drag-region />
+        <button className="settings-back" type="button" onClick={onClose}>
+          <ChevronLeft size={16} />
+          <span>返回应用</span>
+        </button>
+        <div className="settings-nav-list">
+          <div className="settings-nav-grouplabel">个人</div>
+          {SETTINGS_SECTIONS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`settings-nav-item ${section === item.id ? 'active' : ''}`}
+              onClick={() => setSection(item.id)}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      <div className="settings-page-main">
+        <div className="settings-page-head" data-tauri-drag-region />
+
+        <div className="settings-page-scroll">
+          <div className="settings-content">
+            <h1 className="settings-content-title">{activeLabel}</h1>
+            {section === 'general' && (
+              <SettingsGroup>
+                <SettingsRow
+                  title="默认访问权限"
+                  description="新对话的默认沙箱级别，发送前仍可在输入框左侧临时调整。"
+                >
+                  <select
+                    className="settings-select"
+                    value={sandboxMode}
+                    onChange={(event) => setSandboxMode(event.target.value as SandboxMode)}
+                  >
+                    <option value="read-only">{sandboxLabels['read-only']}</option>
+                    <option value="workspace-write">{sandboxLabels['workspace-write']}</option>
+                    <option value="danger-full-access">{sandboxLabels['danger-full-access']}</option>
+                  </select>
+                </SettingsRow>
+                <SettingsRow
+                  title="工作目录"
+                  description="项目可绑定本地目录，新对话默认使用当前项目的工作区。"
+                >
+                  <span className="settings-static">按项目管理</span>
+                </SettingsRow>
+                <SettingsRow
+                  title="合规边界"
+                  description="首版只做投研对话，不接交易、不写审计归档。"
+                >
+                  <span className="settings-static">只读投研</span>
+                </SettingsRow>
+              </SettingsGroup>
+            )}
+
+            {section === 'model' && (
+              <SettingsGroup>
+                <SettingsRow title="模型" description="对话使用的基础模型，可随时切换。">
+                  <select
+                    className="settings-select"
+                    value={model}
+                    onChange={(event) => setModel(event.target.value)}
+                  >
+                    {MODEL_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </SettingsRow>
+                <SettingsRow title="推理强度" description="更高的强度更细致，但响应更慢。">
+                  <SettingsSegment
+                    options={EFFORT_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
+                    value={reasoningEffort}
+                    onChange={(id) => setReasoningEffort(id as ReasoningEffort)}
+                  />
+                </SettingsRow>
+                <SettingsRow title="速度" description="快速模式约 1.5 倍速度，用量也会相应增加。">
+                  <SettingsSegment
+                    options={SPEED_OPTIONS.map((option) => ({
+                      id: option.id,
+                      label: option.label,
+                      icon: option.fast ? <Zap size={13} /> : undefined,
+                    }))}
+                    value={speed}
+                    onChange={(id) => setSpeed(id as Speed)}
+                  />
+                </SettingsRow>
+              </SettingsGroup>
+            )}
+
+            {section === 'appearance' && (
+              <SettingsGroup>
+                <SettingsRow title="主题" description="选择界面的明暗外观。">
+                  <SettingsSegment
+                    options={[
+                      { id: 'dark', label: '深色', icon: <Moon size={13} /> },
+                      { id: 'light', label: '浅色', icon: <Sun size={13} /> },
+                    ]}
+                    value={theme}
+                    onChange={(id) => {
+                      if (id !== theme) onToggleTheme();
+                    }}
+                  />
+                </SettingsRow>
+              </SettingsGroup>
+            )}
+
+            {section === 'about' && (
+              <SettingsGroup>
+                <div className={`settings-status ${codexReady ? 'ready' : 'attention'}`}>
+                  <span className="settings-status-icon">
+                    {isCheckingCodex ? <Loader2 size={16} className="spin" /> : <Terminal size={16} />}
+                  </span>
+                  <div className="settings-status-main">
+                    <strong>
+                      {isCheckingCodex
+                        ? '正在检查 Codex CLI…'
+                        : codexReady
+                          ? `Codex CLI 已就绪${codexStatus?.version ? ` · ${codexStatus.version}` : ''}`
+                          : 'Codex CLI 未就绪'}
+                    </strong>
+                    <span>
+                      {codexReady
+                        ? codexStatus?.path || '已检测到本地 Codex CLI'
+                        : codexStatus?.error || '请确认 Codex 已安装并登录。'}
+                    </span>
+                  </div>
+                  <button
+                    className="settings-btn"
+                    type="button"
+                    onClick={() => void refreshCodexStatus()}
+                    disabled={isCheckingCodex}
+                  >
+                    重新检测
+                  </button>
+                </div>
+                <SettingsRow title="登录状态" description="Codex CLI 的本地登录态。">
+                  <span className="settings-static">{codexStatus?.loggedIn ? '已登录' : '未登录'}</span>
+                </SettingsRow>
+                <SettingsRow title="应用" description="Alpha Studio · 本地投研工作台">
+                  <span className="settings-static">预览版</span>
+                </SettingsRow>
+              </SettingsGroup>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsGroup({ children }: { children: ReactNode }) {
+  return <div className="settings-group">{children}</div>;
+}
+
+function SettingsRow({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="settings-row">
+      <div className="settings-row-main">
+        <strong>{title}</strong>
+        {description && <span>{description}</span>}
+      </div>
+      <div className="settings-row-control">{children}</div>
+    </div>
+  );
+}
+
+function SettingsSegment<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { id: T; label: string; icon?: ReactNode }[];
+  value: T;
+  onChange: (id: T) => void;
+}) {
+  return (
+    <div className="settings-segment" role="group">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          className={`settings-segment-btn ${option.id === value ? 'active' : ''}`}
+          aria-pressed={option.id === value}
+          onClick={() => onChange(option.id)}
+        >
+          {option.icon}
+          <span>{option.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function UtilityDialog({
+  icon,
+  title,
+  onClose,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    const handleKeyDown = (event: WindowEventMap['keydown']) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="dialog-layer" role="presentation">
+      <button className="dialog-backdrop" type="button" aria-label={`关闭${title}`} onClick={onClose} />
+      <section className="utility-dialog" role="dialog" aria-modal="true" aria-label={title}>
+        <header className="utility-header">
+          <span className="utility-title">
+            {icon}
+            <strong>{title}</strong>
+          </span>
+          <button className="icon-btn" type="button" onClick={onClose} aria-label={`关闭${title}`}>
+            <X size={15} />
+          </button>
+        </header>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function UtilityRow({
+  icon,
+  title,
+  description,
+  badge,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  badge: string;
+}) {
+  return (
+    <div className="utility-row">
+      <span className="utility-row-icon">{icon}</span>
+      <span className="utility-row-main">
+        <strong>{title}</strong>
+        <em>{description}</em>
+      </span>
+      <span className="utility-badge">{badge}</span>
+    </div>
+  );
+}
+
 function ConversationRow({
   conversation,
   active,
-  deletable,
   nested,
+  menuOpen,
+  editing,
+  showPinIndicator = true,
   onSelect,
-  onDelete,
+  onOpenMenu,
+  onCommitRename,
+  onCancelRename,
 }: {
   conversation: Conversation;
   active: boolean;
-  deletable: boolean;
   nested?: boolean;
+  menuOpen: boolean;
+  editing: boolean;
+  showPinIndicator?: boolean;
   onSelect: () => void;
-  onDelete: () => void;
+  onOpenMenu: (anchor: MenuAnchor) => void;
+  onCommitRename: (name: string) => void;
+  onCancelRename: () => void;
 }) {
+  const streaming = conversation.status === 'streaming';
   return (
     <div
-      className={`conversation-row ${active ? 'active' : ''} ${nested ? 'nested' : ''}`}
+      className={`conv-row ${active ? 'active' : ''} ${nested ? 'nested' : ''} ${menuOpen ? 'menu-open' : ''}`}
       role="button"
       tabIndex={0}
-      onClick={onSelect}
+      onClick={() => {
+        if (!editing) onSelect();
+      }}
       onKeyDown={(event) => {
-        if (event.key === 'Enter') onSelect();
+        if (!editing && event.key === 'Enter') onSelect();
+      }}
+      onContextMenu={(event) => {
+        if (editing) return;
+        event.preventDefault();
+        onOpenMenu(anchorFromCursor(event));
       }}
     >
-      <span className="conversation-title">{conversation.title}</span>
-      <span className="conversation-time">{formatRelative(conversation.updatedAt)}</span>
-      {deletable && (
-        <span
-          className="delete-hit"
-          role="button"
-          tabIndex={0}
-          aria-label="删除对话"
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete();
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
+      {editing ? (
+        <ProjectNameInput
+          defaultValue={conversation.title}
+          onCommit={onCommitRename}
+          onCancel={onCancelRename}
+        />
+      ) : (
+        <span className="conv-title">{conversation.title}</span>
+      )}
+      {showPinIndicator && conversation.pinned && !editing && <Pin size={10} className="conv-pin" aria-label="已置顶" />}
+      {!editing && (
+        <span className={`conv-time ${streaming ? 'streaming' : ''}`}>
+          {streaming ? <Loader2 size={12} className="spin" /> : formatRelative(conversation.updatedAt)}
+        </span>
+      )}
+      {!editing && (
+        <span className="conv-actions" onClick={(event) => event.stopPropagation()}>
+          <button
+            className={`row-icon-btn ${menuOpen ? 'active' : ''}`}
+            type="button"
+            onClick={(event) => {
               event.stopPropagation();
-              onDelete();
-            }
-          }}
-        >
-          <Trash2 size={13} />
+              onOpenMenu(anchorFromButton(event));
+            }}
+            aria-label="对话操作"
+            title="更多"
+          >
+            <MoreHorizontal size={15} />
+          </button>
         </span>
       )}
     </div>
   );
 }
 
+const PROJECT_VISIBLE_LIMIT = 5;
+
 function ProjectItem({
   project,
   expanded,
   editing,
+  menuOpen,
   conversations,
   currentConversationId,
+  activeMenuId,
+  editingConversationId,
   onToggle,
   onSelectConversation,
   onNewConversation,
-  onDeleteConversation,
-  onStartRename,
+  onOpenConversationMenu,
+  onCommitConversationRename,
+  onCancelConversationRename,
   onCommitRename,
   onCancelRename,
-  onChooseFolder,
-  onDelete,
+  onOpenMenu,
 }: {
   project: Project;
   expanded: boolean;
   editing: boolean;
+  menuOpen: boolean;
   conversations: Conversation[];
   currentConversationId: string | null;
+  activeMenuId: string | null;
+  editingConversationId: string | null;
   onToggle: () => void;
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
-  onDeleteConversation: (id: string) => void;
-  onStartRename: () => void;
+  onOpenConversationMenu: (conversation: Conversation, anchor: MenuAnchor) => void;
+  onCommitConversationRename: (id: string, name: string) => void;
+  onCancelConversationRename: () => void;
   onCommitRename: (name: string) => void;
   onCancelRename: () => void;
-  onChooseFolder: () => Promise<void>;
-  onDelete: () => void;
+  onOpenMenu: (anchor: MenuAnchor) => void;
 }) {
   const sorted = useMemo(
-    () => [...conversations].sort((a, b) => b.updatedAt - a.updatedAt),
+    () =>
+      [...conversations].sort((a, b) => {
+        const pinnedA = a.pinned ? 1 : 0;
+        const pinnedB = b.pinned ? 1 : 0;
+        if (pinnedA !== pinnedB) return pinnedB - pinnedA;
+        return b.updatedAt - a.updatedAt;
+      }),
     [conversations],
   );
+  const [showAll, setShowAll] = useState(false);
+  const hasMore = sorted.length > PROJECT_VISIBLE_LIMIT;
+  const visible = showAll ? sorted : sorted.slice(0, PROJECT_VISIBLE_LIMIT);
 
   return (
     <div className="project-item">
       <div
-        className={`project-header ${expanded ? 'open' : ''}`}
+        className={`project-row ${expanded ? 'open' : ''} ${menuOpen ? 'menu-open' : ''}`}
         role="button"
         tabIndex={0}
         onClick={() => {
@@ -428,9 +1445,17 @@ function ProjectItem({
         onKeyDown={(event) => {
           if (!editing && event.key === 'Enter') onToggle();
         }}
+        onContextMenu={(event) => {
+          if (editing) return;
+          event.preventDefault();
+          onOpenMenu(anchorFromCursor(event));
+        }}
       >
-        <ChevronRight size={14} className={`project-chevron ${expanded ? 'open' : ''}`} />
-        <Folder size={14} className="project-folder-icon" />
+        {expanded ? (
+          <FolderOpen size={15} className={`project-folder ${project.pinned ? 'pinned' : ''}`} />
+        ) : (
+          <Folder size={15} className={`project-folder ${project.pinned ? 'pinned' : ''}`} />
+        )}
         {editing ? (
           <ProjectNameInput
             defaultValue={project.name}
@@ -442,76 +1467,63 @@ function ProjectItem({
             {project.name}
           </span>
         )}
-        {!editing && conversations.length > 0 && (
-          <span className="project-count">{conversations.length}</span>
-        )}
+        {!editing && project.pinned && <Pin size={11} className="project-pin" aria-label="已置顶" />}
         {!editing && (
           <span className="project-actions" onClick={(event) => event.stopPropagation()}>
             <button
-              className="icon-mini"
+              className="row-icon-btn"
               type="button"
               onClick={onNewConversation}
               aria-label="在项目中新建对话"
               title="新建对话"
             >
-              <Plus size={13} />
+              <SquarePen size={13} />
             </button>
             <button
-              className="icon-mini"
+              className={`row-icon-btn ${menuOpen ? 'active' : ''}`}
               type="button"
-              onClick={onStartRename}
-              aria-label="重命名项目"
-              title="重命名"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenMenu(anchorFromButton(event));
+              }}
+              aria-label="项目操作"
+              title="更多"
             >
-              <Pencil size={12} />
-            </button>
-            <button
-              className="icon-mini"
-              type="button"
-              onClick={() => void onChooseFolder()}
-              aria-label="设置工作目录"
-              title="设置工作目录"
-            >
-              <FolderOpen size={13} />
-            </button>
-            <button
-              className="icon-mini danger"
-              type="button"
-              onClick={onDelete}
-              aria-label="删除项目"
-              title="删除项目"
-            >
-              <Trash2 size={13} />
+              <MoreHorizontal size={15} />
             </button>
           </span>
         )}
       </div>
       {expanded && (
         <div className="project-children">
-          <button
-            className="project-cwd"
-            type="button"
-            onClick={() => void onChooseFolder()}
-            title={project.cwd || '点击选择工作目录'}
-          >
-            <FolderOpen size={11} />
-            <span>{project.cwd ? shortenPath(project.cwd) : '未指定目录 · 点击选择'}</span>
-          </button>
-          {sorted.map((conversation) => (
-            <ConversationRow
-              key={conversation.id}
-              conversation={conversation}
-              active={conversation.id === currentConversationId}
-              deletable
-              nested
-              onSelect={() => onSelectConversation(conversation.id)}
-              onDelete={() => onDeleteConversation(conversation.id)}
-            />
-          ))}
-          <button className="project-new-conv" type="button" onClick={onNewConversation}>
-            <Plus size={13} />
-            <span>新对话</span>
-          </button>
+          {sorted.length === 0 ? (
+            <div className="project-empty">暂无对话</div>
+          ) : (
+            visible.map((conversation) => (
+              <ConversationRow
+                key={conversation.id}
+                conversation={conversation}
+                active={conversation.id === currentConversationId}
+                nested
+                menuOpen={activeMenuId === conversation.id}
+                editing={editingConversationId === conversation.id}
+                onSelect={() => onSelectConversation(conversation.id)}
+                onOpenMenu={(anchor) => onOpenConversationMenu(conversation, anchor)}
+                onCommitRename={(name) => onCommitConversationRename(conversation.id, name)}
+                onCancelRename={onCancelConversationRename}
+              />
+            ))
+          )}
+          {hasMore && (
+            <button
+              className="project-toggle"
+              type="button"
+              onClick={() => setShowAll((value) => !value)}
+            >
+              <ChevronDown size={13} className={`project-toggle-caret ${showAll ? 'open' : ''}`} />
+              <span>{showAll ? '折叠显示' : `展开显示 · ${sorted.length - PROJECT_VISIBLE_LIMIT}`}</span>
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -568,6 +1580,175 @@ function ProjectNameInput({
   );
 }
 
+/* ------------------------------------------------------------------ context menu */
+
+interface MenuAnchor {
+  x: number;
+  y: number;
+}
+
+type MenuNode =
+  | { kind: 'item'; icon?: ReactNode; label: string; shortcut?: string; danger?: boolean; disabled?: boolean; onSelect: () => void }
+  | { kind: 'radio'; icon?: ReactNode; label: string; checked: boolean; onSelect: () => void }
+  | { kind: 'submenu'; icon?: ReactNode; label: string; children: MenuNode[] }
+  | { kind: 'separator' };
+
+interface SidebarMenu extends MenuAnchor {
+  owner: string;
+  items: MenuNode[];
+}
+
+function anchorFromButton(event: ReactMouseEvent): MenuAnchor {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return { x: rect.left, y: rect.bottom + 6 };
+}
+
+function anchorFromCursor(event: ReactMouseEvent): MenuAnchor {
+  return { x: event.clientX, y: event.clientY };
+}
+
+function ContextMenu({ menu, onClose }: { menu: SidebarMenu; onClose: () => void }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number }>({ left: menu.x, top: menu.y });
+
+  useLayoutEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const pad = 10;
+    let left = menu.x;
+    let top = menu.y;
+    if (left + rect.width > window.innerWidth - pad) {
+      left = Math.max(pad, window.innerWidth - pad - rect.width);
+    }
+    if (top + rect.height > window.innerHeight - pad) {
+      top = Math.max(pad, menu.y - rect.height - 12);
+    }
+    setPos({ left, top });
+  }, [menu.x, menu.y, menu.items]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: WindowEventMap['keydown']) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const runItem = (action: () => void) => {
+    onClose();
+    action();
+  };
+
+  return (
+    <>
+      <button
+        className="menu-backdrop"
+        type="button"
+        aria-label="关闭菜单"
+        onClick={onClose}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onClose();
+        }}
+      />
+      <div
+        ref={panelRef}
+        className="cmenu"
+        role="menu"
+        style={{ left: pos.left, top: pos.top }}
+      >
+        {menu.items.map((node, index) => (
+          <MenuRow key={index} node={node} onRun={runItem} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function MenuRow({ node, onRun }: { node: MenuNode; onRun: (action: () => void) => void }) {
+  const [subOpen, setSubOpen] = useState(false);
+
+  if (node.kind === 'separator') {
+    return <div className="cmenu-sep" role="separator" />;
+  }
+
+  if (node.kind === 'submenu') {
+    return (
+      <div
+        className="cmenu-subwrap"
+        onMouseEnter={() => setSubOpen(true)}
+        onMouseLeave={() => setSubOpen(false)}
+      >
+        <button
+          type="button"
+          className={`cmenu-item ${subOpen ? 'active' : ''}`}
+          role="menuitem"
+          aria-haspopup="menu"
+          aria-expanded={subOpen}
+        >
+          <span className="cmenu-icon">{node.icon}</span>
+          <span className="cmenu-label">{node.label}</span>
+          <ChevronRight size={14} className="cmenu-chevron" />
+        </button>
+        {subOpen && (
+          <div className="cmenu-flyout">
+            <div className="cmenu" role="menu">
+              {node.children.map((child, index) => (
+                <MenuRow key={index} node={child} onRun={onRun} />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (node.kind === 'radio') {
+    return (
+      <button
+        type="button"
+        className="cmenu-item"
+        role="menuitemradio"
+        aria-checked={node.checked}
+        onClick={() => onRun(node.onSelect)}
+      >
+        <span className="cmenu-icon">{node.icon}</span>
+        <span className="cmenu-label">{node.label}</span>
+        {node.checked && <Check size={15} className="cmenu-check" />}
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className={`cmenu-item ${node.danger ? 'danger' : ''}`}
+      role="menuitem"
+      disabled={node.disabled}
+      onClick={() => onRun(node.onSelect)}
+    >
+      <span className="cmenu-icon">{node.icon}</span>
+      <span className="cmenu-label">{node.label}</span>
+      {node.shortcut && <span className="cmenu-shortcut">{node.shortcut}</span>}
+    </button>
+  );
+}
+
+function sortProjects(projects: Project[], sort: 'updated' | 'created' | 'name'): Project[] {
+  const compare = (a: Project, b: Project) => {
+    if (sort === 'name') return a.name.localeCompare(b.name, 'zh-CN');
+    if (sort === 'created') return b.createdAt - a.createdAt;
+    return b.updatedAt - a.updatedAt;
+  };
+  return [...projects].sort((a, b) => {
+    const pinnedA = a.pinned ? 1 : 0;
+    const pinnedB = b.pinned ? 1 : 0;
+    if (pinnedA !== pinnedB) return pinnedB - pinnedA;
+    return compare(a, b);
+  });
+}
+
 /* ------------------------------------------------------------------ top bar */
 
 function TopBar({
@@ -588,7 +1769,40 @@ function TopBar({
   const codexStatus = useChatStore((state) => state.codexStatus);
   const isCheckingCodex = useChatStore((state) => state.isCheckingCodex);
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
+  const renameConversation = useChatStore((state) => state.renameConversation);
+  const toggleConversationPin = useChatStore((state) => state.toggleConversationPin);
+  const deleteConversation = useChatStore((state) => state.deleteConversation);
+  const createConversation = useChatStore((state) => state.createConversation);
   const conversation = useCurrentConversation();
+
+  const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
+  const [editing, setEditing] = useState(false);
+
+  const conversationId = conversation?.id;
+  useEffect(() => {
+    setEditing(false);
+    setMenuAnchor(null);
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!conversation) return;
+    const handleKeyDown = (event: WindowEventMap['keydown']) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.altKey && event.code === 'KeyP') {
+        event.preventDefault();
+        toggleConversationPin(conversation.id);
+      } else if (event.altKey && event.code === 'KeyR') {
+        event.preventDefault();
+        setMenuAnchor(null);
+        setEditing(true);
+      } else if (!event.altKey && !event.shiftKey && event.code === 'Backspace') {
+        event.preventDefault();
+        deleteConversation(conversation.id);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [conversation, toggleConversationPin, deleteConversation]);
 
   const status = codexStatus?.installed && codexStatus.loggedIn ? 'ready' : 'needs-attention';
   const statusLabel = isCheckingCodex
@@ -597,32 +1811,145 @@ function TopBar({
       ? `Codex ${codexStatus.version || ''}`.trim()
       : 'Codex 未就绪';
 
+  const titleMenu: SidebarMenu | null =
+    conversation && menuAnchor
+      ? {
+          owner: 'top-title',
+          ...menuAnchor,
+          items: [
+            {
+              kind: 'item',
+              icon: conversation.pinned ? <PinOff size={15} /> : <Pin size={15} />,
+              label: conversation.pinned ? '取消置顶' : '置顶对话',
+              shortcut: '⌥⌘P',
+              onSelect: () => toggleConversationPin(conversation.id),
+            },
+            {
+              kind: 'item',
+              icon: <Pencil size={15} />,
+              label: '重命名对话',
+              shortcut: '⌥⌘R',
+              onSelect: () => setEditing(true),
+            },
+            {
+              kind: 'submenu',
+              icon: <Copy size={15} />,
+              label: '复制',
+              children: [
+                {
+                  kind: 'item',
+                  icon: <FileText size={15} />,
+                  label: '复制标题',
+                  onSelect: () => void copyToClipboard(conversation.title),
+                },
+                {
+                  kind: 'item',
+                  icon: <MessageSquare size={15} />,
+                  label: '复制线程 ID',
+                  disabled: !conversation.codexThreadId,
+                  onSelect: () => void copyToClipboard(conversation.codexThreadId || ''),
+                },
+              ],
+            },
+            { kind: 'separator' },
+            {
+              kind: 'item',
+              icon: <FolderOpen size={15} />,
+              label: '在访达中打开',
+              disabled: !conversation.cwd,
+              onSelect: () => void revealPath(conversation.cwd),
+            },
+            {
+              kind: 'item',
+              icon: <SquarePen size={15} />,
+              label: '新建对话',
+              shortcut: '⌘N',
+              onSelect: () => createConversation(conversation.projectId),
+            },
+            { kind: 'separator' },
+            {
+              kind: 'item',
+              icon: <Trash2 size={15} />,
+              label: '删除对话',
+              danger: true,
+              shortcut: '⌘⌫',
+              onSelect: () => deleteConversation(conversation.id),
+            },
+          ],
+        }
+      : null;
+
   return (
     <header className="top-bar" data-tauri-drag-region>
-      <button
-        className="icon-btn"
-        type="button"
-        onClick={onToggleSidebar}
-        aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
-        title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
-      >
-        {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-      </button>
-      <div className="top-bar-title" data-tauri-drag-region>{conversation?.title || 'Alpha Studio'}</div>
+      {sidebarCollapsed && (
+        <button
+          className="icon-btn"
+          type="button"
+          onClick={onToggleSidebar}
+          aria-label="展开侧栏"
+          title="展开侧栏"
+        >
+          <PanelLeftOpen size={16} />
+        </button>
+      )}
+      {conversation ? (
+        <div className={`top-bar-title ${editing ? 'editing' : ''}`} data-tauri-drag-region>
+          {editing ? (
+            <div className="top-bar-title-edit">
+              <ProjectNameInput
+                defaultValue={conversation.title}
+                onCommit={(name) => {
+                  renameConversation(conversation.id, name);
+                  setEditing(false);
+                }}
+                onCancel={() => setEditing(false)}
+              />
+            </div>
+          ) : (
+            <div className="top-bar-title-group">
+              <button
+                type="button"
+                className={`top-bar-title-btn ${menuAnchor ? 'active' : ''}`}
+                onClick={(event) => setMenuAnchor(anchorFromButton(event))}
+                onDoubleClick={() => setEditing(true)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setMenuAnchor(anchorFromCursor(event));
+                }}
+                title="对话操作"
+              >
+                {conversation.pinned && <Pin size={12} className="top-bar-title-pin" aria-label="已置顶" />}
+                <span className="top-bar-title-text">{conversation.title}</span>
+              </button>
+              <button
+                type="button"
+                className={`top-bar-title-more ${menuAnchor ? 'active' : ''}`}
+                onClick={(event) => setMenuAnchor(anchorFromButton(event))}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setMenuAnchor(anchorFromCursor(event));
+                }}
+                aria-label="对话操作"
+                title="更多"
+              >
+                <MoreHorizontal size={16} />
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="top-bar-title" data-tauri-drag-region>Alpha Studio</div>
+      )}
       <div className="top-bar-actions">
         <button
           className={`codex-chip ${status}`}
           type="button"
           onClick={() => void refreshCodexStatus()}
-          title={codexStatus?.path || '点击重新检查 Codex'}
+          aria-label={statusLabel}
+          title={codexStatus?.path ? `${statusLabel} · ${codexStatus.path}` : statusLabel}
         >
-          {isCheckingCodex ? (
-            <Loader2 size={11} className="spin" />
-          ) : (
-            <span className="dot" />
-          )}
-          <span>{statusLabel}</span>
-          <RefreshCw size={11} />
+          {isCheckingCodex ? <Loader2 size={13} className="spin" /> : <Terminal size={13} />}
+          <ChevronDown size={12} />
         </button>
         <button
           className={`icon-btn ${portfolioOpen ? 'active' : ''}`}
@@ -643,6 +1970,7 @@ function TopBar({
           <Users size={16} />
         </button>
       </div>
+      {titleMenu && <ContextMenu menu={titleMenu} onClose={() => setMenuAnchor(null)} />}
     </header>
   );
 }
@@ -655,17 +1983,22 @@ function ChatArea() {
 
   if (!conversation) return null;
 
-  const codexReady = Boolean(codexStatus?.installed && codexStatus.loggedIn);
+  const previewRuntime = !isTauriRuntime();
+  const codexReady = previewRuntime || Boolean(codexStatus?.installed && codexStatus.loggedIn);
   const isEmpty = conversation.messages.length === 0;
 
   return (
     <div className="chat-area">
-      {!codexReady && (
+      {(!codexReady || previewRuntime) && (
         <div className="codex-warning">
           <AlertCircle size={16} />
           <div>
-            <strong>Codex CLI 暂不可用</strong>
-            <span>{codexStatus?.error || '请确认 Codex 已安装并登录。'}</span>
+            <strong>{previewRuntime ? '浏览器预览模式' : 'Codex CLI 暂不可用'}</strong>
+            <span>
+              {previewRuntime
+                ? '这里会模拟 Codex 事件流；桌面应用会直连本地 Codex CLI。'
+                : codexStatus?.error || '请确认 Codex 已安装并登录。'}
+            </span>
             {codexStatus?.path && <code>{codexStatus.path}</code>}
           </div>
         </div>
@@ -753,21 +2086,46 @@ function MessageList({ conversation }: { conversation: Conversation }) {
   return (
     <div className="message-list">
       {conversation.messages.map((message) => (
-        <MessageBubble key={message.id} message={message} />
+        <MessageBubble key={message.id} message={message} conversation={conversation} />
       ))}
       <div ref={scrollRef} />
     </div>
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({ message, conversation }: { message: ChatMessage; conversation: Conversation }) {
+  const editUserMessageAndResend = useChatStore((state) => state.editUserMessageAndResend);
+  const [editing, setEditing] = useState(false);
+  const lastTextIndex = message.blocks.reduce(
+    (lastIndex, block, index) => (block.type === 'text' ? index : lastIndex),
+    -1,
+  );
+  const plainText = messageToPlainText(message);
+  const canCopy = plainText.length > 0;
+  const canEdit = message.role === 'user' && conversation.status !== 'streaming';
+  const isEditing = editing && canEdit;
+
+  const submitEdit = (next: string) => {
+    const trimmed = next.trim();
+    if (!trimmed) return;
+    setEditing(false);
+    void editUserMessageAndResend(conversation.id, message.id, trimmed);
+  };
+
   return (
-    <article className={`message ${message.role}`}>
-      <div className="bubble">
+    <article className={`message ${message.role} ${isEditing ? 'editing' : ''}`}>
+      {isEditing ? (
+        <MessageEditBubble
+          initialValue={plainText}
+          onCancel={() => setEditing(false)}
+          onSubmit={submitEdit}
+        />
+      ) : (
+        <div className="bubble">
         {message.blocks.length === 0 && message.isStreaming ? (
           <div className="thinking-inline">
             <Loader2 size={14} className="spin" />
-            <span>Alpha Studio 正在思考</span>
+            <span>Alpha Studio 正在准备回复</span>
           </div>
         ) : message.role === 'user' ? (
           message.blocks.map((block, index) =>
@@ -779,46 +2137,175 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           )
         ) : (
           message.blocks.map((block, index) => (
-            <BlockRenderer block={block} key={`${block.type}-${index}`} />
+            <BlockRenderer
+              block={block}
+              streaming={message.isStreaming && block.type === 'text' && index === lastTextIndex}
+              key={`${block.type}-${index}`}
+            />
           ))
         )}
-      </div>
+        </div>
+      )}
+      {!isEditing && (canCopy || canEdit) && (
+        <div className="message-meta">
+          <span className="message-time">{formatClock(message.timestamp)}</span>
+          <span className="message-actions">
+            {canCopy && (
+              <button
+                type="button"
+                className="message-action"
+                onClick={() => void copyMessageText(message)}
+                aria-label={message.role === 'user' ? '复制消息' : '复制回复'}
+                title={message.role === 'user' ? '复制消息' : '复制回复'}
+              >
+                <Copy size={13} />
+              </button>
+            )}
+            {canEdit && (
+              <button
+                type="button"
+                className="message-action"
+                onClick={() => setEditing(true)}
+                aria-label="编辑并重新发送"
+                title="编辑并重新发送"
+              >
+                <Pencil size={13} />
+              </button>
+            )}
+          </span>
+        </div>
+      )}
     </article>
   );
 }
 
-function BlockRenderer({ block }: { block: MessageBlock }) {
+function MessageEditBubble({
+  initialValue,
+  onCancel,
+  onSubmit,
+}: {
+  initialValue: string;
+  onCancel: () => void;
+  onSubmit: (value: string) => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = '0px';
+    el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
+  }, [value]);
+
+  useEffect(() => {
+    textareaRef.current?.focus();
+    textareaRef.current?.select();
+  }, []);
+
+  const submit = () => {
+    if (!value.trim()) return;
+    onSubmit(value);
+  };
+
+  return (
+    <div className="message-edit-card">
+      <textarea
+        ref={textareaRef}
+        className="message-edit-textarea"
+        value={value}
+        rows={1}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            onCancel();
+          } else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            submit();
+          }
+        }}
+      />
+      <div className="message-edit-actions">
+        <button type="button" className="message-edit-btn ghost" onClick={onCancel}>
+          取消
+        </button>
+        <button
+          type="button"
+          className="message-edit-btn primary"
+          onClick={submit}
+          disabled={!value.trim() || value.trim() === initialValue.trim()}
+        >
+          发送
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: boolean }) {
   if (block.type === 'text') {
     return (
-      <div className="markdown-content">
+      <div className={`markdown-content ${streaming ? 'streaming' : ''}`}>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown>
+        {streaming && <span className="stream-cursor" aria-hidden="true" />}
       </div>
     );
   }
 
   if (block.type === 'thinking') {
     return (
-      <details className="thinking-block">
-        <summary>推理过程</summary>
+      <details className={`thinking-block ${streaming ? 'streaming' : ''}`} open={streaming}>
+        <summary>
+          {streaming ? <Loader2 size={13} className="spin" /> : <CheckCircle2 size={13} />}
+          <span>{streaming ? '正在推理' : '推理过程'}</span>
+          <ChevronDown size={13} />
+        </summary>
         <pre>{block.content}</pre>
       </details>
     );
   }
 
   if (block.type === 'tool') {
+    const tool = toolPresentation(block.title);
+    const status = toolStatusLabel(block.status);
+
     return (
-      <div className={`tool-block ${block.status}`}>
-        <div className="tool-title">
-          {block.status === 'completed' ? (
-            <CheckCircle2 size={13} />
-          ) : (
-            <Loader2 size={13} className="spin" />
-          )}
-          <span>{block.title}</span>
-        </div>
-        {block.input && <code>{block.input}</code>}
-        {block.output && <pre>{block.output}</pre>}
-      </div>
+      <details className={`tool-block ${block.status}`} open={block.status !== 'completed'}>
+        <summary className="tool-summary">
+          <span className="tool-title-main">
+            {tool.icon}
+            <span>{tool.label}</span>
+          </span>
+          <span className="tool-status">
+            {block.status === 'failed' ? (
+              <AlertCircle size={13} />
+            ) : block.status === 'completed' ? (
+              <CheckCircle2 size={13} />
+            ) : (
+              <Loader2 size={13} className="spin" />
+            )}
+            <em>{status}</em>
+          </span>
+          <ChevronDown size={13} className="tool-chevron" />
+        </summary>
+        {(block.input || block.output) && (
+          <div className="tool-detail">
+            {block.input && (
+              <div className="tool-io">
+                <span>输入</span>
+                <code>{block.input}</code>
+              </div>
+            )}
+            {block.output && (
+              <div className="tool-io">
+                <span>输出</span>
+                <pre>{block.output}</pre>
+              </div>
+            )}
+          </div>
+        )}
+      </details>
     );
   }
 
@@ -828,6 +2315,58 @@ function BlockRenderer({ block }: { block: MessageBlock }) {
       <span>{block.content}</span>
     </div>
   );
+}
+
+function toolPresentation(title: string): { label: string; icon: ReactNode } {
+  const normalized = title.trim().toLowerCase();
+  if (normalized.includes('exec') || normalized.includes('shell') || normalized.includes('command')) {
+    return { label: '运行命令', icon: <Terminal size={14} /> };
+  }
+  if (normalized.includes('stderr')) {
+    return { label: 'Codex 日志', icon: <AlertCircle size={14} /> };
+  }
+  if (normalized.includes('file')) {
+    return { label: '读取文件', icon: <FileText size={14} /> };
+  }
+  return { label: title || '使用工具', icon: <Workflow size={14} /> };
+}
+
+function toolStatusLabel(status: ToolBlockStatus): string {
+  if (status === 'completed') return '完成';
+  if (status === 'failed') return '失败';
+  return '运行中';
+}
+
+type ToolBlockStatus = Extract<MessageBlock, { type: 'tool' }>['status'];
+
+async function copyMessageText(message: ChatMessage): Promise<void> {
+  const text = messageToPlainText(message);
+  try {
+    await navigator.clipboard?.writeText(text);
+  } catch {
+    // Clipboard access is best-effort in browser preview and older webviews.
+  }
+}
+
+function messageToPlainText(message: ChatMessage): string {
+  return message.blocks
+    .map((block) => {
+      if (block.type === 'text' || block.type === 'thinking' || block.type === 'error') return block.content;
+      if (block.type === 'tool') return [block.title, block.input, block.output].filter(Boolean).join('\n');
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  if (!text) return;
+  try {
+    await navigator.clipboard?.writeText(text);
+  } catch {
+    // Clipboard access is best-effort in browser preview and older webviews.
+  }
 }
 
 /* ------------------------------------------------------------------ composer */
@@ -856,6 +2395,12 @@ function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [value]);
 
+  useEffect(() => {
+    if (!bottom && !disabled && !isStreaming) {
+      textareaRef.current?.focus();
+    }
+  }, [bottom, disabled, isStreaming]);
+
   const submit = () => {
     const next = value.trim();
     if (!next || isStreaming || disabled) return;
@@ -863,14 +2408,12 @@ function Composer({
     void sendMessage(next);
   };
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       submit();
     }
   };
-
-  const sandboxLabel = sandboxLabels[sandboxMode];
 
   return (
     <div className={`composer-wrap ${bottom ? 'bottom' : ''}`}>
@@ -885,7 +2428,9 @@ function Composer({
           placeholder={
             disabled
               ? '请先修复 Codex CLI 状态'
-              : '描述你的投研问题，Enter 发送，Shift+Enter 换行'
+              : bottom
+                ? '要求后续变更'
+                : '要求 Codex 执行任务'
           }
           rows={1}
         />
@@ -952,9 +2497,9 @@ function Composer({
 }
 
 const sandboxLabels: Record<SandboxMode, string> = {
-  'read-only': '只读访问',
+  'read-only': '只读',
   'workspace-write': '工作区写入',
-  'danger-full-access': '完全访问权限',
+  'danger-full-access': '完全访问',
 };
 
 function ModelPicker() {
@@ -1552,8 +3097,35 @@ interface ConversationGroup {
   items: Conversation[];
 }
 
-function groupConversationsByDate(conversations: Conversation[]): ConversationGroup[] {
-  const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt);
+function groupStandaloneConversations(
+  conversations: Conversation[],
+  sort: ProjectSort,
+): ConversationGroup[] {
+  const rest = conversations.filter((conversation) => !conversation.pinned);
+  const groups: ConversationGroup[] = [];
+
+  if (sort === 'name') {
+    if (rest.length > 0) groups.push({ label: '', items: sortConversations(rest, sort) });
+  } else {
+    groups.push(...groupConversationsByDate(rest, sort === 'created' ? 'createdAt' : 'updatedAt'));
+  }
+
+  return groups;
+}
+
+function sortConversations(conversations: Conversation[], sort: ProjectSort): Conversation[] {
+  return [...conversations].sort((a, b) => {
+    if (sort === 'name') return a.title.localeCompare(b.title, 'zh-CN');
+    if (sort === 'created') return b.createdAt - a.createdAt;
+    return b.updatedAt - a.updatedAt;
+  });
+}
+
+function groupConversationsByDate(
+  conversations: Conversation[],
+  key: 'updatedAt' | 'createdAt' = 'updatedAt',
+): ConversationGroup[] {
+  const sorted = [...conversations].sort((a, b) => b[key] - a[key]);
   const now = Date.now();
   const dayMs = 86_400_000;
   const buckets: ConversationGroup[] = [
@@ -1563,8 +3135,9 @@ function groupConversationsByDate(conversations: Conversation[]): ConversationGr
     { label: '更早', items: [] },
   ];
   for (const item of sorted) {
-    const diff = now - item.updatedAt;
-    if (diff < dayMs && new Date(item.updatedAt).getDate() === new Date(now).getDate()) {
+    const stamp = item[key];
+    const diff = now - stamp;
+    if (diff < dayMs && new Date(stamp).getDate() === new Date(now).getDate()) {
       buckets[0].items.push(item);
     } else if (diff < dayMs * 2) {
       buckets[1].items.push(item);
@@ -1584,6 +3157,14 @@ function formatRelative(value: number): string {
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}小时`;
   if (diff < 86_400_000 * 7) return `${Math.floor(diff / 86_400_000)}天`;
   return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(value);
+}
+
+function formatClock(value: number): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(value);
 }
 
 function shortenPath(value: string): string {

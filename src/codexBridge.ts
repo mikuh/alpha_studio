@@ -44,6 +44,17 @@ export async function stopCodexChat(runId: string): Promise<boolean> {
   return result.stopped;
 }
 
+export async function revealPath(path: string): Promise<boolean> {
+  if (!path || !isTauriRuntime()) return false;
+  try {
+    const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+    await revealItemInDir(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function subscribeCodexEvents(
   handler: (event: CodexChatEvent) => void,
 ): Promise<UnlistenFn | null> {

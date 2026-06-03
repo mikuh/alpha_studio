@@ -24,7 +24,7 @@
         "fullscreen": false,
         "decorations": true,
         "titleBarStyle": "Overlay",
-        "transparent": false,
+        "transparent": true,
         "center": true,
         "visible": true,
         "focus": true,

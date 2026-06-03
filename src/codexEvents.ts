@@ -59,6 +59,10 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
     return completeTool(conversation, now, event);
   }
 
+  if (event.type === 'tool_failed') {
+    return failTool(conversation, now, event);
+  }
+
   return conversation;
 }
 
@@ -67,12 +71,22 @@ function appendTextDelta(conversation: Conversation, now: number, text: string):
     const blocks = [...message.blocks];
     const last = blocks[blocks.length - 1];
     if (last?.type === 'text') {
-      blocks[blocks.length - 1] = { ...last, content: last.content + text };
+      const nextText = mergeTextDelta(last.content, text);
+      if (nextText === last.content) return message;
+      blocks[blocks.length - 1] = { ...last, content: nextText };
     } else {
       blocks.push({ type: 'text', content: text });
     }
     return { ...message, blocks };
   });
+}
+
+function mergeTextDelta(current: string, incoming: string): string {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  if (current === incoming || current.endsWith(incoming)) return current;
+  if (incoming.startsWith(current)) return incoming;
+  return current + incoming;
 }
 
 function appendThinkingDelta(conversation: Conversation, now: number, text: string): Conversation {
@@ -135,6 +149,24 @@ function completeTool(conversation: Conversation, now: number, event: CodexChatE
           ...block,
           status: 'completed',
           output: event.text || block.output,
+        };
+      }),
+    };
+  });
+}
+
+function failTool(conversation: Conversation, now: number, event: CodexChatEvent): Conversation {
+  const toolId = event.itemId || `tool-${event.runId}`;
+  return updateStreamingAssistant(conversation, now, (message) => {
+    const blocks = ensureToolBlock(message.blocks, toolId, event.title || 'tool');
+    return {
+      ...message,
+      blocks: blocks.map((block) => {
+        if (block.type !== 'tool' || block.id !== toolId) return block;
+        return {
+          ...block,
+          status: 'failed',
+          output: event.message || event.text || block.output,
         };
       }),
     };

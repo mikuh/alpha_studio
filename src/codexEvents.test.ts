@@ -51,6 +51,23 @@ describe('applyCodexEventToConversation', () => {
     expect(second.messages[0].blocks).toEqual([{ type: 'text', content: '结论：谨慎。' }]);
   });
 
+  it('does not duplicate a final full-text message after deltas', () => {
+    const first = applyCodexEventToConversation(baseConversation(), {
+      type: 'text_delta',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      text: '结论：',
+    });
+    const second = applyCodexEventToConversation(first, {
+      type: 'text_delta',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      text: '结论：谨慎。',
+    });
+
+    expect(second.messages[0].blocks).toEqual([{ type: 'text', content: '结论：谨慎。' }]);
+  });
+
   it('tracks tool lifecycle', () => {
     const started = applyCodexEventToConversation(baseConversation(), {
       type: 'tool_started',
@@ -75,6 +92,33 @@ describe('applyCodexEventToConversation', () => {
       status: 'completed',
       input: 'date',
       output: 'done',
+    });
+  });
+
+  it('marks failed tools without losing their output', () => {
+    const started = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_started',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'tool-1',
+      title: 'execute',
+      text: 'npm test',
+    });
+    const failed = applyCodexEventToConversation(started, {
+      type: 'tool_failed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'tool-1',
+      title: 'execute',
+      text: '1 failed',
+    });
+
+    expect(failed.messages[0].blocks[0]).toMatchObject({
+      type: 'tool',
+      id: 'tool-1',
+      status: 'failed',
+      input: 'npm test',
+      output: '1 failed',
     });
   });
 

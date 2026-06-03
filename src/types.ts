@@ -47,6 +47,7 @@ export interface Conversation {
   updatedAt: number;
   status: 'idle' | 'streaming' | 'error';
   runId?: string;
+  pinned?: boolean;
 }
 
 export interface Project {
@@ -55,7 +56,10 @@ export interface Project {
   cwd: string;
   createdAt: number;
   updatedAt: number;
+  pinned?: boolean;
 }
+
+export type ProjectSort = 'updated' | 'created' | 'name';
 
 export interface Holding {
   id: string;
@@ -93,6 +97,7 @@ export interface CodexChatEvent {
     | 'tool_started'
     | 'tool_delta'
     | 'tool_completed'
+    | 'tool_failed'
     | 'completed'
     | 'error'
     | 'stopped';

@@ -481,18 +481,45 @@ pub fn parse_codex_json_event(
             None,
             Some(raw),
         )),
-        "agent_message_delta" | "response.output_text.delta" | "message.delta" => {
+        "agent_message_delta"
+        | "response.output_text.delta"
+        | "response.text.delta"
+        | "output_text.delta"
+        | "message.content.delta"
+        | "content.delta"
+        | "message.delta"
+        | "agent_message"
+        | "assistant_message" => {
             let text = first_string(&raw, &["delta", "text", "content"]);
             text.map(|text| event("text_delta", run_id, conversation_id, None, None, None, Some(text), None, Some(raw)))
         }
-        "reasoning_delta" | "response.reasoning.delta" | "thought.delta" => {
+        "reasoning_delta"
+        | "agent_reasoning_delta"
+        | "response.reasoning.delta"
+        | "response.reasoning_text.delta"
+        | "response.reasoning_summary.delta"
+        | "response.reasoning_summary_text.delta"
+        | "reasoning.summary.delta"
+        | "thought.delta" => {
             let text = first_string(&raw, &["delta", "text", "content"]);
             text.map(|text| event("reasoning_delta", run_id, conversation_id, None, None, None, Some(text), None, Some(raw)))
         }
-        "item.started" => parse_item_event("tool_started", &raw, run_id, conversation_id),
+        "exec_command.begin" | "exec_command.started" | "command_execution.started" => {
+            parse_command_event("tool_started", &raw, run_id, conversation_id)
+        }
+        "exec_command.output_delta"
+        | "exec_command.delta"
+        | "command_execution.output_delta"
+        | "command_execution.delta" => {
+            parse_command_event("tool_delta", &raw, run_id, conversation_id)
+        }
+        "exec_command.end" | "exec_command.completed" | "command_execution.completed" => {
+            parse_command_end_event(&raw, run_id, conversation_id)
+        }
+        "item.started" | "response.output_item.added" => parse_item_event("tool_started", &raw, run_id, conversation_id),
         "item.updated" => parse_item_update_event(&raw, run_id, conversation_id),
-        "item.completed" => parse_item_completed_event(&raw, run_id, conversation_id),
-        "turn.completed" => Some(event(
+        "item.completed" | "response.output_item.done" => parse_item_completed_event(&raw, run_id, conversation_id),
+        "turn.completed" | "response.completed" => Some(event(
             "completed",
             run_id,
             conversation_id,
@@ -503,6 +530,10 @@ pub fn parse_codex_json_event(
             None,
             Some(raw),
         )),
+        "turn.failed" | "response.failed" => {
+            let message = first_string(&raw, &["message", "error"]).unwrap_or_else(|| "Codex turn failed.".to_string());
+            Some(event("error", run_id, conversation_id, None, None, None, None, Some(message), Some(raw)))
+        }
         "error" => {
             let message = first_string(&raw, &["message", "error"])
                 .or_else(|| raw.get("error").and_then(|v| first_string(v, &["message", "code"])))
@@ -515,25 +546,111 @@ pub fn parse_codex_json_event(
 
 fn parse_item_update_event(raw: &Value, run_id: &str, conversation_id: &str) -> Option<CodexChatEvent> {
     let item = raw.get("item").unwrap_or(raw);
+    let item_type = normalized_item_type(item);
     let item_id = first_string(item, &["id", "item_id", "itemId"]);
     let text = first_string(raw, &["delta", "output_delta", "outputDelta", "text", "content"])
-        .or_else(|| first_string(item, &["delta", "output_delta", "outputDelta", "text", "content"]));
-    text.map(|text| event("tool_delta", run_id, conversation_id, None, item_id, item_title(item), Some(text), None, Some(raw.clone())))
+        .or_else(|| first_string(item, &["delta", "output_delta", "outputDelta", "text", "content"]))
+        .or_else(|| {
+            let extracted = extract_text_content(item);
+            if extracted.is_empty() {
+                None
+            } else {
+                Some(extracted)
+            }
+        });
+
+    if matches!(item_type.as_str(), "agentmessage" | "assistantmessage" | "message") {
+        return text.map(|text| event("text_delta", run_id, conversation_id, None, item_id, None, Some(text), None, Some(raw.clone())));
+    }
+
+    if matches!(item_type.as_str(), "reasoning" | "thought" | "analysis") {
+        return text.map(|text| event("reasoning_delta", run_id, conversation_id, None, item_id, None, Some(text), None, Some(raw.clone())));
+    }
+
+    if is_tool_item(&item_type) || item_type.is_empty() {
+        return text.map(|text| event("tool_delta", run_id, conversation_id, None, item_id, item_title(item), Some(text), None, Some(raw.clone())));
+    }
+
+    None
+}
+
+fn parse_command_event(kind: &str, raw: &Value, run_id: &str, conversation_id: &str) -> Option<CodexChatEvent> {
+    let item_id = first_string(raw, &["id", "item_id", "itemId", "call_id"])
+        .or_else(|| Some("exec".to_string()));
+    let text = command_text(
+        raw,
+        &[
+            "command",
+            "cmd",
+            "delta",
+            "output_delta",
+            "outputDelta",
+            "text",
+            "content",
+            "stdout",
+            "stderr",
+        ],
+    );
+    if kind == "tool_delta" && text.is_none() {
+        return None;
+    }
+    Some(event(
+        kind,
+        run_id,
+        conversation_id,
+        None,
+        item_id,
+        Some("command_execution".to_string()),
+        text,
+        None,
+        Some(raw.clone()),
+    ))
+}
+
+fn parse_command_end_event(raw: &Value, run_id: &str, conversation_id: &str) -> Option<CodexChatEvent> {
+    let item_id = first_string(raw, &["id", "item_id", "itemId", "call_id"])
+        .or_else(|| Some("exec".to_string()));
+    let status = first_string(raw, &["status", "outcome"]).unwrap_or_default().to_lowercase();
+    let exit_failed = raw
+        .get("exit_code")
+        .or_else(|| raw.get("exitCode"))
+        .and_then(Value::as_i64)
+        .map(|code| code != 0)
+        .unwrap_or(false);
+    let failed = exit_failed || status.contains("fail") || status.contains("error");
+    let text = command_text(
+        raw,
+        &[
+            "output",
+            "aggregatedOutput",
+            "result",
+            "stdout",
+            "stderr",
+            "text",
+            "message",
+            "error",
+        ],
+    );
+    Some(event(
+        if failed { "tool_failed" } else { "tool_completed" },
+        run_id,
+        conversation_id,
+        None,
+        item_id,
+        Some("command_execution".to_string()),
+        text,
+        None,
+        Some(raw.clone()),
+    ))
 }
 
 fn parse_item_completed_event(raw: &Value, run_id: &str, conversation_id: &str) -> Option<CodexChatEvent> {
     let item = raw.get("item").unwrap_or(raw);
-    let item_type = item
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .replace('_', "")
-        .replace('-', "")
-        .to_lowercase();
+    let item_type = normalized_item_type(item);
     let item_id = first_string(item, &["id", "item_id", "itemId"]);
 
     if matches!(item_type.as_str(), "agentmessage" | "assistantmessage" | "message") {
-        let text = first_string(item, &["text", "content", "message"]).unwrap_or_default();
+        let text = extract_text_content(item);
         if text.is_empty() {
             return None;
         }
@@ -549,7 +666,22 @@ fn parse_item_completed_event(raw: &Value, run_id: &str, conversation_id: &str) 
     }
 
     if is_tool_item(&item_type) {
-        return Some(event("tool_completed", run_id, conversation_id, None, item_id, item_title(item), extract_tool_output(item), None, Some(raw.clone())));
+        let status = first_string(item, &["status", "outcome"]).unwrap_or_default().to_lowercase();
+        let failed = status.contains("fail") || status.contains("error") || item.get("error").is_some();
+        let output = extract_tool_output(item)
+            .or_else(|| first_string(item, &["error", "message"]))
+            .or_else(|| item.get("error").map(|value| value.to_string()));
+        return Some(event(
+            if failed { "tool_failed" } else { "tool_completed" },
+            run_id,
+            conversation_id,
+            None,
+            item_id,
+            item_title(item),
+            output,
+            None,
+            Some(raw.clone()),
+        ));
     }
 
     None
@@ -557,13 +689,7 @@ fn parse_item_completed_event(raw: &Value, run_id: &str, conversation_id: &str) 
 
 fn parse_item_event(kind: &str, raw: &Value, run_id: &str, conversation_id: &str) -> Option<CodexChatEvent> {
     let item = raw.get("item").unwrap_or(raw);
-    let item_type = item
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .replace('_', "")
-        .replace('-', "")
-        .to_lowercase();
+    let item_type = normalized_item_type(item);
     if !is_tool_item(&item_type) {
         return None;
     }
@@ -585,7 +711,18 @@ fn is_tool_item(normalized_type: &str) -> bool {
         || normalized_type.contains("command")
         || normalized_type.contains("exec")
         || normalized_type.contains("shell")
+        || normalized_type.contains("functioncall")
+        || normalized_type.contains("mcpcall")
         || normalized_type.contains("filechange")
+}
+
+fn normalized_item_type(item: &Value) -> String {
+    item.get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .replace('_', "")
+        .replace('-', "")
+        .to_lowercase()
 }
 
 fn item_title(item: &Value) -> Option<String> {
@@ -598,7 +735,7 @@ fn item_title(item: &Value) -> Option<String> {
 }
 
 fn extract_tool_input(item: &Value) -> Option<String> {
-    first_string(item, &["command", "query", "path", "name"]).or_else(|| {
+    first_string(item, &["command", "query", "path", "input", "arguments", "args"]).or_else(|| {
         item.get("input")
             .or_else(|| item.get("arguments"))
             .or_else(|| item.get("args"))
@@ -618,6 +755,14 @@ fn extract_text_content(value: &Value) -> String {
     if let Some(text) = first_string(value, &["text", "content", "summary", "message"]) {
         return text;
     }
+    for key in ["content", "text", "summary", "message", "output_text"] {
+        if let Some(child) = value.get(key) {
+            let text = extract_text_content(child);
+            if !text.is_empty() {
+                return text;
+            }
+        }
+    }
     if let Some(items) = value.as_array() {
         return items.iter().map(extract_text_content).collect::<Vec<_>>().join("");
     }
@@ -634,6 +779,33 @@ fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
         };
         if let Some(text) = candidate.as_str().map(str::trim).filter(|text| !text.is_empty()) {
             return Some(text.to_string());
+        }
+    }
+    None
+}
+
+fn command_text(value: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        let Some(candidate) = value.get(*key) else {
+            continue;
+        };
+        if let Some(text) = candidate.as_str().map(str::trim).filter(|text| !text.is_empty()) {
+            return Some(text.to_string());
+        }
+        if let Some(items) = candidate.as_array() {
+            let text = items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+        if candidate.is_object() {
+            return Some(candidate.to_string());
         }
     }
     None
@@ -667,6 +839,7 @@ fn event(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(CodexProcessState::default())
         .invoke_handler(tauri::generate_handler![
             codex_check,
@@ -676,6 +849,16 @@ pub fn run() {
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("Alpha Studio");
+                #[cfg(target_os = "macos")]
+                {
+                    use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+                    let _ = apply_vibrancy(
+                        &window,
+                        NSVisualEffectMaterial::Sidebar,
+                        Some(NSVisualEffectState::Active),
+                        None,
+                    );
+                }
             }
             Ok(())
         })
@@ -712,6 +895,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_agent_message_updates_as_text_delta() {
+        let event = parse_codex_json_event(
+            r#"{"type":"item.updated","item":{"id":"item_0","type":"assistant_message","content":[{"type":"output_text","text":"hello"}]}}"#,
+            "run-1",
+            "conv-1",
+        )
+        .unwrap();
+        assert_eq!(event.event_type, "text_delta");
+        assert_eq!(event.text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn parses_response_output_item_done_as_text_delta() {
+        let event = parse_codex_json_event(
+            r#"{"type":"response.output_item.done","item":{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"done"}]}}"#,
+            "run-1",
+            "conv-1",
+        )
+        .unwrap();
+        assert_eq!(event.event_type, "text_delta");
+        assert_eq!(event.text.as_deref(), Some("done"));
+    }
+
+    #[test]
     fn parses_reasoning_delta() {
         let event = parse_codex_json_event(
             r#"{"type":"reasoning_delta","delta":"thinking"}"#,
@@ -743,6 +950,50 @@ mod tests {
         .unwrap();
         assert_eq!(completed.event_type, "tool_completed");
         assert_eq!(completed.text.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn parses_function_call_as_tool() {
+        let started = parse_codex_json_event(
+            r#"{"type":"response.output_item.added","item":{"id":"call_1","type":"function_call","name":"web.run","arguments":"{\"q\":\"test\"}"}}"#,
+            "run-1",
+            "conv-1",
+        )
+        .unwrap();
+        assert_eq!(started.event_type, "tool_started");
+        assert_eq!(started.title.as_deref(), Some("web.run"));
+        assert_eq!(started.text.as_deref(), Some("{\"q\":\"test\"}"));
+    }
+
+    #[test]
+    fn parses_exec_command_events() {
+        let started = parse_codex_json_event(
+            r#"{"type":"exec_command.begin","id":"cmd_1","command":["npm","test"]}"#,
+            "run-1",
+            "conv-1",
+        )
+        .unwrap();
+        assert_eq!(started.event_type, "tool_started");
+        assert_eq!(started.item_id.as_deref(), Some("cmd_1"));
+        assert_eq!(started.text.as_deref(), Some("npm test"));
+
+        let delta = parse_codex_json_event(
+            r#"{"type":"exec_command.output_delta","id":"cmd_1","delta":"running"}"#,
+            "run-1",
+            "conv-1",
+        )
+        .unwrap();
+        assert_eq!(delta.event_type, "tool_delta");
+        assert_eq!(delta.text.as_deref(), Some("running"));
+
+        let failed = parse_codex_json_event(
+            r#"{"type":"exec_command.end","id":"cmd_1","exit_code":1,"stderr":"failed"}"#,
+            "run-1",
+            "conv-1",
+        )
+        .unwrap();
+        assert_eq!(failed.event_type, "tool_failed");
+        assert_eq!(failed.text.as_deref(), Some("failed"));
     }
 
     #[test]

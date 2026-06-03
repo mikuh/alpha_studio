@@ -11,6 +11,7 @@ import type {
   Conversation,
   Holding,
   Project,
+  ProjectSort,
   SandboxMode,
   WatchItem,
 } from './types';
@@ -31,13 +32,20 @@ interface ChatState {
   error: string | null;
   holdings: Holding[];
   watchlist: WatchItem[];
+  projectSort: ProjectSort;
+  conversationSort: ProjectSort;
   createConversation: (projectId?: string) => string;
   setCurrentConversation: (id: string) => void;
   deleteConversation: (id: string) => void;
+  renameConversation: (id: string, title: string) => void;
+  toggleConversationPin: (id: string) => void;
+  setConversationSort: (sort: ProjectSort) => void;
   createProject: (input?: { name?: string; cwd?: string }) => string;
   renameProject: (id: string, name: string) => void;
   setProjectCwd: (id: string, cwd: string) => void;
+  toggleProjectPin: (id: string) => void;
   deleteProject: (id: string) => void;
+  setProjectSort: (sort: ProjectSort) => void;
   setActiveCoworker: (id: string) => void;
   setModel: (model: string) => void;
   setReasoningEffort: (effort: ReasoningEffort) => void;
@@ -45,6 +53,7 @@ interface ChatState {
   setSandboxMode: (mode: SandboxMode) => void;
   refreshCodexStatus: () => Promise<void>;
   sendMessage: (message: string) => Promise<void>;
+  editUserMessageAndResend: (conversationId: string, messageId: string, message: string) => Promise<void>;
   stopCurrentConversation: () => Promise<void>;
   handleCodexEvent: (event: CodexChatEvent) => void;
   addHolding: (input: Omit<Holding, 'id' | 'createdAt'>) => void;
@@ -71,6 +80,8 @@ export const useChatStore = create<ChatState>()(
       error: null,
       holdings: [],
       watchlist: [],
+      projectSort: 'updated',
+      conversationSort: 'updated',
 
       createConversation: (projectId?: string) => {
         const project = projectId
@@ -99,6 +110,26 @@ export const useChatStore = create<ChatState>()(
           };
         });
       },
+
+      renameConversation: (id: string, title: string) => {
+        const trimmed = title.trim();
+        if (!trimmed) return;
+        set((state) => ({
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === id ? { ...conversation, title: trimmed } : conversation
+          ),
+        }));
+      },
+
+      toggleConversationPin: (id: string) => {
+        set((state) => ({
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === id ? { ...conversation, pinned: !conversation.pinned } : conversation
+          ),
+        }));
+      },
+
+      setConversationSort: (sort) => set({ conversationSort: sort }),
 
       createProject: (input) => {
         const now = Date.now();
@@ -136,6 +167,14 @@ export const useChatStore = create<ChatState>()(
         }));
       },
 
+      toggleProjectPin: (id: string) => {
+        set((state) => ({
+          projects: state.projects.map((project) =>
+            project.id === id ? { ...project, pinned: !project.pinned } : project
+          ),
+        }));
+      },
+
       deleteProject: (id: string) => {
         set((state) => ({
           projects: state.projects.filter((project) => project.id !== id),
@@ -146,6 +185,8 @@ export const useChatStore = create<ChatState>()(
           ),
         }));
       },
+
+      setProjectSort: (sort: ProjectSort) => set({ projectSort: sort }),
 
       setActiveCoworker: (id: string) => set({ activeCoworkerId: id }),
 
@@ -252,6 +293,86 @@ export const useChatStore = create<ChatState>()(
         }
       },
 
+      editUserMessageAndResend: async (conversationId: string, messageId: string, message: string) => {
+        const trimmed = message.trim();
+        if (!trimmed) return;
+
+        const conversation = get().conversations.find((item) => item.id === conversationId);
+        if (!conversation || conversation.status === 'streaming') return;
+
+        const messageIndex = conversation.messages.findIndex(
+          (item) => item.id === messageId && item.role === 'user',
+        );
+        if (messageIndex < 0) return;
+
+        const now = Date.now();
+        const previousMessages = conversation.messages.slice(0, messageIndex);
+        const editedUserMessage: ChatMessage = {
+          ...conversation.messages[messageIndex],
+          timestamp: now,
+          blocks: [{ type: 'text', content: trimmed }],
+        };
+        const assistantMessage: ChatMessage = {
+          id: createId('assistant'),
+          role: 'assistant',
+          timestamp: now,
+          isStreaming: true,
+          blocks: [],
+        };
+        const nextTitle = messageIndex === 0 ? buildConversationTitle(trimmed) : conversation.title;
+
+        set((state) => ({
+          conversations: state.conversations.map((item) =>
+            item.id === conversationId
+              ? {
+                  ...item,
+                  title: nextTitle,
+                  messages: [...previousMessages, editedUserMessage, assistantMessage],
+                  status: 'streaming',
+                  updatedAt: now,
+                  runId: undefined,
+                  codexThreadId: undefined,
+                }
+              : item
+          ),
+          currentConversationId: conversationId,
+          error: null,
+        }));
+
+        if (!isTauriRuntime()) {
+          simulateBrowserReply(conversationId, get().handleCodexEvent);
+          return;
+        }
+
+        try {
+          const latest = get().conversations.find((item) => item.id === conversationId);
+          const prompt = buildFinancePrompt(
+            buildEditedPrompt(trimmed, previousMessages),
+            get().activeCoworkerId,
+          );
+          const result = await startCodexChat({
+            conversationId,
+            prompt,
+            cwd: latest?.cwd || DEFAULT_CWD,
+            model: get().model,
+            reasoningEffort: get().reasoningEffort,
+            sandboxMode: get().sandboxMode,
+          });
+          set((state) => ({
+            conversations: state.conversations.map((item) =>
+              item.id === conversationId ? { ...item, runId: result.runId } : item
+            ),
+          }));
+        } catch (error) {
+          get().handleCodexEvent({
+            type: 'error',
+            runId: '',
+            conversationId,
+            message: stringifyError(error),
+          });
+        }
+      },
+
       stopCurrentConversation: async () => {
         const conversation = get().conversations.find((item) => item.id === get().currentConversationId);
         if (!conversation?.runId) return;
@@ -332,6 +453,8 @@ export const useChatStore = create<ChatState>()(
         sandboxMode: state.sandboxMode,
         holdings: state.holdings,
         watchlist: state.watchlist,
+        projectSort: state.projectSort,
+        conversationSort: state.conversationSort,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
@@ -378,17 +501,107 @@ function stringifyError(error: unknown): string {
   return String(error || 'Unknown error');
 }
 
+function buildEditedPrompt(message: string, previousMessages: ChatMessage[]): string {
+  const context = previousMessages
+    .map((item) => {
+      const content = messageBlocksToText(item.blocks);
+      if (!content) return null;
+      return `${item.role === 'user' ? '用户' : 'AI'}：\n${content}`;
+    })
+    .filter(Boolean)
+    .join('\n\n');
+
+  if (!context) return message;
+
+  return [
+    '以下是本地可见的历史上下文。用户刚刚编辑了后续的一条消息，旧回复已被截断。',
+    '',
+    context,
+    '',
+    '请基于以上上下文回答这条编辑后的用户消息：',
+    message,
+  ].join('\n');
+}
+
+function messageBlocksToText(blocks: ChatMessage['blocks']): string {
+  return blocks
+    .map((block) => {
+      if (block.type === 'text' || block.type === 'thinking' || block.type === 'error') {
+        return block.content;
+      }
+      if (block.type === 'tool') {
+        return [block.title, block.input, block.output].filter(Boolean).join('\n');
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+}
+
 function simulateBrowserReply(conversationId: string, dispatch: (event: CodexChatEvent) => void): void {
   const runId = createId('preview');
   dispatch({ type: 'started', runId, conversationId });
   dispatch({ type: 'thread_started', runId, conversationId, threadId: 'browser-preview' });
-  setTimeout(() => {
-    dispatch({
-      type: 'text_delta',
-      runId,
-      conversationId,
-      text: '这是浏览器预览模式。真实 Codex CLI 对话请使用 `npm run tauri:dev` 启动桌面应用。',
-    });
-    dispatch({ type: 'completed', runId, conversationId });
-  }, 300);
+  const events: Array<{ delay: number; event: CodexChatEvent }> = [
+    {
+      delay: 120,
+      event: {
+        type: 'reasoning_delta',
+        runId,
+        conversationId,
+        text: '识别问题意图，准备把市场主线、风险和可执行检查点拆开。',
+      },
+    },
+    {
+      delay: 260,
+      event: {
+        type: 'tool_started',
+        runId,
+        conversationId,
+        itemId: `${runId}-scan`,
+        title: 'command_execution',
+        text: 'scan alpha_signals --scope watchlist',
+      },
+    },
+    {
+      delay: 440,
+      event: {
+        type: 'tool_delta',
+        runId,
+        conversationId,
+        itemId: `${runId}-scan`,
+        title: 'command_execution',
+        text: '资金偏好：高股息、AI 算力、电力设备\n风险提示：成交缩量、北向分歧',
+      },
+    },
+    {
+      delay: 720,
+      event: {
+        type: 'tool_completed',
+        runId,
+        conversationId,
+        itemId: `${runId}-scan`,
+        title: 'command_execution',
+        text: '预览扫描完成。',
+      },
+    },
+  ];
+
+  const chunks = [
+    '预览模式已按 Codex 风格渲染事件流：',
+    '\n\n1. 先展示推理和工具运行状态，完成后自动折叠为紧凑轨迹。',
+    '\n2. 文本会分段流式追加，并在末尾显示生成游标。',
+    '\n3. 桌面模式会把这些预览事件替换为真实 Codex CLI 输出。',
+  ];
+  let delay = 880;
+  for (const text of chunks) {
+    events.push({ delay, event: { type: 'text_delta', runId, conversationId, text } });
+    delay += 180;
+  }
+  events.push({ delay: delay + 80, event: { type: 'completed', runId, conversationId } });
+
+  for (const item of events) {
+    setTimeout(() => dispatch(item.event), item.delay);
+  }
 }
