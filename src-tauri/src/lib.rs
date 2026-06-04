@@ -1,22 +1,29 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
 
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
-const DEFAULT_CWD: &str = "/Users/geb/codes/alpha_studio";
+const TERMINAL_EVENT: &str = "terminal-event";
 
 static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
 struct CodexProcessState {
+    children: Arc<Mutex<HashMap<String, Child>>>,
+}
+
+#[derive(Default)]
+struct TerminalState {
+    stdins: Arc<Mutex<HashMap<String, ChildStdin>>>,
     children: Arc<Mutex<HashMap<String, Child>>>,
 }
 
@@ -59,6 +66,163 @@ pub struct CodexChatStopRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CodexChatStopResult {
     stopped: bool,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenInAppRequest {
+    app: String,
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalStartRequest {
+    cwd: Option<String>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalStartResult {
+    session_id: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalWriteRequest {
+    session_id: String,
+    data: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalStopRequest {
+    session_id: String,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk: Option<String>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiffStat {
+    files_changed: u32,
+    additions: u32,
+    deletions: u32,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GhAuthStatus {
+    installed: bool,
+    authenticated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCwdRequest {
+    cwd: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiffRequest {
+    cwd: String,
+    path: Option<String>,
+    staged: Option<bool>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPathsRequest {
+    cwd: String,
+    paths: Vec<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitRequest {
+    cwd: String,
+    message: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchRequest {
+    cwd: String,
+    name: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPushRequest {
+    cwd: String,
+    set_upstream: Option<bool>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommandResult {
+    stdout: String,
+    stderr: String,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusResult {
+    cwd: String,
+    is_repository: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream: Option<String>,
+    ahead: u32,
+    behind: u32,
+    clean: bool,
+    changes: Vec<GitFileChange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFileChange {
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_path: Option<String>,
+    staged: bool,
+    unstaged: bool,
+    index_status: String,
+    working_tree_status: String,
+    status: String,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranch {
+    name: String,
+    current: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream: Option<String>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRemote {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fetch_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    push_url: Option<String>,
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -107,7 +271,7 @@ async fn codex_chat_start(
     }
 
     let run_id = generate_run_id();
-    let cwd = request.cwd.clone().unwrap_or_else(|| DEFAULT_CWD.to_string());
+    let cwd = resolve_cwd(request.cwd.as_deref())?;
     let sandbox_mode = sanitize_sandbox_mode(request.sandbox_mode.as_deref());
     let mut command = Command::new(&check.path);
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -323,19 +487,428 @@ async fn codex_chat_stop(
     }
 }
 
+#[tauri::command]
+async fn list_open_apps() -> Result<Vec<String>, String> {
+    // Finder and Terminal ship with macOS, so they are always offered there.
+    let mut available: Vec<String> = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        available.push("finder".to_string());
+        available.push("terminal".to_string());
+        let candidates: &[(&str, &[&str])] = &[
+            ("vscode", &["Visual Studio Code.app", "VSCode.app"]),
+            ("cursor", &["Cursor.app"]),
+            ("pycharm", &["PyCharm.app", "PyCharm CE.app", "PyCharm Community Edition.app"]),
+        ];
+        for (id, bundles) in candidates {
+            if bundles.iter().any(|bundle| app_bundle_exists(bundle)) {
+                available.push((*id).to_string());
+            }
+        }
+    }
+    Ok(available)
+}
+
+#[tauri::command]
+async fn open_in_app(request: OpenInAppRequest) -> Result<(), String> {
+    let path = validate_cwd(&request.path)?;
+    #[cfg(target_os = "macos")]
+    {
+        let args: Vec<String> = match request.app.as_str() {
+            "finder" => vec!["-R".to_string(), path.to_string()],
+            "terminal" => vec!["-a".to_string(), "Terminal".to_string(), path.to_string()],
+            "vscode" => vec!["-a".to_string(), "Visual Studio Code".to_string(), path.to_string()],
+            "cursor" => vec!["-a".to_string(), "Cursor".to_string(), path.to_string()],
+            "pycharm" => vec!["-a".to_string(), "PyCharm".to_string(), path.to_string()],
+            other => return Err(format!("Unsupported app: {other}")),
+        };
+        let output = Command::new("open")
+            .args(&args)
+            .output()
+            .await
+            .map_err(|e| format!("Failed to launch app: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(if stderr.is_empty() {
+                format!("Failed to open in {}", request.app)
+            } else {
+                stderr
+            })
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Err("Opening in external apps is only supported on macOS in this build.".to_string())
+    }
+}
+
+#[tauri::command]
+async fn terminal_start(
+    app: AppHandle,
+    state: State<'_, TerminalState>,
+    request: TerminalStartRequest,
+) -> Result<TerminalStartResult, String> {
+    let cwd = resolve_cwd(request.cwd.as_deref())?;
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let session_id = generate_id("term");
+
+    let mut command = Command::new(&shell);
+    // Login shell so the user's profile (PATH, conda, etc.) is loaded. We keep it
+    // non-interactive on purpose: stdin is a pipe (not a PTY), so an interactive
+    // shell would emit its own prompt/escape codes. The UI renders the prompt and
+    // echoes input instead, which keeps the streamed output clean and predictable.
+    command.arg("-l");
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.current_dir(&cwd);
+    command.env("TERM", "dumb");
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to start shell: {e}"))?;
+
+    let stdin = child.stdin.take().ok_or_else(|| "Failed to open shell stdin".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| "Failed to open shell stdout".to_string())?;
+    let stderr = child.stderr.take().ok_or_else(|| "Failed to open shell stderr".to_string())?;
+
+    {
+        let mut stdins = state.stdins.lock().await;
+        stdins.insert(session_id.clone(), stdin);
+        let mut children = state.children.lock().await;
+        children.insert(session_id.clone(), child);
+    }
+
+    spawn_terminal_reader(app.clone(), session_id.clone(), stdout);
+    spawn_terminal_reader(app.clone(), session_id.clone(), stderr);
+
+    let exit_app = app.clone();
+    let exit_session = session_id.clone();
+    let exit_children = state.children.clone();
+    let exit_stdins = state.stdins.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let mut children = exit_children.lock().await;
+            let Some(child) = children.get_mut(&exit_session) else {
+                break;
+            };
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    children.remove(&exit_session);
+                    drop(children);
+                    exit_stdins.lock().await.remove(&exit_session);
+                    emit_terminal_event(
+                        &exit_app,
+                        TerminalEvent {
+                            event_type: "exit".to_string(),
+                            session_id: exit_session.clone(),
+                            chunk: None,
+                        },
+                    );
+                    break;
+                }
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok(TerminalStartResult { session_id })
+}
+
+#[tauri::command]
+async fn terminal_write(
+    state: State<'_, TerminalState>,
+    request: TerminalWriteRequest,
+) -> Result<(), String> {
+    let mut stdins = state.stdins.lock().await;
+    let stdin = stdins
+        .get_mut(&request.session_id)
+        .ok_or_else(|| "Terminal session is no longer active.".to_string())?;
+    stdin
+        .write_all(request.data.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write to terminal: {e}"))?;
+    stdin.flush().await.map_err(|e| format!("Failed to flush terminal: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn terminal_stop(
+    app: AppHandle,
+    state: State<'_, TerminalState>,
+    request: TerminalStopRequest,
+) -> Result<(), String> {
+    state.stdins.lock().await.remove(&request.session_id);
+    let mut children = state.children.lock().await;
+    if let Some(mut child) = children.remove(&request.session_id) {
+        let _ = child.kill().await;
+    }
+    drop(children);
+    emit_terminal_event(
+        &app,
+        TerminalEvent {
+            event_type: "exit".to_string(),
+            session_id: request.session_id,
+            chunk: None,
+        },
+    );
+    Ok(())
+}
+
+#[tauri::command]
+async fn git_diff_stat(request: GitCwdRequest) -> Result<GitDiffStat, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    let output = match run_git(cwd, &["diff", "--numstat", "HEAD"]).await {
+        Ok(value) => value,
+        Err(_) => run_git(cwd, &["diff", "--numstat"]).await?,
+    };
+    Ok(parse_numstat(&output.stdout))
+}
+
+#[tauri::command]
+async fn gh_auth_status() -> Result<GhAuthStatus, String> {
+    let output = std::process::Command::new("gh")
+        .args(["auth", "status"])
+        .env("NO_COLOR", "1")
+        .output();
+    match output {
+        Ok(output) => {
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(GhAuthStatus {
+                installed: true,
+                authenticated: output.status.success(),
+                account: parse_gh_account(&combined),
+            })
+        }
+        Err(_) => Ok(GhAuthStatus {
+            installed: false,
+            authenticated: false,
+            account: None,
+        }),
+    }
+}
+
+#[tauri::command]
+async fn git_status(request: GitCwdRequest) -> Result<GitStatusResult, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    match run_git(cwd, &["rev-parse", "--is-inside-work-tree"]).await {
+        Ok(_) => {
+            let output = run_git(cwd, &["status", "--porcelain=v1", "--branch"]).await?;
+            Ok(parse_git_status(cwd, &output.stdout))
+        }
+        Err(error) => Ok(GitStatusResult {
+            cwd: cwd.to_string(),
+            is_repository: false,
+            branch: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            clean: true,
+            changes: Vec::new(),
+            error: Some(error),
+        }),
+    }
+}
+
+#[tauri::command]
+async fn git_diff(request: GitDiffRequest) -> Result<String, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    let mut args = vec!["diff".to_string()];
+    if request.staged.unwrap_or(false) {
+        args.push("--cached".to_string());
+    }
+    if let Some(path) = request.path.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        args.push("--".to_string());
+        args.push(path.to_string());
+    }
+    let output = run_git_owned(cwd, args).await?;
+    Ok(output.stdout)
+}
+
+#[tauri::command]
+async fn git_stage(request: GitPathsRequest) -> Result<GitCommandResult, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    let paths = sanitize_paths(&request.paths)?;
+    let mut args = vec!["add".to_string(), "--".to_string()];
+    args.extend(paths);
+    run_git_owned(cwd, args).await
+}
+
+#[tauri::command]
+async fn git_unstage(request: GitPathsRequest) -> Result<GitCommandResult, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    let paths = sanitize_paths(&request.paths)?;
+    let mut args = vec!["restore".to_string(), "--staged".to_string(), "--".to_string()];
+    args.extend(paths);
+    run_git_owned(cwd, args).await
+}
+
+#[tauri::command]
+async fn git_commit(request: GitCommitRequest) -> Result<GitCommandResult, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    let message = request.message.trim();
+    if message.is_empty() {
+        return Err("Commit message cannot be empty.".to_string());
+    }
+    run_git_owned(cwd, vec!["commit".to_string(), "-m".to_string(), message.to_string()]).await
+}
+
+#[tauri::command]
+async fn git_branch_list(request: GitCwdRequest) -> Result<Vec<GitBranch>, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    let output = run_git(cwd, &["branch", "--format=%(refname:short)%09%(HEAD)%09%(upstream:short)"]).await?;
+    Ok(parse_git_branches(&output.stdout))
+}
+
+#[tauri::command]
+async fn git_create_branch(request: GitBranchRequest) -> Result<GitCommandResult, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    let name = validate_branch_name(cwd, &request.name).await?;
+    run_git_owned(cwd, vec!["switch".to_string(), "-c".to_string(), name]).await
+}
+
+#[tauri::command]
+async fn git_checkout_branch(request: GitBranchRequest) -> Result<GitCommandResult, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    let name = validate_branch_name(cwd, &request.name).await?;
+    run_git_owned(cwd, vec!["switch".to_string(), name]).await
+}
+
+#[tauri::command]
+async fn git_pull(request: GitCwdRequest) -> Result<GitCommandResult, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    run_git(cwd, &["pull", "--ff-only"]).await
+}
+
+#[tauri::command]
+async fn git_push(request: GitPushRequest) -> Result<GitCommandResult, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    if request.set_upstream.unwrap_or(false) {
+        let branch = run_git(cwd, &["branch", "--show-current"]).await?.stdout.trim().to_string();
+        if branch.is_empty() {
+            return Err("Cannot set upstream while HEAD is detached.".to_string());
+        }
+        run_git_owned(cwd, vec!["push".to_string(), "-u".to_string(), "origin".to_string(), branch]).await
+    } else {
+        run_git(cwd, &["push"]).await
+    }
+}
+
+#[tauri::command]
+async fn git_remotes(request: GitCwdRequest) -> Result<Vec<GitRemote>, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    let output = run_git(cwd, &["remote", "-v"]).await?;
+    Ok(parse_git_remotes(&output.stdout))
+}
+
 fn emit_event(app: &AppHandle, event: CodexChatEvent) {
     if let Err(e) = app.emit(CODEX_CHAT_EVENT, event) {
         eprintln!("failed to emit {CODEX_CHAT_EVENT}: {e}");
     }
 }
 
+fn emit_terminal_event(app: &AppHandle, event: TerminalEvent) {
+    if let Err(e) = app.emit(TERMINAL_EVENT, event) {
+        eprintln!("failed to emit {TERMINAL_EVENT}: {e}");
+    }
+}
+
+fn spawn_terminal_reader<R>(app: AppHandle, session_id: String, reader: R)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut reader = reader;
+        let mut buffer = [0u8; 4096];
+        loop {
+            match reader.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buffer[..n]).to_string();
+                    emit_terminal_event(
+                        &app,
+                        TerminalEvent {
+                            event_type: "output".to_string(),
+                            session_id: session_id.clone(),
+                            chunk: Some(chunk),
+                        },
+                    );
+                }
+            }
+        }
+    });
+}
+
 fn generate_run_id() -> String {
+    generate_id("codex")
+}
+
+fn generate_id(prefix: &str) -> String {
     let count = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_millis())
         .unwrap_or_default();
-    format!("codex-{millis}-{count}")
+    format!("{prefix}-{millis}-{count}")
+}
+
+#[cfg(target_os = "macos")]
+fn app_bundle_exists(bundle: &str) -> bool {
+    if Path::new("/Applications").join(bundle).exists() {
+        return true;
+    }
+    if let Some(home) = home_dir() {
+        if Path::new(&home).join("Applications").join(bundle).exists() {
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_numstat(output: &str) -> GitDiffStat {
+    let mut files_changed = 0u32;
+    let mut additions = 0u32;
+    let mut deletions = 0u32;
+    for line in output.lines() {
+        let mut parts = line.split('\t');
+        let added = parts.next().unwrap_or("").trim();
+        let removed = parts.next().unwrap_or("").trim();
+        let path = parts.next().unwrap_or("").trim();
+        if path.is_empty() {
+            continue;
+        }
+        files_changed += 1;
+        additions += added.parse::<u32>().unwrap_or(0);
+        deletions += removed.parse::<u32>().unwrap_or(0);
+    }
+    GitDiffStat {
+        files_changed,
+        additions,
+        deletions,
+    }
+}
+
+fn parse_gh_account(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Logged in to ") {
+            if let Some((host, account)) = rest.split_once(" account ") {
+                let account = account.split_whitespace().next().unwrap_or("").trim();
+                if !account.is_empty() {
+                    return Some(format!("{account} · {}", host.trim()));
+                }
+            }
+            return non_empty_string(rest);
+        }
+    }
+    None
 }
 
 fn sanitize_sandbox_mode(value: Option<&str>) -> String {
@@ -417,6 +990,247 @@ fn codex_binary_candidates() -> Vec<String> {
 
 fn home_dir() -> Option<String> {
     std::env::var("HOME").ok().filter(|value| !value.trim().is_empty())
+}
+
+fn resolve_cwd(value: Option<&str>) -> Result<String, String> {
+    if let Some(cwd) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        return Ok(cwd.to_string());
+    }
+    std::env::current_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(|e| format!("Failed to resolve current working directory: {e}"))
+}
+
+fn validate_cwd(cwd: &str) -> Result<&str, String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return Err("Working directory is required for Git operations.".to_string());
+    }
+    let path = Path::new(cwd);
+    if !path.exists() {
+        return Err(format!("Working directory does not exist: {cwd}"));
+    }
+    if !path.is_dir() {
+        return Err(format!("Working directory is not a directory: {cwd}"));
+    }
+    Ok(cwd)
+}
+
+fn sanitize_paths(paths: &[String]) -> Result<Vec<String>, String> {
+    let sanitized = paths
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if sanitized.is_empty() {
+        return Err("At least one path is required.".to_string());
+    }
+    Ok(sanitized)
+}
+
+async fn validate_branch_name(cwd: &str, name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Branch name cannot be empty.".to_string());
+    }
+    run_git_owned(cwd, vec!["check-ref-format".to_string(), "--branch".to_string(), name.to_string()]).await?;
+    Ok(name.to_string())
+}
+
+async fn run_git(cwd: &str, args: &[&str]) -> Result<GitCommandResult, String> {
+    run_git_owned(cwd, args.iter().map(|arg| arg.to_string()).collect()).await
+}
+
+async fn run_git_owned(cwd: &str, args: Vec<String>) -> Result<GitCommandResult, String> {
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(cwd)
+        .env("TERM", "xterm-256color")
+        .env("NO_COLOR", "1")
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run git {}: {e}", args.join(" ")))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim_end().to_string();
+    if output.status.success() {
+        Ok(GitCommandResult { stdout, stderr })
+    } else {
+        let message = if stderr.is_empty() { stdout.clone() } else { stderr.clone() };
+        Err(if message.is_empty() {
+            format!("git {} exited with {}", args.join(" "), output.status)
+        } else {
+            message
+        })
+    }
+}
+
+fn parse_git_status(cwd: &str, output: &str) -> GitStatusResult {
+    let mut branch = None;
+    let mut upstream = None;
+    let mut ahead = 0;
+    let mut behind = 0;
+    let mut changes = Vec::new();
+
+    for line in output.lines() {
+        if let Some(header) = line.strip_prefix("## ") {
+            let parsed = parse_git_branch_header(header);
+            branch = parsed.0;
+            upstream = parsed.1;
+            ahead = parsed.2;
+            behind = parsed.3;
+            continue;
+        }
+        if line.starts_with("!!") || line.len() < 3 {
+            continue;
+        }
+        if let Some(change) = parse_git_change_line(line) {
+            changes.push(change);
+        }
+    }
+
+    GitStatusResult {
+        cwd: cwd.to_string(),
+        is_repository: true,
+        branch,
+        upstream,
+        ahead,
+        behind,
+        clean: changes.is_empty(),
+        changes,
+        error: None,
+    }
+}
+
+fn parse_git_branch_header(header: &str) -> (Option<String>, Option<String>, u32, u32) {
+    let mut ahead = 0;
+    let mut behind = 0;
+    let (names, counts) = header.split_once(" [").unwrap_or((header, ""));
+    for part in counts.trim_end_matches(']').split(',') {
+        let part = part.trim();
+        if let Some(value) = part.strip_prefix("ahead ") {
+            ahead = value.parse().unwrap_or(0);
+        } else if let Some(value) = part.strip_prefix("behind ") {
+            behind = value.parse().unwrap_or(0);
+        }
+    }
+
+    if let Some(rest) = names.strip_prefix("No commits yet on ") {
+        return (Some(rest.trim().to_string()), None, ahead, behind);
+    }
+    if let Some((branch, upstream)) = names.split_once("...") {
+        return (
+            non_empty_string(branch),
+            non_empty_string(upstream),
+            ahead,
+            behind,
+        );
+    }
+    (non_empty_string(names), None, ahead, behind)
+}
+
+fn parse_git_change_line(line: &str) -> Option<GitFileChange> {
+    let mut chars = line.chars();
+    let index_status = chars.next()?;
+    let working_tree_status = chars.next()?;
+    let path_text = line.get(3..)?.trim();
+    let (original_path, path) = if let Some((left, right)) = path_text.split_once(" -> ") {
+        (Some(left.to_string()), right.to_string())
+    } else {
+        (None, path_text.to_string())
+    };
+    if path.is_empty() {
+        return None;
+    }
+
+    let status = git_change_status(index_status, working_tree_status);
+    let untracked = index_status == '?' && working_tree_status == '?';
+    Some(GitFileChange {
+        path,
+        original_path,
+        staged: !untracked && index_status != ' ',
+        unstaged: !untracked && working_tree_status != ' ',
+        index_status: index_status.to_string(),
+        working_tree_status: working_tree_status.to_string(),
+        status,
+    })
+}
+
+fn git_change_status(index_status: char, working_tree_status: char) -> String {
+    if index_status == '?' && working_tree_status == '?' {
+        return "untracked".to_string();
+    }
+    if index_status == 'U'
+        || working_tree_status == 'U'
+        || matches!((index_status, working_tree_status), ('A', 'A') | ('D', 'D'))
+    {
+        return "conflicted".to_string();
+    }
+    let code = if index_status != ' ' { index_status } else { working_tree_status };
+    match code {
+        'A' => "added",
+        'M' => "modified",
+        'D' => "deleted",
+        'R' => "renamed",
+        'C' => "copied",
+        'T' => "typechange",
+        _ => "unknown",
+    }
+    .to_string()
+}
+
+fn parse_git_branches(output: &str) -> Vec<GitBranch> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let parts = line.split('\t').collect::<Vec<_>>();
+            let name = parts.first()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(GitBranch {
+                name: name.to_string(),
+                current: parts.get(1).map(|value| value.trim() == "*").unwrap_or(false),
+                upstream: parts.get(2).and_then(|value| non_empty_string(value)),
+            })
+        })
+        .collect()
+}
+
+fn parse_git_remotes(output: &str) -> Vec<GitRemote> {
+    let mut remotes: Vec<GitRemote> = Vec::new();
+    for line in output.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.next() else { continue };
+        let Some(url) = parts.next() else { continue };
+        let kind = parts.next().unwrap_or_default();
+        let remote = match remotes.iter_mut().find(|remote| remote.name == name) {
+            Some(remote) => remote,
+            None => {
+                remotes.push(GitRemote {
+                    name: name.to_string(),
+                    fetch_url: None,
+                    push_url: None,
+                });
+                remotes.last_mut().expect("remote was just pushed")
+            }
+        };
+        if kind.contains("fetch") {
+            remote.fetch_url = Some(url.to_string());
+        } else if kind.contains("push") {
+            remote.push_url = Some(url.to_string());
+        }
+    }
+    remotes
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn codex_version(path: &str) -> Option<String> {
@@ -669,6 +1483,8 @@ fn parse_item_completed_event(raw: &Value, run_id: &str, conversation_id: &str) 
         let status = first_string(item, &["status", "outcome"]).unwrap_or_default().to_lowercase();
         let failed = status.contains("fail") || status.contains("error") || item.get("error").is_some();
         let output = extract_tool_output(item)
+            // Fall back to the query/args so web/file search still shows what was searched.
+            .or_else(|| extract_tool_input(item))
             .or_else(|| first_string(item, &["error", "message"]))
             .or_else(|| item.get("error").map(|value| value.to_string()));
         return Some(event(
@@ -714,6 +1530,9 @@ fn is_tool_item(normalized_type: &str) -> bool {
         || normalized_type.contains("functioncall")
         || normalized_type.contains("mcpcall")
         || normalized_type.contains("filechange")
+        || normalized_type.contains("websearch")
+        || normalized_type.contains("filesearch")
+        || normalized_type.contains("webfetch")
 }
 
 fn normalized_item_type(item: &Value) -> String {
@@ -735,12 +1554,15 @@ fn item_title(item: &Value) -> Option<String> {
 }
 
 fn extract_tool_input(item: &Value) -> Option<String> {
-    first_string(item, &["command", "query", "path", "input", "arguments", "args"]).or_else(|| {
-        item.get("input")
-            .or_else(|| item.get("arguments"))
-            .or_else(|| item.get("args"))
-            .map(|value| value.to_string())
-    })
+    first_string(item, &["command", "query", "path", "input", "arguments", "args"])
+        // Web search items (web_search_call) carry the query under `action`.
+        .or_else(|| item.get("action").and_then(|action| first_string(action, &["query", "url", "command"])))
+        .or_else(|| {
+            item.get("input")
+                .or_else(|| item.get("arguments"))
+                .or_else(|| item.get("args"))
+                .map(|value| value.to_string())
+        })
 }
 
 fn extract_tool_output(item: &Value) -> Option<String> {
@@ -841,10 +1663,29 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(CodexProcessState::default())
+        .manage(TerminalState::default())
         .invoke_handler(tauri::generate_handler![
             codex_check,
             codex_chat_start,
             codex_chat_stop,
+            list_open_apps,
+            open_in_app,
+            terminal_start,
+            terminal_write,
+            terminal_stop,
+            git_diff_stat,
+            gh_auth_status,
+            git_status,
+            git_diff,
+            git_stage,
+            git_unstage,
+            git_commit,
+            git_branch_list,
+            git_create_branch,
+            git_checkout_branch,
+            git_pull,
+            git_push,
+            git_remotes,
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -966,6 +1807,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_web_search_item() {
+        let started = parse_codex_json_event(
+            r#"{"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","action":{"type":"search","query":"hangzhou weather"}}}"#,
+            "run-1",
+            "conv-1",
+        )
+        .unwrap();
+        assert_eq!(started.event_type, "tool_started");
+        assert_eq!(started.title.as_deref(), Some("web_search_call"));
+        assert_eq!(started.text.as_deref(), Some("hangzhou weather"));
+
+        let completed = parse_codex_json_event(
+            r#"{"type":"item.completed","item":{"id":"ws_1","type":"web_search","action":{"query":"hangzhou weather"}}}"#,
+            "run-1",
+            "conv-1",
+        )
+        .unwrap();
+        assert_eq!(completed.event_type, "tool_completed");
+    }
+
+    #[test]
     fn parses_exec_command_events() {
         let started = parse_codex_json_event(
             r#"{"type":"exec_command.begin","id":"cmd_1","command":["npm","test"]}"#,
@@ -1012,5 +1874,42 @@ mod tests {
     fn ignores_unknown_and_non_json_lines() {
         assert!(parse_codex_json_event("WARN noisy line", "run-1", "conv-1").is_none());
         assert!(parse_codex_json_event(r#"{"type":"turn.started"}"#, "run-1", "conv-1").is_none());
+    }
+
+    #[test]
+    fn parses_git_status_with_branch_and_changes() {
+        let status = parse_git_status(
+            "/repo",
+            "## main...origin/main [ahead 1, behind 2]\n M src/App.tsx\nA  README.md\nR  old.ts -> new.ts\n?? scratch.txt\n",
+        );
+
+        assert!(status.is_repository);
+        assert_eq!(status.branch.as_deref(), Some("main"));
+        assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(status.ahead, 1);
+        assert_eq!(status.behind, 2);
+        assert!(!status.clean);
+        assert_eq!(status.changes.len(), 4);
+        assert_eq!(status.changes[0].status, "modified");
+        assert!(status.changes[0].unstaged);
+        assert_eq!(status.changes[2].original_path.as_deref(), Some("old.ts"));
+        assert_eq!(status.changes[2].path, "new.ts");
+        assert_eq!(status.changes[3].status, "untracked");
+    }
+
+    #[test]
+    fn parses_git_branches_and_remotes() {
+        let branches = parse_git_branches("main\t*\torigin/main\nfeature\t\torigin/feature\n");
+        assert_eq!(branches.len(), 2);
+        assert!(branches[0].current);
+        assert_eq!(branches[0].upstream.as_deref(), Some("origin/main"));
+
+        let remotes = parse_git_remotes(
+            "origin\thttps://example.com/repo.git (fetch)\norigin\tgit@example.com:repo.git (push)\n",
+        );
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(remotes[0].fetch_url.as_deref(), Some("https://example.com/repo.git"));
+        assert_eq!(remotes[0].push_url.as_deref(), Some("git@example.com:repo.git"));
     }
 }

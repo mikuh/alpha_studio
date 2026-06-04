@@ -1,7 +1,7 @@
 [package]
 name = "alpha-studio"
 version = "0.1.0"
-description = "Alpha Studio - AI-native investment research workspace"
+description = "Alpha Studio - noncommercial local coding workspace"
 authors = ["Alpha Studio"]
 edition = "2021"
 

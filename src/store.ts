@@ -1,95 +1,186 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { applyCodexEventToConversation } from './codexEvents';
-import { buildFinancePrompt } from './prompt';
+import { buildCodingPrompt } from './prompt';
 import { checkCodex, isTauriRuntime, startCodexChat, stopCodexChat } from './codexBridge';
-import { DEFAULT_EFFORT, DEFAULT_MODEL, DEFAULT_SPEED, type ReasoningEffort, type Speed } from './models';
+import {
+  DEFAULT_APPROVAL,
+  DEFAULT_EFFORT,
+  DEFAULT_MODEL,
+  DEFAULT_SPEED,
+  approvalRequiresPrompt,
+  baseSandboxForApproval,
+  isApprovalMode,
+  sandboxToApproval,
+  type ApprovalMode,
+  type ReasoningEffort,
+  type Speed,
+} from './models';
 import type {
+  ApprovalDecision,
+  AuthorizationRequest,
   ChatMessage,
   CodexChatEvent,
   CodexStatus,
   Conversation,
-  Holding,
   Project,
   ProjectSort,
   SandboxMode,
-  WatchItem,
 } from './types';
 
-const DEFAULT_CWD = '/Users/geb/codes/alpha_studio';
+const LEGACY_DEFAULT_CONVERSATION_TITLE = ['\u65b0\u7684', '\u5bf9\u8bdd'].join('\u6295\u7814');
+
+// Holds the unresolved promise callbacks for in-flight authorization prompts.
+// Kept outside the persisted store because functions are not serializable.
+const authorizationResolvers = new Map<string, (decision: ApprovalDecision) => void>();
 
 interface ChatState {
   conversations: Conversation[];
   projects: Project[];
   currentConversationId: string | null;
-  activeCoworkerId: string;
   model: string;
   reasoningEffort: ReasoningEffort;
   speed: Speed;
   codexStatus: CodexStatus | null;
-  sandboxMode: SandboxMode;
+  approvalMode: ApprovalMode;
+  pendingAuthorization: AuthorizationRequest | null;
   isCheckingCodex: boolean;
   error: string | null;
-  holdings: Holding[];
-  watchlist: WatchItem[];
   projectSort: ProjectSort;
   conversationSort: ProjectSort;
   createConversation: (projectId?: string) => string;
   setCurrentConversation: (id: string) => void;
-  deleteConversation: (id: string) => void;
+  archiveConversation: (id: string) => void;
+  unarchiveConversation: (id: string) => void;
+  permanentlyDeleteConversation: (id: string) => void;
+  archiveStandaloneConversations: () => void;
   renameConversation: (id: string, title: string) => void;
   toggleConversationPin: (id: string) => void;
+  duplicateConversation: (id: string) => string | null;
   setConversationSort: (sort: ProjectSort) => void;
   createProject: (input?: { name?: string; cwd?: string }) => string;
   renameProject: (id: string, name: string) => void;
   setProjectCwd: (id: string, cwd: string) => void;
   toggleProjectPin: (id: string) => void;
-  deleteProject: (id: string) => void;
+  archiveProject: (id: string) => void;
+  unarchiveProject: (id: string) => void;
+  permanentlyDeleteProject: (id: string) => void;
   setProjectSort: (sort: ProjectSort) => void;
-  setActiveCoworker: (id: string) => void;
   setModel: (model: string) => void;
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setSpeed: (speed: Speed) => void;
-  setSandboxMode: (mode: SandboxMode) => void;
+  setApprovalMode: (mode: ApprovalMode) => void;
+  resolveAuthorization: (id: string, decision: ApprovalDecision) => void;
   refreshCodexStatus: () => Promise<void>;
   sendMessage: (message: string) => Promise<void>;
   editUserMessageAndResend: (conversationId: string, messageId: string, message: string) => Promise<void>;
   stopCurrentConversation: () => Promise<void>;
   handleCodexEvent: (event: CodexChatEvent) => void;
-  addHolding: (input: Omit<Holding, 'id' | 'createdAt'>) => void;
-  updateHolding: (id: string, patch: Partial<Omit<Holding, 'id' | 'createdAt'>>) => void;
-  removeHolding: (id: string) => void;
-  addWatchItem: (input: Omit<WatchItem, 'id' | 'createdAt'>) => void;
-  updateWatchItem: (id: string, patch: Partial<Omit<WatchItem, 'id' | 'createdAt'>>) => void;
-  removeWatchItem: (id: string) => void;
+}
+
+interface PersistedChatState {
+  conversations: Conversation[];
+  projects: Project[];
+  currentConversationId: string | null;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  speed: Speed;
+  approvalMode: ApprovalMode;
+  projectSort: ProjectSort;
+  conversationSort: ProjectSort;
 }
 
 export const useChatStore = create<ChatState>()(
   persist(
-    (set, get) => ({
+    (set, get) => {
+      // Opens an authorization prompt and resolves once the user decides in the UI.
+      const requestAuthorization = (
+        request: Omit<AuthorizationRequest, 'id'>,
+      ): Promise<ApprovalDecision> => {
+        const id = createId('auth');
+        return new Promise((resolve) => {
+          authorizationResolvers.set(id, resolve);
+          set({ pendingAuthorization: { ...request, id } });
+        });
+      };
+
+      // Resolves the granted sandbox policy for a turn, pausing for the user when
+      // the active approval mode requires it. Returns null when the user denies.
+      const runApprovalGate = async (conversationId: string): Promise<SandboxMode | null> => {
+        const mode = get().approvalMode;
+        if (!approvalRequiresPrompt(mode)) {
+          return baseSandboxForApproval(mode);
+        }
+        const latest = get().conversations.find((item) => item.id === conversationId);
+        const decision = await requestAuthorization({
+          conversationId,
+          title: 'Codex 请求操作权限',
+          description: latest?.cwd
+            ? '允许 Codex 在当前工作目录读取、修改文件并运行命令吗？'
+            : '允许 Codex 读取、修改文件并运行命令吗？',
+          cwd: latest?.cwd || '',
+        });
+        if (decision === 'deny') {
+          finishWithDenial(conversationId);
+          return null;
+        }
+        return decision === 'full-access' ? 'danger-full-access' : 'workspace-write';
+      };
+
+      // Ends the current streaming turn with a note explaining authorization was denied.
+      const finishWithDenial = (conversationId: string) => {
+        set((state) => ({
+          conversations: state.conversations.map((item) => {
+            if (item.id !== conversationId) return item;
+            const messages = [...item.messages];
+            const lastIndex = messages.length - 1;
+            const last = messages[lastIndex];
+            if (last && last.role === 'assistant') {
+              messages[lastIndex] = {
+                ...last,
+                isStreaming: false,
+                blocks: [
+                  { type: 'text', content: '已拒绝本次授权，未执行任何操作。如需继续，请重新发送消息并授予权限。' },
+                ],
+              };
+            }
+            return { ...item, messages, status: 'idle' as const, runId: undefined, updatedAt: Date.now() };
+          }),
+        }));
+      };
+
+      return {
       conversations: [createEmptyConversation()],
       projects: [],
       currentConversationId: null,
-      activeCoworkerId: 'pm',
       model: DEFAULT_MODEL,
       reasoningEffort: DEFAULT_EFFORT,
       speed: DEFAULT_SPEED,
       codexStatus: null,
-      sandboxMode: 'read-only',
+      approvalMode: DEFAULT_APPROVAL,
+      pendingAuthorization: null,
       isCheckingCodex: false,
       error: null,
-      holdings: [],
-      watchlist: [],
       projectSort: 'updated',
       conversationSort: 'updated',
 
       createConversation: (projectId?: string) => {
         const project = projectId
-          ? get().projects.find((item) => item.id === projectId)
+          ? get().projects.find((item) => item.id === projectId && !item.archivedAt)
           : undefined;
-        const conversation = createEmptyConversation(project);
+        const targetProjectId = project?.id;
+        // A blank conversation is just a draft. Reuse the existing draft for this
+        // context (and drop any other stray drafts) so unsent "新对话" never pile
+        // up in the sidebar; a draft only becomes a real entry once a message is sent.
+        const reused = get().conversations.find(
+          (item) => isDraftConversation(item) && (item.projectId ?? undefined) === (targetProjectId ?? undefined),
+        );
+        const conversation = reused ?? createEmptyConversation(project);
         set((state) => ({
-          conversations: [conversation, ...state.conversations],
+          conversations: [
+            ...(reused ? [] : [conversation]),
+            ...state.conversations.filter((item) => item.id === conversation.id || !isDraftConversation(item)),
+          ],
           currentConversationId: conversation.id,
           error: null,
         }));
@@ -100,14 +191,51 @@ export const useChatStore = create<ChatState>()(
         set({ currentConversationId: id, error: null });
       },
 
-      deleteConversation: (id: string) => {
+      archiveConversation: (id: string) => {
+        set((state) => {
+          const now = Date.now();
+          const conversations = state.conversations.map((conversation) =>
+            conversation.id === id
+              ? {
+                  ...conversation,
+                  archivedAt: conversation.archivedAt ?? now,
+                  pinned: false,
+                  status: conversation.status === 'streaming' ? 'idle' : conversation.status,
+                  runId: undefined,
+                }
+              : conversation
+          );
+          return resolveActiveConversation(conversations, state.currentConversationId === id ? null : state.currentConversationId);
+        });
+      },
+
+      unarchiveConversation: (id: string) => {
+        set((state) => ({
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === id
+              ? { ...conversation, archivedAt: undefined, archiveBatchId: undefined }
+              : conversation
+          ),
+          currentConversationId: id,
+        }));
+      },
+
+      permanentlyDeleteConversation: (id: string) => {
         set((state) => {
           const conversations = state.conversations.filter((conversation) => conversation.id !== id);
-          const fallbackId = conversations[0]?.id || null;
-          return {
-            conversations: conversations.length > 0 ? conversations : [createEmptyConversation()],
-            currentConversationId: state.currentConversationId === id ? fallbackId : state.currentConversationId,
-          };
+          return resolveActiveConversation(conversations, state.currentConversationId === id ? null : state.currentConversationId);
+        });
+      },
+
+      archiveStandaloneConversations: () => {
+        set((state) => {
+          const now = Date.now();
+          const conversations = state.conversations.map((conversation) =>
+            !conversation.archivedAt && !conversation.projectId && !conversation.pinned
+              ? { ...conversation, archivedAt: now, status: 'idle' as const, runId: undefined }
+              : conversation
+          );
+          return resolveActiveConversation(conversations, state.currentConversationId);
         });
       },
 
@@ -116,7 +244,7 @@ export const useChatStore = create<ChatState>()(
         if (!trimmed) return;
         set((state) => ({
           conversations: state.conversations.map((conversation) =>
-            conversation.id === id ? { ...conversation, title: trimmed } : conversation
+            conversation.id === id ? { ...conversation, title: trimmed, updatedAt: Date.now() } : conversation
           ),
         }));
       },
@@ -124,16 +252,52 @@ export const useChatStore = create<ChatState>()(
       toggleConversationPin: (id: string) => {
         set((state) => ({
           conversations: state.conversations.map((conversation) =>
-            conversation.id === id ? { ...conversation, pinned: !conversation.pinned } : conversation
+            conversation.id === id && !conversation.archivedAt
+              ? { ...conversation, pinned: !conversation.pinned }
+              : conversation
           ),
         }));
+      },
+
+      // Fork a conversation into a new, independent one (same project/cwd) that
+      // carries over the existing transcript. New message ids keep the branch
+      // from clobbering the source while editing.
+      duplicateConversation: (id: string) => {
+        const source = get().conversations.find((item) => item.id === id);
+        if (!source) return null;
+        const now = Date.now();
+        const clone: Conversation = {
+          ...source,
+          id: createId('conv'),
+          title: `${source.title} 分支`,
+          messages: source.messages.map((message) => ({
+            ...message,
+            id: createId('msg'),
+            blocks: message.blocks.map((block) => ({ ...block })),
+            isStreaming: false,
+          })),
+          codexThreadId: undefined,
+          status: 'idle',
+          runId: undefined,
+          pinned: false,
+          archivedAt: undefined,
+          archiveBatchId: undefined,
+          createdAt: now,
+          updatedAt: now,
+        };
+        set((state) => ({
+          conversations: [clone, ...state.conversations],
+          currentConversationId: clone.id,
+          error: null,
+        }));
+        return clone.id;
       },
 
       setConversationSort: (sort) => set({ conversationSort: sort }),
 
       createProject: (input) => {
         const now = Date.now();
-        const fallbackName = `新项目 ${get().projects.length + 1}`;
+        const fallbackName = `新项目 ${activeProjects(get().projects).length + 1}`;
         const project: Project = {
           id: createId('proj'),
           name: input?.name?.trim() || fallbackName,
@@ -170,25 +334,62 @@ export const useChatStore = create<ChatState>()(
       toggleProjectPin: (id: string) => {
         set((state) => ({
           projects: state.projects.map((project) =>
-            project.id === id ? { ...project, pinned: !project.pinned } : project
+            project.id === id && !project.archivedAt ? { ...project, pinned: !project.pinned } : project
           ),
         }));
       },
 
-      deleteProject: (id: string) => {
-        set((state) => ({
-          projects: state.projects.filter((project) => project.id !== id),
-          conversations: state.conversations.map((conversation) =>
-            conversation.projectId === id
-              ? { ...conversation, projectId: undefined, cwd: '' }
+      archiveProject: (id: string) => {
+        set((state) => {
+          const now = Date.now();
+          const batchId = createId('archive');
+          const projects = state.projects.map((project) =>
+            project.id === id
+              ? { ...project, archivedAt: project.archivedAt ?? now, archiveBatchId: batchId, pinned: false }
+              : project
+          );
+          const conversations = state.conversations.map((conversation) =>
+            conversation.projectId === id && !conversation.archivedAt
+              ? {
+                  ...conversation,
+                  archivedAt: now,
+                  archiveBatchId: batchId,
+                  pinned: false,
+                  status: 'idle' as const,
+                  runId: undefined,
+                }
               : conversation
-          ),
-        }));
+          );
+          return { projects, ...resolveActiveConversation(conversations, state.currentConversationId) };
+        });
+      },
+
+      unarchiveProject: (id: string) => {
+        set((state) => {
+          const project = state.projects.find((item) => item.id === id);
+          const batchId = project?.archiveBatchId;
+          return {
+            projects: state.projects.map((item) =>
+              item.id === id ? { ...item, archivedAt: undefined, archiveBatchId: undefined } : item
+            ),
+            conversations: state.conversations.map((conversation) =>
+              batchId && conversation.archiveBatchId === batchId
+                ? { ...conversation, archivedAt: undefined, archiveBatchId: undefined }
+                : conversation
+            ),
+          };
+        });
+      },
+
+      permanentlyDeleteProject: (id: string) => {
+        set((state) => {
+          const projects = state.projects.filter((project) => project.id !== id);
+          const conversations = state.conversations.filter((conversation) => conversation.projectId !== id);
+          return { projects, ...resolveActiveConversation(conversations, state.currentConversationId) };
+        });
       },
 
       setProjectSort: (sort: ProjectSort) => set({ projectSort: sort }),
-
-      setActiveCoworker: (id: string) => set({ activeCoworkerId: id }),
 
       setModel: (model: string) => set({ model }),
 
@@ -196,7 +397,16 @@ export const useChatStore = create<ChatState>()(
 
       setSpeed: (speed: Speed) => set({ speed }),
 
-      setSandboxMode: (mode: SandboxMode) => set({ sandboxMode: mode }),
+      setApprovalMode: (mode: ApprovalMode) => set({ approvalMode: mode }),
+
+      resolveAuthorization: (id: string, decision: ApprovalDecision) => {
+        const resolve = authorizationResolvers.get(id);
+        if (resolve) {
+          authorizationResolvers.delete(id);
+          resolve(decision);
+        }
+        set((state) => (state.pendingAuthorization?.id === id ? { pendingAuthorization: null } : {}));
+      },
 
       refreshCodexStatus: async () => {
         set({ isCheckingCodex: true, error: null });
@@ -222,11 +432,12 @@ export const useChatStore = create<ChatState>()(
         if (!trimmed) return;
 
         let conversationId = get().currentConversationId;
-        if (!conversationId) {
+        const activeIds = new Set(activeConversations(get().conversations).map((item) => item.id));
+        if (!conversationId || !activeIds.has(conversationId)) {
           conversationId = get().createConversation();
         }
         const conversation = get().conversations.find((item) => item.id === conversationId);
-        if (!conversation || conversation.status === 'streaming') return;
+        if (!conversation || conversation.status === 'streaming' || conversation.archivedAt) return;
 
         const userMessage: ChatMessage = {
           id: createId('user'),
@@ -261,6 +472,9 @@ export const useChatStore = create<ChatState>()(
           error: null,
         }));
 
+        const sandboxMode = await runApprovalGate(conversationId);
+        if (sandboxMode === null) return;
+
         if (!isTauriRuntime()) {
           simulateBrowserReply(conversationId, get().handleCodexEvent);
           return;
@@ -268,15 +482,15 @@ export const useChatStore = create<ChatState>()(
 
         try {
           const latest = get().conversations.find((item) => item.id === conversationId);
-          const prompt = buildFinancePrompt(trimmed, get().activeCoworkerId);
+          const prompt = buildCodingPrompt(trimmed);
           const result = await startCodexChat({
             conversationId,
             prompt,
             codexThreadId: latest?.codexThreadId,
-            cwd: latest?.cwd || DEFAULT_CWD,
+            cwd: latest?.cwd || undefined,
             model: get().model,
             reasoningEffort: get().reasoningEffort,
-            sandboxMode: get().sandboxMode,
+            sandboxMode,
           });
           set((state) => ({
             conversations: state.conversations.map((item) =>
@@ -298,7 +512,7 @@ export const useChatStore = create<ChatState>()(
         if (!trimmed) return;
 
         const conversation = get().conversations.find((item) => item.id === conversationId);
-        if (!conversation || conversation.status === 'streaming') return;
+        if (!conversation || conversation.status === 'streaming' || conversation.archivedAt) return;
 
         const messageIndex = conversation.messages.findIndex(
           (item) => item.id === messageId && item.role === 'user',
@@ -339,6 +553,9 @@ export const useChatStore = create<ChatState>()(
           error: null,
         }));
 
+        const sandboxMode = await runApprovalGate(conversationId);
+        if (sandboxMode === null) return;
+
         if (!isTauriRuntime()) {
           simulateBrowserReply(conversationId, get().handleCodexEvent);
           return;
@@ -346,17 +563,14 @@ export const useChatStore = create<ChatState>()(
 
         try {
           const latest = get().conversations.find((item) => item.id === conversationId);
-          const prompt = buildFinancePrompt(
-            buildEditedPrompt(trimmed, previousMessages),
-            get().activeCoworkerId,
-          );
+          const prompt = buildCodingPrompt(buildEditedPrompt(trimmed, previousMessages));
           const result = await startCodexChat({
             conversationId,
             prompt,
-            cwd: latest?.cwd || DEFAULT_CWD,
+            cwd: latest?.cwd || undefined,
             model: get().model,
             reasoningEffort: get().reasoningEffort,
-            sandboxMode: get().sandboxMode,
+            sandboxMode,
           });
           set((state) => ({
             conversations: state.conversations.map((item) =>
@@ -390,76 +604,28 @@ export const useChatStore = create<ChatState>()(
           ),
         }));
       },
-
-      addHolding: (input) => {
-        const holding: Holding = {
-          ...input,
-          code: input.code.trim().toUpperCase(),
-          name: input.name.trim(),
-          id: createId('hold'),
-          createdAt: Date.now(),
-        };
-        if (!holding.code) return;
-        set((state) => ({ holdings: [holding, ...state.holdings] }));
-      },
-
-      updateHolding: (id, patch) => {
-        set((state) => ({
-          holdings: state.holdings.map((holding) =>
-            holding.id === id ? { ...holding, ...patch } : holding
-          ),
-        }));
-      },
-
-      removeHolding: (id) => {
-        set((state) => ({ holdings: state.holdings.filter((holding) => holding.id !== id) }));
-      },
-
-      addWatchItem: (input) => {
-        const item: WatchItem = {
-          ...input,
-          code: input.code.trim().toUpperCase(),
-          name: input.name.trim(),
-          id: createId('watch'),
-          createdAt: Date.now(),
-        };
-        if (!item.code) return;
-        set((state) => ({ watchlist: [item, ...state.watchlist] }));
-      },
-
-      updateWatchItem: (id, patch) => {
-        set((state) => ({
-          watchlist: state.watchlist.map((item) =>
-            item.id === id ? { ...item, ...patch } : item
-          ),
-        }));
-      },
-
-      removeWatchItem: (id) => {
-        set((state) => ({ watchlist: state.watchlist.filter((item) => item.id !== id) }));
-      },
-    }),
+      };
+    },
     {
-      name: 'alpha-studio.chat.v1',
-      version: 1,
+      name: 'alpha-studio.chat.v2',
+      version: 3,
       partialize: (state) => ({
         conversations: state.conversations,
         projects: state.projects,
         currentConversationId: state.currentConversationId,
-        activeCoworkerId: state.activeCoworkerId,
         model: state.model,
         reasoningEffort: state.reasoningEffort,
         speed: state.speed,
-        sandboxMode: state.sandboxMode,
-        holdings: state.holdings,
-        watchlist: state.watchlist,
+        approvalMode: state.approvalMode,
         projectSort: state.projectSort,
         conversationSort: state.conversationSort,
       }),
+      migrate: (persistedState) => migratePersistedState(persistedState),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
-        if (!state.currentConversationId && state.conversations[0]) {
-          state.currentConversationId = state.conversations[0].id;
+        const active = activeConversations(state.conversations);
+        if (!state.currentConversationId || !active.some((item) => item.id === state.currentConversationId)) {
+          state.currentConversationId = active[0]?.id ?? null;
         }
       },
     },
@@ -468,16 +634,62 @@ export const useChatStore = create<ChatState>()(
 
 export function useCurrentConversation(): Conversation | null {
   return useChatStore((state) => {
-    const id = state.currentConversationId || state.conversations[0]?.id;
-    return state.conversations.find((conversation) => conversation.id === id) || null;
+    const active = activeConversations(state.conversations);
+    const id = state.currentConversationId || active[0]?.id;
+    return active.find((conversation) => conversation.id === id) || active[0] || null;
   });
+}
+
+export function activeConversations(conversations: Conversation[]): Conversation[] {
+  return conversations.filter((conversation) => !conversation.archivedAt);
+}
+
+// A draft is an unsent, blank conversation. It stays hidden from the sidebar
+// (but remains the active conversation in the main view) until a message is sent.
+export function isDraftConversation(conversation: Conversation): boolean {
+  return conversation.messages.length === 0 && !conversation.archivedAt && !conversation.pinned;
+}
+
+// Conversations that should appear in the sidebar: active and not an unsent draft.
+export function visibleConversations(conversations: Conversation[]): Conversation[] {
+  return activeConversations(conversations).filter((conversation) => !isDraftConversation(conversation));
+}
+
+export function archivedConversations(conversations: Conversation[]): Conversation[] {
+  return conversations.filter((conversation) => Boolean(conversation.archivedAt));
+}
+
+export function activeProjects(projects: Project[]): Project[] {
+  return projects.filter((project) => !project.archivedAt);
+}
+
+export function archivedProjects(projects: Project[]): Project[] {
+  return projects.filter((project) => Boolean(project.archivedAt));
+}
+
+function resolveActiveConversation(
+  conversations: Conversation[],
+  preferredId: string | null,
+): Pick<ChatState, 'conversations' | 'currentConversationId'> {
+  const active = activeConversations(conversations);
+  if (active.length === 0) {
+    const fresh = createEmptyConversation();
+    return {
+      conversations: [fresh, ...conversations],
+      currentConversationId: fresh.id,
+    };
+  }
+  const preferred = preferredId && active.some((conversation) => conversation.id === preferredId)
+    ? preferredId
+    : active[0].id;
+  return { conversations, currentConversationId: preferred };
 }
 
 function createEmptyConversation(project?: Project): Conversation {
   const now = Date.now();
   return {
     id: createId('conv'),
-    title: '新的投研对话',
+    title: '新对话',
     messages: [],
     cwd: project?.cwd ?? '',
     projectId: project?.id,
@@ -493,7 +705,7 @@ function createId(prefix: string): string {
 
 function buildConversationTitle(message: string): string {
   const compact = message.replace(/\s+/g, ' ').trim();
-  return compact.length > 24 ? `${compact.slice(0, 24)}...` : compact || '新的投研对话';
+  return compact.length > 24 ? `${compact.slice(0, 24)}...` : compact || '新对话';
 }
 
 function stringifyError(error: unknown): string {
@@ -543,65 +755,77 @@ function simulateBrowserReply(conversationId: string, dispatch: (event: CodexCha
   const runId = createId('preview');
   dispatch({ type: 'started', runId, conversationId });
   dispatch({ type: 'thread_started', runId, conversationId, threadId: 'browser-preview' });
-  const events: Array<{ delay: number; event: CodexChatEvent }> = [
-    {
-      delay: 120,
-      event: {
-        type: 'reasoning_delta',
-        runId,
-        conversationId,
-        text: '识别问题意图，准备把市场主线、风险和可执行检查点拆开。',
-      },
-    },
-    {
-      delay: 260,
-      event: {
-        type: 'tool_started',
-        runId,
-        conversationId,
-        itemId: `${runId}-scan`,
-        title: 'command_execution',
-        text: 'scan alpha_signals --scope watchlist',
-      },
-    },
-    {
-      delay: 440,
-      event: {
-        type: 'tool_delta',
-        runId,
-        conversationId,
-        itemId: `${runId}-scan`,
-        title: 'command_execution',
-        text: '资金偏好：高股息、AI 算力、电力设备\n风险提示：成交缩量、北向分歧',
-      },
-    },
-    {
-      delay: 720,
-      event: {
-        type: 'tool_completed',
-        runId,
-        conversationId,
-        itemId: `${runId}-scan`,
-        title: 'command_execution',
-        text: '预览扫描完成。',
-      },
-    },
+
+  const events: Array<{ delay: number; event: CodexChatEvent }> = [];
+  let delay = 160;
+  const push = (event: CodexChatEvent) => events.push({ delay, event });
+
+  push({ type: 'reasoning_delta', runId, conversationId, text: '先做一次只读体检：看工作区状态、目录结构和关键文件，再决定下一步。' });
+  delay += 260;
+
+  const commands = [
+    { id: 'status', cmd: 'git status --short', out: ' M src/App.tsx\n M src/store.ts\n M src/styles.css\n' },
+    { id: 'ls', cmd: 'ls -la src', out: 'total 96\n-rw-r--r--  1 user  staff   72K App.tsx\n-rw-r--r--  1 user  staff   18K store.ts\n-rw-r--r--  1 user  staff   54K styles.css\n' },
+    { id: 'disk', cmd: 'du -sh node_modules 2>/dev/null || echo missing', out: 'missing\n' },
   ];
+  for (const command of commands) {
+    push({ type: 'tool_started', runId, conversationId, itemId: `${runId}-${command.id}`, title: 'command_execution', text: command.cmd });
+    delay += 240;
+    push({ type: 'tool_delta', runId, conversationId, itemId: `${runId}-${command.id}`, title: 'command_execution', text: command.out });
+    delay += 220;
+    push({ type: 'tool_completed', runId, conversationId, itemId: `${runId}-${command.id}`, title: 'command_execution' });
+    delay += 200;
+  }
 
   const chunks = [
     '预览模式已按 Codex 风格渲染事件流：',
-    '\n\n1. 先展示推理和工具运行状态，完成后自动折叠为紧凑轨迹。',
-    '\n2. 文本会分段流式追加，并在末尾显示生成游标。',
+    '\n\n1. 连续的命令会折叠成「已运行 N 条命令」，可展开查看每条命令与终端结果。',
+    '\n2. 推理与文本会分段流式追加，任务进行时底部显示「正在思考」。',
     '\n3. 桌面模式会把这些预览事件替换为真实 Codex CLI 输出。',
   ];
-  let delay = 880;
   for (const text of chunks) {
-    events.push({ delay, event: { type: 'text_delta', runId, conversationId, text } });
-    delay += 180;
+    push({ type: 'text_delta', runId, conversationId, text });
+    delay += 200;
   }
-  events.push({ delay: delay + 80, event: { type: 'completed', runId, conversationId } });
+  push({ type: 'completed', runId, conversationId });
 
   for (const item of events) {
-    setTimeout(() => dispatch(item.event), item.delay);
+    window.setTimeout(() => dispatch(item.event), item.delay);
   }
+}
+
+export function migratePersistedState(persistedState: unknown): PersistedChatState {
+  const source = (persistedState && typeof persistedState === 'object' ? persistedState : {}) as Record<string, unknown>;
+  const conversations = Array.isArray(source.conversations)
+    ? (source.conversations as Conversation[]).map((conversation) => ({
+        ...conversation,
+        title: conversation.title === LEGACY_DEFAULT_CONVERSATION_TITLE ? '新对话' : conversation.title,
+      }))
+    : [createEmptyConversation()];
+  const projects = Array.isArray(source.projects) ? (source.projects as Project[]) : [];
+  const currentConversationId = typeof source.currentConversationId === 'string'
+    ? source.currentConversationId
+    : activeConversations(conversations)[0]?.id ?? conversations[0]?.id ?? null;
+
+  return {
+    conversations,
+    projects,
+    currentConversationId,
+    model: typeof source.model === 'string' ? source.model : DEFAULT_MODEL,
+    reasoningEffort: isReasoningEffort(source.reasoningEffort) ? source.reasoningEffort : DEFAULT_EFFORT,
+    speed: source.speed === 'fast' || source.speed === 'standard' ? source.speed : DEFAULT_SPEED,
+    approvalMode: isApprovalMode(source.approvalMode)
+      ? source.approvalMode
+      : sandboxToApproval(source.sandboxMode),
+    projectSort: isProjectSort(source.projectSort) ? source.projectSort : 'updated',
+    conversationSort: isProjectSort(source.conversationSort) ? source.conversationSort : 'updated',
+  };
+}
+
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh';
+}
+
+function isProjectSort(value: unknown): value is ProjectSort {
+  return value === 'updated' || value === 'created' || value === 'name';
 }

@@ -24,6 +24,7 @@
         "fullscreen": false,
         "decorations": true,
         "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "transparent": true,
         "center": true,
         "visible": true,
@@ -47,9 +48,9 @@
       "icons/icon.icns",
       "icons/icon.png"
     ],
-    "category": "Finance",
-    "shortDescription": "Alpha Studio - AI-native investment research workspace",
-    "longDescription": "Alpha Studio wraps OpenAI Codex CLI with a finance-focused local research assistant UI.",
+    "category": "DeveloperTool",
+    "shortDescription": "Alpha Studio - noncommercial local coding workspace",
+    "longDescription": "Alpha Studio wraps OpenAI Codex CLI with a source-available noncommercial coding workspace UI.",
     "macOS": {
       "minimumSystemVersion": "10.15"
     }

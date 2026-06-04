@@ -1,3 +1,5 @@
+import type { SandboxMode } from './types';
+
 export interface ModelOption {
   id: string;
   label: string;
@@ -56,4 +58,85 @@ export function shortModelLabel(id: string): string {
 
 export function effortLabel(id: string): string {
   return EFFORT_OPTIONS.find((effort) => effort.id === id)?.label ?? id;
+}
+
+export type ApprovalMode = 'request' | 'auto' | 'full-access';
+
+export interface ApprovalOption {
+  id: ApprovalMode;
+  label: string;
+  title: string;
+  description: string;
+}
+
+export const APPROVAL_OPTIONS: ApprovalOption[] = [
+  {
+    id: 'request',
+    label: '请求批准',
+    title: '请求批准',
+    description: '编辑外部文件和使用互联网时始终询问',
+  },
+  {
+    id: 'auto',
+    label: '替我审批',
+    title: '替我审批',
+    description: '仅对检测到的风险操作请求批准',
+  },
+  {
+    id: 'full-access',
+    label: '完全访问',
+    title: '完全访问权限',
+    description: '不受限制访问互联网和您电脑上的任何文件',
+  },
+];
+
+export const DEFAULT_APPROVAL: ApprovalMode = 'request';
+
+export function isApprovalMode(value: unknown): value is ApprovalMode {
+  return value === 'request' || value === 'auto' || value === 'full-access';
+}
+
+export function approvalLabel(id: ApprovalMode): string {
+  return APPROVAL_OPTIONS.find((option) => option.id === id)?.label ?? id;
+}
+
+export function approvalTitle(id: ApprovalMode): string {
+  return APPROVAL_OPTIONS.find((option) => option.id === id)?.title ?? id;
+}
+
+export function approvalDescription(id: ApprovalMode): string {
+  return APPROVAL_OPTIONS.find((option) => option.id === id)?.description ?? '';
+}
+
+// The selected approval mode determines the real `--sandbox` policy handed to the
+// Codex CLI process. `request` always pauses for explicit user authorization, so
+// its base value is only a fallback; the granted scope comes from the dialog.
+export function baseSandboxForApproval(mode: ApprovalMode): SandboxMode {
+  switch (mode) {
+    case 'full-access':
+      return 'danger-full-access';
+    case 'auto':
+      return 'workspace-write';
+    case 'request':
+    default:
+      return 'workspace-write';
+  }
+}
+
+export function approvalRequiresPrompt(mode: ApprovalMode): boolean {
+  return mode === 'request';
+}
+
+// Maps the legacy persisted sandbox mode onto the new approval model.
+export function sandboxToApproval(value: unknown): ApprovalMode {
+  switch (value) {
+    case 'danger-full-access':
+      return 'full-access';
+    case 'workspace-write':
+      return 'auto';
+    case 'read-only':
+      return 'request';
+    default:
+      return DEFAULT_APPROVAL;
+  }
 }
