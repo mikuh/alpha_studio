@@ -1,14 +1,17 @@
+use base64::Engine as _;
+use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::HashMap;
+use serde_json::{json, Map, Value};
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
@@ -19,12 +22,21 @@ static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
 #[derive(Default)]
 struct CodexProcessState {
     children: Arc<Mutex<HashMap<String, Child>>>,
+    // Run ids the user explicitly stopped. The driver checks this when its turn
+    // ends so a user-initiated kill is reported as a single `stopped` event
+    // rather than surfacing the torn-down stdio pipe as an `error`.
+    stopped: Arc<Mutex<HashSet<String>>>,
 }
 
-#[derive(Default)]
+struct TerminalSession {
+    master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
+    child: Box<dyn PtyChild + Send + Sync>,
+}
+
+#[derive(Default, Clone)]
 struct TerminalState {
-    stdins: Arc<Mutex<HashMap<String, ChildStdin>>>,
-    children: Arc<Mutex<HashMap<String, Child>>>,
+    sessions: Arc<StdMutex<HashMap<String, TerminalSession>>>,
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -79,6 +91,8 @@ pub struct OpenInAppRequest {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalStartRequest {
     cwd: Option<String>,
+    rows: Option<u16>,
+    cols: Option<u16>,
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -98,6 +112,14 @@ pub struct TerminalWriteRequest {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalStopRequest {
     session_id: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalResizeRequest {
+    session_id: String,
+    rows: u16,
+    cols: u16,
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -215,6 +237,23 @@ pub struct GitBranch {
     upstream: Option<String>,
 }
 
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRecentCommitsRequest {
+    cwd: String,
+    limit: Option<u32>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommit {
+    sha: String,
+    short_sha: String,
+    subject: String,
+    author: String,
+    relative_date: String,
+}
+
 #[derive(Clone, Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitRemote {
@@ -273,47 +312,25 @@ async fn codex_chat_start(
     let run_id = generate_run_id();
     let cwd = resolve_cwd(request.cwd.as_deref())?;
     let sandbox_mode = sanitize_sandbox_mode(request.sandbox_mode.as_deref());
+    // We talk to the long-running `codex app-server` over a JSON-RPC stdio
+    // channel instead of `codex exec`. The exec JSONL stream only emits the
+    // final assistant message in a single `item.completed`, so nothing renders
+    // until the whole turn is done. The app-server protocol streams
+    // `item/agentMessage/delta` notifications token-by-token, which is what
+    // gives the UI a live, incremental response.
     let mut command = Command::new(&check.path);
+    command.arg("app-server");
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     command.current_dir(&cwd);
     command.env("TERM", "xterm-256color");
     command.env("NO_COLOR", "1");
-
-    if let Some(thread_id) = request.codex_thread_id.as_deref().filter(|value| !value.trim().is_empty()) {
-        command.arg("exec");
-        command.arg("--skip-git-repo-check");
-        command.arg("--sandbox").arg(&sandbox_mode);
-        command.arg("-C").arg(&cwd);
-        if let Some(model) = request.model.as_deref().filter(|value| !value.trim().is_empty()) {
-            command.arg("--model").arg(model.trim());
-        }
-        if let Some(effort) = sanitize_reasoning_effort(request.reasoning_effort.as_deref()) {
-            command.arg("-c").arg(format!("model_reasoning_effort=\"{effort}\""));
-        }
-        command.arg("resume");
-        command.arg("--json");
-        command.arg(thread_id.trim());
-        command.arg("-");
-    } else {
-        command.arg("exec");
-        command.arg("--json");
-        command.arg("--skip-git-repo-check");
-        command.arg("--sandbox").arg(&sandbox_mode);
-        command.arg("-C").arg(&cwd);
-        if let Some(model) = request.model.as_deref().filter(|value| !value.trim().is_empty()) {
-            command.arg("--model").arg(model.trim());
-        }
-        if let Some(effort) = sanitize_reasoning_effort(request.reasoning_effort.as_deref()) {
-            command.arg("-c").arg(format!("model_reasoning_effort=\"{effort}\""));
-        }
-        command.arg("-");
-    }
+    command.kill_on_drop(true);
 
     let mut child = command
         .spawn()
-        .map_err(|e| format!("Failed to spawn Codex CLI: {e}"))?;
+        .map_err(|e| format!("Failed to spawn Codex app-server: {e}"))?;
 
-    let mut stdin = child
+    let stdin = child
         .stdin
         .take()
         .ok_or_else(|| "Failed to open Codex stdin".to_string())?;
@@ -346,17 +363,8 @@ async fn codex_chat_start(
         },
     );
 
-    let prompt = request.prompt.clone();
-    tokio::spawn(async move {
-        if let Err(e) = stdin.write_all(prompt.as_bytes()).await {
-            eprintln!("failed to write prompt to Codex stdin: {e}");
-        }
-        let _ = stdin.shutdown().await;
-    });
-
-    let app_for_stderr = app.clone();
-    let stderr_run_id = run_id.clone();
-    let stderr_conversation_id = request.conversation_id.clone();
+    // Drain stderr into a bounded buffer so we can surface a useful message if
+    // the app-server dies before the turn completes.
     let stderr_buffer = Arc::new(Mutex::new(String::new()));
     let stderr_buffer_reader = stderr_buffer.clone();
     tokio::spawn(async move {
@@ -367,122 +375,496 @@ async fn codex_chat_start(
                 continue;
             }
             let mut buffer = stderr_buffer_reader.lock().await;
-            if !buffer.is_empty() {
-                buffer.push('\n');
-            }
-            buffer.push_str(trimmed);
-            if trimmed.to_lowercase().contains("error") {
-                emit_event(
-                    &app_for_stderr,
-                    CodexChatEvent {
-                        event_type: "tool_delta".to_string(),
-                        run_id: stderr_run_id.clone(),
-                        conversation_id: Some(stderr_conversation_id.clone()),
-                        thread_id: None,
-                        item_id: Some("stderr".to_string()),
-                        title: Some("codex stderr".to_string()),
-                        text: Some(trimmed.to_string()),
-                        message: None,
-                        raw: None,
-                    },
-                );
+            if buffer.len() < 8192 {
+                if !buffer.is_empty() {
+                    buffer.push('\n');
+                }
+                buffer.push_str(trimmed);
             }
         }
     });
 
-    let app_for_stdout = app.clone();
-    let state_children = state.children.clone();
-    let stdout_run_id = run_id.clone();
-    let stdout_conversation_id = request.conversation_id.clone();
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Some(event) = parse_codex_json_event(&line, &stdout_run_id, &stdout_conversation_id) {
-                emit_event(&app_for_stdout, event);
-            }
-        }
+    let driver = CodexDriver {
+        app: app.clone(),
+        children: state.children.clone(),
+        stopped: state.stopped.clone(),
+        run_id: run_id.clone(),
+        conversation_id: request.conversation_id.clone(),
+        thread_id: request
+            .codex_thread_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        cwd,
+        sandbox_mode,
+        model: request
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        reasoning_effort: sanitize_reasoning_effort(request.reasoning_effort.as_deref()),
+        prompt: request.prompt.clone(),
+        stderr_buffer,
+    };
 
-        let status = {
-            let mut children = state_children.lock().await;
-            if let Some(mut child) = children.remove(&stdout_run_id) {
-                child.wait().await.ok()
-            } else {
-                None
-            }
-        };
-
-        if let Some(status) = status {
-            if !status.success() {
-                let stderr_text = stderr_buffer.lock().await.clone();
-                emit_event(
-                    &app_for_stdout,
-                    CodexChatEvent {
-                        event_type: "error".to_string(),
-                        run_id: stdout_run_id.clone(),
-                        conversation_id: Some(stdout_conversation_id.clone()),
-                        thread_id: None,
-                        item_id: None,
-                        title: None,
-                        text: None,
-                        message: Some(format!(
-                            "Codex exited with status {}{}",
-                            status,
-                            if stderr_text.is_empty() {
-                                String::new()
-                            } else {
-                                format!(": {stderr_text}")
-                            }
-                        )),
-                        raw: None,
-                    },
-                );
-            }
-        }
-
-        emit_event(
-            &app_for_stdout,
-            CodexChatEvent {
-                event_type: "completed".to_string(),
-                run_id: stdout_run_id,
-                conversation_id: Some(stdout_conversation_id),
-                thread_id: None,
-                item_id: None,
-                title: None,
-                text: None,
-                message: None,
-                raw: None,
-            },
-        );
-    });
+    tokio::spawn(driver.run(stdin, stdout));
 
     Ok(CodexChatStartResult { run_id })
 }
 
+/// Drives one Codex turn over the `codex app-server` JSON-RPC stdio protocol and
+/// forwards streamed notifications to the frontend as `CodexChatEvent`s.
+struct CodexDriver {
+    app: AppHandle,
+    children: Arc<Mutex<HashMap<String, Child>>>,
+    stopped: Arc<Mutex<HashSet<String>>>,
+    run_id: String,
+    conversation_id: String,
+    thread_id: Option<String>,
+    cwd: String,
+    sandbox_mode: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    prompt: String,
+    stderr_buffer: Arc<Mutex<String>>,
+}
+
+impl CodexDriver {
+    async fn run(
+        self,
+        stdin: tokio::process::ChildStdin,
+        stdout: tokio::process::ChildStdout,
+    ) {
+        let mut stdin = stdin;
+        let mut reader = BufReader::new(stdout).lines();
+        let outcome = self.drive(&mut stdin, &mut reader).await;
+
+        // The app-server keeps running after the turn ends, so stop it now that
+        // we are done streaming this turn.
+        let child = { self.children.lock().await.remove(&self.run_id) };
+        if let Some(mut child) = child {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+
+        // If the user stopped this run, close it out with a single `stopped`
+        // event (targeted at the right conversation) and skip the error/completed
+        // pair we would otherwise emit when the killed process drops its stdio.
+        let was_stopped = self.stopped.lock().await.remove(&self.run_id);
+        if was_stopped {
+            emit_event(
+                &self.app,
+                event(
+                    "stopped",
+                    &self.run_id,
+                    &self.conversation_id,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            );
+            return;
+        }
+
+        if let Err(message) = outcome {
+            let stderr_text = self.stderr_buffer.lock().await.clone();
+            let detail = if stderr_text.is_empty() {
+                message
+            } else {
+                format!("{message}: {stderr_text}")
+            };
+            emit_event(
+                &self.app,
+                event(
+                    "error",
+                    &self.run_id,
+                    &self.conversation_id,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(detail),
+                    None,
+                ),
+            );
+        }
+
+        emit_event(
+            &self.app,
+            event(
+                "completed",
+                &self.run_id,
+                &self.conversation_id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        );
+    }
+
+    async fn drive(
+        &self,
+        stdin: &mut tokio::process::ChildStdin,
+        reader: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    ) -> Result<(), String> {
+        // 1. Handshake.
+        send_jsonrpc(
+            stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "alpha-studio",
+                        "title": "Alpha Studio",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                    "capabilities": {
+                        "experimentalApi": true,
+                        "requestAttestation": false,
+                    },
+                },
+            }),
+        )
+        .await?;
+        await_response(reader, 1).await?;
+        send_jsonrpc(
+            stdin,
+            &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        )
+        .await?;
+
+        // 2. Start a fresh thread, or resume the conversation's existing one.
+        let mut thread_params = Map::new();
+        thread_params.insert("cwd".to_string(), json!(self.cwd));
+        thread_params.insert("sandbox".to_string(), json!(self.sandbox_mode));
+        thread_params.insert("approvalPolicy".to_string(), json!("never"));
+        if let Some(model) = &self.model {
+            thread_params.insert("model".to_string(), json!(model));
+        }
+        let method = if let Some(thread_id) = &self.thread_id {
+            thread_params.insert("threadId".to_string(), json!(thread_id));
+            "thread/resume"
+        } else {
+            "thread/start"
+        };
+        send_jsonrpc(
+            stdin,
+            &json!({ "jsonrpc": "2.0", "id": 2, "method": method, "params": Value::Object(thread_params) }),
+        )
+        .await?;
+        let thread_response = await_response(reader, 2).await?;
+        let thread_id = self
+            .thread_id
+            .clone()
+            .or_else(|| {
+                thread_response
+                    .get("result")
+                    .and_then(|result| result.get("thread"))
+                    .and_then(|thread| thread.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| "Codex app-server did not return a thread id".to_string())?;
+
+        emit_event(
+            &self.app,
+            event(
+                "thread_started",
+                &self.run_id,
+                &self.conversation_id,
+                Some(thread_id.clone()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        );
+
+        // 3. Kick off the turn with the user's prompt.
+        let mut turn_params = Map::new();
+        turn_params.insert("threadId".to_string(), json!(thread_id));
+        turn_params.insert(
+            "input".to_string(),
+            json!([{ "type": "text", "text": self.prompt, "text_elements": [] }]),
+        );
+        if let Some(model) = &self.model {
+            turn_params.insert("model".to_string(), json!(model));
+        }
+        if let Some(effort) = &self.reasoning_effort {
+            turn_params.insert("effort".to_string(), json!(effort));
+        }
+        send_jsonrpc(
+            stdin,
+            &json!({ "jsonrpc": "2.0", "id": 3, "method": "turn/start", "params": Value::Object(turn_params) }),
+        )
+        .await?;
+
+        // 4. Stream turn notifications until the turn finishes.
+        let mut streamed: HashSet<String> = HashSet::new();
+        loop {
+            let line = match reader.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => return Err("Codex app-server closed during the turn".to_string()),
+                Err(e) => return Err(format!("Failed to read from Codex app-server: {e}")),
+            };
+            let trimmed = line.trim();
+            if trimmed.is_empty() || !trimmed.starts_with('{') {
+                continue;
+            }
+            let Ok(message) = serde_json::from_str::<Value>(trimmed) else {
+                continue;
+            };
+
+            if let Some(method) = message.get("method").and_then(Value::as_str) {
+                // A message that carries both a `method` and an `id` is a
+                // server-initiated JSON-RPC request (e.g. an approval or
+                // elicitation prompt). The protocol blocks until we answer, so
+                // failing to reply leaves the turn stuck on "正在思考" forever.
+                // We approve approval/permission prompts (the user already chose
+                // the sandbox/approval policy up front) and acknowledge anything
+                // else, so the turn can always make progress.
+                if let Some(request_id) = message.get("id").filter(|id| !id.is_null()) {
+                    let lowered = method.to_ascii_lowercase();
+                    let approval = lowered.contains("approv")
+                        || lowered.contains("permission")
+                        || lowered.contains("elicit");
+                    let result = if approval {
+                        json!({ "decision": "approved", "approved": true, "allow": true })
+                    } else {
+                        json!({})
+                    };
+                    let _ = send_jsonrpc(
+                        stdin,
+                        &json!({ "jsonrpc": "2.0", "id": request_id.clone(), "result": result }),
+                    )
+                    .await;
+                    continue;
+                }
+
+                if method == "turn/completed" {
+                    return Ok(());
+                }
+                let params = message.get("params").unwrap_or(&Value::Null);
+                for chat_event in map_app_server_notification(
+                    method,
+                    params,
+                    &self.run_id,
+                    &self.conversation_id,
+                    &mut streamed,
+                ) {
+                    emit_event(&self.app, chat_event);
+                }
+                if method == "error" {
+                    let will_retry = params
+                        .get("willRetry")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if !will_retry {
+                        return Ok(());
+                    }
+                }
+            } else if message.get("id").is_some() {
+                if let Some(error) = message.get("error") {
+                    return Err(jsonrpc_error_message(error));
+                }
+            }
+        }
+    }
+}
+
+async fn send_jsonrpc(stdin: &mut tokio::process::ChildStdin, message: &Value) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec(message).map_err(|e| format!("Failed to encode request: {e}"))?;
+    bytes.push(b'\n');
+    stdin
+        .write_all(&bytes)
+        .await
+        .map_err(|e| format!("Failed to write to Codex app-server: {e}"))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|e| format!("Failed to flush Codex app-server: {e}"))?;
+    Ok(())
+}
+
+async fn await_response(
+    reader: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    id: i64,
+) -> Result<Value, String> {
+    loop {
+        match reader.next_line().await {
+            Ok(Some(line)) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || !trimmed.starts_with('{') {
+                    continue;
+                }
+                let Ok(message) = serde_json::from_str::<Value>(trimmed) else {
+                    continue;
+                };
+                if message.get("id").and_then(Value::as_i64) == Some(id) {
+                    if let Some(error) = message.get("error") {
+                        return Err(jsonrpc_error_message(error));
+                    }
+                    return Ok(message);
+                }
+            }
+            Ok(None) => return Err("Codex app-server closed before responding".to_string()),
+            Err(e) => return Err(format!("Failed to read from Codex app-server: {e}")),
+        }
+    }
+}
+
+fn jsonrpc_error_message(error: &Value) -> String {
+    first_string(error, &["message"]).unwrap_or_else(|| error.to_string())
+}
+
+/// Translates a single `codex app-server` JSON-RPC notification into zero or more
+/// `CodexChatEvent`s the frontend already understands. Agent message and
+/// reasoning items are streamed via their `*/delta` notifications; the matching
+/// `item/completed` is only forwarded as a fallback when no deltas were seen, to
+/// avoid duplicating the streamed text.
+fn map_app_server_notification(
+    method: &str,
+    params: &Value,
+    run_id: &str,
+    conversation_id: &str,
+    streamed: &mut HashSet<String>,
+) -> Vec<CodexChatEvent> {
+    match method {
+        "item/agentMessage/delta" => {
+            let Some(delta) = params.get("delta").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            if delta.is_empty() {
+                return Vec::new();
+            }
+            if let Some(item_id) = params.get("itemId").and_then(Value::as_str) {
+                streamed.insert(format!("message:{item_id}"));
+            }
+            vec![event("text_delta", run_id, conversation_id, None, None, None, Some(delta.to_string()), None, None)]
+        }
+        "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
+            let Some(delta) = params.get("delta").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            if delta.is_empty() {
+                return Vec::new();
+            }
+            if let Some(item_id) = params.get("itemId").and_then(Value::as_str) {
+                streamed.insert(format!("reasoning:{item_id}"));
+            }
+            vec![event("reasoning_delta", run_id, conversation_id, None, None, None, Some(delta.to_string()), None, None)]
+        }
+        "item/commandExecution/outputDelta" => {
+            let Some(delta) = params.get("delta").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            if delta.is_empty() {
+                return Vec::new();
+            }
+            let item_id = params.get("itemId").and_then(Value::as_str).map(str::to_string);
+            vec![event("tool_delta", run_id, conversation_id, None, item_id, Some("command_execution".to_string()), Some(delta.to_string()), None, None)]
+        }
+        "item/started" => {
+            let Some(item) = params.get("item") else {
+                return Vec::new();
+            };
+            let item_type = normalized_item_type(item);
+            if !is_tool_item(&item_type) {
+                return Vec::new();
+            }
+            let synthetic = json!({ "type": "item.started", "item": item });
+            parse_item_event("tool_started", &synthetic, run_id, conversation_id)
+                .into_iter()
+                .collect()
+        }
+        "item/completed" => {
+            let Some(item) = params.get("item") else {
+                return Vec::new();
+            };
+            let item_type = normalized_item_type(item);
+            let item_id = first_string(item, &["id", "item_id", "itemId"]);
+
+            if matches!(item_type.as_str(), "agentmessage" | "assistantmessage" | "message") {
+                let already = item_id
+                    .as_ref()
+                    .map(|id| streamed.contains(&format!("message:{id}")))
+                    .unwrap_or(false);
+                if already {
+                    return Vec::new();
+                }
+                let text = extract_text_content(item);
+                if text.is_empty() {
+                    return Vec::new();
+                }
+                return vec![event("text_delta", run_id, conversation_id, None, item_id, None, Some(text), None, None)];
+            }
+
+            if matches!(item_type.as_str(), "reasoning" | "thought" | "analysis") {
+                let already = item_id
+                    .as_ref()
+                    .map(|id| streamed.contains(&format!("reasoning:{id}")))
+                    .unwrap_or(false);
+                if already {
+                    return Vec::new();
+                }
+                let text = extract_text_content(item);
+                if text.is_empty() {
+                    return Vec::new();
+                }
+                return vec![event("reasoning_delta", run_id, conversation_id, None, item_id, None, Some(text), None, None)];
+            }
+
+            if is_tool_item(&item_type) {
+                let synthetic = json!({ "type": "item.completed", "item": item });
+                return parse_item_completed_event(&synthetic, run_id, conversation_id)
+                    .into_iter()
+                    .collect();
+            }
+
+            Vec::new()
+        }
+        "error" => {
+            let error = params.get("error").unwrap_or(params);
+            let message = first_string(error, &["message", "error"])
+                .or_else(|| first_string(params, &["message"]))
+                .unwrap_or_else(|| "Codex reported an error.".to_string());
+            vec![event("error", run_id, conversation_id, None, None, None, None, Some(message), None)]
+        }
+        _ => Vec::new(),
+    }
+}
+
 #[tauri::command]
 async fn codex_chat_stop(
-    app: AppHandle,
     state: State<'_, CodexProcessState>,
     request: CodexChatStopRequest,
 ) -> Result<CodexChatStopResult, String> {
+    // Mark the run as stopped before killing so the driver task (which is racing
+    // to read the about-to-close stdout) reports it as `stopped` instead of an
+    // error. The driver emits the actual `stopped` event once it unwinds, which
+    // carries the conversation id; the frontend also finalizes locally so a stale
+    // run id (no live child to kill) still unsticks the conversation.
+    state.stopped.lock().await.insert(request.run_id.clone());
     let mut children = state.children.lock().await;
     if let Some(child) = children.get_mut(&request.run_id) {
         let _ = child.kill().await;
-        emit_event(
-            &app,
-            CodexChatEvent {
-                event_type: "stopped".to_string(),
-                run_id: request.run_id,
-                conversation_id: None,
-                thread_id: None,
-                item_id: None,
-                title: None,
-                text: None,
-                message: None,
-                raw: None,
-            },
-        );
         Ok(CodexChatStopResult { stopped: true })
     } else {
+        drop(children);
+        // Nothing to kill (already finished, or a run id left over from a
+        // previous process). Drop the marker we just set so it can't leak.
+        state.stopped.lock().await.remove(&request.run_id);
         Ok(CodexChatStopResult { stopped: false })
     }
 }
@@ -552,67 +934,90 @@ async fn terminal_start(
     request: TerminalStartRequest,
 ) -> Result<TerminalStartResult, String> {
     let cwd = resolve_cwd(request.cwd.as_deref())?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let session_id = generate_id("term");
+    let rows = request.rows.filter(|r| *r > 0).unwrap_or(24);
+    let cols = request.cols.filter(|c| *c > 0).unwrap_or(80);
 
-    let mut command = Command::new(&shell);
-    // Login shell so the user's profile (PATH, conda, etc.) is loaded. We keep it
-    // non-interactive on purpose: stdin is a pipe (not a PTY), so an interactive
-    // shell would emit its own prompt/escape codes. The UI renders the prompt and
-    // echoes input instead, which keeps the streamed output clean and predictable.
-    command.arg("-l");
-    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    command.current_dir(&cwd);
-    command.env("TERM", "dumb");
+    // A real PTY makes the shell behave exactly like one launched from an
+    // external Terminal: it is an interactive login shell, so it sources the
+    // user's full profile (.zprofile/.zshrc, conda, prompt theme, aliases, …)
+    // and renders its own prompt and colors. We forward the raw bytes to the
+    // frontend xterm.js emulator, which handles the escape sequences.
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("Failed to open pty: {e}"))?;
 
-    let mut child = command
-        .spawn()
+    // `new_default_prog` launches the user's login shell with argv[0] prefixed
+    // by `-` (e.g. `-zsh`), which is precisely how macOS Terminal starts it.
+    let mut cmd = CommandBuilder::new_default_prog();
+    cmd.cwd(&cwd);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+
+    let child = pair
+        .slave
+        .spawn_command(cmd)
         .map_err(|e| format!("Failed to start shell: {e}"))?;
+    // Drop the slave so the reader sees EOF once the shell process exits.
+    drop(pair.slave);
 
-    let stdin = child.stdin.take().ok_or_else(|| "Failed to open shell stdin".to_string())?;
-    let stdout = child.stdout.take().ok_or_else(|| "Failed to open shell stdout".to_string())?;
-    let stderr = child.stderr.take().ok_or_else(|| "Failed to open shell stderr".to_string())?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("Failed to read from shell: {e}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("Failed to write to shell: {e}"))?;
 
     {
-        let mut stdins = state.stdins.lock().await;
-        stdins.insert(session_id.clone(), stdin);
-        let mut children = state.children.lock().await;
-        children.insert(session_id.clone(), child);
+        let mut sessions = state.sessions.lock().unwrap();
+        sessions.insert(
+            session_id.clone(),
+            TerminalSession {
+                master: pair.master,
+                writer,
+                child,
+            },
+        );
     }
 
-    spawn_terminal_reader(app.clone(), session_id.clone(), stdout);
-    spawn_terminal_reader(app.clone(), session_id.clone(), stderr);
-
-    let exit_app = app.clone();
-    let exit_session = session_id.clone();
-    let exit_children = state.children.clone();
-    let exit_stdins = state.stdins.clone();
-    tokio::spawn(async move {
+    let reader_app = app.clone();
+    let reader_session = session_id.clone();
+    let reader_sessions = state.sessions.clone();
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 8192];
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            let mut children = exit_children.lock().await;
-            let Some(child) = children.get_mut(&exit_session) else {
-                break;
-            };
-            match child.try_wait() {
-                Ok(Some(_)) => {
-                    children.remove(&exit_session);
-                    drop(children);
-                    exit_stdins.lock().await.remove(&exit_session);
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(&buffer[..n]);
                     emit_terminal_event(
-                        &exit_app,
+                        &reader_app,
                         TerminalEvent {
-                            event_type: "exit".to_string(),
-                            session_id: exit_session.clone(),
-                            chunk: None,
+                            event_type: "output".to_string(),
+                            session_id: reader_session.clone(),
+                            chunk: Some(encoded),
                         },
                     );
-                    break;
                 }
-                Ok(None) => {}
-                Err(_) => break,
             }
         }
+        reader_sessions.lock().unwrap().remove(&reader_session);
+        emit_terminal_event(
+            &reader_app,
+            TerminalEvent {
+                event_type: "exit".to_string(),
+                session_id: reader_session.clone(),
+                chunk: None,
+            },
+        );
     });
 
     Ok(TerminalStartResult { session_id })
@@ -623,15 +1028,40 @@ async fn terminal_write(
     state: State<'_, TerminalState>,
     request: TerminalWriteRequest,
 ) -> Result<(), String> {
-    let mut stdins = state.stdins.lock().await;
-    let stdin = stdins
+    let mut sessions = state.sessions.lock().unwrap();
+    let session = sessions
         .get_mut(&request.session_id)
         .ok_or_else(|| "Terminal session is no longer active.".to_string())?;
-    stdin
+    session
+        .writer
         .write_all(request.data.as_bytes())
-        .await
         .map_err(|e| format!("Failed to write to terminal: {e}"))?;
-    stdin.flush().await.map_err(|e| format!("Failed to flush terminal: {e}"))?;
+    session
+        .writer
+        .flush()
+        .map_err(|e| format!("Failed to flush terminal: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn terminal_resize(
+    state: State<'_, TerminalState>,
+    request: TerminalResizeRequest,
+) -> Result<(), String> {
+    let rows = request.rows.max(1);
+    let cols = request.cols.max(1);
+    let sessions = state.sessions.lock().unwrap();
+    if let Some(session) = sessions.get(&request.session_id) {
+        session
+            .master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to resize terminal: {e}"))?;
+    }
     Ok(())
 }
 
@@ -641,12 +1071,10 @@ async fn terminal_stop(
     state: State<'_, TerminalState>,
     request: TerminalStopRequest,
 ) -> Result<(), String> {
-    state.stdins.lock().await.remove(&request.session_id);
-    let mut children = state.children.lock().await;
-    if let Some(mut child) = children.remove(&request.session_id) {
-        let _ = child.kill().await;
+    let session = state.sessions.lock().unwrap().remove(&request.session_id);
+    if let Some(mut session) = session {
+        let _ = session.child.kill();
     }
-    drop(children);
     emit_terminal_event(
         &app,
         TerminalEvent {
@@ -768,6 +1196,24 @@ async fn git_branch_list(request: GitCwdRequest) -> Result<Vec<GitBranch>, Strin
 }
 
 #[tauri::command]
+async fn git_recent_commits(request: GitRecentCommitsRequest) -> Result<Vec<GitCommit>, String> {
+    let cwd = validate_cwd(&request.cwd)?;
+    let limit = request.limit.unwrap_or(20).clamp(1, 100);
+    // %x1f is the unit separator; keeps fields unambiguous even when a subject
+    // happens to contain other punctuation.
+    let output = run_git_owned(
+        cwd,
+        vec![
+            "log".to_string(),
+            format!("-n{limit}"),
+            "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%cr".to_string(),
+        ],
+    )
+    .await?;
+    Ok(parse_git_commits(&output.stdout))
+}
+
+#[tauri::command]
 async fn git_create_branch(request: GitBranchRequest) -> Result<GitCommandResult, String> {
     let cwd = validate_cwd(&request.cwd)?;
     let name = validate_branch_name(cwd, &request.name).await?;
@@ -818,32 +1264,6 @@ fn emit_terminal_event(app: &AppHandle, event: TerminalEvent) {
     if let Err(e) = app.emit(TERMINAL_EVENT, event) {
         eprintln!("failed to emit {TERMINAL_EVENT}: {e}");
     }
-}
-
-fn spawn_terminal_reader<R>(app: AppHandle, session_id: String, reader: R)
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    tokio::spawn(async move {
-        let mut reader = reader;
-        let mut buffer = [0u8; 4096];
-        loop {
-            match reader.read(&mut buffer).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buffer[..n]).to_string();
-                    emit_terminal_event(
-                        &app,
-                        TerminalEvent {
-                            event_type: "output".to_string(),
-                            session_id: session_id.clone(),
-                            chunk: Some(chunk),
-                        },
-                    );
-                }
-            }
-        }
-    });
 }
 
 fn generate_run_id() -> String {
@@ -1192,6 +1612,26 @@ fn parse_git_branches(output: &str) -> Vec<GitBranch> {
                 name: name.to_string(),
                 current: parts.get(1).map(|value| value.trim() == "*").unwrap_or(false),
                 upstream: parts.get(2).and_then(|value| non_empty_string(value)),
+            })
+        })
+        .collect()
+}
+
+fn parse_git_commits(output: &str) -> Vec<GitCommit> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\u{1f}');
+            let sha = parts.next()?.trim();
+            if sha.is_empty() {
+                return None;
+            }
+            Some(GitCommit {
+                sha: sha.to_string(),
+                short_sha: parts.next().unwrap_or("").trim().to_string(),
+                subject: parts.next().unwrap_or("").trim().to_string(),
+                author: parts.next().unwrap_or("").trim().to_string(),
+                relative_date: parts.next().unwrap_or("").trim().to_string(),
             })
         })
         .collect()
@@ -1547,7 +1987,7 @@ fn normalized_item_type(item: &Value) -> String {
 fn item_title(item: &Value) -> Option<String> {
     first_string(item, &["title", "name", "tool", "toolName", "type"]).map(|value| {
         match value.as_str() {
-            "command_execution" | "exec" | "shell" => "execute".to_string(),
+            "command_execution" | "commandExecution" | "exec" | "shell" => "execute".to_string(),
             other => other.to_string(),
         }
     })
@@ -1672,6 +2112,7 @@ pub fn run() {
             open_in_app,
             terminal_start,
             terminal_write,
+            terminal_resize,
             terminal_stop,
             git_diff_stat,
             gh_auth_status,
@@ -1681,6 +2122,7 @@ pub fn run() {
             git_unstage,
             git_commit,
             git_branch_list,
+            git_recent_commits,
             git_create_branch,
             git_checkout_branch,
             git_pull,
@@ -1871,6 +2313,115 @@ mod tests {
     }
 
     #[test]
+    fn app_server_streams_agent_message_delta_and_suppresses_completed() {
+        let mut streamed = HashSet::new();
+        let delta = map_app_server_notification(
+            "item/agentMessage/delta",
+            &serde_json::json!({ "threadId": "t", "turnId": "u", "itemId": "item_0", "delta": "Hello" }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(delta.len(), 1);
+        assert_eq!(delta[0].event_type, "text_delta");
+        assert_eq!(delta[0].text.as_deref(), Some("Hello"));
+
+        // The matching item.completed must not re-emit the full text.
+        let completed = map_app_server_notification(
+            "item/completed",
+            &serde_json::json!({ "item": { "id": "item_0", "type": "agentMessage", "text": "Hello world" } }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert!(completed.is_empty());
+    }
+
+    #[test]
+    fn app_server_falls_back_to_completed_message_without_deltas() {
+        let mut streamed = HashSet::new();
+        let completed = map_app_server_notification(
+            "item/completed",
+            &serde_json::json!({ "item": { "id": "item_0", "type": "agentMessage", "text": "Final" } }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].event_type, "text_delta");
+        assert_eq!(completed[0].text.as_deref(), Some("Final"));
+    }
+
+    #[test]
+    fn app_server_maps_reasoning_delta() {
+        let mut streamed = HashSet::new();
+        let events = map_app_server_notification(
+            "item/reasoning/summaryTextDelta",
+            &serde_json::json!({ "itemId": "r0", "delta": "thinking" }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "reasoning_delta");
+        assert_eq!(events[0].text.as_deref(), Some("thinking"));
+    }
+
+    #[test]
+    fn app_server_maps_command_execution_lifecycle() {
+        let mut streamed = HashSet::new();
+        let started = map_app_server_notification(
+            "item/started",
+            &serde_json::json!({ "item": { "id": "c1", "type": "commandExecution", "command": "ls -la", "status": "inProgress" } }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].event_type, "tool_started");
+        assert_eq!(started[0].title.as_deref(), Some("execute"));
+        assert_eq!(started[0].text.as_deref(), Some("ls -la"));
+
+        let delta = map_app_server_notification(
+            "item/commandExecution/outputDelta",
+            &serde_json::json!({ "itemId": "c1", "delta": "file.txt\n" }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(delta.len(), 1);
+        assert_eq!(delta[0].event_type, "tool_delta");
+        assert_eq!(delta[0].item_id.as_deref(), Some("c1"));
+        assert_eq!(delta[0].text.as_deref(), Some("file.txt\n"));
+
+        let failed = map_app_server_notification(
+            "item/completed",
+            &serde_json::json!({ "item": { "id": "c1", "type": "commandExecution", "status": "failed", "aggregatedOutput": "boom", "exitCode": 1 } }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].event_type, "tool_failed");
+        assert_eq!(failed[0].text.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn app_server_maps_error_notification() {
+        let mut streamed = HashSet::new();
+        let events = map_app_server_notification(
+            "error",
+            &serde_json::json!({ "error": { "message": "rate limited" }, "willRetry": false, "threadId": "t", "turnId": "u" }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "error");
+        assert_eq!(events[0].message.as_deref(), Some("rate limited"));
+    }
+
+    #[test]
     fn ignores_unknown_and_non_json_lines() {
         assert!(parse_codex_json_event("WARN noisy line", "run-1", "conv-1").is_none());
         assert!(parse_codex_json_event(r#"{"type":"turn.started"}"#, "run-1", "conv-1").is_none());
@@ -1911,5 +2462,19 @@ mod tests {
         assert_eq!(remotes[0].name, "origin");
         assert_eq!(remotes[0].fetch_url.as_deref(), Some("https://example.com/repo.git"));
         assert_eq!(remotes[0].push_url.as_deref(), Some("git@example.com:repo.git"));
+    }
+
+    #[test]
+    fn parses_recent_commits() {
+        let raw = "abc123def\u{1f}abc123d\u{1f}Add review feature\u{1f}Ada\u{1f}2 hours ago\n\
+                   999fedcba\u{1f}999fedc\u{1f}Fix branch checkout\u{1f}Lin\u{1f}yesterday";
+        let commits = parse_git_commits(raw);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].sha, "abc123def");
+        assert_eq!(commits[0].short_sha, "abc123d");
+        assert_eq!(commits[0].subject, "Add review feature");
+        assert_eq!(commits[0].author, "Ada");
+        assert_eq!(commits[0].relative_date, "2 hours ago");
+        assert_eq!(commits[1].subject, "Fix branch checkout");
     }
 }

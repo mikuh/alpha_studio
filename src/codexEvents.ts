@@ -24,15 +24,24 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
     };
   }
 
+  // Terminal events (stopped/completed/error) are idempotent: the first one to
+  // arrive finalizes the turn, and any later ones are ignored. This keeps a
+  // user-initiated stop (which finalizes locally) from being clobbered by the
+  // backend's own follow-up `error`/`completed` once the killed process tears
+  // down its stdio, and prevents a stray `stopped` (which carries no
+  // conversationId) from finalizing other conversations that are still running.
   if (event.type === 'stopped') {
+    if (conversation.status !== 'streaming') return conversation;
     return finishStreaming(conversation, now, '[已停止]');
   }
 
   if (event.type === 'completed') {
+    if (conversation.status !== 'streaming') return conversation;
     return finishStreaming(conversation, now);
   }
 
   if (event.type === 'error') {
+    if (conversation.status !== 'streaming') return conversation;
     return appendToStreamingAssistant(conversation, now, {
       type: 'error',
       content: event.message || event.text || 'Codex 返回了未知错误。',
@@ -66,27 +75,20 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   return conversation;
 }
 
+// Codex app-server streams the assistant message as pure token deltas, so we
+// append every chunk verbatim. (The old snapshot-style dedup would drop legit
+// repeated tokens like "." or " the".)
 function appendTextDelta(conversation: Conversation, now: number, text: string): Conversation {
   return updateStreamingAssistant(conversation, now, (message) => {
     const blocks = [...message.blocks];
     const last = blocks[blocks.length - 1];
     if (last?.type === 'text') {
-      const nextText = mergeTextDelta(last.content, text);
-      if (nextText === last.content) return message;
-      blocks[blocks.length - 1] = { ...last, content: nextText };
+      blocks[blocks.length - 1] = { ...last, content: last.content + text };
     } else {
       blocks.push({ type: 'text', content: text });
     }
     return { ...message, blocks };
   });
-}
-
-function mergeTextDelta(current: string, incoming: string): string {
-  if (!incoming) return current;
-  if (!current) return incoming;
-  if (current === incoming || current.endsWith(incoming)) return current;
-  if (incoming.startsWith(current)) return incoming;
-  return current + incoming;
 }
 
 function appendThinkingDelta(conversation: Conversation, now: number, text: string): Conversation {

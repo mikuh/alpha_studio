@@ -6,6 +6,7 @@ import type {
   GhAuthStatus,
   GitBranch,
   GitCommandResult,
+  GitCommit,
   GitDiffStat,
   GitRemote,
   GitStatus,
@@ -107,6 +108,11 @@ export async function gitBranches(cwd: string): Promise<GitBranch[]> {
   return invoke<GitBranch[]>('git_branch_list', { request: { cwd } });
 }
 
+export async function gitRecentCommits(cwd: string, limit = 20): Promise<GitCommit[]> {
+  if (!cwd || !isTauriRuntime()) return [];
+  return invoke<GitCommit[]>('git_recent_commits', { request: { cwd, limit } });
+}
+
 export async function gitCreateBranch(cwd: string, name: string): Promise<GitCommandResult> {
   if (!isTauriRuntime()) return { stdout: '', stderr: '' };
   return invoke<GitCommandResult>('git_create_branch', { request: { cwd, name } });
@@ -153,15 +159,22 @@ export async function openInApp(app: OpenAppId, path: string): Promise<void> {
   await invoke('open_in_app', { request: { app, path } });
 }
 
-export async function terminalStart(cwd?: string): Promise<string> {
+export async function terminalStart(cwd?: string, rows?: number, cols?: number): Promise<string> {
   if (!isTauriRuntime()) return '';
-  const result = await invoke<{ sessionId: string }>('terminal_start', { request: { cwd } });
+  const result = await invoke<{ sessionId: string }>('terminal_start', {
+    request: { cwd, rows, cols },
+  });
   return result.sessionId;
 }
 
 export async function terminalWrite(sessionId: string, data: string): Promise<void> {
   if (!isTauriRuntime() || !sessionId) return;
   await invoke('terminal_write', { request: { sessionId, data } });
+}
+
+export async function terminalResize(sessionId: string, rows: number, cols: number): Promise<void> {
+  if (!isTauriRuntime() || !sessionId) return;
+  await invoke('terminal_resize', { request: { sessionId, rows, cols } });
 }
 
 export async function terminalStop(sessionId: string): Promise<void> {

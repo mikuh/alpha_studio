@@ -8,14 +8,16 @@ import type {
 } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Terminal as XTerm, type ITheme } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
 import {
   AlertCircle,
+  AlertTriangle,
   AppWindow,
   Archive,
   ArrowDownAZ,
   ArrowDownUp,
   ArrowUp,
-  Bot,
   Box,
   Braces,
   CalendarDays,
@@ -30,7 +32,9 @@ import {
   Copy,
   Cpu,
   Download,
+  File,
   FileCode2,
+  FileSpreadsheet,
   FileText,
   Folder,
   FolderGit2,
@@ -44,6 +48,7 @@ import {
   Globe,
   HardDrive,
   History,
+  Image as ImageIcon,
   Info,
   Keyboard,
   Layers,
@@ -62,6 +67,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PanelRight,
+  Paperclip,
   Pencil,
   Pin,
   PinOff,
@@ -79,6 +85,7 @@ import {
   SquarePen,
   SquareTerminal,
   Sun,
+  Target,
   Terminal,
   Trash2,
   Upload,
@@ -95,6 +102,7 @@ import {
   gitCommit,
   gitCreateBranch,
   gitDiff,
+  gitRecentCommits,
   gitDiffStat,
   gitPull,
   gitPush,
@@ -106,8 +114,8 @@ import {
   listOpenApps,
   openInApp,
   revealPath,
-  subscribeCodexEvents,
   subscribeTerminalEvents,
+  terminalResize,
   terminalStart,
   terminalStop,
   terminalWrite,
@@ -134,6 +142,7 @@ import {
   archivedProjects,
   useChatStore,
   useCurrentConversation,
+  useImageViewer,
   visibleConversations,
 } from './store';
 import type {
@@ -141,17 +150,22 @@ import type {
   Conversation,
   GhAuthStatus,
   GitBranch as GitBranchInfo,
+  GitCommit,
   GitDiffStat,
   GitFileChange,
   GitRemote,
   GitStatus,
+  MessageAttachment,
   MessageBlock,
   OpenAppId,
   Project,
   ProjectSort,
+  ReviewFinding,
+  ReviewReport,
+  ReviewRequest,
 } from './types';
 
-type RightPanel = 'none' | 'git' | 'features';
+type RightPanel = 'none' | 'git' | 'features' | 'review';
 type Theme = 'light' | 'dark';
 type SettingsSection =
   | 'general'
@@ -182,7 +196,6 @@ const SIDEBAR_DEFAULT_WIDTH = 300;
 
 export function App() {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
-  const handleCodexEvent = useChatStore((state) => state.handleCodexEvent);
   const conversations = useChatStore((state) => state.conversations);
   const currentConversationId = useChatStore((state) => state.currentConversationId);
   const setCurrentConversation = useChatStore((state) => state.setCurrentConversation);
@@ -197,6 +210,7 @@ export function App() {
   });
   const [rightPanel, setRightPanel] = useState<RightPanel>('none');
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [theme, setTheme] = useState<Theme>(() => {
@@ -265,14 +279,6 @@ export function App() {
     void refreshCodexStatus();
   }, [refreshCodexStatus]);
 
-  useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    void subscribeCodexEvents(handleCodexEvent).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, [handleCodexEvent]);
-
   const openSettings = (section: SettingsSection = 'general') => {
     setSettingsSection(section);
     setSettingsOpen(true);
@@ -296,28 +302,39 @@ export function App() {
           onCommit={setSidebarWidth}
         />
       )}
-      <main className="main-stage">
-        <TopBar
-          sidebarCollapsed={sidebarCollapsed}
-          featuresOpen={rightPanel === 'features'}
-          terminalOpen={terminalOpen}
-          onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-          onToggleFeatures={() => setRightPanel((value) => (value === 'features' ? 'none' : 'features'))}
-          onToggleTerminal={() => setTerminalOpen((value) => !value)}
-          onOpenGit={() => setRightPanel('git')}
-          onOpenSettings={() => openSettings('config')}
-        />
-        <ChatArea />
-        {terminalOpen && <BottomTerminal onClose={() => setTerminalOpen(false)} />}
-      </main>
-      {rightPanel === 'git' && <GitPanel onClose={() => setRightPanel('none')} />}
-      {rightPanel === 'features' && (
-        <FeaturesPanel
-          onClose={() => setRightPanel('none')}
-          onOpenGit={() => setRightPanel('git')}
-          onOpenTerminal={() => setTerminalOpen(true)}
-        />
-      )}
+      <div className="workspace">
+        <div className="workspace-row">
+          <main className="main-stage">
+            <TopBar
+              sidebarCollapsed={sidebarCollapsed}
+              featuresOpen={rightPanel === 'features'}
+              terminalOpen={terminalOpen}
+              onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+              onToggleFeatures={() => setRightPanel((value) => (value === 'features' ? 'none' : 'features'))}
+              onToggleTerminal={() => setTerminalOpen((value) => !value)}
+              onOpenGit={() => setRightPanel('git')}
+              onOpenSettings={() => openSettings('config')}
+            />
+            <ChatArea />
+          </main>
+          {rightPanel === 'git' && <GitPanel onClose={() => setRightPanel('none')} />}
+          {rightPanel === 'review' && (
+            <ReviewChangesPanel
+              onClose={() => setRightPanel('none')}
+              onOpenCodexReview={() => setReviewOpen(true)}
+            />
+          )}
+          {rightPanel === 'features' && (
+            <FeaturesPanel
+              onClose={() => setRightPanel('none')}
+              onOpenGit={() => setRightPanel('git')}
+              onOpenReviewChanges={() => setRightPanel('review')}
+              onOpenTerminal={() => setTerminalOpen(true)}
+            />
+          )}
+        </div>
+        {terminalOpen && <TerminalPanel theme={theme} onClose={() => setTerminalOpen(false)} />}
+      </div>
       <SettingsPage
         open={settingsOpen}
         section={settingsSection}
@@ -327,6 +344,8 @@ export function App() {
         onThemeChange={setTheme}
       />
       <AuthorizationDialog />
+      <ReviewDialog open={reviewOpen} onClose={() => setReviewOpen(false)} />
+      <ImageLightbox />
     </div>
   );
 }
@@ -427,6 +446,16 @@ function Sidebar({
   const [menu, setMenu] = useState<SidebarMenu | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+
+  // Keep the active conversation's project expanded so a chat that just got
+  // pointed at a folder (e.g. via the composer directory switcher) is visible
+  // under its project instead of hidden inside a collapsed group.
+  const currentProjectId = conversations.find((conversation) => conversation.id === currentConversationId)?.projectId;
+  useEffect(() => {
+    if (!currentProjectId) return;
+    setExpanded((prev) => (prev[currentProjectId] ? prev : { ...prev, [currentProjectId]: true }));
+  }, [currentProjectId]);
+
   const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
   const [conversationsCollapsed, setConversationsCollapsed] = useState(false);
 
@@ -807,9 +836,11 @@ function ConversationRow({
           <button className="row-icon-btn" type="button" onClick={() => toggleConversationPin(conversation.id)} aria-label="置顶对话" title={conversation.pinned ? '取消置顶' : '置顶'}>
             {conversation.pinned ? <PinOff size={14} /> : <Pin size={14} />}
           </button>
-          <button className="row-icon-btn" type="button" onClick={() => archiveConversation(conversation.id)} aria-label="归档对话" title="归档">
-            <Archive size={14} />
-          </button>
+          {!conversation.pinned && (
+            <button className="row-icon-btn" type="button" onClick={() => archiveConversation(conversation.id)} aria-label="归档对话" title="归档">
+              <Archive size={14} />
+            </button>
+          )}
         </span>
       )}
     </div>
@@ -1456,98 +1487,250 @@ function EnvironmentMenu({ cwd, onOpenGit, onOpenSettings }: { cwd: string; onOp
   );
 }
 
-function BottomTerminal({ onClose }: { onClose: () => void }) {
-  const conversation = useCurrentConversation();
-  const cwd = conversation?.cwd || '';
-  const [lines, setLines] = useState('');
-  const [input, setInput] = useState('');
+type TerminalTab = { id: string; title: string };
+
+function cssVar(name: string, fallback: string): string {
+  if (typeof window === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function terminalTheme(): ITheme {
+  const dark = document.documentElement.dataset.theme !== 'light';
+  const foreground = cssVar('--text', dark ? '#f1f1f1' : '#1f1f1f');
+  return {
+    background: cssVar('--bg', dark ? '#151515' : '#ffffff'),
+    foreground,
+    cursor: foreground,
+    cursorAccent: cssVar('--bg', dark ? '#151515' : '#ffffff'),
+    selectionBackground: dark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.16)',
+  };
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function TerminalInstance({
+  cwd,
+  active,
+  theme,
+}: {
+  cwd: string;
+  active: boolean;
+  theme: Theme;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<XTerm | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
   const sessionRef = useRef('');
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const promptLabel = `${basename(cwd) || '~'} %`;
 
   useEffect(() => {
-    let active = true;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const term = new XTerm({
+      fontFamily: cssVar('--mono', 'ui-monospace, Menlo, monospace'),
+      fontSize: 12.5,
+      lineHeight: 1.25,
+      cursorBlink: true,
+      allowProposedApi: true,
+      theme: terminalTheme(),
+      scrollback: 10_000,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(container);
+    try {
+      fit.fit();
+    } catch {
+      /* container may not be measurable yet */
+    }
+    termRef.current = term;
+    fitRef.current = fit;
+
+    const dataDisposable = term.onData((data) => {
+      if (sessionRef.current) void terminalWrite(sessionRef.current, data);
+    });
+    const resizeDisposable = term.onResize(({ rows, cols }) => {
+      if (sessionRef.current) void terminalResize(sessionRef.current, rows, cols);
+    });
+
+    let mounted = true;
     let unlisten: (() => void) | null = null;
     void (async () => {
       const unsub = await subscribeTerminalEvents((event) => {
         if (event.sessionId !== sessionRef.current) return;
         if (event.type === 'output' && event.chunk) {
-          setLines((prev) => clampTerminalBuffer(prev + stripAnsi(event.chunk ?? '')));
+          term.write(base64ToBytes(event.chunk));
         } else if (event.type === 'exit') {
-          setLines((prev) => `${prev}\n[shell 已结束]\n`);
           sessionRef.current = '';
+          term.write('\r\n\x1b[2m[shell 已结束]\x1b[0m\r\n');
         }
       });
-      if (!active) {
+      if (!mounted) {
         unsub?.();
         return;
       }
       unlisten = unsub;
       if (!isTauriRuntime()) {
-        setLines('（浏览器预览模式下终端不可用，请在桌面应用中使用。）\n');
+        term.write('\x1b[2m（浏览器预览模式下终端不可用，请在桌面应用中使用。）\x1b[0m\r\n');
         return;
       }
       try {
-        const id = await terminalStart(cwd);
-        if (!active) {
+        const id = await terminalStart(cwd, term.rows, term.cols);
+        if (!mounted) {
           if (id) void terminalStop(id);
           return;
         }
         sessionRef.current = id;
-        inputRef.current?.focus();
+        if (active) term.focus();
       } catch (err) {
-        setLines((prev) => `${prev}${stringifyError(err)}\n`);
+        term.write(`\x1b[31m${stringifyError(err)}\x1b[0m\r\n`);
       }
     })();
+
+    const observer = new ResizeObserver(() => {
+      try {
+        fit.fit();
+      } catch {
+        /* hidden tabs report 0x0; ignore */
+      }
+    });
+    observer.observe(container);
+
     return () => {
-      active = false;
+      mounted = false;
+      observer.disconnect();
+      dataDisposable.dispose();
+      resizeDisposable.dispose();
       unlisten?.();
       const id = sessionRef.current;
       sessionRef.current = '';
       if (id) void terminalStop(id);
+      term.dispose();
     };
-  }, [cwd]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    const el = bodyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+    // The app writes `data-theme` in a parent effect, which commits after this
+    // child effect; defer one frame so the CSS variables reflect the new theme.
+    const id = window.requestAnimationFrame(() => {
+      if (termRef.current) termRef.current.options.theme = terminalTheme();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [theme]);
 
-  const submit = () => {
-    const command = input;
-    setInput('');
-    setLines((prev) => `${prev}${promptLabel} ${command}\n`);
-    if (sessionRef.current) void terminalWrite(sessionRef.current, `${command}\n`);
+  useEffect(() => {
+    if (!active) return;
+    const id = window.requestAnimationFrame(() => {
+      try {
+        fitRef.current?.fit();
+      } catch {
+        /* ignore */
+      }
+      termRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [active]);
+
+  return <div className={`terminal-surface ${active ? '' : 'hidden'}`} ref={containerRef} />;
+}
+
+function TerminalPanel({ theme, onClose }: { theme: Theme; onClose: () => void }) {
+  const conversation = useCurrentConversation();
+  const cwd = conversation?.cwd || '';
+  const baseName = basename(cwd) || '终端';
+  const counterRef = useRef(0);
+
+  const createTab = (): TerminalTab => {
+    counterRef.current += 1;
+    return {
+      id: `term-${Date.now()}-${counterRef.current}`,
+      title: `${baseName} ${counterRef.current}`,
+    };
+  };
+
+  const [tabs, setTabs] = useState<TerminalTab[]>(() => [createTab()]);
+  const [activeId, setActiveId] = useState<string>(() => tabs[0]?.id ?? '');
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+
+  const addTab = () => {
+    const tab = createTab();
+    setTabs((prev) => [...prev, tab]);
+    setActiveId(tab.id);
+  };
+
+  const closeTab = (id: string) => {
+    const prev = tabsRef.current;
+    const index = prev.findIndex((tab) => tab.id === id);
+    if (index === -1) return;
+    const next = prev.filter((tab) => tab.id !== id);
+    if (next.length === 0) {
+      onClose();
+      return;
+    }
+    setTabs(next);
+    setActiveId((current) =>
+      current === id ? next[Math.min(index, next.length - 1)].id : current,
+    );
   };
 
   return (
-    <section className="bottom-terminal" aria-label="终端">
-      <header className="bottom-terminal-head">
-        <span className="bottom-terminal-tab"><SquareTerminal size={13} />{basename(cwd) || '终端'}</span>
-        <span className="spacer" />
-        <button type="button" className="icon-mini" onClick={() => setLines('')} title="清屏"><RotateCcw size={13} /></button>
-        <button type="button" className="icon-mini" onClick={onClose} aria-label="关闭终端" title="关闭"><X size={14} /></button>
-      </header>
-      <div className="bottom-terminal-body" ref={bodyRef} onClick={() => inputRef.current?.focus()}>
-        <pre className="bottom-terminal-output">{lines}</pre>
-        <div className="bottom-terminal-input-row">
-          <span className="bottom-terminal-prompt">{promptLabel}</span>
-          <input
-            ref={inputRef}
-            className="bottom-terminal-input"
-            value={input}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-          />
+    <section className="terminal-panel" aria-label="终端">
+      <header className="terminal-panel-head">
+        <div className="terminal-tabs">
+          {tabs.map((tab) => (
+            <div
+              key={tab.id}
+              className={`terminal-tab ${tab.id === activeId ? 'active' : ''}`}
+              onClick={() => setActiveId(tab.id)}
+              role="tab"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') setActiveId(tab.id);
+              }}
+            >
+              <SquareTerminal size={13} />
+              <span className="terminal-tab-label">{tab.title}</span>
+              <button
+                type="button"
+                className="terminal-tab-close"
+                aria-label="关闭终端"
+                title="关闭"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  closeTab(tab.id);
+                }}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+          <button type="button" className="terminal-tab-add" onClick={addTab} title="新建终端">
+            <Plus size={14} />
+          </button>
         </div>
+        <span className="spacer" />
+        <button
+          type="button"
+          className="icon-mini"
+          onClick={onClose}
+          aria-label="收起终端面板"
+          title="收起"
+        >
+          <ChevronDown size={16} />
+        </button>
+      </header>
+      <div className="terminal-panel-bodies">
+        {tabs.map((tab) => (
+          <TerminalInstance key={tab.id} cwd={cwd} active={tab.id === activeId} theme={theme} />
+        ))}
       </div>
     </section>
   );
@@ -1556,10 +1739,12 @@ function BottomTerminal({ onClose }: { onClose: () => void }) {
 function FeaturesPanel({
   onClose,
   onOpenGit,
+  onOpenReviewChanges,
   onOpenTerminal,
 }: {
   onClose: () => void;
   onOpenGit: () => void;
+  onOpenReviewChanges: () => void;
   onOpenTerminal: () => void;
 }) {
   const conversation = useCurrentConversation();
@@ -1578,7 +1763,8 @@ function FeaturesPanel({
     { id: 'files', icon: <FolderOpen size={20} />, title: '文件', desc: '浏览项目文件', shortcut: '⌘P', disabled: !cwd, action: () => { if (cwd) void revealPath(cwd); } },
     { id: 'chat', icon: <MessageSquarePlus size={20} />, title: '侧边聊天', desc: '发起侧边对话', action: () => createConversation(conversation?.projectId) },
     { id: 'browser', icon: <Globe size={20} />, title: '浏览器', desc: '打开网站', shortcut: '⌘T', action: () => { const url = window.prompt('输入要打开的网址', 'https://'); if (url && url.trim()) void openExternal(url.trim()); } },
-    { id: 'review', icon: <GitPullRequest size={20} />, title: '审查', desc: '查看代码更改', shortcut: '⌃⇧G', action: onOpenGit },
+    { id: 'review', icon: <GitPullRequest size={20} />, title: '审查', desc: '查看代码更改', shortcut: '⌃⇧G', disabled: !cwd, action: onOpenReviewChanges },
+    { id: 'changes', icon: <FileCode2 size={20} />, title: '更改', desc: '查看并提交 Git 变更', action: onOpenGit },
     { id: 'terminal', icon: <SquareTerminal size={20} />, title: '终端', desc: '启动交互式 shell', shortcut: '⌃`', action: onOpenTerminal },
   ];
 
@@ -1656,16 +1842,52 @@ function EmptyState({ conversation, disabled }: { conversation: Conversation; di
 function MessageList({ conversation }: { conversation: Conversation }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const streaming = conversation.status === 'streaming';
+  const answerLength = streaming ? streamingAnswerLength(conversation) : 0;
+  const typing = useActiveTyping(answerLength, streaming);
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [conversation.messages.length, conversation.messages[conversation.messages.length - 1], streaming]);
   return (
     <div className="message-list">
       {conversation.messages.map((message) => <MessageBubble key={message.id} message={message} conversation={conversation} />)}
-      {streaming && <ThinkingIndicator />}
+      {streaming && !typing && <ThinkingIndicator />}
       <div ref={scrollRef} />
     </div>
   );
+}
+
+// Total characters of answer text in the last (streaming) assistant message.
+function streamingAnswerLength(conversation: Conversation): number {
+  const last = conversation.messages[conversation.messages.length - 1];
+  if (!last || last.role !== 'assistant') return 0;
+  let length = 0;
+  for (const block of last.blocks) {
+    if (block.type === 'text') length += block.content.length;
+  }
+  return length;
+}
+
+// True while answer tokens are actively streaming in. We hide the "正在思考"
+// indicator during active typing and only bring it back once the text output
+// pauses for a beat (e.g. the model resumes reasoning or runs a tool) while the
+// turn is still in progress.
+function useActiveTyping(answerLength: number, streaming: boolean): boolean {
+  const [typing, setTyping] = useState(false);
+  const previousLength = useRef(answerLength);
+  useEffect(() => {
+    if (!streaming) {
+      previousLength.current = answerLength;
+      setTyping(false);
+      return;
+    }
+    const grew = answerLength > previousLength.current;
+    previousLength.current = answerLength;
+    if (!grew) return;
+    setTyping(true);
+    const timer = window.setTimeout(() => setTyping(false), 700);
+    return () => window.clearTimeout(timer);
+  }, [answerLength, streaming]);
+  return typing;
 }
 
 function ThinkingIndicator() {
@@ -1688,15 +1910,16 @@ function ThinkingIndicator() {
 function MessageBubble({ message, conversation }: { message: ChatMessage; conversation: Conversation }) {
   const editUserMessageAndResend = useChatStore((state) => state.editUserMessageAndResend);
   const [editing, setEditing] = useState(false);
+  const isReviewRequest = message.role === 'user' && Boolean(message.reviewRequest);
   const plainText = messageToPlainText(message);
-  const canCopy = plainText.length > 0;
-  const canEdit = message.role === 'user' && conversation.status !== 'streaming';
+  const canCopy = plainText.length > 0 && !isReviewRequest;
+  const canEdit = message.role === 'user' && !isReviewRequest && conversation.status !== 'streaming';
   const lastBlockIndex = message.blocks.length - 1;
-  const submitEdit = (next: string) => {
+  const submitEdit = (next: string, attachments: MessageAttachment[]) => {
     const trimmed = next.trim();
-    if (!trimmed) return;
+    if (!trimmed && attachments.length === 0) return;
     setEditing(false);
-    void editUserMessageAndResend(conversation.id, message.id, trimmed);
+    void editUserMessageAndResend(conversation.id, message.id, trimmed, attachments);
   };
   if (message.role === 'assistant' && message.blocks.length === 0 && message.isStreaming) {
     return null;
@@ -1704,21 +1927,32 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
   return (
     <article className={`message ${message.role} ${editing ? 'editing' : ''}`}>
       {editing && canEdit ? (
-        <MessageEditBubble initialValue={plainText} onCancel={() => setEditing(false)} onSubmit={submitEdit} />
+        <MessageEditBubble initialValue={plainText} initialAttachments={message.attachments ?? []} onCancel={() => setEditing(false)} onSubmit={submitEdit} />
+      ) : isReviewRequest && message.reviewRequest ? (
+        <ReviewRequestChip request={message.reviewRequest} />
       ) : (
-        <div className="bubble">
-          {message.role === 'user'
-            ? message.blocks.map((block, index) => block.type === 'text' ? <span key={index}>{block.content}</span> : <BlockRenderer key={index} block={block} />)
-            : buildRenderUnits(message.blocks).map((unit) =>
-                unit.type === 'command-group'
-                  ? (unit.blocks.length === 1
-                      ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
-                      : <CommandGroup key={`cmd-group-${unit.startIndex}`} blocks={unit.blocks} />)
-                  : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={Boolean(message.isStreaming) && unit.index === lastBlockIndex} />,
-              )}
-        </div>
+        <>
+          {message.role === 'user' && message.attachments?.length ? (
+            <MessageAttachments attachments={message.attachments} />
+          ) : null}
+          {(message.role !== 'user' || message.blocks.length > 0) && (
+            <div className="bubble">
+              {message.role === 'user'
+                ? message.blocks.map((block, index) => block.type === 'text' ? <span key={index}>{block.content}</span> : <BlockRenderer key={index} block={block} />)
+                : message.review
+                  ? <ReviewBody message={message} cwd={conversation.cwd} />
+                  : buildRenderUnits(message.blocks).map((unit) =>
+                      unit.type === 'command-group'
+                        ? (unit.blocks.length === 1
+                            ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
+                            : <CommandGroup key={`cmd-group-${unit.startIndex}`} blocks={unit.blocks} />)
+                        : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={Boolean(message.isStreaming) && unit.index === lastBlockIndex} />,
+                    )}
+            </div>
+          )}
+        </>
       )}
-      {!editing && (canCopy || canEdit) && (
+      {!editing && !message.isStreaming && (canCopy || canEdit) && (
         <div className="message-meta">
           <span className="message-actions">
             {canCopy && <button type="button" className="message-action" onClick={() => void copyToClipboard(plainText)} aria-label="复制"><Copy size={13} /></button>}
@@ -1730,8 +1964,9 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
   );
 }
 
-function MessageEditBubble({ initialValue, onCancel, onSubmit }: { initialValue: string; onCancel: () => void; onSubmit: (value: string) => void }) {
+function MessageEditBubble({ initialValue, initialAttachments, onCancel, onSubmit }: { initialValue: string; initialAttachments: MessageAttachment[]; onCancel: () => void; onSubmit: (value: string, attachments: MessageAttachment[]) => void }) {
   const [value, setValue] = useState(initialValue);
+  const [attachments, setAttachments] = useState<MessageAttachment[]>(initialAttachments);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     const el = textareaRef.current;
@@ -1743,20 +1978,76 @@ function MessageEditBubble({ initialValue, onCancel, onSubmit }: { initialValue:
     textareaRef.current?.focus();
     textareaRef.current?.select();
   }, []);
+  const addFiles = async () => {
+    const items = await pickAttachments();
+    if (items.length) setAttachments((prev) => mergeAttachments(prev, items));
+  };
+  const removeAttachment = (id: string) => setAttachments((prev) => prev.filter((item) => item.id !== id));
+  const canSubmit = Boolean(value.trim() || attachments.length);
+  const submit = () => {
+    if (!canSubmit) return;
+    onSubmit(value, attachments);
+  };
   return (
     <div className="message-edit-card">
+      {attachments.length > 0 && (
+        <div className="composer-attachments">
+          {attachments.map((attachment) => (
+            <AttachmentCard key={attachment.id} attachment={attachment} onRemove={() => removeAttachment(attachment.id)} />
+          ))}
+        </div>
+      )}
       <textarea ref={textareaRef} className="message-edit-textarea" value={value} rows={1} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => {
         if (event.key === 'Escape') onCancel();
         if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
           event.preventDefault();
-          onSubmit(value);
+          submit();
         }
       }} />
       <div className="message-edit-actions">
+        <button type="button" className="message-edit-attach" onClick={() => void addFiles()} aria-label="添加照片和文件" title="添加照片和文件"><Paperclip size={15} /></button>
+        <span className="spacer" />
         <button type="button" className="message-edit-btn ghost" onClick={onCancel}>取消</button>
-        <button type="button" className="message-edit-btn primary" onClick={() => onSubmit(value)} disabled={!value.trim() || value.trim() === initialValue.trim()}>发送</button>
+        <button type="button" className="message-edit-btn primary" onClick={submit} disabled={!canSubmit}>发送</button>
       </div>
     </div>
+  );
+}
+
+// A disclosure whose body is mounted only while open. Keeping the body out of
+// the DOM when collapsed avoids a WKWebView bug where content updated inside a
+// closed <details> (e.g. command output that lands exactly as the row
+// auto-collapses on completion) renders blank until the row is toggled again.
+function EventDetails({
+  className,
+  forceOpen = false,
+  defaultOpen = false,
+  summary,
+  children,
+}: {
+  className: string;
+  forceOpen?: boolean;
+  defaultOpen?: boolean;
+  summary: ReactNode;
+  children?: ReactNode;
+}) {
+  const [userOpen, setUserOpen] = useState(defaultOpen);
+  const open = forceOpen || userOpen;
+  return (
+    <details
+      className={className}
+      open={open}
+      onToggle={(event) => {
+        // While forced open (in progress) ignore collapse attempts; the next
+        // render restores the open state.
+        if (forceOpen) return;
+        const next = event.currentTarget.open;
+        if (next !== userOpen) setUserOpen(next);
+      }}
+    >
+      <summary className="event-summary">{summary}</summary>
+      {open && children}
+    </details>
   );
 }
 
@@ -1766,15 +2057,20 @@ function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: 
   }
   if (block.type === 'thinking') {
     return (
-      <details className={`thinking-block ${streaming ? 'is-active' : ''}`} open={streaming}>
-        <summary className="event-summary">
-          <span className="event-icon">{streaming ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}</span>
-          <span className="event-verb">{streaming ? '正在推理' : '推理过程'}</span>
-          <span className="event-target" />
-          <ChevronDown size={13} className="event-chevron" />
-        </summary>
+      <EventDetails
+        className={`thinking-block ${streaming ? 'is-active' : ''}`}
+        forceOpen={streaming}
+        summary={(
+          <>
+            <span className="event-icon">{streaming ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}</span>
+            <span className="event-verb">{streaming ? '正在推理' : '推理过程'}</span>
+            <span className="event-target" />
+            <ChevronDown size={13} className="event-chevron" />
+          </>
+        )}
+      >
         <div className="thinking-text">{block.content.trim()}</div>
-      </details>
+      </EventDetails>
     );
   }
   if (block.type === 'tool') {
@@ -1790,19 +2086,24 @@ function ToolBlockView({ block }: { block: Extract<MessageBlock, { type: 'tool' 
   const verb = running ? tool.running : failed ? tool.failed : tool.done;
   const target = firstLine(block.input);
   const isCommand = tool.kind === 'command';
-  const plainBody = isCommand ? '' : (block.output || block.input || '').trim();
+  const plainBody = isCommand ? '' : cleanCommandOutput(block.output || block.input || '');
   const hasBody = isCommand ? Boolean(block.input || block.output) : Boolean(plainBody) && plainBody !== target;
   return (
-    <details className={`tool-block event-block ${block.status} kind-${tool.kind}`} open={running}>
-      <summary className="event-summary">
-        <span className="event-icon">{tool.icon}</span>
-        <span className="event-verb">{verb}</span>
-        <span className={`event-target ${target ? 'mono' : ''}`}>{target}</span>
-        <span className="event-trailing">
-          {running ? <Loader2 size={12} className="spin" /> : failed ? <AlertCircle size={12} className="event-fail" /> : null}
-          <ChevronDown size={13} className="event-chevron" />
-        </span>
-      </summary>
+    <EventDetails
+      className={`tool-block event-block ${block.status} kind-${tool.kind}`}
+      forceOpen={running}
+      summary={(
+        <>
+          <span className="event-icon">{tool.icon}</span>
+          <span className="event-verb">{verb}</span>
+          <span className={`event-target ${target ? 'mono' : ''}`}>{target}</span>
+          <span className="event-trailing">
+            {running ? <Loader2 size={12} className="spin" /> : failed ? <AlertCircle size={12} className="event-fail" /> : null}
+            <ChevronDown size={13} className="event-chevron" />
+          </span>
+        </>
+      )}
+    >
       {hasBody && (
         <div className="event-body">
           {isCommand ? (
@@ -1812,30 +2113,30 @@ function ToolBlockView({ block }: { block: Extract<MessageBlock, { type: 'tool' 
           )}
         </div>
       )}
-    </details>
+    </EventDetails>
   );
 }
 
 function CommandCard({ command, output, status }: { command?: string; output?: string; status: 'in_progress' | 'completed' | 'failed' }) {
-  const copyText = [command ? `$ ${command}` : '', (output || '').trim()].filter(Boolean).join('\n');
+  const cleaned = cleanCommandOutput(output);
+  const copyText = [command ? `$ ${command}` : '', cleaned].filter(Boolean).join('\n');
+  const statusBadge = status === 'failed'
+    ? <span className="cc-status fail"><AlertCircle size={12} />失败</span>
+    : status === 'completed'
+      ? <span className="cc-status ok"><Check size={12} />成功</span>
+      : <span className="cc-status run"><Loader2 size={12} className="spin" />运行中</span>;
   return (
     <div className={`command-card ${status}`}>
-      <div className="command-card-head">
+      <div className="command-card-bar">
         <span className="command-card-label"><Terminal size={12} />Shell</span>
+        {statusBadge}
         <button type="button" className="command-card-copy" onClick={() => void copyToClipboard(copyText)} aria-label="复制命令">
           <Copy size={12} />
         </button>
       </div>
       <div className="command-card-body">
         {command && <div className="command-line"><span className="command-prompt">$</span><span className="command-text">{command}</span></div>}
-        {output && <pre className="command-out">{output.trim()}</pre>}
-      </div>
-      <div className="command-card-foot">
-        {status === 'failed'
-          ? <span className="cc-status fail"><AlertCircle size={12} />失败</span>
-          : status === 'completed'
-            ? <span className="cc-status ok"><Check size={12} />成功</span>
-            : <span className="cc-status run"><Loader2 size={12} className="spin" />运行中</span>}
+        {cleaned && <pre className="command-out">{cleaned}</pre>}
       </div>
     </div>
   );
@@ -1847,20 +2148,25 @@ function CommandGroup({ blocks }: { blocks: Array<Extract<MessageBlock, { type: 
   const verb = anyRunning ? '正在运行' : '已运行';
   const state = anyRunning ? 'in_progress' : anyFailed ? 'failed' : 'completed';
   return (
-    <details className={`tool-block event-block command-group ${state}`} open={anyRunning}>
-      <summary className="event-summary">
-        <span className="event-icon"><Terminal size={14} /></span>
-        <span className="event-verb">{verb} {blocks.length} 条命令</span>
-        <span className="event-target" />
-        <span className="event-trailing">
-          {anyRunning ? <Loader2 size={12} className="spin" /> : anyFailed ? <AlertCircle size={12} className="event-fail" /> : null}
-          <ChevronDown size={13} className="event-chevron" />
-        </span>
-      </summary>
+    <EventDetails
+      className={`tool-block event-block command-group ${state}`}
+      forceOpen={anyRunning}
+      summary={(
+        <>
+          <span className="event-icon command-group-icon"><SquareTerminal size={15} /></span>
+          <span className="event-verb">{verb} {blocks.length} 条命令</span>
+          <span className="event-target" />
+          <span className="event-trailing">
+            {anyRunning ? <Loader2 size={12} className="spin" /> : anyFailed ? <AlertCircle size={12} className="event-fail" /> : null}
+            <ChevronDown size={13} className="event-chevron" />
+          </span>
+        </>
+      )}
+    >
       <div className="command-group-items">
         {blocks.map((block) => <ToolBlockView key={block.id} block={block} />)}
       </div>
-    </details>
+    </EventDetails>
   );
 }
 
@@ -1894,6 +2200,7 @@ function isCommandBlock(block: MessageBlock): boolean {
 
 function Composer({ conversation, disabled, bottom }: { conversation: Conversation; disabled?: boolean; bottom?: boolean }) {
   const [value, setValue] = useState('');
+  const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sendMessage = useChatStore((state) => state.sendMessage);
   const stopCurrentConversation = useChatStore((state) => state.stopCurrentConversation);
@@ -1904,15 +2211,28 @@ function Composer({ conversation, disabled, bottom }: { conversation: Conversati
     el.style.height = '0px';
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [value]);
+  const addAttachments = (items: MessageAttachment[]) => {
+    setAttachments((prev) => mergeAttachments(prev, items));
+  };
+  const removeAttachment = (id: string) => setAttachments((prev) => prev.filter((item) => item.id !== id));
+  const canSend = Boolean(value.trim() || attachments.length);
   const submit = () => {
-    const next = value.trim();
-    if (!next || isStreaming || disabled) return;
+    if (!canSend || isStreaming || disabled) return;
+    const outgoing = attachments;
     setValue('');
-    void sendMessage(next);
+    setAttachments([]);
+    void sendMessage(value.trim(), outgoing);
   };
   return (
     <div className={`composer-wrap ${bottom ? 'bottom' : ''}`}>
       <div className="composer-card">
+        {attachments.length > 0 && (
+          <div className="composer-attachments">
+            {attachments.map((attachment) => (
+              <AttachmentCard key={attachment.id} attachment={attachment} onRemove={() => removeAttachment(attachment.id)} />
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           className="composer-textarea"
@@ -1929,12 +2249,12 @@ function Composer({ conversation, disabled, bottom }: { conversation: Conversati
           rows={1}
         />
         <div className="composer-toolbar">
-          <button className="composer-icon-btn" type="button" disabled aria-label="附件"><Plus size={16} /></button>
+          <ComposerPlusMenu onAttach={addAttachments} disabled={disabled || isStreaming} />
           <ApprovalPicker />
           <span className="spacer" />
           <ModelPicker />
           <button className="composer-icon-btn" type="button" disabled aria-label="语音"><Mic size={15} /></button>
-          {isStreaming ? <button className="send-button stop" type="button" onClick={() => void stopCurrentConversation()} aria-label="停止"><Square size={14} /></button> : <button className="send-button" type="button" onClick={submit} disabled={!value.trim() || disabled} aria-label="发送"><ArrowUp size={18} /></button>}
+          {isStreaming ? <button className="send-button stop" type="button" onClick={() => void stopCurrentConversation()} aria-label="停止"><Square size={12} fill="currentColor" strokeWidth={0} /></button> : <button className="send-button" type="button" onClick={submit} disabled={!canSend || disabled} aria-label="发送"><ArrowUp size={18} /></button>}
         </div>
       </div>
       <ComposerMeta conversation={conversation} />
@@ -1942,10 +2262,585 @@ function Composer({ conversation, disabled, bottom }: { conversation: Conversati
   );
 }
 
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'avif'];
+
+// Maps a file extension to the badge tone used for its icon (Excel green, Word
+// blue, etc.), echoing the colored file chips in the reference design.
+const FILE_TONES: Record<string, 'green' | 'blue' | 'red' | 'orange'> = {
+  csv: 'green', tsv: 'green', xls: 'green', xlsx: 'green', numbers: 'green',
+  doc: 'blue', docx: 'blue', pages: 'blue', rtf: 'blue',
+  pdf: 'red',
+  ppt: 'orange', pptx: 'orange', key: 'orange',
+};
+
+function extOf(name: string): string {
+  const match = /\.([^.\\/]+)$/.exec(name);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function isImageExt(ext: string): boolean {
+  return IMAGE_EXTENSIONS.includes(ext);
+}
+
+function fileTone(ext: string): string {
+  return FILE_TONES[ext] ?? 'gray';
+}
+
+function fileTypeLabel(ext: string): string {
+  return ext ? ext.toUpperCase() : '文件';
+}
+
+function fileGlyph(ext: string, size: number): ReactNode {
+  if (fileTone(ext) === 'green') return <FileSpreadsheet size={size} />;
+  if (FILE_TONES[ext]) return <FileText size={size} />;
+  return <File size={size} />;
+}
+
+function createAttachmentId(): string {
+  return `att-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Browser-preview fallback: the file picker yields File objects, so we can build
+// an object URL for instant image thumbnails.
+function buildAttachmentFromFile(file: File): MessageAttachment {
+  const name = file.name;
+  const ext = extOf(name);
+  const kind: MessageAttachment['kind'] = file.type.startsWith('image/') || isImageExt(ext) ? 'image' : 'file';
+  return {
+    id: createAttachmentId(),
+    name,
+    kind,
+    ext,
+    path: name,
+    previewUrl: kind === 'image' ? URL.createObjectURL(file) : undefined,
+  };
+}
+
+// Desktop: the dialog returns absolute paths; images get an asset URL the
+// webview can render via the Tauri asset protocol.
+async function buildAttachmentFromPath(path: string): Promise<MessageAttachment> {
+  const name = basename(path);
+  const ext = extOf(name);
+  const kind: MessageAttachment['kind'] = isImageExt(ext) ? 'image' : 'file';
+  let previewUrl: string | undefined;
+  if (kind === 'image') {
+    try {
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      previewUrl = convertFileSrc(path);
+    } catch {
+      previewUrl = undefined;
+    }
+  }
+  return { id: createAttachmentId(), name, kind, ext, path, previewUrl };
+}
+
+// Opens the OS file picker (desktop) or a transient <input> (browser preview) and
+// resolves the chosen files as attachments. Shared by the composer and the edit UI.
+async function pickAttachments(): Promise<MessageAttachment[]> {
+  if (isTauriRuntime()) {
+    try {
+      const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
+      const selected = await openDialog({ multiple: true, title: '添加照片和文件' });
+      if (!selected) return [];
+      const paths = Array.isArray(selected) ? selected : [selected];
+      return Promise.all(paths.map((path) => buildAttachmentFromPath(path)));
+    } catch {
+      return [];
+    }
+  }
+  return new Promise<MessageAttachment[]>((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.style.position = 'fixed';
+    input.style.left = '-9999px';
+    let settled = false;
+    const finish = (items: MessageAttachment[]) => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      resolve(items);
+    };
+    input.addEventListener('change', () => {
+      finish(Array.from(input.files ?? []).map((file) => buildAttachmentFromFile(file)));
+    });
+    // A dismissed dialog refocuses the window without firing `change`.
+    window.addEventListener('focus', () => window.setTimeout(() => finish([]), 400), { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+
+function mergeAttachments(prev: MessageAttachment[], items: MessageAttachment[]): MessageAttachment[] {
+  const next = [...prev];
+  for (const item of items) {
+    const key = item.path || item.name;
+    if (!next.some((existing) => (existing.path || existing.name) === key)) next.push(item);
+  }
+  return next;
+}
+
+// A single attachment shown inside the composer: image thumbnail or file card.
+function AttachmentCard({ attachment, onRemove }: { attachment: MessageAttachment; onRemove: () => void }) {
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const openViewer = useImageViewer((state) => state.open);
+  if (attachment.kind === 'image' && attachment.previewUrl && !previewFailed) {
+    return (
+      <div className="att-thumb" title={`查看原图 · ${attachment.name}`}>
+        <img
+          src={attachment.previewUrl}
+          alt={attachment.name}
+          onError={() => setPreviewFailed(true)}
+          onClick={() => attachment.previewUrl && openViewer(attachment.previewUrl, attachment.name)}
+        />
+        <button type="button" className="att-remove" onClick={onRemove} aria-label={`移除 ${attachment.name}`}><X size={12} /></button>
+      </div>
+    );
+  }
+  return (
+    <div className={`att-card tone-${fileTone(attachment.ext)}`} title={attachment.name}>
+      <span className="att-icon">{attachment.kind === 'image' ? <ImageIcon size={18} /> : fileGlyph(attachment.ext, 18)}</span>
+      <span className="att-info">
+        <span className="att-name">{attachment.name}</span>
+        <span className="att-type">{attachment.kind === 'image' ? '图片' : fileTypeLabel(attachment.ext)}</span>
+      </span>
+      <button type="button" className="att-remove" onClick={onRemove} aria-label={`移除 ${attachment.name}`}><X size={12} /></button>
+    </div>
+  );
+}
+
+// Attachments rendered inside a sent user message: image thumbnails + file pills.
+function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
+  return (
+    <div className="message-attachments">
+      {attachments.filter((item) => item.kind === 'image').map((attachment) => (
+        <MessageImageAttachment key={attachment.id} attachment={attachment} />
+      ))}
+      {attachments.filter((item) => item.kind !== 'image').map((attachment) => (
+        <span key={attachment.id} className={`att-pill tone-${fileTone(attachment.ext)}`} title={attachment.name}>
+          <span className="att-pill-icon">{fileGlyph(attachment.ext, 13)}</span>
+          <span className="att-pill-name">{attachment.name}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function MessageImageAttachment({ attachment }: { attachment: MessageAttachment }) {
+  const [failed, setFailed] = useState(false);
+  const openViewer = useImageViewer((state) => state.open);
+  if (!attachment.previewUrl || failed) {
+    return (
+      <span className="att-pill tone-gray" title={attachment.name}>
+        <span className="att-pill-icon"><ImageIcon size={13} /></span>
+        <span className="att-pill-name">{attachment.name}</span>
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="message-image"
+      title={`查看原图 · ${attachment.name}`}
+      onClick={() => attachment.previewUrl && openViewer(attachment.previewUrl, attachment.name)}
+    >
+      <img src={attachment.previewUrl} alt={attachment.name} onError={() => setFailed(true)} />
+    </button>
+  );
+}
+
+// Full-size image preview overlay opened by clicking a thumbnail.
+function ImageLightbox() {
+  const src = useImageViewer((state) => state.src);
+  const alt = useImageViewer((state) => state.alt);
+  const close = useImageViewer((state) => state.close);
+  useEffect(() => {
+    if (!src) return;
+    const onKey = (event: WindowEventMap['keydown']) => {
+      if (event.key === 'Escape') close();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [src, close]);
+  if (!src) return null;
+  return (
+    <div className="image-viewer" role="dialog" aria-modal="true" aria-label={alt || '图片预览'} onClick={close}>
+      <button type="button" className="image-viewer-close" onClick={close} aria-label="关闭预览"><X size={18} /></button>
+      <img className="image-viewer-img" src={src} alt={alt} onClick={(event) => event.stopPropagation()} />
+      {alt && <span className="image-viewer-caption">{alt}</span>}
+    </div>
+  );
+}
+
+// The "+" composer menu: attach files, toggle plan/goal modes, browse plugins.
+function ComposerPlusMenu({ onAttach, disabled }: { onAttach: (items: MessageAttachment[]) => void; disabled?: boolean }) {
+  const planMode = useChatStore((state) => state.planMode);
+  const pursueGoal = useChatStore((state) => state.pursueGoal);
+  const setPlanMode = useChatStore((state) => state.setPlanMode);
+  const setPursueGoal = useChatStore((state) => state.setPursueGoal);
+  const [open, setOpen] = useState(false);
+  const [submenu, setSubmenu] = useState<'plugins' | null>(null);
+  const close = () => {
+    setOpen(false);
+    setSubmenu(null);
+  };
+
+  const pickFiles = async () => {
+    close();
+    const items = await pickAttachments();
+    if (items.length) onAttach(items);
+  };
+
+  return (
+    <div className="plus-picker">
+      <button
+        type="button"
+        className={`composer-icon-btn ${open ? 'active' : ''}`}
+        onClick={() => setOpen((prev) => !prev)}
+        disabled={disabled}
+        aria-label="添加内容"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="添加内容"
+      >
+        <Plus size={16} />
+      </button>
+      {open && (
+        <>
+          <button className="menu-backdrop" type="button" aria-label="关闭菜单" onClick={close} />
+          <div className="plus-menu" role="menu" onMouseLeave={() => setSubmenu(null)}>
+            <button type="button" className="plus-menu-item" role="menuitem" onMouseEnter={() => setSubmenu(null)} onClick={() => void pickFiles()}>
+              <Paperclip size={15} />
+              <span>添加照片和文件</span>
+            </button>
+            <div className="plus-menu-divider" />
+            <button
+              type="button"
+              className="plus-menu-item toggle-row"
+              role="menuitemcheckbox"
+              aria-checked={planMode}
+              onMouseEnter={() => setSubmenu(null)}
+              onClick={() => setPlanMode(!planMode)}
+            >
+              <ListChecks size={15} />
+              <span>计划模式</span>
+              <Toggle checked={planMode} />
+            </button>
+            <button
+              type="button"
+              className="plus-menu-item toggle-row"
+              role="menuitemcheckbox"
+              aria-checked={pursueGoal}
+              onMouseEnter={() => setSubmenu(null)}
+              onClick={() => setPursueGoal(!pursueGoal)}
+            >
+              <Target size={15} />
+              <span>追求目标</span>
+              <Toggle checked={pursueGoal} />
+            </button>
+            <div className="plus-menu-divider" />
+            <div className="plus-flyout-row" onMouseEnter={() => setSubmenu('plugins')}>
+              <button type="button" className="plus-menu-item submenu-trigger">
+                <Plug size={15} />
+                <span>插件</span>
+                <ChevronRight size={14} className="model-menu-chevron" />
+              </button>
+              {submenu === 'plugins' && (
+                <div className="plus-flyout">
+                  <div className="model-flyout-panel" role="menu">
+                    <div className="model-menu-label">插件入口</div>
+                    {domain.navigation.integrations.map((item) => (
+                      <div key={item.id} className="plus-plugin-row">
+                        <span>{item.label}</span>
+                        <span className="plus-plugin-tag">可扩展</span>
+                      </div>
+                    ))}
+                    <div className="plus-menu-hint">公开源码版保留插件入口，商业垂直包可在此扩展领域能力。</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// The working-directory pill beneath the composer doubles as a switcher: it lists
+// existing project folders and lets you point the conversation at any directory,
+// so a fresh "新对话" can target a workspace without leaving the composer.
+function DirectoryPicker({ conversation }: { conversation: Conversation }) {
+  const projects = useChatStore((state) => state.projects);
+  const setConversationCwd = useChatStore((state) => state.setConversationCwd);
+  const createProject = useChatStore((state) => state.createProject);
+  const [open, setOpen] = useState(false);
+  const cwd = conversation.cwd;
+  const folderProjects = useMemo(
+    () => activeProjects(projects).filter((project) => project.cwd),
+    [projects],
+  );
+  const close = () => setOpen(false);
+
+  const pickProject = (project: Project) => {
+    setConversationCwd(conversation.id, project.cwd, project.id);
+    close();
+  };
+  const pickCustomFolder = async () => {
+    close();
+    const dir = await pickFolder();
+    if (!dir) return;
+    // Group the conversation under a project for that folder so it lands in the
+    // sidebar's 项目 section instead of as a stray standalone chat. Reuse a
+    // matching project when one already exists, otherwise spin up a new one.
+    const existing = activeProjects(projects).find((project) => project.cwd === dir);
+    const projectId = existing ? existing.id : createProject({ name: basename(dir), cwd: dir });
+    setConversationCwd(conversation.id, dir, projectId);
+  };
+  const clearFolder = () => {
+    setConversationCwd(conversation.id, '', null);
+    close();
+  };
+
+  return (
+    <div className="dir-picker">
+      <button
+        type="button"
+        className={`composer-meta-pill dir-pill ${open ? 'active' : ''}`}
+        title={cwd || '选择工作目录'}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <FolderGit2 size={12} />
+        <span>{cwd ? basename(cwd) : '选择目录'}</span>
+        <ChevronDown size={11} className="dir-pill-chevron" />
+      </button>
+      {open && (
+        <>
+          <button className="menu-backdrop" type="button" aria-label="关闭目录菜单" onClick={close} />
+          <div className="model-menu dir-menu" role="menu">
+            {folderProjects.length > 0 && <div className="model-menu-label">项目目录</div>}
+            {folderProjects.map((project) => {
+              const selected = conversation.projectId === project.id || (!!cwd && cwd === project.cwd);
+              return (
+                <button
+                  key={project.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  className={`model-menu-item dir-menu-item ${selected ? 'active' : ''}`}
+                  title={project.cwd}
+                  onClick={() => pickProject(project)}
+                >
+                  <Folder size={14} />
+                  <span className="dir-menu-text">
+                    <span className="dir-menu-name">{project.name}</span>
+                    <span className="dir-menu-path">{shortenPath(project.cwd)}</span>
+                  </span>
+                  {selected && <Check size={14} className="model-menu-check" />}
+                </button>
+              );
+            })}
+            {folderProjects.length > 0 && <div className="model-menu-divider" />}
+            <button type="button" className="model-menu-item dir-menu-item" onClick={() => void pickCustomFolder()}>
+              <FolderInput size={14} />
+              <span>选择其他文件夹…</span>
+            </button>
+            {cwd && (
+              <button type="button" className="model-menu-item dir-menu-item" onClick={clearFolder}>
+                <FolderOpen size={14} />
+                <span>清除工作目录</span>
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// The branch pill beneath the composer lists local branches and lets you switch
+// to one or create-and-checkout a new branch without opening the full Git panel.
+function BranchPicker({ cwd, currentBranch, onChanged }: { cwd: string; currentBranch: string; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [branches, setBranches] = useState<GitBranchInfo[]>([]);
+  const [query, setQuery] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+
+  const close = () => {
+    setOpen(false);
+    setQuery('');
+    setError(null);
+    setCreating(false);
+    setNewName('');
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await gitBranches(cwd);
+        if (!cancelled) setBranches(list);
+      } catch (err) {
+        if (!cancelled) setError(stringifyError(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, cwd]);
+
+  const runGit = async (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      onChanged();
+      close();
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const switchBranch = (name: string) => {
+    if (name === currentBranch) {
+      close();
+      return;
+    }
+    void runGit(() => gitCheckoutBranch(cwd, name));
+  };
+
+  const submitCreate = () => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    void runGit(() => gitCreateBranch(cwd, trimmed));
+  };
+
+  const normalized = query.trim().toLowerCase();
+  const filtered = normalized
+    ? branches.filter((item) => item.name.toLowerCase().includes(normalized))
+    : branches;
+
+  return (
+    <div className="branch-picker">
+      <button
+        type="button"
+        className={`composer-meta-pill branch-pill ${open ? 'active' : ''}`}
+        title={`当前分支 ${currentBranch}`}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <GitBranch size={12} />
+        <span>{currentBranch}</span>
+        <ChevronDown size={11} className="dir-pill-chevron" />
+      </button>
+      {open && (
+        <>
+          <button className="menu-backdrop" type="button" aria-label="关闭分支菜单" onClick={close} />
+          <div className="model-menu branch-menu" role="menu">
+            <div className="branch-search">
+              <Search size={13} />
+              <input
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索分支"
+                spellCheck={false}
+              />
+            </div>
+            <div className="model-menu-label">分支</div>
+            <div className="branch-list">
+              {filtered.length === 0 ? (
+                <div className="branch-empty">{branches.length === 0 ? '没有可用分支' : '没有匹配的分支'}</div>
+              ) : (
+                filtered.map((item) => {
+                  const active = item.current || item.name === currentBranch;
+                  return (
+                    <button
+                      key={item.name}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={active}
+                      className={`model-menu-item branch-menu-item ${active ? 'active' : ''}`}
+                      title={item.upstream ? `${item.name} · ${item.upstream}` : item.name}
+                      disabled={busy}
+                      onClick={() => switchBranch(item.name)}
+                    >
+                      <GitBranch size={14} />
+                      <span>{item.name}</span>
+                      {active && <Check size={14} className="model-menu-check" />}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            <div className="model-menu-divider" />
+            {creating ? (
+              <form
+                className="branch-create"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  submitCreate();
+                }}
+              >
+                <GitBranch size={13} />
+                <input
+                  autoFocus
+                  value={newName}
+                  onChange={(event) => setNewName(event.target.value)}
+                  placeholder="新分支名"
+                  spellCheck={false}
+                  disabled={busy}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      setCreating(false);
+                      setNewName('');
+                    }
+                  }}
+                />
+                <button type="submit" className="branch-create-confirm" disabled={!newName.trim() || busy} aria-label="创建并检出分支" title="创建并检出">
+                  {busy ? <Loader2 size={13} className="spin" /> : <Check size={14} />}
+                </button>
+              </form>
+            ) : (
+              <button
+                type="button"
+                className="model-menu-item branch-menu-item"
+                disabled={busy}
+                onClick={() => {
+                  setNewName(query.trim());
+                  setCreating(true);
+                }}
+              >
+                <Plus size={14} />
+                <span>创建并检出新分支…</span>
+              </button>
+            )}
+            {error && (
+              <div className="branch-error">
+                <AlertCircle size={12} />
+                <span>{error}</span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Directory + git context shown beneath the composer, mirroring Codex's footer.
 function ComposerMeta({ conversation }: { conversation: Conversation }) {
   const cwd = conversation.cwd;
+  const planMode = useChatStore((state) => state.planMode);
+  const pursueGoal = useChatStore((state) => state.pursueGoal);
   const [branch, setBranch] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
   useEffect(() => {
     let cancelled = false;
     setBranch(null);
@@ -1962,22 +2857,28 @@ function ComposerMeta({ conversation }: { conversation: Conversation }) {
     return () => {
       cancelled = true;
     };
-  }, [cwd]);
+  }, [cwd, reloadToken]);
 
   return (
     <div className="composer-meta">
-      <span className="composer-meta-pill" title={cwd || '未指定工作目录'}>
-        <FolderGit2 size={12} />
-        <span>{cwd ? basename(cwd) : '未指定目录'}</span>
-      </span>
-      <span className="composer-meta-pill">
-        <Bot size={12} />
-        <span>本地模式</span>
-      </span>
+      <DirectoryPicker conversation={conversation} />
       {branch && (
-        <span className="composer-meta-pill" title={`当前分支 ${branch}`}>
-          <GitBranch size={12} />
-          <span>{branch}</span>
+        <BranchPicker
+          cwd={cwd}
+          currentBranch={branch}
+          onChanged={() => setReloadToken((value) => value + 1)}
+        />
+      )}
+      {planMode && (
+        <span className="composer-meta-pill mode-on" title="计划模式已开启：Codex 会先给出可执行计划">
+          <ListChecks size={12} />
+          <span>计划模式</span>
+        </span>
+      )}
+      {pursueGoal && (
+        <span className="composer-meta-pill mode-on" title="追求目标已开启：Codex 会持续推进直到目标达成">
+          <Target size={12} />
+          <span>追求目标</span>
         </span>
       )}
     </div>
@@ -2047,16 +2948,6 @@ function ApprovalPicker() {
         <>
           <button className="menu-backdrop" type="button" aria-label="关闭批准菜单" onClick={() => setOpen(false)} />
           <div className="approval-menu" role="menu">
-            <div className="approval-menu-head">
-              <span>应如何批准 Codex 操作？</span>
-              <button
-                type="button"
-                className="approval-menu-learn"
-                onClick={() => void openExternal('https://developers.openai.com/codex')}
-              >
-                了解更多
-              </button>
-            </div>
             {APPROVAL_OPTIONS.map((option) => (
               <button
                 key={option.id}
@@ -2117,6 +3008,818 @@ function AuthorizationDialog() {
   );
 }
 
+type ReviewStep = 'menu' | 'base' | 'commit' | 'custom';
+
+// The review launcher mirrors Codex's `/review` presets: review uncommitted
+// changes, compare against a base branch, review a specific commit, or run the
+// reviewer with custom instructions. Picking a target kicks off a read-only
+// review turn in the current conversation and closes the dialog.
+function ReviewDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const conversation = useCurrentConversation();
+  const cwd = conversation?.cwd || '';
+  const startReview = useChatStore((state) => state.startReview);
+  const busy = conversation?.status === 'streaming';
+  const [step, setStep] = useState<ReviewStep>('menu');
+  const [branches, setBranches] = useState<GitBranchInfo[]>([]);
+  const [commits, setCommits] = useState<GitCommit[]>([]);
+  const [instructions, setInstructions] = useState('');
+  const [query, setQuery] = useState('');
+  const [isRepo, setIsRepo] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setStep('menu');
+    setInstructions('');
+    setQuery('');
+    setError(null);
+    let cancelled = false;
+    void (async () => {
+      if (!cwd) {
+        setIsRepo(false);
+        return;
+      }
+      try {
+        const status = await gitStatus(cwd);
+        if (!cancelled) setIsRepo(status.isRepository);
+      } catch {
+        if (!cancelled) setIsRepo(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, cwd]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: WindowEventMap['keydown']) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const launch = (request: ReviewRequest) => {
+    startReview(request).catch(() => undefined);
+    onClose();
+  };
+
+  const openBase = async () => {
+    setStep('base');
+    setQuery('');
+    setError(null);
+    setLoading(true);
+    try {
+      setBranches(await gitBranches(cwd));
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openCommit = async () => {
+    setStep('commit');
+    setQuery('');
+    setError(null);
+    setLoading(true);
+    try {
+      setCommits(await gitRecentCommits(cwd, 30));
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredBranches = normalizedQuery
+    ? branches.filter((item) => item.name.toLowerCase().includes(normalizedQuery))
+    : branches;
+  const filteredCommits = normalizedQuery
+    ? commits.filter((item) =>
+        `${item.shortSha} ${item.subject} ${item.author}`.toLowerCase().includes(normalizedQuery),
+      )
+    : commits;
+
+  const header = (
+    <header className="review-dialog-head">
+      {step === 'menu' ? (
+        <span className="review-dialog-icon"><GitPullRequest size={18} /></span>
+      ) : (
+        <button type="button" className="icon-mini" onClick={() => setStep('menu')} aria-label="返回"><ChevronLeft size={16} /></button>
+      )}
+      <div className="review-dialog-title">
+        <strong>代码审查</strong>
+        <span>{cwd ? basename(cwd) || shortenPath(cwd) : '未绑定工作目录'}</span>
+      </div>
+      <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭"><X size={15} /></button>
+    </header>
+  );
+
+  let body: ReactNode;
+  if (isRepo === false) {
+    body = (
+      <div className="review-dialog-empty">
+        <AlertCircle size={20} />
+        <p>{cwd ? `${basename(cwd)} 不是 Git 仓库，无法进行代码审查。` : '当前对话尚未绑定工作目录。请先在输入框下方选择一个项目文件夹。'}</p>
+      </div>
+    );
+  } else if (step === 'menu') {
+    body = (
+      <div className="review-preset-list">
+        <button type="button" className="review-preset" disabled={busy} onClick={() => launch({ kind: 'uncommitted', label: '审查未提交的更改' })}>
+          <span className="review-preset-icon"><FileCode2 size={17} /></span>
+          <span className="review-preset-text">
+            <strong>审查未提交的更改</strong>
+            <span>检查已暂存、未暂存以及未跟踪的新文件</span>
+          </span>
+          <ChevronRight size={15} className="review-preset-chevron" />
+        </button>
+        <button type="button" className="review-preset" disabled={busy} onClick={() => void openBase()}>
+          <span className="review-preset-icon"><GitBranch size={17} /></span>
+          <span className="review-preset-text">
+            <strong>对比基础分支审查</strong>
+            <span>选择一个分支，审查当前分支相对它的改动</span>
+          </span>
+          <ChevronRight size={15} className="review-preset-chevron" />
+        </button>
+        <button type="button" className="review-preset" disabled={busy} onClick={() => void openCommit()}>
+          <span className="review-preset-icon"><GitCommitHorizontal size={17} /></span>
+          <span className="review-preset-text">
+            <strong>审查某次提交</strong>
+            <span>从最近的提交中选择一个进行审查</span>
+          </span>
+          <ChevronRight size={15} className="review-preset-chevron" />
+        </button>
+        <button type="button" className="review-preset" disabled={busy} onClick={() => setStep('custom')}>
+          <span className="review-preset-icon"><Sparkles size={17} /></span>
+          <span className="review-preset-text">
+            <strong>自定义审查指令</strong>
+            <span>用你自己的话指定审查重点（如“关注安全性”）</span>
+          </span>
+          <ChevronRight size={15} className="review-preset-chevron" />
+        </button>
+      </div>
+    );
+  } else if (step === 'base') {
+    body = (
+      <div className="review-pick">
+        <div className="branch-search">
+          <Search size={13} />
+          <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索分支" spellCheck={false} />
+        </div>
+        <div className="review-pick-list">
+          {loading ? (
+            <div className="review-pick-empty"><Loader2 size={14} className="spin" />加载分支…</div>
+          ) : filteredBranches.length === 0 ? (
+            <div className="review-pick-empty">{branches.length === 0 ? '没有可用分支' : '没有匹配的分支'}</div>
+          ) : (
+            filteredBranches.map((branch) => (
+              <button key={branch.name} type="button" className="review-pick-row" disabled={busy} onClick={() => launch({ kind: 'base', target: branch.name, label: `审查：对比分支 ${branch.name}` })}>
+                <GitBranch size={14} />
+                <span className="review-pick-main">{branch.name}{branch.current ? ' （当前）' : ''}</span>
+                {branch.upstream && <span className="review-pick-sub">{branch.upstream}</span>}
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    );
+  } else if (step === 'commit') {
+    body = (
+      <div className="review-pick">
+        <div className="branch-search">
+          <Search size={13} />
+          <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索提交" spellCheck={false} />
+        </div>
+        <div className="review-pick-list">
+          {loading ? (
+            <div className="review-pick-empty"><Loader2 size={14} className="spin" />加载提交…</div>
+          ) : filteredCommits.length === 0 ? (
+            <div className="review-pick-empty">{commits.length === 0 ? '没有提交记录' : '没有匹配的提交'}</div>
+          ) : (
+            filteredCommits.map((commit) => (
+              <button key={commit.sha} type="button" className="review-pick-row commit" disabled={busy} onClick={() => launch({ kind: 'commit', target: commit.sha, commitSubject: commit.subject, label: `审查提交 ${commit.shortSha}` })}>
+                <span className="review-commit-sha">{commit.shortSha}</span>
+                <span className="review-pick-main">{commit.subject}</span>
+                <span className="review-pick-sub">{commit.author} · {commit.relativeDate}</span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    );
+  } else {
+    const trimmed = instructions.trim();
+    body = (
+      <div className="review-custom">
+        <textarea
+          autoFocus
+          value={instructions}
+          onChange={(event) => setInstructions(event.target.value)}
+          placeholder="例如：重点关注并发安全和错误处理；忽略样式问题。"
+          rows={4}
+        />
+        <p className="review-custom-hint">将按你的指令审查未提交的更改。</p>
+        <div className="review-custom-actions">
+          <button type="button" className="auth-btn ghost" onClick={() => setStep('menu')}>返回</button>
+          <button type="button" className="auth-btn primary" disabled={!trimmed || busy} onClick={() => launch({ kind: 'custom', label: '自定义审查', instructions: trimmed })}>开始审查</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dialog-layer review-layer" role="presentation">
+      <button className="dialog-backdrop" type="button" aria-label="关闭审查" onClick={onClose} />
+      <section className="review-dialog" role="dialog" aria-modal="true" aria-label="代码审查">
+        {header}
+        {error && <div className="review-dialog-error"><AlertCircle size={13} />{error}</div>}
+        {busy && <div className="review-dialog-note"><Loader2 size={13} className="spin" />当前对话正在运行，请等待完成后再发起审查。</div>}
+        {body}
+      </section>
+    </div>
+  );
+}
+
+const REVIEW_PRIORITY_META: Record<string, { short: string; label: string; tone: string }> = {
+  P0: { short: 'P0', label: 'P0 严重', tone: 'p0' },
+  P1: { short: 'P1', label: 'P1 重要', tone: 'p1' },
+  P2: { short: 'P2', label: 'P2 一般', tone: 'p2' },
+  P3: { short: 'P3', label: 'P3 优化', tone: 'p3' },
+};
+
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text.trim());
+  } catch {
+    return null;
+  }
+}
+
+function normalizeReviewFinding(value: unknown): ReviewFinding | null {
+  if (!value || typeof value !== 'object') return null;
+  const obj = value as Record<string, unknown>;
+  const title = typeof obj.title === 'string' ? obj.title.trim() : '';
+  const body = typeof obj.body === 'string' ? obj.body.trim() : '';
+  if (!title && !body) return null;
+  const rawPriority = obj.priority;
+  const priority = rawPriority === 'P0' || rawPriority === 'P1' || rawPriority === 'P3' ? rawPriority : 'P2';
+  const num = (input: unknown) => (typeof input === 'number' && Number.isFinite(input) ? input : undefined);
+  return {
+    priority,
+    title: title || '（无标题）',
+    body,
+    file: typeof obj.file === 'string' && obj.file.trim() ? obj.file.trim() : undefined,
+    lineStart: num(obj.lineStart),
+    lineEnd: num(obj.lineEnd),
+    confidence: num(obj.confidence),
+    suggestion: typeof obj.suggestion === 'string' && obj.suggestion.trim() ? obj.suggestion : undefined,
+  };
+}
+
+function normalizeReviewReport(value: unknown): ReviewReport | null {
+  if (!value || typeof value !== 'object') return null;
+  const obj = value as Record<string, unknown>;
+  const hasFindings = Array.isArray(obj.findings);
+  const hasVerdict = obj.verdict === 'correct' || obj.verdict === 'incorrect';
+  if (!hasFindings && !hasVerdict) return null;
+  const findings = (hasFindings ? (obj.findings as unknown[]) : [])
+    .map(normalizeReviewFinding)
+    .filter((item): item is ReviewFinding => item !== null);
+  return {
+    verdict: obj.verdict === 'correct' ? 'correct' : obj.verdict === 'incorrect' ? 'incorrect' : 'unknown',
+    summary: typeof obj.summary === 'string' ? obj.summary.trim() : '',
+    findings,
+  };
+}
+
+// Splits a review turn's streamed text into human prose and the structured
+// findings JSON the prompt asks for. While the JSON fence is still streaming
+// (no closing ```), we hide it so the user never sees raw JSON.
+function parseReviewOutput(text: string): { prose: string; report: ReviewReport | null } {
+  const fenceRe = /```json\s*([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null;
+  let lastJson: string | null = null;
+  let lastStart = -1;
+  let lastEnd = -1;
+  while ((match = fenceRe.exec(text)) !== null) {
+    lastJson = match[1];
+    lastStart = match.index;
+    lastEnd = fenceRe.lastIndex;
+  }
+  if (lastJson !== null) {
+    const report = normalizeReviewReport(safeJsonParse(lastJson));
+    if (report) {
+      return { prose: `${text.slice(0, lastStart)}${text.slice(lastEnd)}`.trim(), report };
+    }
+    return { prose: text, report: null };
+  }
+  const openIdx = text.search(/```json/i);
+  if (openIdx >= 0) {
+    return { prose: text.slice(0, openIdx).trim(), report: null };
+  }
+  // Fallback for a bare JSON object emitted without a fence.
+  if (!text.includes('```') && text.includes('"findings"')) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      const report = normalizeReviewReport(safeJsonParse(text.slice(start, end + 1)));
+      if (report) return { prose: text.slice(0, start).trim(), report };
+    }
+  }
+  return { prose: text, report: null };
+}
+
+function joinPath(base: string, rel: string): string {
+  return `${base.replace(/[\\/]+$/, '')}/${rel.replace(/^[\\/]+/, '')}`;
+}
+
+function ReviewRequestChip({ request }: { request: ReviewRequest }) {
+  const icon = request.kind === 'base'
+    ? <GitBranch size={13} />
+    : request.kind === 'commit'
+      ? <GitCommitHorizontal size={13} />
+      : request.kind === 'custom'
+        ? <Sparkles size={13} />
+        : <GitPullRequest size={13} />;
+  return (
+    <div className="review-request-chip" title={request.instructions || request.label}>
+      <span className="review-request-icon">{icon}</span>
+      <span className="review-request-text">
+        <span className="review-request-title">{request.label}</span>
+        {request.instructions && <span className="review-request-sub">{request.instructions}</span>}
+      </span>
+    </div>
+  );
+}
+
+function ReviewBody({ message, cwd }: { message: ChatMessage; cwd: string }) {
+  const streaming = Boolean(message.isStreaming);
+  const textContent = message.blocks
+    .filter((block): block is Extract<MessageBlock, { type: 'text' }> => block.type === 'text')
+    .map((block) => block.content)
+    .join('');
+  const parsed = useMemo(() => parseReviewOutput(textContent), [textContent]);
+  const lastBlockIndex = message.blocks.length - 1;
+  const units = buildRenderUnits(message.blocks).filter(
+    (unit) => unit.type === 'command-group' || unit.block.type !== 'text',
+  );
+  return (
+    <div className="review-body">
+      {units.map((unit) =>
+        unit.type === 'command-group'
+          ? (unit.blocks.length === 1
+              ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
+              : <CommandGroup key={`cmd-group-${unit.startIndex}`} blocks={unit.blocks} />)
+          : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={streaming && unit.index === lastBlockIndex} />,
+      )}
+      {parsed.prose && (
+        <div className={`markdown-content ${streaming && !parsed.report ? 'streaming' : ''}`}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{parsed.prose}</ReactMarkdown>
+        </div>
+      )}
+      {parsed.report && <ReviewReportCard report={parsed.report} cwd={cwd} />}
+    </div>
+  );
+}
+
+function ReviewReportCard({ report, cwd }: { report: ReviewReport; cwd: string }) {
+  const counts: Record<string, number> = { P0: 0, P1: 0, P2: 0, P3: 0 };
+  for (const finding of report.findings) counts[finding.priority] = (counts[finding.priority] || 0) + 1;
+  const ok = report.verdict === 'correct';
+  const bad = report.verdict === 'incorrect';
+  return (
+    <section className="review-report">
+      <header className={`review-verdict ${ok ? 'ok' : bad ? 'bad' : 'unknown'}`}>
+        <span className="review-verdict-icon">{ok ? <ShieldCheck size={18} /> : bad ? <AlertTriangle size={18} /> : <Info size={18} />}</span>
+        <div className="review-verdict-text">
+          <strong>{ok ? '可以合入（Patch is correct）' : bad ? '存在需要解决的问题（Patch is incorrect）' : '审查完成'}</strong>
+          {report.summary && <span>{report.summary}</span>}
+        </div>
+      </header>
+      {report.findings.length > 0 ? (
+        <>
+          <div className="review-finding-stats">
+            {(['P0', 'P1', 'P2', 'P3']).map((priority) =>
+              counts[priority] ? (
+                <span key={priority} className={`review-badge ${REVIEW_PRIORITY_META[priority].tone}`}>
+                  {priority} · {counts[priority]}
+                </span>
+              ) : null,
+            )}
+          </div>
+          <div className="review-finding-list">
+            {report.findings.map((finding, index) => (
+              <ReviewFindingCard key={`${finding.title}-${index}`} finding={finding} cwd={cwd} />
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="review-clean"><Check size={15} />未发现需要修复的问题。</div>
+      )}
+    </section>
+  );
+}
+
+function ReviewFindingCard({ finding, cwd }: { finding: ReviewFinding; cwd: string }) {
+  const meta = REVIEW_PRIORITY_META[finding.priority] || REVIEW_PRIORITY_META.P2;
+  const location = finding.file
+    ? `${finding.file}${finding.lineStart ? `:${finding.lineStart}${finding.lineEnd && finding.lineEnd !== finding.lineStart ? `-${finding.lineEnd}` : ''}` : ''}`
+    : '';
+  const canOpen = Boolean(finding.file && cwd);
+  return (
+    <article className={`review-finding ${meta.tone}`}>
+      <div className="review-finding-head">
+        <span className={`review-badge ${meta.tone}`} title={meta.label}>{finding.priority}</span>
+        <span className="review-finding-title">{finding.title}</span>
+        {typeof finding.confidence === 'number' && (
+          <span className="review-confidence" title="审查器置信度">{Math.round(finding.confidence * 100)}%</span>
+        )}
+      </div>
+      {location && (
+        <button
+          type="button"
+          className="review-finding-loc"
+          disabled={!canOpen}
+          title={canOpen ? '在文件管理器中显示' : undefined}
+          onClick={() => { if (finding.file && cwd) void revealPath(joinPath(cwd, finding.file)); }}
+        >
+          <FileCode2 size={12} />{location}
+        </button>
+      )}
+      {finding.body && (
+        <div className="review-finding-body markdown-content">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{finding.body}</ReactMarkdown>
+        </div>
+      )}
+      {finding.suggestion && (
+        <div className="review-suggestion">
+          <div className="review-suggestion-head"><Sparkles size={12} />建议修改</div>
+          <pre>{finding.suggestion}</pre>
+        </div>
+      )}
+    </article>
+  );
+}
+
+type DiffLineType = 'add' | 'del' | 'context';
+
+interface DiffLine {
+  type: DiffLineType;
+  oldNo: number | null;
+  newNo: number | null;
+  text: string;
+}
+
+interface DiffHunk {
+  header: string;
+  oldStart: number;
+  newStart: number;
+  oldEnd: number;
+  newEnd: number;
+  lines: DiffLine[];
+}
+
+interface ParsedDiff {
+  hunks: DiffHunk[];
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}
+
+// Parse a single-file `git diff` payload into hunks with old/new line numbers so
+// the review panel can render an inline, Cursor-style diff instead of raw text.
+function parseUnifiedDiff(diff: string): ParsedDiff {
+  const hunks: DiffHunk[] = [];
+  let additions = 0;
+  let deletions = 0;
+  let binary = false;
+  if (!diff) return { hunks, additions, deletions, binary };
+
+  let current: DiffHunk | null = null;
+  let oldNo = 0;
+  let newNo = 0;
+  for (const raw of diff.split('\n')) {
+    if (raw.startsWith('Binary files') || raw.startsWith('GIT binary patch')) {
+      binary = true;
+      continue;
+    }
+    if (raw.startsWith('@@')) {
+      const match = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)/.exec(raw);
+      if (match) {
+        oldNo = Number(match[1]);
+        newNo = Number(match[2]);
+        current = {
+          header: match[3].trim(),
+          oldStart: oldNo,
+          newStart: newNo,
+          oldEnd: oldNo,
+          newEnd: newNo,
+          lines: [],
+        };
+        hunks.push(current);
+      }
+      continue;
+    }
+    if (!current) continue; // file headers (diff --git / index / --- / +++)
+    if (raw.startsWith('+')) {
+      current.lines.push({ type: 'add', oldNo: null, newNo, text: raw.slice(1) });
+      current.newEnd = newNo;
+      newNo += 1;
+      additions += 1;
+    } else if (raw.startsWith('-')) {
+      current.lines.push({ type: 'del', oldNo, newNo: null, text: raw.slice(1) });
+      current.oldEnd = oldNo;
+      oldNo += 1;
+      deletions += 1;
+    } else if (raw.startsWith('\\')) {
+      // "\ No newline at end of file" — metadata, skip.
+    } else {
+      const text = raw.startsWith(' ') ? raw.slice(1) : raw;
+      current.lines.push({ type: 'context', oldNo, newNo, text });
+      current.oldEnd = oldNo;
+      current.newEnd = newNo;
+      oldNo += 1;
+      newNo += 1;
+    }
+  }
+  return { hunks, additions, deletions, binary };
+}
+
+interface FileDiffState {
+  change: GitFileChange;
+  raw: string;
+  parsed: ParsedDiff;
+  error?: string;
+}
+
+// "审查 / 查看代码更改" — a Cursor-style review panel that shows every changed
+// file's diff inline and lets you stage, commit and push without leaving it.
+function ReviewChangesPanel({
+  onClose,
+  onOpenCodexReview,
+}: {
+  onClose: () => void;
+  onOpenCodexReview: () => void;
+}) {
+  const conversation = useCurrentConversation();
+  const cwd = conversation?.cwd || '';
+  const [status, setStatus] = useState<GitStatus | null>(null);
+  const [diffs, setDiffs] = useState<Record<string, FileDiffState>>({});
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [filter, setFilter] = useState('');
+  const [commitOpen, setCommitOpen] = useState(false);
+  const [commitMessage, setCommitMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!cwd) {
+      setStatus({ cwd: '', isRepository: false, ahead: 0, behind: 0, clean: true, changes: [], error: '当前对话未绑定工作目录。' });
+      setDiffs({});
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await gitStatus(cwd);
+      setStatus(next);
+      if (!next.isRepository) {
+        setDiffs({});
+        return;
+      }
+      const entries = await Promise.all(
+        next.changes.map(async (change): Promise<readonly [string, FileDiffState]> => {
+          try {
+            const raw = await gitDiff(cwd, change.path, change.staged && !change.unstaged);
+            return [change.path, { change, raw, parsed: parseUnifiedDiff(raw) }] as const;
+          } catch (err) {
+            return [change.path, { change, raw: '', parsed: parseUnifiedDiff(''), error: stringifyError(err) }] as const;
+          }
+        }),
+      );
+      setDiffs(Object.fromEntries(entries));
+      setCollapsed((prev) => {
+        const merged: Record<string, boolean> = {};
+        for (const [path, state] of entries) {
+          // Auto-collapse very large diffs (e.g. lockfiles) so the panel stays snappy.
+          merged[path] = path in prev ? prev[path] : state.parsed.additions + state.parsed.deletions > 600;
+        }
+        return merged;
+      });
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [cwd]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const runGit = async (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      await refresh();
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changes = status?.changes ?? [];
+  const totals = useMemo(() => {
+    let add = 0;
+    let del = 0;
+    for (const state of Object.values(diffs)) {
+      add += state.parsed.additions;
+      del += state.parsed.deletions;
+    }
+    return { add, del };
+  }, [diffs]);
+  const unstagedCount = changes.filter((change) => change.unstaged || change.status === 'untracked').length;
+  const normalizedFilter = filter.trim().toLowerCase();
+  const visibleChanges = normalizedFilter
+    ? changes.filter((change) => change.path.toLowerCase().includes(normalizedFilter))
+    : changes;
+  const branch = status?.branch || '';
+
+  return (
+    <aside className="review-panel">
+      <header className="panel-header">
+        <div>
+          <h2>审查</h2>
+          <span>{cwd ? shortenPath(cwd) : '未指定工作目录'}</span>
+        </div>
+        <button className="icon-btn" type="button" onClick={onClose} aria-label="关闭审查面板"><X size={15} /></button>
+      </header>
+
+      {status?.isRepository ? (
+        <>
+          <div className="review-bar">
+            {branch && <span className="review-branch"><GitBranch size={13} />{branch}</span>}
+            <span className="review-pill">未暂存 {unstagedCount}</span>
+            <span className="review-stat add">+{totals.add}</span>
+            <span className="review-stat del">-{totals.del}</span>
+            <button type="button" className="icon-mini" onClick={() => void refresh()} disabled={busy} title="刷新"><RefreshCw size={13} className={busy ? 'spin' : ''} /></button>
+          </div>
+
+          <div className="review-actions">
+            <button type="button" className="panel-btn" onClick={() => setCommitOpen((value) => !value)} disabled={changes.length === 0 && !commitOpen}><GitCommitHorizontal size={13} />提交或推送</button>
+            <button type="button" className="panel-btn" onClick={onOpenCodexReview} disabled={!cwd}><Sparkles size={13} />让 Codex 审查</button>
+          </div>
+
+          {commitOpen && (
+            <div className="git-commit-box">
+              <textarea value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Commit message" rows={3} />
+              <div className="review-commit-actions">
+                <button type="button" className="panel-btn primary" disabled={!commitMessage.trim() || busy} onClick={() => void runGit(async () => { await gitCommit(cwd, commitMessage); setCommitMessage(''); })}><GitCommitHorizontal size={13} />提交</button>
+                <button type="button" className="panel-btn" disabled={!status.isRepository || busy} onClick={() => void runGit(() => gitPush(cwd, !status.upstream))}><Upload size={13} />推送</button>
+                <button type="button" className="panel-btn" disabled={!status.isRepository || busy} onClick={() => void runGit(() => gitPull(cwd))}><Download size={13} />拉取</button>
+              </div>
+            </div>
+          )}
+
+          {error && <div className="panel-error"><AlertCircle size={14} />{error}</div>}
+
+          <div className="review-filter">
+            <Search size={13} />
+            <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选文件…" spellCheck={false} />
+          </div>
+
+          <div className="review-files">
+            {changes.length === 0 ? (
+              <div className="git-empty">工作区干净，没有需要审查的更改。</div>
+            ) : visibleChanges.length === 0 ? (
+              <div className="git-empty">没有匹配「{filter}」的文件。</div>
+            ) : (
+              visibleChanges.map((change) => {
+                const state = diffs[change.path];
+                return (
+                  <ReviewFileDiff
+                    key={`${change.path}-${change.indexStatus}-${change.workingTreeStatus}`}
+                    change={change}
+                    state={state}
+                    collapsed={collapsed[change.path] ?? false}
+                    busy={busy}
+                    onToggle={() => setCollapsed((prev) => ({ ...prev, [change.path]: !(prev[change.path] ?? false) }))}
+                    onStage={() => void runGit(() => gitStage(cwd, [change.path]))}
+                    onUnstage={() => void runGit(() => gitUnstage(cwd, [change.path]))}
+                    onOpen={() => void revealPath(`${cwd}/${change.path}`)}
+                  />
+                );
+              })
+            )}
+          </div>
+
+          {changes.length > 0 && (
+            <footer className="review-footer">
+              <button type="button" className="panel-btn" disabled={busy || !changes.some((change) => change.staged)} onClick={() => void runGit(() => gitUnstage(cwd, changes.filter((change) => change.staged).map((change) => change.path)))}><RotateCcw size={13} />取消暂存全部</button>
+              <button type="button" className="panel-btn primary" disabled={busy || changes.length === 0} onClick={() => void runGit(() => gitStage(cwd, changes.map((change) => change.path)))}><Plus size={13} />暂存全部</button>
+            </footer>
+          )}
+        </>
+      ) : (
+        <div className="git-empty-state">
+          <FolderGit2 size={22} />
+          <strong>当前工作目录不是 Git 仓库</strong>
+          <span>{status?.error || '请选择一个包含 .git 的项目目录。'}</span>
+          {error && <em>{error}</em>}
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function ReviewFileDiff({
+  change,
+  state,
+  collapsed,
+  busy,
+  onToggle,
+  onStage,
+  onUnstage,
+  onOpen,
+}: {
+  change: GitFileChange;
+  state: FileDiffState | undefined;
+  collapsed: boolean;
+  busy: boolean;
+  onToggle: () => void;
+  onStage: () => void;
+  onUnstage: () => void;
+  onOpen: () => void;
+}) {
+  const parsed = state?.parsed;
+  const adds = parsed?.additions ?? 0;
+  const dels = parsed?.deletions ?? 0;
+
+  return (
+    <section className="review-file">
+      <header className="review-file-head">
+        <button type="button" className="review-file-toggle" onClick={onToggle} title={change.path}>
+          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          <span className={`git-status-dot ${change.status}`}>{change.indexStatus}{change.workingTreeStatus}</span>
+          <span className="review-file-name">{change.path}</span>
+        </button>
+        <span className="review-file-stat">
+          {adds > 0 && <span className="add">+{adds}</span>}
+          {dels > 0 && <span className="del">-{dels}</span>}
+        </span>
+        <span className="review-file-actions">
+          {change.staged
+            ? <button type="button" className="icon-mini" onClick={onUnstage} disabled={busy} title="取消暂存"><RotateCcw size={13} /></button>
+            : <button type="button" className="icon-mini" onClick={onStage} disabled={busy} title="暂存"><Plus size={13} /></button>}
+          <button type="button" className="icon-mini" onClick={onOpen} title="在文件管理器中显示"><FolderOpen size={13} /></button>
+        </span>
+      </header>
+      {!collapsed && (
+        <div className="review-diff">
+          {!state ? (
+            <div className="review-diff-note"><Loader2 size={13} className="spin" />读取差异…</div>
+          ) : state.error ? (
+            <div className="review-diff-note">{state.error}</div>
+          ) : parsed && parsed.binary ? (
+            <div className="review-diff-note">二进制文件已更改。</div>
+          ) : !parsed || parsed.hunks.length === 0 ? (
+            <div className="review-diff-note">{change.status === 'untracked' ? '新文件（未跟踪）— 暂存后可查看差异。' : '没有可显示的文本差异。'}</div>
+          ) : (
+            parsed.hunks.map((hunk, index) => {
+              const previous = index > 0 ? parsed.hunks[index - 1] : null;
+              const gap = previous ? hunk.oldStart - previous.oldEnd - 1 : hunk.oldStart - 1;
+              return (
+                <div className="review-hunk" key={`${hunk.oldStart}-${hunk.newStart}-${index}`}>
+                  {gap > 0 && (
+                    <div className="review-hunk-sep">{gap} 行未更改{hunk.header ? ` · ${hunk.header}` : ''}</div>
+                  )}
+                  {hunk.lines.map((line, lineIndex) => (
+                    <div className={`review-line ${line.type}`} key={lineIndex}>
+                      <span className="review-ln">{line.oldNo ?? ''}</span>
+                      <span className="review-ln">{line.newNo ?? ''}</span>
+                      <span className="review-line-sign">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}</span>
+                      <code className="review-line-text">{line.text.length ? line.text : ' '}</code>
+                    </div>
+                  ))}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function GitPanel({ onClose }: { onClose: () => void }) {
   const conversation = useCurrentConversation();
   const cwd = conversation?.cwd || '';
@@ -2128,6 +3831,8 @@ function GitPanel({ onClose }: { onClose: () => void }) {
   const [commitMessage, setCommitMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [creatingBranch, setCreatingBranch] = useState(false);
+  const [newBranchName, setNewBranchName] = useState('');
 
   const refresh = async () => {
     if (!cwd) {
@@ -2202,13 +3907,46 @@ function GitPanel({ onClose }: { onClose: () => void }) {
             {(status.ahead > 0 || status.behind > 0) && <span>ahead {status.ahead} · behind {status.behind}</span>}
           </div>
           <div className="git-branches">
-            <button type="button" className="panel-btn" onClick={() => {
-              const name = window.prompt('输入新分支名');
-              if (name) void runGit(() => gitCreateBranch(cwd, name));
-            }} disabled={busy}><Plus size={13} />新分支</button>
-            <select value={currentBranch} onChange={(event) => void runGit(() => gitCheckoutBranch(cwd, event.target.value))} disabled={busy}>
-              {branches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}{branch.upstream ? ` · ${branch.upstream}` : ''}</option>)}
-            </select>
+            {creatingBranch ? (
+              <form
+                className="git-branch-create"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const name = newBranchName.trim();
+                  if (!name) return;
+                  void runGit(async () => {
+                    await gitCreateBranch(cwd, name);
+                    setCreatingBranch(false);
+                    setNewBranchName('');
+                  });
+                }}
+              >
+                <input
+                  autoFocus
+                  value={newBranchName}
+                  onChange={(event) => setNewBranchName(event.target.value)}
+                  placeholder="新分支名（基于当前分支创建并检出）"
+                  spellCheck={false}
+                  disabled={busy}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      setCreatingBranch(false);
+                      setNewBranchName('');
+                    }
+                  }}
+                />
+                <button type="submit" className="panel-btn primary" disabled={!newBranchName.trim() || busy}><Check size={13} />创建</button>
+                <button type="button" className="panel-btn" disabled={busy} onClick={() => { setCreatingBranch(false); setNewBranchName(''); }}><X size={13} /></button>
+              </form>
+            ) : (
+              <>
+                <button type="button" className="panel-btn" onClick={() => { setNewBranchName(''); setCreatingBranch(true); }} disabled={busy}><Plus size={13} />新分支</button>
+                <select value={currentBranch} onChange={(event) => void runGit(() => gitCheckoutBranch(cwd, event.target.value))} disabled={busy}>
+                  {branches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}{branch.upstream ? ` · ${branch.upstream}` : ''}</option>)}
+                </select>
+              </>
+            )}
           </div>
           <div className="git-commit-box">
             <textarea value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Commit message" rows={3} />
@@ -2792,9 +4530,12 @@ function stripAnsi(value: string): string {
   return value.replace(ANSI_PATTERN, '');
 }
 
-function clampTerminalBuffer(value: string): string {
-  const MAX = 120_000;
-  return value.length > MAX ? value.slice(value.length - MAX) : value;
+function cleanCommandOutput(value?: string): string {
+  if (!value) return '';
+  return stripAnsi(value)
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function stringifyError(error: unknown): string {

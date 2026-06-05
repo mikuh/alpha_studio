@@ -51,7 +51,10 @@ describe('applyCodexEventToConversation', () => {
     expect(second.messages[0].blocks).toEqual([{ type: 'text', content: '结论：谨慎。' }]);
   });
 
-  it('does not duplicate a final full-text message after deltas', () => {
+  it('appends every text delta verbatim (dedup is the backend\'s job)', () => {
+    // The app-server streams pure incremental tokens and suppresses the final
+    // full-text snapshot when it already streamed deltas, so the frontend must
+    // append each delta as-is — repeated tokens like "." or " the" are legit.
     const first = applyCodexEventToConversation(baseConversation(), {
       type: 'text_delta',
       runId: 'run-1',
@@ -62,10 +65,26 @@ describe('applyCodexEventToConversation', () => {
       type: 'text_delta',
       runId: 'run-1',
       conversationId: 'conv-1',
-      text: '结论：谨慎。',
+      text: '谨慎。谨慎。',
     });
 
-    expect(second.messages[0].blocks).toEqual([{ type: 'text', content: '结论：谨慎。' }]);
+    expect(second.messages[0].blocks).toEqual([{ type: 'text', content: '结论：谨慎。谨慎。' }]);
+  });
+
+  it('ignores terminal events once the turn has already finished', () => {
+    const conversation: Conversation = { ...baseConversation(), status: 'idle' };
+    conversation.messages = [
+      { id: 'asst-1', role: 'assistant', timestamp: 1, isStreaming: false, blocks: [{ type: 'text', content: '你好' }] },
+    ];
+
+    const afterStop = applyCodexEventToConversation(conversation, {
+      type: 'stopped',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+    });
+    // A late stop must not append a second "[已停止]" or otherwise mutate a
+    // conversation that already left the streaming state.
+    expect(afterStop).toBe(conversation);
   });
 
   it('tracks tool lifecycle', () => {

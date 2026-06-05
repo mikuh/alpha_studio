@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { applyCodexEventToConversation } from './codexEvents';
-import { buildCodingPrompt } from './prompt';
-import { checkCodex, isTauriRuntime, startCodexChat, stopCodexChat } from './codexBridge';
+import { buildCodingPrompt, buildReviewPrompt } from './prompt';
+import { checkCodex, isTauriRuntime, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import {
   DEFAULT_APPROVAL,
   DEFAULT_EFFORT,
@@ -23,8 +23,11 @@ import type {
   CodexChatEvent,
   CodexStatus,
   Conversation,
+  MessageAttachment,
+  MessageBlock,
   Project,
   ProjectSort,
+  ReviewRequest,
   SandboxMode,
 } from './types';
 
@@ -43,6 +46,8 @@ interface ChatState {
   speed: Speed;
   codexStatus: CodexStatus | null;
   approvalMode: ApprovalMode;
+  planMode: boolean;
+  pursueGoal: boolean;
   pendingAuthorization: AuthorizationRequest | null;
   isCheckingCodex: boolean;
   error: string | null;
@@ -57,6 +62,7 @@ interface ChatState {
   renameConversation: (id: string, title: string) => void;
   toggleConversationPin: (id: string) => void;
   duplicateConversation: (id: string) => string | null;
+  setConversationCwd: (id: string, cwd: string, projectId?: string | null) => void;
   setConversationSort: (sort: ProjectSort) => void;
   createProject: (input?: { name?: string; cwd?: string }) => string;
   renameProject: (id: string, name: string) => void;
@@ -70,10 +76,13 @@ interface ChatState {
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setSpeed: (speed: Speed) => void;
   setApprovalMode: (mode: ApprovalMode) => void;
+  setPlanMode: (planMode: boolean) => void;
+  setPursueGoal: (pursueGoal: boolean) => void;
   resolveAuthorization: (id: string, decision: ApprovalDecision) => void;
   refreshCodexStatus: () => Promise<void>;
-  sendMessage: (message: string) => Promise<void>;
-  editUserMessageAndResend: (conversationId: string, messageId: string, message: string) => Promise<void>;
+  sendMessage: (message: string, attachments?: MessageAttachment[]) => Promise<void>;
+  startReview: (request: ReviewRequest) => Promise<void>;
+  editUserMessageAndResend: (conversationId: string, messageId: string, message: string, attachments?: MessageAttachment[]) => Promise<void>;
   stopCurrentConversation: () => Promise<void>;
   handleCodexEvent: (event: CodexChatEvent) => void;
 }
@@ -86,6 +95,8 @@ interface PersistedChatState {
   reasoningEffort: ReasoningEffort;
   speed: Speed;
   approvalMode: ApprovalMode;
+  planMode: boolean;
+  pursueGoal: boolean;
   projectSort: ProjectSort;
   conversationSort: ProjectSort;
 }
@@ -158,6 +169,8 @@ export const useChatStore = create<ChatState>()(
       speed: DEFAULT_SPEED,
       codexStatus: null,
       approvalMode: DEFAULT_APPROVAL,
+      planMode: false,
+      pursueGoal: false,
       pendingAuthorization: null,
       isCheckingCodex: false,
       error: null,
@@ -293,6 +306,26 @@ export const useChatStore = create<ChatState>()(
         return clone.id;
       },
 
+      // Point a single conversation at a working directory. Picking an existing
+      // project carries its id so the conversation stays grouped; choosing a raw
+      // folder passes projectId=null to detach it into a standalone chat. Passing
+      // undefined leaves the current project association untouched.
+      setConversationCwd: (id, cwd, projectId) => {
+        const next = cwd.trim();
+        set((state) => ({
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === id
+              ? {
+                  ...conversation,
+                  cwd: next,
+                  projectId: projectId === undefined ? conversation.projectId : projectId ?? undefined,
+                  updatedAt: Date.now(),
+                }
+              : conversation
+          ),
+        }));
+      },
+
       setConversationSort: (sort) => set({ conversationSort: sort }),
 
       createProject: (input) => {
@@ -399,6 +432,10 @@ export const useChatStore = create<ChatState>()(
 
       setApprovalMode: (mode: ApprovalMode) => set({ approvalMode: mode }),
 
+      setPlanMode: (planMode: boolean) => set({ planMode }),
+
+      setPursueGoal: (pursueGoal: boolean) => set({ pursueGoal }),
+
       resolveAuthorization: (id: string, decision: ApprovalDecision) => {
         const resolve = authorizationResolvers.get(id);
         if (resolve) {
@@ -427,9 +464,10 @@ export const useChatStore = create<ChatState>()(
         }
       },
 
-      sendMessage: async (message: string) => {
+      sendMessage: async (message: string, attachments?: MessageAttachment[]) => {
         const trimmed = message.trim();
-        if (!trimmed) return;
+        const attachmentList = attachments && attachments.length ? attachments : undefined;
+        if (!trimmed && !attachmentList) return;
 
         let conversationId = get().currentConversationId;
         const activeIds = new Set(activeConversations(get().conversations).map((item) => item.id));
@@ -443,7 +481,8 @@ export const useChatStore = create<ChatState>()(
           id: createId('user'),
           role: 'user',
           timestamp: Date.now(),
-          blocks: [{ type: 'text', content: trimmed }],
+          blocks: trimmed ? [{ type: 'text', content: trimmed }] : [],
+          attachments: attachmentList,
         };
         const assistantMessage: ChatMessage = {
           id: createId('assistant'),
@@ -453,7 +492,7 @@ export const useChatStore = create<ChatState>()(
           blocks: [],
         };
         const nextTitle = conversation.messages.length === 0
-          ? buildConversationTitle(trimmed)
+          ? buildConversationTitle(trimmed || attachmentList?.[0]?.name || '')
           : conversation.title;
 
         set((state) => ({
@@ -482,7 +521,10 @@ export const useChatStore = create<ChatState>()(
 
         try {
           const latest = get().conversations.find((item) => item.id === conversationId);
-          const prompt = buildCodingPrompt(trimmed);
+          const prompt = buildCodingPrompt(promptWithAttachments(trimmed, attachmentList), {
+            planMode: get().planMode,
+            pursueGoal: get().pursueGoal,
+          });
           const result = await startCodexChat({
             conversationId,
             prompt,
@@ -507,9 +549,88 @@ export const useChatStore = create<ChatState>()(
         }
       },
 
-      editUserMessageAndResend: async (conversationId: string, messageId: string, message: string) => {
+      startReview: async (request: ReviewRequest) => {
+        let conversationId = get().currentConversationId;
+        const activeIds = new Set(activeConversations(get().conversations).map((item) => item.id));
+        if (!conversationId || !activeIds.has(conversationId)) {
+          conversationId = get().createConversation();
+        }
+        const conversation = get().conversations.find((item) => item.id === conversationId);
+        if (!conversation || conversation.status === 'streaming' || conversation.archivedAt) return;
+
+        const userMessage: ChatMessage = {
+          id: createId('user'),
+          role: 'user',
+          timestamp: Date.now(),
+          blocks: [{ type: 'text', content: request.label }],
+          reviewRequest: request,
+        };
+        const assistantMessage: ChatMessage = {
+          id: createId('assistant'),
+          role: 'assistant',
+          timestamp: Date.now(),
+          isStreaming: true,
+          blocks: [],
+          review: true,
+        };
+        const nextTitle = conversation.messages.length === 0 ? request.label : conversation.title;
+
+        set((state) => ({
+          conversations: state.conversations.map((item) =>
+            item.id === conversationId
+              ? {
+                  ...item,
+                  title: nextTitle,
+                  messages: [...item.messages, userMessage, assistantMessage],
+                  status: 'streaming',
+                  updatedAt: Date.now(),
+                  runId: undefined,
+                }
+              : item
+          ),
+          error: null,
+        }));
+
+        if (!isTauriRuntime()) {
+          simulateBrowserReview(conversationId, request, get().handleCodexEvent);
+          return;
+        }
+
+        try {
+          const latest = get().conversations.find((item) => item.id === conversationId);
+          // Reviews always run read-only so they can never touch the working tree,
+          // matching Codex's dedicated reviewer (no approval prompt needed).
+          const result = await startCodexChat({
+            conversationId,
+            prompt: buildReviewPrompt(request),
+            codexThreadId: latest?.codexThreadId,
+            cwd: latest?.cwd || undefined,
+            model: get().model,
+            reasoningEffort: get().reasoningEffort,
+            sandboxMode: 'read-only',
+          });
+          set((state) => ({
+            conversations: state.conversations.map((item) =>
+              item.id === conversationId ? { ...item, runId: result.runId } : item
+            ),
+          }));
+        } catch (error) {
+          get().handleCodexEvent({
+            type: 'error',
+            runId: '',
+            conversationId,
+            message: stringifyError(error),
+          });
+        }
+      },
+
+      editUserMessageAndResend: async (
+        conversationId: string,
+        messageId: string,
+        message: string,
+        attachments?: MessageAttachment[],
+      ) => {
         const trimmed = message.trim();
-        if (!trimmed) return;
 
         const conversation = get().conversations.find((item) => item.id === conversationId);
         if (!conversation || conversation.status === 'streaming' || conversation.archivedAt) return;
@@ -519,12 +640,23 @@ export const useChatStore = create<ChatState>()(
         );
         if (messageIndex < 0) return;
 
+        const original = conversation.messages[messageIndex];
+        // When the caller passes an explicit list we honor it (including clearing
+        // to none); otherwise we keep whatever the original message carried so the
+        // attached file/image context survives the edit.
+        const nextAttachments =
+          attachments !== undefined
+            ? (attachments.length ? attachments : undefined)
+            : original.attachments;
+        if (!trimmed && !nextAttachments) return;
+
         const now = Date.now();
         const previousMessages = conversation.messages.slice(0, messageIndex);
         const editedUserMessage: ChatMessage = {
-          ...conversation.messages[messageIndex],
+          ...original,
           timestamp: now,
-          blocks: [{ type: 'text', content: trimmed }],
+          blocks: trimmed ? [{ type: 'text', content: trimmed }] : [],
+          attachments: nextAttachments,
         };
         const assistantMessage: ChatMessage = {
           id: createId('assistant'),
@@ -533,7 +665,9 @@ export const useChatStore = create<ChatState>()(
           isStreaming: true,
           blocks: [],
         };
-        const nextTitle = messageIndex === 0 ? buildConversationTitle(trimmed) : conversation.title;
+        const nextTitle = messageIndex === 0
+          ? buildConversationTitle(trimmed || nextAttachments?.[0]?.name || '')
+          : conversation.title;
 
         set((state) => ({
           conversations: state.conversations.map((item) =>
@@ -563,7 +697,13 @@ export const useChatStore = create<ChatState>()(
 
         try {
           const latest = get().conversations.find((item) => item.id === conversationId);
-          const prompt = buildCodingPrompt(buildEditedPrompt(trimmed, previousMessages));
+          const prompt = buildCodingPrompt(
+            promptWithAttachments(buildEditedPrompt(trimmed, previousMessages), nextAttachments),
+            {
+              planMode: get().planMode,
+              pursueGoal: get().pursueGoal,
+            },
+          );
           const result = await startCodexChat({
             conversationId,
             prompt,
@@ -589,12 +729,25 @@ export const useChatStore = create<ChatState>()(
 
       stopCurrentConversation: async () => {
         const conversation = get().conversations.find((item) => item.id === get().currentConversationId);
-        if (!conversation?.runId) return;
-        try {
-          await stopCodexChat(conversation.runId);
-        } catch (error) {
-          set({ error: stringifyError(error) });
+        if (!conversation || conversation.status !== 'streaming') return;
+        if (conversation.runId) {
+          try {
+            await stopCodexChat(conversation.runId);
+          } catch (error) {
+            set({ error: stringifyError(error) });
+          }
         }
+        // Always finalize locally so the stop button can never get stuck. When
+        // the backend has a live process for this run it also emits its own
+        // `stopped`, but that is now idempotent; when it doesn't (e.g. the run
+        // is a stale one persisted from before an app/process restart, so there
+        // is nothing left to kill) this local finalize is the only thing that
+        // unsticks the conversation.
+        get().handleCodexEvent({
+          type: 'stopped',
+          runId: conversation.runId ?? '',
+          conversationId: conversation.id,
+        });
       },
 
       handleCodexEvent: (event: CodexChatEvent) => {
@@ -617,12 +770,19 @@ export const useChatStore = create<ChatState>()(
         reasoningEffort: state.reasoningEffort,
         speed: state.speed,
         approvalMode: state.approvalMode,
+        planMode: state.planMode,
+        pursueGoal: state.pursueGoal,
         projectSort: state.projectSort,
         conversationSort: state.conversationSort,
       }),
       migrate: (persistedState) => migratePersistedState(persistedState),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
+        // A conversation persisted mid-turn comes back as `streaming` with a
+        // `runId` that no longer maps to any live process (the Codex process
+        // restarts on every `tauri dev` rebuild and on app relaunch). Finalize
+        // those on load so they don't show "正在思考" forever and stay stuck.
+        state.conversations = state.conversations.map(recoverInterruptedConversation);
         const active = activeConversations(state.conversations);
         if (!state.currentConversationId || !active.some((item) => item.id === state.currentConversationId)) {
           state.currentConversationId = active[0]?.id ?? null;
@@ -631,6 +791,21 @@ export const useChatStore = create<ChatState>()(
     },
   ),
 );
+
+interface ImageViewerState {
+  src: string | null;
+  alt: string;
+  open: (src: string, alt?: string) => void;
+  close: () => void;
+}
+
+// Ephemeral, non-persisted state for the full-size image lightbox.
+export const useImageViewer = create<ImageViewerState>((set) => ({
+  src: null,
+  alt: '',
+  open: (src, alt = '') => set({ src, alt }),
+  close: () => set({ src: null, alt: '' }),
+}));
 
 export function useCurrentConversation(): Conversation | null {
   return useChatStore((state) => {
@@ -699,6 +874,30 @@ function createEmptyConversation(project?: Project): Conversation {
   };
 }
 
+// Closes out a conversation that was persisted while a turn was still in
+// flight. The backing run is necessarily dead by the time we rehydrate, so we
+// drop the status/runId back to idle and stop any half-streamed message from
+// rendering as if it were still live (empty ones get a short interrupted note).
+function recoverInterruptedConversation(conversation: Conversation): Conversation {
+  const needsRecovery =
+    conversation.status === 'streaming' ||
+    conversation.runId !== undefined ||
+    conversation.messages.some((message) => message.isStreaming);
+  if (!needsRecovery) return conversation;
+
+  const messages = conversation.messages.map((message) => {
+    if (!message.isStreaming) return message;
+    const interrupted: MessageBlock[] = [{ type: 'text', content: '[已中断]' }];
+    return {
+      ...message,
+      isStreaming: false,
+      blocks: message.blocks.length > 0 ? message.blocks : interrupted,
+    };
+  });
+
+  return { ...conversation, status: 'idle', runId: undefined, messages };
+}
+
 function createId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -711,6 +910,15 @@ function buildConversationTitle(message: string): string {
 function stringifyError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error || 'Unknown error');
+}
+
+// Folds attached file references into the prompt so Codex can locate them in the
+// working directory (the visible transcript renders the chips separately).
+function promptWithAttachments(text: string, attachments?: MessageAttachment[]): string {
+  if (!attachments || attachments.length === 0) return text;
+  const lines = attachments.map((item) => `- ${item.path || item.name}${item.kind === 'image' ? '（图片）' : ''}`);
+  const section = ['附带文件：', ...lines].join('\n');
+  return text ? `${text}\n\n${section}` : section;
 }
 
 function buildEditedPrompt(message: string, previousMessages: ChatMessage[]): string {
@@ -794,6 +1002,73 @@ function simulateBrowserReply(conversationId: string, dispatch: (event: CodexCha
   }
 }
 
+function simulateBrowserReview(
+  conversationId: string,
+  request: ReviewRequest,
+  dispatch: (event: CodexChatEvent) => void,
+): void {
+  const runId = createId('preview');
+  dispatch({ type: 'started', runId, conversationId });
+  dispatch({ type: 'thread_started', runId, conversationId, threadId: 'browser-preview' });
+
+  const events: Array<{ delay: number; event: CodexChatEvent }> = [];
+  let delay = 160;
+  const push = (event: CodexChatEvent) => events.push({ delay, event });
+
+  push({ type: 'reasoning_delta', runId, conversationId, text: '先获取需要审查的改动，再逐文件评估风险。' });
+  delay += 260;
+
+  const diffCmd =
+    request.kind === 'base'
+      ? `git diff ${request.target}...HEAD`
+      : request.kind === 'commit'
+        ? `git show ${request.target}`
+        : 'git diff';
+  push({ type: 'tool_started', runId, conversationId, itemId: `${runId}-diff`, title: 'command_execution', text: diffCmd });
+  delay += 240;
+  push({ type: 'tool_delta', runId, conversationId, itemId: `${runId}-diff`, title: 'command_execution', text: ' src/store.ts | 18 ++++++++--\n 1 file changed\n' });
+  delay += 220;
+  push({ type: 'tool_completed', runId, conversationId, itemId: `${runId}-diff`, title: 'command_execution' });
+  delay += 200;
+
+  const report = {
+    verdict: 'incorrect',
+    summary: '改动整体方向正确，但有 1 个需要修复的问题与 1 个建议。',
+    findings: [
+      {
+        priority: 'P1',
+        title: '未处理空数组导致的潜在崩溃',
+        body: '当 `changes` 为空时直接访问 `changes[0]` 会得到 undefined，后续解构会抛错。建议先判空。',
+        file: 'src/store.ts',
+        lineStart: 42,
+        lineEnd: 48,
+        confidence: 0.78,
+        suggestion: 'const first = changes[0];\nif (!first) return;',
+      },
+      {
+        priority: 'P3',
+        title: '抽取重复的分支查找逻辑',
+        body: '相同的查找在两处出现，可抽成一个小函数以便维护。',
+        file: 'src/store.ts',
+        lineStart: 120,
+        lineEnd: 134,
+        confidence: 0.5,
+      },
+    ],
+  };
+
+  const prose = '这是浏览器预览模式下的模拟审查结果。桌面应用会调用真实的 Codex 审查器来分析改动。\n\n';
+  for (const chunk of [prose, '```json\n', `${JSON.stringify(report, null, 2)}\n`, '```']) {
+    push({ type: 'text_delta', runId, conversationId, text: chunk });
+    delay += 200;
+  }
+  push({ type: 'completed', runId, conversationId });
+
+  for (const item of events) {
+    window.setTimeout(() => dispatch(item.event), item.delay);
+  }
+}
+
 export function migratePersistedState(persistedState: unknown): PersistedChatState {
   const source = (persistedState && typeof persistedState === 'object' ? persistedState : {}) as Record<string, unknown>;
   const conversations = Array.isArray(source.conversations)
@@ -817,6 +1092,8 @@ export function migratePersistedState(persistedState: unknown): PersistedChatSta
     approvalMode: isApprovalMode(source.approvalMode)
       ? source.approvalMode
       : sandboxToApproval(source.sandboxMode),
+    planMode: source.planMode === true,
+    pursueGoal: source.pursueGoal === true,
     projectSort: isProjectSort(source.projectSort) ? source.projectSort : 'updated',
     conversationSort: isProjectSort(source.conversationSort) ? source.conversationSort : 'updated',
   };
@@ -828,4 +1105,21 @@ function isReasoningEffort(value: unknown): value is ReasoningEffort {
 
 function isProjectSort(value: unknown): value is ProjectSort {
   return value === 'updated' || value === 'created' || value === 'name';
+}
+
+// Subscribe to Codex streaming events exactly once per page load. We do this at
+// module scope rather than inside a React effect so it is immune to React
+// StrictMode's mount→cleanup→mount cycle and to Vite HMR remounts — both of
+// which previously leaked a second listener and replayed every streamed token
+// twice (the "duplicated characters" bug). The window flag survives HMR, so only
+// a full page reload ever re-subscribes.
+const CODEX_SUBSCRIPTION_FLAG = '__alphaStudioCodexSubscribed__';
+if (isTauriRuntime()) {
+  const globalScope = window as unknown as Record<string, boolean>;
+  if (!globalScope[CODEX_SUBSCRIPTION_FLAG]) {
+    globalScope[CODEX_SUBSCRIPTION_FLAG] = true;
+    void subscribeCodexEvents((event) => {
+      useChatStore.getState().handleCodexEvent(event);
+    });
+  }
 }

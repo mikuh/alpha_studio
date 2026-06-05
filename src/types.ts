@@ -38,12 +38,65 @@ export interface ErrorBlock {
 
 export type MessageBlock = TextBlock | ThinkingBlock | ToolBlock | ErrorBlock;
 
+export interface MessageAttachment {
+  id: string;
+  name: string;
+  kind: 'image' | 'file';
+  ext: string;
+  // Absolute path (desktop) or file name (browser preview); folded into the prompt.
+  path?: string;
+  // URL the webview can render for image thumbnails (asset URL or object URL).
+  previewUrl?: string;
+}
+
+// What a review turn was asked to inspect, mirroring Codex's /review presets.
+export type ReviewTargetKind = 'uncommitted' | 'base' | 'commit' | 'custom';
+
+export interface ReviewRequest {
+  kind: ReviewTargetKind;
+  // Human-readable label shown on the request chip, e.g. "审查未提交的更改".
+  label: string;
+  // Branch name (base review) or commit SHA (commit review).
+  target?: string;
+  // First line of the reviewed commit, shown for context.
+  commitSubject?: string;
+  // Optional custom reviewer instructions the user typed.
+  instructions?: string;
+}
+
+export type ReviewVerdict = 'correct' | 'incorrect' | 'unknown';
+
+export type ReviewPriority = 'P0' | 'P1' | 'P2' | 'P3';
+
+export interface ReviewFinding {
+  priority: ReviewPriority;
+  title: string;
+  body: string;
+  file?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  confidence?: number;
+  suggestion?: string;
+}
+
+// Structured findings parsed from a review turn's final JSON block.
+export interface ReviewReport {
+  verdict: ReviewVerdict;
+  summary: string;
+  findings: ReviewFinding[];
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
   blocks: MessageBlock[];
   timestamp: number;
   isStreaming?: boolean;
+  attachments?: MessageAttachment[];
+  // Marks an assistant turn that should render as a structured code review.
+  review?: boolean;
+  // Marks a user turn that kicked off a review (renders as a review chip).
+  reviewRequest?: ReviewRequest;
 }
 
 export interface Conversation {
@@ -152,6 +205,14 @@ export interface GitBranch {
   name: string;
   current: boolean;
   upstream?: string;
+}
+
+export interface GitCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  relativeDate: string;
 }
 
 export interface GitRemote {
