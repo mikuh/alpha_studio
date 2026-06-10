@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { ModelProfile } from './models';
 import type {
   CodexChatEvent,
   CodexStatus,
@@ -24,12 +25,23 @@ export interface CodexChatStartRequest {
   codexThreadId?: string;
   cwd?: string;
   model?: string;
+  providerId?: string;
+  providerBaseUrl?: string;
+  providerApiKey?: string;
+  providerWireApi?: string;
+  providerThinkingEnabled?: boolean;
   reasoningEffort?: string;
   sandboxMode?: SandboxMode;
 }
 
 export interface CodexChatStartResult {
   runId: string;
+}
+
+export interface ModelConfigFile {
+  selectedModelProfileId?: string;
+  modelProfiles: ModelProfile[];
+  path?: string;
 }
 
 export function isTauriRuntime(): boolean {
@@ -58,6 +70,17 @@ export async function stopCodexChat(runId: string): Promise<boolean> {
   return result.stopped;
 }
 
+export async function loadModelConfig(): Promise<ModelConfigFile | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<ModelConfigFile>('model_config_load');
+}
+
+export async function saveModelConfig(config: ModelConfigFile): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const result = await invoke<{ path: string }>('model_config_save', { request: config });
+  return result.path;
+}
+
 export async function revealPath(path: string): Promise<boolean> {
   if (!path || !isTauriRuntime()) return false;
   try {
@@ -83,9 +106,37 @@ export async function gitStatus(cwd: string): Promise<GitStatus> {
   return invoke<GitStatus>('git_status', { request: { cwd } });
 }
 
-export async function gitDiff(cwd: string, path?: string, staged = false): Promise<string> {
+export async function gitDiff(
+  cwd: string,
+  path?: string,
+  staged = false,
+  untracked = false,
+  context?: number,
+): Promise<string> {
   if (!isTauriRuntime()) return '';
-  return invoke<string>('git_diff', { request: { cwd, path, staged } });
+  return invoke<string>('git_diff', { request: { cwd, path, staged, untracked, context } });
+}
+
+// Opens the GitHub "create pull request" page in the browser (gh pr create --web).
+export async function ghPrCreateWeb(cwd: string): Promise<GitCommandResult> {
+  if (!isTauriRuntime()) return { stdout: '', stderr: '浏览器预览模式无法创建拉取请求。' };
+  return invoke<GitCommandResult>('gh_pr_create_web', { request: { cwd } });
+}
+
+export async function gitDiscard(cwd: string, paths: string[]): Promise<GitCommandResult> {
+  if (!isTauriRuntime()) return { stdout: '', stderr: '' };
+  return invoke<GitCommandResult>('git_discard', { request: { cwd, paths } });
+}
+
+// Stage (or, with reverse, unstage) a single hunk by applying its patch to the
+// index. `patch` is a self-contained unified diff (file header + one hunk).
+export async function gitApplyPatch(
+  cwd: string,
+  patch: string,
+  reverse = false,
+): Promise<GitCommandResult> {
+  if (!isTauriRuntime()) return { stdout: '', stderr: '' };
+  return invoke<GitCommandResult>('git_apply_patch', { request: { cwd, patch, reverse } });
 }
 
 export async function gitStage(cwd: string, paths: string[]): Promise<GitCommandResult> {

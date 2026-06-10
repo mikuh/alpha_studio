@@ -2,17 +2,26 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { applyCodexEventToConversation } from './codexEvents';
 import { buildCodingPrompt, buildReviewPrompt } from './prompt';
-import { checkCodex, isTauriRuntime, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
+import { checkCodex, isTauriRuntime, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
+import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
 import {
   DEFAULT_APPROVAL,
   DEFAULT_EFFORT,
-  DEFAULT_MODEL,
+  DEFAULT_MODEL_PROFILE_ID,
   DEFAULT_SPEED,
   approvalRequiresPrompt,
   baseSandboxForApproval,
+  defaultModelProfiles,
   isApprovalMode,
+  normalizeModelProfileDraft,
+  normalizeModelProfiles,
+  resolveModelProfile,
+  selectedModelProfileId as resolveSelectedModelProfileId,
   sandboxToApproval,
+  stripModelProfileSecrets,
   type ApprovalMode,
+  type ModelProfile,
+  type ModelProfileDraft,
   type ReasoningEffort,
   type Speed,
 } from './models';
@@ -41,9 +50,13 @@ interface ChatState {
   conversations: Conversation[];
   projects: Project[];
   currentConversationId: string | null;
-  model: string;
+  selectedModelProfileId: string;
+  modelProfiles: ModelProfile[];
+  modelConfigPath: string | null;
+  isLoadingModelConfig: boolean;
   reasoningEffort: ReasoningEffort;
   speed: Speed;
+  workModeId: WorkModeId;
   codexStatus: CodexStatus | null;
   approvalMode: ApprovalMode;
   planMode: boolean;
@@ -72,9 +85,15 @@ interface ChatState {
   unarchiveProject: (id: string) => void;
   permanentlyDeleteProject: (id: string) => void;
   setProjectSort: (sort: ProjectSort) => void;
-  setModel: (model: string) => void;
+  setModelProfile: (id: string) => void;
+  addModelProfile: (profile: ModelProfileDraft) => string | null;
+  updateModelProfile: (id: string, patch: Partial<ModelProfileDraft>) => void;
+  deleteModelProfile: (id: string) => void;
+  toggleModelProfile: (id: string, enabled: boolean) => void;
+  loadModelConfig: () => Promise<void>;
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setSpeed: (speed: Speed) => void;
+  setWorkModeId: (modeId: WorkModeId) => void;
   setApprovalMode: (mode: ApprovalMode) => void;
   setPlanMode: (planMode: boolean) => void;
   setPursueGoal: (pursueGoal: boolean) => void;
@@ -91,9 +110,11 @@ interface PersistedChatState {
   conversations: Conversation[];
   projects: Project[];
   currentConversationId: string | null;
-  model: string;
+  selectedModelProfileId: string;
+  modelProfiles: ModelProfile[];
   reasoningEffort: ReasoningEffort;
   speed: Speed;
+  workModeId: WorkModeId;
   approvalMode: ApprovalMode;
   planMode: boolean;
   pursueGoal: boolean;
@@ -160,13 +181,29 @@ export const useChatStore = create<ChatState>()(
         }));
       };
 
+      const persistModelConfig = () => {
+        const state = get();
+        void saveModelConfigFile({
+          selectedModelProfileId: state.selectedModelProfileId,
+          modelProfiles: state.modelProfiles.filter((profile) => !profile.builtIn),
+        })
+          .then((path) => {
+            if (path) set({ modelConfigPath: path });
+          })
+          .catch((error) => set({ error: stringifyError(error) }));
+      };
+
       return {
-      conversations: [createEmptyConversation()],
-      projects: [],
-      currentConversationId: null,
-      model: DEFAULT_MODEL,
-      reasoningEffort: DEFAULT_EFFORT,
-      speed: DEFAULT_SPEED,
+        conversations: [createEmptyConversation()],
+        projects: [],
+        currentConversationId: null,
+        selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+        modelProfiles: defaultModelProfiles(),
+        modelConfigPath: null,
+        isLoadingModelConfig: false,
+        reasoningEffort: DEFAULT_EFFORT,
+        speed: DEFAULT_SPEED,
+      workModeId: DEFAULT_WORK_MODE_ID,
       codexStatus: null,
       approvalMode: DEFAULT_APPROVAL,
       planMode: false,
@@ -424,11 +461,99 @@ export const useChatStore = create<ChatState>()(
 
       setProjectSort: (sort: ProjectSort) => set({ projectSort: sort }),
 
-      setModel: (model: string) => set({ model }),
+      setModelProfile: (id: string) => {
+        const selected = get().modelProfiles.find((profile) => profile.id === id && profile.enabled);
+        if (selected) {
+          set({ selectedModelProfileId: selected.id });
+          persistModelConfig();
+        }
+      },
+
+      addModelProfile: (profile) => {
+        const normalized = normalizeModelProfileDraft(profile);
+        if (!normalized.model || (normalized.providerId !== 'openai' && !normalized.baseUrl)) return null;
+        const id = createId('model');
+        set((state) => ({
+          modelProfiles: [...state.modelProfiles, { ...normalized, id }],
+          selectedModelProfileId: id,
+        }));
+        persistModelConfig();
+        return id;
+      },
+
+      updateModelProfile: (id, patch) => {
+        set((state) => {
+          const target = state.modelProfiles.find((profile) => profile.id === id);
+          if (!target || target.builtIn) return {};
+          const next = normalizeModelProfileDraft({ ...target, ...patch });
+          if (!next.model || (next.providerId !== 'openai' && !next.baseUrl)) return {};
+          return {
+            modelProfiles: state.modelProfiles.map((profile) =>
+              profile.id === id ? { ...next, id } : profile
+            ),
+          };
+        });
+        persistModelConfig();
+      },
+
+      deleteModelProfile: (id) => {
+        set((state) => {
+          const target = state.modelProfiles.find((profile) => profile.id === id);
+          if (!target || target.builtIn) return {};
+          const modelProfiles = state.modelProfiles.filter((profile) => profile.id !== id);
+          const selectedModelProfileId =
+            state.selectedModelProfileId === id
+              ? resolveModelProfile(modelProfiles, DEFAULT_MODEL_PROFILE_ID).id
+              : state.selectedModelProfileId;
+          return { modelProfiles, selectedModelProfileId };
+        });
+        persistModelConfig();
+      },
+
+      toggleModelProfile: (id, enabled) => {
+        set((state) => {
+          const modelProfiles = state.modelProfiles.map((profile) =>
+            profile.id === id && !profile.builtIn ? { ...profile, enabled } : profile
+          );
+          const selectedModelProfileId =
+            !enabled && state.selectedModelProfileId === id
+              ? resolveModelProfile(modelProfiles, DEFAULT_MODEL_PROFILE_ID).id
+              : state.selectedModelProfileId;
+          return { modelProfiles, selectedModelProfileId };
+        });
+        persistModelConfig();
+      },
+
+      loadModelConfig: async () => {
+        if (!isTauriRuntime()) return;
+        set({ isLoadingModelConfig: true, error: null });
+        try {
+          const config = await loadModelConfigFile();
+          if (!config) {
+            set({ isLoadingModelConfig: false });
+            return;
+          }
+          const modelProfiles = normalizeModelProfiles(config.modelProfiles);
+          const selectedModelProfileId = resolveSelectedModelProfileId(
+            config.selectedModelProfileId,
+            modelProfiles,
+          );
+          set({
+            modelProfiles,
+            selectedModelProfileId,
+            modelConfigPath: config.path ?? null,
+            isLoadingModelConfig: false,
+          });
+        } catch (error) {
+          set({ isLoadingModelConfig: false, error: stringifyError(error) });
+        }
+      },
 
       setReasoningEffort: (effort: ReasoningEffort) => set({ reasoningEffort: effort }),
 
       setSpeed: (speed: Speed) => set({ speed }),
+
+      setWorkModeId: (workModeId: WorkModeId) => set({ workModeId }),
 
       setApprovalMode: (mode: ApprovalMode) => set({ approvalMode: mode }),
 
@@ -519,21 +644,21 @@ export const useChatStore = create<ChatState>()(
           return;
         }
 
-        try {
-          const latest = get().conversations.find((item) => item.id === conversationId);
-          const prompt = buildCodingPrompt(promptWithAttachments(trimmed, attachmentList), {
-            planMode: get().planMode,
-            pursueGoal: get().pursueGoal,
-          });
-          const result = await startCodexChat({
-            conversationId,
-            prompt,
-            codexThreadId: latest?.codexThreadId,
-            cwd: latest?.cwd || undefined,
-            model: get().model,
-            reasoningEffort: get().reasoningEffort,
-            sandboxMode,
-          });
+	        try {
+	          const latest = get().conversations.find((item) => item.id === conversationId);
+	          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+	          const prompt = buildCodingPrompt(promptWithAttachments(trimmed, attachmentList), {
+	            planMode: get().planMode,
+	            pursueGoal: get().pursueGoal,
+	          }, activeDomain(get().workModeId));
+	          const result = await startCodexChat({
+	            conversationId,
+	            prompt,
+	            codexThreadId: latest?.codexThreadId,
+	            cwd: latest?.cwd || undefined,
+	            ...codexModelRequest(modelProfile, get().reasoningEffort),
+	            sandboxMode,
+	          });
           set((state) => ({
             conversations: state.conversations.map((item) =>
               item.id === conversationId ? { ...item, runId: result.runId } : item
@@ -596,19 +721,19 @@ export const useChatStore = create<ChatState>()(
           return;
         }
 
-        try {
-          const latest = get().conversations.find((item) => item.id === conversationId);
-          // Reviews always run read-only so they can never touch the working tree,
-          // matching Codex's dedicated reviewer (no approval prompt needed).
-          const result = await startCodexChat({
-            conversationId,
-            prompt: buildReviewPrompt(request),
-            codexThreadId: latest?.codexThreadId,
-            cwd: latest?.cwd || undefined,
-            model: get().model,
-            reasoningEffort: get().reasoningEffort,
-            sandboxMode: 'read-only',
-          });
+	        try {
+	          const latest = get().conversations.find((item) => item.id === conversationId);
+	          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+	          // Reviews always run read-only so they can never touch the working tree,
+	          // matching Codex's dedicated reviewer (no approval prompt needed).
+	          const result = await startCodexChat({
+	            conversationId,
+	            prompt: buildReviewPrompt(request),
+	            codexThreadId: latest?.codexThreadId,
+	            cwd: latest?.cwd || undefined,
+	            ...codexModelRequest(modelProfile, get().reasoningEffort),
+	            sandboxMode: 'read-only',
+	          });
           set((state) => ({
             conversations: state.conversations.map((item) =>
               item.id === conversationId ? { ...item, runId: result.runId } : item
@@ -695,23 +820,24 @@ export const useChatStore = create<ChatState>()(
           return;
         }
 
-        try {
-          const latest = get().conversations.find((item) => item.id === conversationId);
-          const prompt = buildCodingPrompt(
-            promptWithAttachments(buildEditedPrompt(trimmed, previousMessages), nextAttachments),
-            {
+	        try {
+	          const latest = get().conversations.find((item) => item.id === conversationId);
+	          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+	          const prompt = buildCodingPrompt(
+	            promptWithAttachments(buildEditedPrompt(trimmed, previousMessages), nextAttachments),
+	            {
               planMode: get().planMode,
               pursueGoal: get().pursueGoal,
             },
+            activeDomain(get().workModeId),
           );
-          const result = await startCodexChat({
-            conversationId,
-            prompt,
-            cwd: latest?.cwd || undefined,
-            model: get().model,
-            reasoningEffort: get().reasoningEffort,
-            sandboxMode,
-          });
+	          const result = await startCodexChat({
+	            conversationId,
+	            prompt,
+	            cwd: latest?.cwd || undefined,
+	            ...codexModelRequest(modelProfile, get().reasoningEffort),
+	            sandboxMode,
+	          });
           set((state) => ({
             conversations: state.conversations.map((item) =>
               item.id === conversationId ? { ...item, runId: result.runId } : item
@@ -761,14 +887,16 @@ export const useChatStore = create<ChatState>()(
     },
     {
       name: 'alpha-studio.chat.v2',
-      version: 3,
+      version: 5,
       partialize: (state) => ({
         conversations: state.conversations,
         projects: state.projects,
         currentConversationId: state.currentConversationId,
-        model: state.model,
+        selectedModelProfileId: state.selectedModelProfileId,
+        modelProfiles: stripModelProfileSecrets(state.modelProfiles),
         reasoningEffort: state.reasoningEffort,
         speed: state.speed,
+        workModeId: state.workModeId,
         approvalMode: state.approvalMode,
         planMode: state.planMode,
         pursueGoal: state.pursueGoal,
@@ -902,14 +1030,110 @@ function createId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function buildConversationTitle(message: string): string {
-  const compact = message.replace(/\s+/g, ' ').trim();
-  return compact.length > 24 ? `${compact.slice(0, 24)}...` : compact || '新对话';
+const CONVERSATION_TITLE_MAX_LENGTH = 24;
+
+export function buildConversationTitle(message: string): string {
+  const source = normalizeTitleSource(message);
+  if (!source) return '新对话';
+
+  const withoutGreeting = stripLeadingGreeting(source);
+  if (!withoutGreeting) return '问候';
+
+  const cleaned = cleanTitlePhrase(withoutGreeting);
+  const summarized = summarizeKnownTitleIntent(cleaned);
+  return clampConversationTitle(summarized || cleaned || source);
+}
+
+function normalizeTitleSource(message: string): string {
+  return message
+    .replace(/```[\s\S]*?```/g, '代码片段')
+    .replace(/(?:^|\s)(?:附带文件|附件|上传文件|已附加文件)[：:].*$/s, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[“”"']/g, '')
+    .trim();
+}
+
+function stripLeadingGreeting(message: string): string {
+  let next = message.trim();
+  while (true) {
+    const stripped = next
+      .replace(/^(?:你好|您好|嗨|哈喽|hello|hi|hey)(?:呀|啊|哈)?(?:[，,。.!！?？:：\s]+|$)/i, '')
+      .trim();
+    if (stripped === next) return next;
+    next = stripped;
+    if (!next) return '';
+  }
+}
+
+function cleanTitlePhrase(message: string): string {
+  let next = message.trim();
+  const leadingFillers = [
+    /^(?:请你?|麻烦你?|劳烦你?|拜托你?|可以的话|如果可以的话)[，,：:\s]*/,
+    /^(?:能不能|能否|可以|可不可以)?(?:帮我|帮忙|替我|给我)[，,：:\s]*/,
+    /^(?:我希望|我想要?|我需要|想让你|希望你)[，,：:\s]*/,
+  ];
+
+  while (true) {
+    const before = next;
+    for (const pattern of leadingFillers) {
+      next = next.replace(pattern, '').trim();
+    }
+    if (next === before) break;
+  }
+
+  return next
+    .replace(/[，,]\s*(?:请你?|麻烦你?|帮我|帮忙|替我|给我)[，,\s]*/g, '，')
+    .replace(/(分析|检查|查看|审查|修改|改|写|生成|总结|解释|翻译|整理|搜索|查询|创建|实现|修复)一下/g, '$1')
+    .replace(/(?:这个|这份|该)(文件|附件|文档|图片|截图|代码|项目)/g, '$1')
+    .replace(/(?:怎么样|如何|可以吗|好吗|吗|呢)[？?]?$/i, '')
+    .replace(/[。！？!?]+$/g, '')
+    .trim();
+}
+
+function summarizeKnownTitleIntent(message: string): string | null {
+  const imageQuestion = message.match(/^(?:这个|这张|这幅)?(?:图|图片|照片|截图)(?:是|是什么|里有什么|内容是什么|有什么)/);
+  if (imageQuestion) return '识别图片内容';
+
+  const fileQuestion = message.match(/^(分析|检查|查看|解读|总结|审查)(?:文件|附件|文档|图片|截图|代码|项目)/);
+  if (fileQuestion) {
+    const target = message.slice(fileQuestion[1].length).match(/^(文件|附件|文档|图片|截图|代码|项目)/)?.[1] ?? '内容';
+    return `${fileQuestion[1]}${target}`;
+  }
+
+  const weather = message.match(/^(.{1,14}?)(?:未来|最近|本周|这周|下周|一周|周末).{0,12}?天气/);
+  if (weather) return `${weather[1].replace(/[的在]$/, '')}天气查询`;
+
+  const writing = message.match(/^(?:写|生成|起草)(?:一篇|一份)?(?:([0-9０-９]+字)的?)?(?:关于)?(.{2,18}?)(?:的)?(文章|作文|报告|文案|邮件|说明)/);
+  if (writing) {
+    const size = writing[1] ?? '';
+    return `写${size}${writing[2]}${writing[3]}`;
+  }
+
+  return null;
+}
+
+function clampConversationTitle(title: string): string {
+  const compact = title.replace(/\s+/g, ' ').trim();
+  return compact.length > CONVERSATION_TITLE_MAX_LENGTH
+    ? `${compact.slice(0, CONVERSATION_TITLE_MAX_LENGTH)}...`
+    : compact || '新对话';
 }
 
 function stringifyError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error || 'Unknown error');
+}
+
+function codexModelRequest(profile: ModelProfile, reasoningEffort: ReasoningEffort) {
+  return {
+    model: profile.model,
+    providerId: profile.providerId,
+    providerBaseUrl: profile.baseUrl,
+    providerApiKey: profile.apiKey,
+    providerWireApi: profile.wireApi,
+    providerThinkingEnabled: profile.wireApi === 'chat' ? profile.supportsReasoningEffort : undefined,
+    reasoningEffort: profile.supportsReasoningEffort ? reasoningEffort : undefined,
+  };
 }
 
 // Folds attached file references into the prompt so Codex can locate them in the
@@ -1078,17 +1302,25 @@ export function migratePersistedState(persistedState: unknown): PersistedChatSta
       }))
     : [createEmptyConversation()];
   const projects = Array.isArray(source.projects) ? (source.projects as Project[]) : [];
-  const currentConversationId = typeof source.currentConversationId === 'string'
-    ? source.currentConversationId
-    : activeConversations(conversations)[0]?.id ?? conversations[0]?.id ?? null;
+	  const currentConversationId = typeof source.currentConversationId === 'string'
+	    ? source.currentConversationId
+	    : activeConversations(conversations)[0]?.id ?? conversations[0]?.id ?? null;
+	  const modelProfiles = normalizeModelProfiles(source.modelProfiles, source.model);
+	  const selectedModelProfileId = resolveSelectedModelProfileId(
+	    source.selectedModelProfileId,
+	    modelProfiles,
+	    source.model,
+	  );
 
-  return {
-    conversations,
-    projects,
-    currentConversationId,
-    model: typeof source.model === 'string' ? source.model : DEFAULT_MODEL,
-    reasoningEffort: isReasoningEffort(source.reasoningEffort) ? source.reasoningEffort : DEFAULT_EFFORT,
+	  return {
+	    conversations,
+	    projects,
+	    currentConversationId,
+	    selectedModelProfileId,
+	    modelProfiles,
+	    reasoningEffort: isReasoningEffort(source.reasoningEffort) ? source.reasoningEffort : DEFAULT_EFFORT,
     speed: source.speed === 'fast' || source.speed === 'standard' ? source.speed : DEFAULT_SPEED,
+    workModeId: isWorkModeId(source.workModeId) ? source.workModeId : DEFAULT_WORK_MODE_ID,
     approvalMode: isApprovalMode(source.approvalMode)
       ? source.approvalMode
       : sandboxToApproval(source.sandboxMode),

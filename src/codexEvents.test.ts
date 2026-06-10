@@ -82,9 +82,26 @@ describe('applyCodexEventToConversation', () => {
       runId: 'run-1',
       conversationId: 'conv-1',
     });
-    // A late stop must not append a second "[已停止]" or otherwise mutate a
-    // conversation that already left the streaming state.
     expect(afterStop).toBe(conversation);
+  });
+
+  it('stops streaming without appending a visible stop marker', () => {
+    const conversation = applyCodexEventToConversation(baseConversation(), {
+      type: 'text_delta',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      text: '处理中',
+    });
+
+    const stopped = applyCodexEventToConversation(conversation, {
+      type: 'stopped',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+    });
+
+    expect(stopped.status).toBe('idle');
+    expect(stopped.messages[0].isStreaming).toBe(false);
+    expect(stopped.messages[0].blocks).toEqual([{ type: 'text', content: '处理中' }]);
   });
 
   it('tracks tool lifecycle', () => {
@@ -152,5 +169,20 @@ describe('applyCodexEventToConversation', () => {
     expect(errored.status).toBe('error');
     expect(errored.messages[0].isStreaming).toBe(false);
     expect(errored.messages[0].blocks[0]).toEqual({ type: 'error', content: 'bad' });
+  });
+
+  it('shows retry status without ending the turn', () => {
+    const conversation = { ...baseConversation(), runId: 'run-1' };
+    const next = applyCodexEventToConversation(conversation, {
+      type: 'status',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      message: 'Provider 正在重试',
+    });
+
+    expect(next.status).toBe('streaming');
+    expect(next.runId).toBe('run-1');
+    expect(next.messages[0].isStreaming).toBe(true);
+    expect(next.messages[0].blocks[0]).toEqual({ type: 'error', content: 'Provider 正在重试' });
   });
 });

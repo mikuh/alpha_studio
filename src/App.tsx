@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
-  ChangeEvent,
-  CSSProperties,
-  KeyboardEvent as ReactKeyboardEvent,
+	  ChangeEvent,
+	  CSSProperties,
+	  FormEvent,
+	  KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   ReactNode,
 } from 'react';
@@ -22,6 +23,7 @@ import {
   Braces,
   CalendarDays,
   Check,
+  CheckCheck,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -29,11 +31,15 @@ import {
   ChevronsUpDown,
   Clock3,
   Code2,
+  Columns2,
   Copy,
   Cpu,
   Download,
+  Eye,
+  EyeOff,
   File,
   FileCode2,
+  FileDiff,
   FileSpreadsheet,
   FileText,
   Folder,
@@ -59,6 +65,7 @@ import {
   MessageSquare,
   MessageSquarePlus,
   Mic,
+  Minus,
   Monitor,
   Moon,
   MoreHorizontal,
@@ -88,6 +95,7 @@ import {
   Target,
   Terminal,
   Trash2,
+  Undo2,
   Upload,
   UserCircle,
   Workflow,
@@ -97,11 +105,14 @@ import {
 } from 'lucide-react';
 import {
   ghAuthStatus,
+  ghPrCreateWeb,
+  gitApplyPatch,
   gitBranches,
   gitCheckoutBranch,
   gitCommit,
   gitCreateBranch,
   gitDiff,
+  gitDiscard,
   gitRecentCommits,
   gitDiffStat,
   gitPull,
@@ -120,18 +131,21 @@ import {
   terminalStop,
   terminalWrite,
 } from './codexBridge';
-import { activeDomain } from './domain';
+import { WORK_MODE_OPTIONS, activeDomain, type DomainConfig, type DomainFeature, type DomainSuggestion, type WorkModeId } from './domain';
 import {
   APPROVAL_OPTIONS,
   EFFORT_OPTIONS,
-  MODEL_OPTIONS,
   SPEED_OPTIONS,
   approvalDescription,
   approvalLabel,
   effortLabel,
-  modelLabel,
-  shortModelLabel,
+  modelProfileLabel,
+  normalizeModelProfileDraft,
+  shortModelProfileLabel,
   type ApprovalMode,
+  type ModelProfile,
+  type ModelProfileDraft,
+  type ModelWireApi,
   type ReasoningEffort,
   type Speed,
 } from './models';
@@ -172,6 +186,7 @@ type SettingsSection =
   | 'profile'
   | 'appearance'
   | 'config'
+  | 'models'
   | 'personalization'
   | 'keyboard'
   | 'usage'
@@ -186,19 +201,34 @@ type SettingsSection =
   | 'worktrees'
   | 'archived';
 
-const domain = activeDomain();
 const SIDEBAR_WIDTH_KEY = 'alpha:codex-sidebar-width';
+const RIGHT_SIDEBAR_WIDTH_KEY = 'alpha:right-sidebar-width';
+const GIT_PANEL_WIDTH_KEY = 'alpha:git-panel-width';
+const REVIEW_PANEL_WIDTH_KEY = 'alpha:review-panel-width';
 const THEME_KEY = 'alpha:codex-theme';
 const THEME_RESTORE_KEY = 'alpha:codex-theme-restored-main-ui-v2';
 const SIDEBAR_MIN_WIDTH = 244;
 const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 300;
+const RIGHT_SIDEBAR_MIN_WIDTH = 220;
+const RIGHT_SIDEBAR_MAX_WIDTH = 520;
+const RIGHT_SIDEBAR_DEFAULT_WIDTH = 268;
+const GIT_PANEL_MIN_WIDTH = 360;
+const GIT_PANEL_MAX_WIDTH = 760;
+const GIT_PANEL_DEFAULT_WIDTH = 430;
+const REVIEW_PANEL_MIN_WIDTH = 520;
+const REVIEW_PANEL_MAX_WIDTH = 1120;
+const REVIEW_PANEL_DEFAULT_WIDTH = 704;
+const RIGHT_PANEL_MIN_MAIN_WIDTH = 360;
 
 export function App() {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
+  const loadModelConfig = useChatStore((state) => state.loadModelConfig);
   const conversations = useChatStore((state) => state.conversations);
   const currentConversationId = useChatStore((state) => state.currentConversationId);
   const setCurrentConversation = useChatStore((state) => state.setCurrentConversation);
+  const workModeId = useChatStore((state) => state.workModeId);
+  const domain = activeDomain(workModeId);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -208,10 +238,31 @@ export function App() {
       ? saved
       : SIDEBAR_DEFAULT_WIDTH;
   });
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(() => {
+    if (typeof window === 'undefined') return RIGHT_SIDEBAR_DEFAULT_WIDTH;
+    const saved = Number(window.localStorage.getItem(RIGHT_SIDEBAR_WIDTH_KEY));
+    return Number.isFinite(saved) && saved >= RIGHT_SIDEBAR_MIN_WIDTH && saved <= RIGHT_SIDEBAR_MAX_WIDTH
+      ? saved
+      : RIGHT_SIDEBAR_DEFAULT_WIDTH;
+  });
+  const [gitPanelWidth, setGitPanelWidth] = useState(() => {
+    if (typeof window === 'undefined') return GIT_PANEL_DEFAULT_WIDTH;
+    const saved = Number(window.localStorage.getItem(GIT_PANEL_WIDTH_KEY));
+    return Number.isFinite(saved) && saved >= GIT_PANEL_MIN_WIDTH && saved <= GIT_PANEL_MAX_WIDTH
+      ? saved
+      : GIT_PANEL_DEFAULT_WIDTH;
+  });
+  const [reviewPanelWidth, setReviewPanelWidth] = useState(() => {
+    if (typeof window === 'undefined') return REVIEW_PANEL_DEFAULT_WIDTH;
+    const saved = Number(window.localStorage.getItem(REVIEW_PANEL_WIDTH_KEY));
+    return Number.isFinite(saved) && saved >= REVIEW_PANEL_MIN_WIDTH && saved <= REVIEW_PANEL_MAX_WIDTH
+      ? saved
+      : REVIEW_PANEL_DEFAULT_WIDTH;
+  });
   const [rightPanel, setRightPanel] = useState<RightPanel>('none');
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [reviewOpen, setReviewOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [quickGitOpen, setQuickGitOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [theme, setTheme] = useState<Theme>(() => {
     if (typeof window === 'undefined') return 'dark';
@@ -237,6 +288,18 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(RIGHT_SIDEBAR_WIDTH_KEY, String(rightSidebarWidth));
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(GIT_PANEL_WIDTH_KEY, String(gitPanelWidth));
+  }, [gitPanelWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(REVIEW_PANEL_WIDTH_KEY, String(reviewPanelWidth));
+  }, [reviewPanelWidth]);
 
   useEffect(() => {
     let disposed = false;
@@ -277,19 +340,59 @@ export function App() {
 
   useEffect(() => {
     void refreshCodexStatus();
-  }, [refreshCodexStatus]);
+    void loadModelConfig();
+  }, [refreshCodexStatus, loadModelConfig]);
+
+  useEffect(() => {
+    if (!domainSectionIds(domain).includes(settingsSection)) {
+      setSettingsSection('general');
+    }
+  }, [domain, settingsSection]);
 
   const openSettings = (section: SettingsSection = 'general') => {
     setSettingsSection(section);
     setSettingsOpen(true);
   };
 
+  const rightPanelResizer =
+    rightPanel === 'features'
+      ? {
+          min: RIGHT_SIDEBAR_MIN_WIDTH,
+          max: RIGHT_SIDEBAR_MAX_WIDTH,
+          defaultWidth: RIGHT_SIDEBAR_DEFAULT_WIDTH,
+          onCommit: setRightSidebarWidth,
+        }
+      : rightPanel === 'git'
+        ? {
+            min: GIT_PANEL_MIN_WIDTH,
+            max: GIT_PANEL_MAX_WIDTH,
+            defaultWidth: GIT_PANEL_DEFAULT_WIDTH,
+            onCommit: setGitPanelWidth,
+          }
+        : rightPanel === 'review'
+          ? {
+              min: REVIEW_PANEL_MIN_WIDTH,
+              max: REVIEW_PANEL_MAX_WIDTH,
+              defaultWidth: REVIEW_PANEL_DEFAULT_WIDTH,
+              onCommit: setReviewPanelWidth,
+            }
+          : null;
+
   return (
     <div
-      className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${windowFocused ? '' : 'window-inactive'}`}
-      style={{ ['--sidebar-width']: `${sidebarWidth}px` } as CSSProperties}
+      className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanel !== 'none' ? 'right-panel-open' : ''} ${rightPanel === 'features' ? 'features-panel-open' : ''} ${rightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'}`}
+      data-work-mode={domain.id}
+      style={
+        {
+          ['--sidebar-width']: `${sidebarWidth}px`,
+          ['--right-sidebar-width']: `${rightSidebarWidth}px`,
+          ['--git-panel-width']: `${gitPanelWidth}px`,
+          ['--review-panel-width']: `${reviewPanelWidth}px`,
+        } as CSSProperties
+      }
     >
       <Sidebar
+        domain={domain}
         collapsed={sidebarCollapsed}
         onCollapse={() => setSidebarCollapsed(true)}
         onOpenSettings={openSettings}
@@ -306,28 +409,34 @@ export function App() {
         <div className="workspace-row">
           <main className="main-stage">
             <TopBar
+              domain={domain}
               sidebarCollapsed={sidebarCollapsed}
               featuresOpen={rightPanel === 'features'}
+              rightPanelOpen={rightPanel !== 'none'}
               terminalOpen={terminalOpen}
               onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
               onToggleFeatures={() => setRightPanel((value) => (value === 'features' ? 'none' : 'features'))}
+              onToggleRightPanel={() => setRightPanel((value) => (value === 'none' ? 'features' : 'none'))}
               onToggleTerminal={() => setTerminalOpen((value) => !value)}
               onOpenGit={() => setRightPanel('git')}
+              onOpenQuickGit={() => setQuickGitOpen(true)}
               onOpenSettings={() => openSettings('config')}
             />
-            <ChatArea />
+            <ChatArea domain={domain} />
           </main>
-          {rightPanel === 'git' && <GitPanel onClose={() => setRightPanel('none')} />}
-          {rightPanel === 'review' && (
-            <ReviewChangesPanel
-              onClose={() => setRightPanel('none')}
-              onOpenCodexReview={() => setReviewOpen(true)}
+          {rightPanelResizer && (
+            <RightPanelResizer
+              min={rightPanelResizer.min}
+              max={rightPanelResizer.max}
+              defaultWidth={rightPanelResizer.defaultWidth}
+              onCommit={rightPanelResizer.onCommit}
             />
           )}
+          {rightPanel === 'git' && <GitPanel onClose={() => setRightPanel('none')} />}
+          {rightPanel === 'review' && <ReviewChangesPanel />}
           {rightPanel === 'features' && (
             <FeaturesPanel
-              onClose={() => setRightPanel('none')}
-              onOpenGit={() => setRightPanel('git')}
+              domain={domain}
               onOpenReviewChanges={() => setRightPanel('review')}
               onOpenTerminal={() => setTerminalOpen(true)}
             />
@@ -336,6 +445,7 @@ export function App() {
         {terminalOpen && <TerminalPanel theme={theme} onClose={() => setTerminalOpen(false)} />}
       </div>
       <SettingsPage
+        domain={domain}
         open={settingsOpen}
         section={settingsSection}
         onSectionChange={setSettingsSection}
@@ -343,8 +453,8 @@ export function App() {
         theme={theme}
         onThemeChange={setTheme}
       />
+      <QuickGitDialog open={quickGitOpen} onClose={() => setQuickGitOpen(false)} />
       <AuthorizationDialog />
-      <ReviewDialog open={reviewOpen} onClose={() => setReviewOpen(false)} />
       <ImageLightbox />
     </div>
   );
@@ -399,11 +509,95 @@ function SidebarResizer({
   );
 }
 
+function RightPanelResizer({
+  min,
+  max,
+  defaultWidth,
+  onCommit,
+}: {
+  min: number;
+  max: number;
+  defaultWidth: number;
+  onCommit: (width: number) => void;
+}) {
+  const drag = useRef<{ x: number; w: number; rowWidth: number }>({ x: 0, w: 0, rowWidth: 0 });
+  const [active, setActive] = useState(false);
+
+  const commitWidth = (next: number) => {
+    const rowLimitedMax = drag.current.rowWidth
+      ? Math.max(min, Math.min(max, drag.current.rowWidth - RIGHT_PANEL_MIN_MAIN_WIDTH))
+      : max;
+    onCommit(Math.min(rowLimitedMax, Math.max(min, next)));
+  };
+
+  useEffect(() => {
+    if (!active) return;
+    const handleMove = (event: PointerEvent) => {
+      commitWidth(drag.current.w - (event.clientX - drag.current.x));
+    };
+    const finishDrag = () => {
+      setActive(false);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', finishDrag);
+    window.addEventListener('pointercancel', finishDrag);
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', finishDrag);
+      window.removeEventListener('pointercancel', finishDrag);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+  }, [active, min, max, onCommit]);
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    const row = event.currentTarget.closest('.workspace-row') as HTMLElement | null;
+    const panel = row?.querySelector('.right-dock-panel') as HTMLElement | null;
+    drag.current = {
+      x: event.clientX,
+      w: panel?.getBoundingClientRect().width || defaultWidth,
+      rowWidth: row?.getBoundingClientRect().width || 0,
+    };
+    setActive(true);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!active) return;
+    commitWidth(drag.current.w - (event.clientX - drag.current.x));
+  };
+
+  const finish = () => {
+    setActive(false);
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  };
+
+  return (
+    <div
+      className={`right-panel-resizer ${active ? 'active' : ''}`}
+      role="separator"
+      aria-orientation="vertical"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={finish}
+      onPointerCancel={finish}
+      onDoubleClick={() => onCommit(defaultWidth)}
+    />
+  );
+}
+
 function Sidebar({
+  domain,
   collapsed,
   onCollapse,
   onOpenSettings,
 }: {
+  domain: DomainConfig;
   collapsed: boolean;
   onCollapse: () => void;
   onOpenSettings: (section?: SettingsSection) => void;
@@ -441,6 +635,7 @@ function Sidebar({
   );
   const sortedStandalone = useMemo(() => sortConversations(standalone, conversationSort), [standalone, conversationSort]);
   const sortedProjects = useMemo(() => sortProjects(liveProjects, projectSort), [liveProjects, projectSort]);
+  const sidebarCopy = domain.ui.sidebar;
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [menu, setMenu] = useState<SidebarMenu | null>(null);
@@ -617,7 +812,7 @@ function Sidebar({
           <div className="sidebar-menu-panel nav-menu">
             <button className="nav-item primary" type="button" onClick={() => createConversationInContext()}>
               <SquarePen size={15} />
-              <span className="nav-label">新对话</span>
+              <span className="nav-label">{sidebarCopy.newConversationLabel}</span>
             </button>
             <button className={`nav-item ${searchOpen ? 'active' : ''}`} type="button" onClick={() => setSearchOpen(true)}>
               <Search size={15} />
@@ -650,7 +845,7 @@ function Sidebar({
             </>
           )}
 
-          <SidebarHead label="项目" menuOpen={menu?.owner === 'project-section' || menu?.owner === 'add'}>
+          <SidebarHead label={sidebarCopy.projectSectionLabel} menuOpen={menu?.owner === 'project-section' || menu?.owner === 'add'}>
             <button className="group-action" type="button" onClick={openProjectSectionMenu} aria-label="项目排序与整理" title="排序与整理">
               <MoreHorizontal size={15} />
             </button>
@@ -660,7 +855,7 @@ function Sidebar({
           </SidebarHead>
           <div className="sidebar-menu-panel project-menu">
             {sortedProjects.length === 0 ? (
-              <div className="sidebar-hint">用项目把对话绑定到本地工作目录</div>
+              <div className="sidebar-hint">{sidebarCopy.projectEmpty}</div>
             ) : (
               sortedProjects.map((project) => (
                 <ProjectItem
@@ -670,6 +865,7 @@ function Sidebar({
                   editing={editingProjectId === project.id}
                   menuOpen={menu?.owner === project.id}
                   conversations={sortConversations(liveConversations.filter((conversation) => conversation.projectId === project.id && !conversation.pinned), conversationSort)}
+                  emptyLabel={sidebarCopy.projectConversationEmpty}
                   currentConversationId={currentConversationId}
                   editingConversationId={editingConversationId}
                   activeMenuId={menu?.owner ?? null}
@@ -696,7 +892,7 @@ function Sidebar({
             )}
           </div>
 
-          <SidebarHead label="对话" menuOpen={menu?.owner === 'conversation-section'}>
+          <SidebarHead label={sidebarCopy.conversationSectionLabel} menuOpen={menu?.owner === 'conversation-section'}>
             <button className="group-action" type="button" onClick={() => setConversationsCollapsed((value) => !value)} aria-label="展开或收起对话">
               {conversationsCollapsed ? <ChevronsUpDown size={15} /> : <ChevronsDownUp size={15} />}
             </button>
@@ -710,7 +906,7 @@ function Sidebar({
           {!conversationsCollapsed && (
             <div className="sidebar-menu-panel conv-group">
               {sortedStandalone.length === 0 ? (
-                <div className="sidebar-hint">暂无未归类的对话</div>
+                <div className="sidebar-hint">{sidebarCopy.conversationEmpty}</div>
               ) : (
                 sortedStandalone.map((conversation) => (
                   <ConversationRow
@@ -735,7 +931,7 @@ function Sidebar({
         <div className="sidebar-footer">
           <button className="nav-item settings-entry" type="button" onClick={() => onOpenSettings('general')}>
             <Settings size={15} />
-            <span className="nav-label">设置</span>
+            <span className="nav-label">{sidebarCopy.settingsLabel}</span>
           </button>
         </div>
       </aside>
@@ -761,6 +957,7 @@ function Sidebar({
           createConversation();
           setSearchOpen(false);
         }}
+        copy={sidebarCopy}
       />
     </>
   );
@@ -853,6 +1050,7 @@ function ProjectItem({
   editing,
   menuOpen,
   conversations,
+  emptyLabel,
   currentConversationId,
   activeMenuId,
   editingConversationId,
@@ -871,6 +1069,7 @@ function ProjectItem({
   editing: boolean;
   menuOpen: boolean;
   conversations: Conversation[];
+  emptyLabel: string;
   currentConversationId: string | null;
   activeMenuId: string | null;
   editingConversationId: string | null;
@@ -923,7 +1122,7 @@ function ProjectItem({
       {expanded && (
         <div className="project-children">
           {conversations.length === 0 ? (
-            <div className="project-empty">暂无对话</div>
+            <div className="project-empty">{emptyLabel}</div>
           ) : (
             conversations.map((conversation) => (
               <ConversationRow
@@ -993,6 +1192,7 @@ function SearchDialog({
   conversations,
   projects,
   currentConversationId,
+  copy,
   onClose,
   onSelectConversation,
   onOpenProject,
@@ -1002,6 +1202,7 @@ function SearchDialog({
   conversations: Conversation[];
   projects: Project[];
   currentConversationId: string | null;
+  copy: DomainConfig['ui']['sidebar'];
   onClose: () => void;
   onSelectConversation: (id: string) => void;
   onOpenProject: (id: string) => void;
@@ -1040,13 +1241,13 @@ function SearchDialog({
       <section className="command-dialog" role="dialog" aria-modal="true" aria-label="搜索">
         <div className="command-input-row">
           <Search size={16} />
-          <input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对话、项目或工作目录" />
+          <input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.searchPlaceholder} />
           <button type="button" className="icon-mini" onClick={onClose} aria-label="关闭搜索"><X size={14} /></button>
         </div>
         <div className="command-content">
           <button type="button" className="command-result new" onClick={onNewConversation}>
             <Plus size={15} />
-            <span><strong>新对话</strong><em>从空白上下文开始</em></span>
+            <span><strong>{copy.newConversationLabel}</strong><em>从空白上下文开始</em></span>
           </button>
           {projectResults.length > 0 && <CommandSection label="项目">{projectResults.map((project) => (
             <button key={project.id} type="button" className="command-result" onClick={() => onOpenProject(project.id)}>
@@ -1171,22 +1372,30 @@ function sortSubmenu(value: ProjectSort, onChange: (sort: ProjectSort) => void):
 }
 
 function TopBar({
+  domain,
   sidebarCollapsed,
   featuresOpen,
+  rightPanelOpen,
   terminalOpen,
   onToggleSidebar,
   onToggleFeatures,
+  onToggleRightPanel,
   onToggleTerminal,
   onOpenGit,
+  onOpenQuickGit,
   onOpenSettings,
 }: {
+  domain: DomainConfig;
   sidebarCollapsed: boolean;
   featuresOpen: boolean;
+  rightPanelOpen: boolean;
   terminalOpen: boolean;
   onToggleSidebar: () => void;
   onToggleFeatures: () => void;
+  onToggleRightPanel: () => void;
   onToggleTerminal: () => void;
   onOpenGit: () => void;
+  onOpenQuickGit: () => void;
   onOpenSettings: () => void;
 }) {
   const conversation = useCurrentConversation();
@@ -1290,9 +1499,17 @@ function TopBar({
       )}
       <div className="top-bar-actions">
         <OpenInAppMenu cwd={cwd} />
-        <EnvironmentMenu cwd={cwd} onOpenGit={onOpenGit} onOpenSettings={onOpenSettings} />
+        <EnvironmentMenu cwd={cwd} onOpenGit={onOpenGit} onOpenQuickGit={onOpenQuickGit} onOpenSettings={onOpenSettings} />
         <button className={`icon-btn ${terminalOpen ? 'active' : ''}`} type="button" onClick={onToggleTerminal} aria-label="打开下方终端" title="终端"><PanelBottom size={16} /></button>
-        <button className={`icon-btn ${featuresOpen ? 'active' : ''}`} type="button" onClick={onToggleFeatures} aria-label="打开侧边栏" title="侧边栏"><PanelRight size={16} /></button>
+        <button
+          className={`icon-btn ${rightPanelOpen ? 'active' : ''}`}
+          type="button"
+          onClick={onToggleRightPanel}
+          aria-label={rightPanelOpen ? '关闭侧边栏' : '打开侧边栏'}
+          title={rightPanelOpen ? '关闭侧边栏' : '侧边栏'}
+        >
+          <PanelRight size={16} />
+        </button>
       </div>
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
     </header>
@@ -1368,29 +1585,46 @@ function OpenInAppMenu({ cwd }: { cwd: string }) {
   );
 }
 
-function EnvironmentMenu({ cwd, onOpenGit, onOpenSettings }: { cwd: string; onOpenGit: () => void; onOpenSettings: () => void }) {
+function EnvironmentMenu({
+  cwd,
+  onOpenGit,
+  onOpenQuickGit,
+  onOpenSettings,
+}: {
+  cwd: string;
+  onOpenGit: () => void;
+  onOpenQuickGit: () => void;
+  onOpenSettings: () => void;
+}) {
   const conversation = useCurrentConversation();
   const [open, setOpen] = useState(false);
   const [stat, setStat] = useState<GitDiffStat | null>(null);
   const [branch, setBranch] = useState('');
-  const [remotes, setRemotes] = useState<GitRemote[]>([]);
   const [gh, setGh] = useState<GhAuthStatus | null>(null);
   const [isRepo, setIsRepo] = useState(false);
+  const searchSources = useMemo(() => webSearchSources(conversation), [conversation]);
 
   useEffect(() => {
-    if (!open || !cwd) return;
+    if (!open || !cwd) {
+      setIsRepo(false);
+      setBranch('');
+      setStat(null);
+      return;
+    }
     let cancelled = false;
     void (async () => {
+      setStat(null);
       try {
         const status = await gitStatus(cwd);
         if (cancelled) return;
         setIsRepo(status.isRepository);
         setBranch(status.branch || '');
         if (status.isRepository) {
-          const [diffStat, remoteList] = await Promise.all([gitDiffStat(cwd), gitRemotes(cwd)]);
+          const diffStat = await gitDiffStat(cwd);
           if (cancelled) return;
           setStat(diffStat);
-          setRemotes(remoteList);
+        } else {
+          setStat(null);
         }
       } catch {
         if (!cancelled) setIsRepo(false);
@@ -1450,7 +1684,7 @@ function EnvironmentMenu({ cwd, onOpenGit, onOpenSettings }: { cwd: string; onOp
                   <GitBranch size={15} />
                   <span className="environment-row-label">{branch || 'detached'}</span>
                 </div>
-                <button type="button" className="environment-row" onClick={() => { setOpen(false); onOpenGit(); }}>
+                <button type="button" className="environment-row" onClick={() => { setOpen(false); onOpenQuickGit(); }}>
                   <GitCommitHorizontal size={15} />
                   <span className="environment-row-label">提交或推送</span>
                 </button>
@@ -1458,33 +1692,358 @@ function EnvironmentMenu({ cwd, onOpenGit, onOpenSettings }: { cwd: string; onOp
                   <Github size={15} />
                   <span className="environment-row-label">{ghLabel}</span>
                 </div>
-                <div className="environment-menu-divider" />
-                <div className="environment-menu-section">来源</div>
-                {remotes.length === 0 ? (
-                  <div className="environment-row static muted"><Globe size={15} /><span className="environment-row-label">无远端</span></div>
-                ) : (
-                  remotes.map((remote) => {
-                    const url = remoteUrl(remote);
-                    return (
-                      <button key={remote.name} type="button" className="environment-row" onClick={() => { const httpUrl = httpFromRemote(url); if (httpUrl) { setOpen(false); void openExternal(httpUrl); } }}>
-                        <Globe size={15} />
-                        <span className="environment-row-label">{remote.name}</span>
-                        <span className="environment-row-value">{shortenRemote(url)}</span>
-                      </button>
-                    );
-                  })
-                )}
               </>
             ) : (
               <div className="environment-empty">
                 {cwd ? `${basename(cwd)} 不是 Git 仓库。` : conversation ? '当前对话未绑定工作目录。' : '请先选择一个对话。'}
               </div>
             )}
+            {searchSources.length > 0 && (
+              <>
+                <div className="environment-menu-divider" />
+                <div className="environment-menu-section">来源</div>
+                {searchSources.map((source) => (
+                  <button key={source.url} type="button" className="environment-row" onClick={() => { setOpen(false); void openExternal(source.url); }}>
+                    <Globe size={15} />
+                    <span className="environment-row-label">{source.title}</span>
+                    <span className="environment-row-value">{source.displayUrl}</span>
+                  </button>
+                ))}
+              </>
+            )}
           </div>
         </>
       )}
     </div>
   );
+}
+
+function QuickGitDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const conversation = useCurrentConversation();
+  const cwd = conversation?.cwd || '';
+  const [status, setStatus] = useState<GitStatus | null>(null);
+  const [stat, setStat] = useState<GitDiffStat | null>(null);
+  const [commitMessage, setCommitMessage] = useState('');
+  const [includeUnstaged, setIncludeUnstaged] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const messageRef = useRef<HTMLTextAreaElement>(null);
+
+  const refresh = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (!cwd) {
+        setStatus({ cwd: '', isRepository: false, ahead: 0, behind: 0, clean: true, changes: [], error: '当前对话未绑定工作目录。' });
+        setStat(null);
+        return;
+      }
+      const next = await gitStatus(cwd);
+      setStatus(next);
+      setStat(next.isRepository ? await gitDiffStat(cwd) : null);
+    } catch (err) {
+      setError(stringifyError(err));
+      setStatus(null);
+      setStat(null);
+    } finally {
+      setBusy(false);
+    }
+  }, [cwd]);
+
+  useEffect(() => {
+    if (!open) return;
+    setNotice(null);
+    setError(null);
+    setIncludeUnstaged(true);
+    void refresh();
+    requestAnimationFrame(() => messageRef.current?.focus());
+  }, [open, refresh]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: WindowEventMap['keydown']) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
+  const runGit = useCallback(
+    async (action: () => Promise<unknown>, done: string) => {
+      setBusy(true);
+      setError(null);
+      setNotice(null);
+      try {
+        await action();
+        await refresh();
+        setNotice(done);
+      } catch (err) {
+        setError(stringifyError(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [refresh],
+  );
+
+  const commitCurrent = useCallback(
+    async (current: GitStatus) => {
+      const paths = current.changes.map((change) => change.path);
+      const staged = current.changes.filter((change) => change.staged);
+      if (includeUnstaged && paths.length > 0) {
+        await gitStage(cwd, paths);
+      } else if (!includeUnstaged && staged.length === 0) {
+        throw new Error('没有已暂存的更改。');
+      }
+      await gitCommit(cwd, commitMessage.trim() || quickGitCommitMessage(current));
+      setCommitMessage('');
+    },
+    [commitMessage, cwd, includeUnstaged],
+  );
+
+  const changes = status?.changes ?? [];
+  const branch = status?.branch || '';
+  const isRepo = Boolean(status?.isRepository);
+  const stagedCount = changes.filter((change) => change.staged).length;
+  const unstagedCount = changes.filter((change) => change.unstaged || change.status === 'untracked').length;
+  const committableCount = includeUnstaged ? changes.length : stagedCount;
+  const hasBranch = Boolean(branch);
+  const canCommit = isRepo && committableCount > 0 && !busy;
+  const canCommitAndPush = canCommit && hasBranch;
+  const canPush = isRepo && hasBranch && !busy && ((status?.ahead ?? 0) > 0 || !status?.upstream);
+  const changeLabel = !status
+    ? '读取中'
+    : !status.isRepository
+      ? '不可用'
+      : changes.length === 0
+        ? '无更改'
+        : `${changes.length} 个更改`;
+
+  const handleCommit = () => {
+    if (!status || !canCommit) return;
+    void runGit(() => commitCurrent(status), '已提交');
+  };
+  const handleCommitAndPush = () => {
+    if (!status || !canCommitAndPush) return;
+    void runGit(async () => {
+      await commitCurrent(status);
+      await gitPush(cwd, !status.upstream);
+    }, '已提交并推送');
+  };
+  const handlePush = () => {
+    if (!status || !canPush) return;
+    void runGit(() => gitPush(cwd, !status.upstream), '已推送');
+  };
+  const handleMessageKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+      event.preventDefault();
+      handleCommit();
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="dialog-layer quick-git-layer" role="presentation">
+      <button className="dialog-backdrop" type="button" aria-label="关闭快速提交" onClick={onClose} />
+      <section className="quick-git-dialog" role="dialog" aria-modal="true" aria-label="快速提交推送" aria-busy={busy}>
+        <header className="quick-git-head">
+          <div className="quick-git-branch" title={branch || undefined}>
+            <GitBranch size={14} />
+            <span>{branch || 'detached'}</span>
+          </div>
+          <div className="quick-git-state">
+            <span>{changeLabel}</span>
+            {stat && changes.length > 0 && (
+              <span className="quick-git-stat">
+                <span className="stat-add">+{stat.additions.toLocaleString()}</span>
+                <span className="stat-del">-{stat.deletions.toLocaleString()}</span>
+              </span>
+            )}
+          </div>
+          <button type="button" className="icon-mini" onClick={onClose} aria-label="关闭快速提交"><X size={14} /></button>
+        </header>
+
+        <div className="quick-git-message">
+          <textarea
+            ref={messageRef}
+            value={commitMessage}
+            onChange={(event) => setCommitMessage(event.target.value)}
+            onKeyDown={handleMessageKeyDown}
+            placeholder="提交信息（留空将自动生成）..."
+            rows={3}
+            spellCheck={false}
+            disabled={!isRepo || changes.length === 0 || busy}
+          />
+        </div>
+
+        <label className="quick-git-check">
+          <input
+            type="checkbox"
+            checked={includeUnstaged}
+            onChange={(event) => setIncludeUnstaged(event.target.checked)}
+            disabled={!isRepo || changes.length === 0 || busy}
+          />
+          <span>包含未暂存的更改</span>
+          {unstagedCount > 0 && <em>{unstagedCount}</em>}
+        </label>
+
+        {(error || status?.error || notice) && (
+          <div className={`quick-git-note ${error || status?.error ? 'error' : 'success'}`}>
+            {error || status?.error ? <AlertCircle size={13} /> : <Check size={13} />}
+            <span>{error || status?.error || notice}</span>
+          </div>
+        )}
+
+        <div className="quick-git-actions" role="group" aria-label="Git 快速操作">
+          <button type="button" className="quick-git-action primary" disabled={!canCommit} onClick={handleCommit}>
+            <span>{busy ? <Loader2 size={14} className="spin" /> : <GitCommitHorizontal size={14} />}提交</span>
+            <kbd>⌘↩</kbd>
+          </button>
+          <button type="button" className="quick-git-action" disabled={!canCommitAndPush} onClick={handleCommitAndPush}>
+            <span><Upload size={14} />提交并推送</span>
+          </button>
+          <button type="button" className="quick-git-action" disabled={!canPush} onClick={handlePush}>
+            <span><Upload size={14} />推送</span>
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function quickGitCommitMessage(status: GitStatus): string {
+  if (status.changes.length === 0) return '更新工作区';
+  if (status.changes.length === 1) {
+    const change = status.changes[0];
+    return `${quickGitChangeVerb(change)} ${change.path}`;
+  }
+  return `更新 ${status.changes.length} 个文件`;
+}
+
+function quickGitChangeVerb(change: GitFileChange): string {
+  switch (change.status) {
+    case 'added':
+    case 'untracked':
+      return '添加';
+    case 'deleted':
+      return '删除';
+    case 'renamed':
+      return '重命名';
+    case 'copied':
+      return '复制';
+    default:
+      return '更新';
+  }
+}
+
+interface WebSearchSource {
+  title: string;
+  url: string;
+  displayUrl: string;
+}
+
+function webSearchSources(conversation?: Conversation | null): WebSearchSource[] {
+  if (!conversation) return [];
+  const sources = new Map<string, WebSearchSource>();
+
+  for (let messageIndex = conversation.messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const blocks = conversation.messages[messageIndex].blocks;
+    for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex -= 1) {
+      const block = blocks[blockIndex];
+      if (block.type !== 'tool' || !isWebSearchToolTitle(block.title)) continue;
+      const text = [block.output, block.input].filter(Boolean).join('\n');
+      for (const source of extractWebSearchSources(text)) {
+        if (!sources.has(source.url)) sources.set(source.url, source);
+        if (sources.size >= 5) return Array.from(sources.values());
+      }
+    }
+  }
+
+  return Array.from(sources.values());
+}
+
+function isWebSearchToolTitle(title: string): boolean {
+  const normalized = title.trim().toLowerCase();
+  return ['web_search', 'websearch', 'web.run', 'web.search', 'browse_search'].some((key) => normalized.includes(key));
+}
+
+function extractWebSearchSources(text: string): WebSearchSource[] {
+  const sources = new Map<string, WebSearchSource>();
+  const add = (rawLabel: string, rawUrl: string) => {
+    const url = normalizeHttpUrl(rawUrl);
+    if (!url || sources.has(url)) return;
+    sources.set(url, {
+      title: webSourceTitle(rawLabel, url),
+      url,
+      displayUrl: shortWebUrl(url),
+    });
+  };
+
+  const jsonTitleUrlPattern = /"title"\s*:\s*"([^"]{1,160})"[\s\S]{0,500}?"url"\s*:\s*"(https?:\/\/[^"]+)"/gi;
+  for (const match of text.matchAll(jsonTitleUrlPattern)) {
+    add(decodeJsonText(match[1]), decodeJsonText(match[2]));
+  }
+
+  const markdownPattern = /\[([^\]\n]{1,160})\]\((https?:\/\/[^\s)]+)\)/gi;
+  for (const match of text.matchAll(markdownPattern)) {
+    add(match[1], match[2]);
+  }
+
+  const urlPattern = /\bhttps?:\/\/[^\s<>"'`)\]}]+/gi;
+  for (const match of text.matchAll(urlPattern)) {
+    add('', match[0]);
+  }
+
+  return Array.from(sources.values());
+}
+
+function decodeJsonText(value: string): string {
+  return value
+    .replace(/\\"/g, '"')
+    .replace(/\\\//g, '/')
+    .replace(/\\n/g, ' ');
+}
+
+function normalizeHttpUrl(value: string): string | null {
+  const cleaned = value.trim().replace(/[.,;:]+$/g, '');
+  try {
+    const url = new URL(cleaned);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    url.hash = '';
+    return url.href.replace(/\/$/g, '');
+  } catch {
+    return null;
+  }
+}
+
+function webSourceTitle(label: string, url: string): string {
+  const cleaned = stripAnsi(label).replace(/\s+/g, ' ').trim();
+  if (cleaned && !/^https?:\/\//i.test(cleaned)) {
+    return cleaned.length > 34 ? `${cleaned.slice(0, 33)}…` : cleaned;
+  }
+  return hostFromUrl(url);
+}
+
+function shortWebUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, '');
+    const path = parsed.pathname === '/' ? '' : parsed.pathname;
+    const display = `${host}${path}`;
+    return display.length > 38 ? `${display.slice(0, 37)}…` : display;
+  } catch {
+    return url.length > 38 ? `${url.slice(0, 37)}…` : url;
+  }
+}
+
+function hostFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
 }
 
 type TerminalTab = { id: string; title: string };
@@ -1737,52 +2296,52 @@ function TerminalPanel({ theme, onClose }: { theme: Theme; onClose: () => void }
 }
 
 function FeaturesPanel({
-  onClose,
-  onOpenGit,
+  domain,
   onOpenReviewChanges,
   onOpenTerminal,
 }: {
-  onClose: () => void;
-  onOpenGit: () => void;
+  domain: DomainConfig;
   onOpenReviewChanges: () => void;
   onOpenTerminal: () => void;
 }) {
   const conversation = useCurrentConversation();
   const cwd = conversation?.cwd || '';
-  const createConversation = useChatStore((state) => state.createConversation);
 
-  const features: {
-    id: string;
-    icon: ReactNode;
-    title: string;
-    desc: string;
-    shortcut?: string;
-    disabled?: boolean;
-    action: () => void;
-  }[] = [
-    { id: 'files', icon: <FolderOpen size={20} />, title: '文件', desc: '浏览项目文件', shortcut: '⌘P', disabled: !cwd, action: () => { if (cwd) void revealPath(cwd); } },
-    { id: 'chat', icon: <MessageSquarePlus size={20} />, title: '侧边聊天', desc: '发起侧边对话', action: () => createConversation(conversation?.projectId) },
-    { id: 'browser', icon: <Globe size={20} />, title: '浏览器', desc: '打开网站', shortcut: '⌘T', action: () => { const url = window.prompt('输入要打开的网址', 'https://'); if (url && url.trim()) void openExternal(url.trim()); } },
-    { id: 'review', icon: <GitPullRequest size={20} />, title: '审查', desc: '查看代码更改', shortcut: '⌃⇧G', disabled: !cwd, action: onOpenReviewChanges },
-    { id: 'changes', icon: <FileCode2 size={20} />, title: '更改', desc: '查看并提交 Git 变更', action: onOpenGit },
-    { id: 'terminal', icon: <SquareTerminal size={20} />, title: '终端', desc: '启动交互式 shell', shortcut: '⌃`', action: onOpenTerminal },
-  ];
+  const runFeature = (feature: DomainFeature) => {
+    if (feature.requiresCwd && !cwd) return;
+    switch (feature.action) {
+      case 'reveal-cwd':
+        if (cwd) void revealPath(cwd);
+        break;
+      case 'open-url': {
+        const url = window.prompt('输入要打开的网址', 'https://');
+        if (url && url.trim()) void openExternal(url.trim());
+        break;
+      }
+      case 'open-review':
+        onOpenReviewChanges();
+        break;
+      case 'open-terminal':
+        onOpenTerminal();
+        break;
+    }
+  };
 
   return (
-    <aside className="features-panel">
-      <header className="features-panel-head">
-        <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭侧边栏" title="关闭"><PanelRight size={16} /></button>
+    <aside className="features-panel right-dock-panel">
+      <header className="features-panel-head" data-tauri-drag-region>
+        <span>{domain.ui.rightPanelTitle}</span>
       </header>
       <div className="features-list">
-        {features.map((feature) => (
+        {domain.ui.features.map((feature) => (
           <button
             key={feature.id}
             type="button"
             className="feature-card"
-            disabled={feature.disabled}
-            onClick={feature.action}
+            disabled={feature.requiresCwd && !cwd}
+            onClick={() => runFeature(feature)}
           >
-            <span className="feature-card-icon">{feature.icon}</span>
+            <span className="feature-card-icon">{domainFeatureIcon(feature.icon)}</span>
             <span className="feature-card-title">{feature.title}</span>
             <span className="feature-card-desc">{feature.desc}</span>
             {feature.shortcut && <span className="feature-card-key">{feature.shortcut}</span>}
@@ -1793,7 +2352,7 @@ function FeaturesPanel({
   );
 }
 
-function ChatArea() {
+function ChatArea({ domain }: { domain: DomainConfig }) {
   const conversation = useCurrentConversation();
   const codexStatus = useChatStore((state) => state.codexStatus);
   if (!conversation) return null;
@@ -1812,26 +2371,23 @@ function ChatArea() {
           </div>
         </div>
       )}
-      {isEmpty ? <EmptyState conversation={conversation} disabled={!codexReady} /> : <><div className="message-scroll"><MessageList conversation={conversation} /></div><Composer conversation={conversation} disabled={!codexReady} bottom /></>}
+      {isEmpty ? <EmptyState domain={domain} conversation={conversation} disabled={!codexReady} /> : <><div className="message-scroll"><MessageList conversation={conversation} /></div><Composer domain={domain} conversation={conversation} disabled={!codexReady} bottom /></>}
     </div>
   );
 }
 
-function EmptyState({ conversation, disabled }: { conversation: Conversation; disabled: boolean }) {
+function EmptyState({ domain, conversation, disabled }: { domain: DomainConfig; conversation: Conversation; disabled: boolean }) {
   const sendMessage = useChatStore((state) => state.sendMessage);
-  const suggestions = [
-    ['理解代码库', '先扫描这个项目结构，告诉我主要模块、入口和运行方式。', <FileCode2 size={16} className="icon" />],
-    ['实现功能', '帮我实现一个小功能：先读代码，再给出修改并运行必要验证。', <Code2 size={16} className="icon" />],
-    ['修复测试', '检查当前失败测试或类型错误，定位原因并修复。', <Wrench size={16} className="icon" />],
-  ] as const;
   return (
     <div className="empty-state">
-      <h1 className="empty-heading">把编码任务交给 Alpha Studio</h1>
-      <Composer conversation={conversation} disabled={disabled} />
+      <h1 className="empty-heading">{domain.ui.emptyHeading}</h1>
+      <Composer domain={domain} conversation={conversation} disabled={disabled} />
       <div className="suggestion-row">
-        {suggestions.map(([title, prompt, icon]) => (
-          <button key={title} type="button" className="suggestion-card" onClick={() => void sendMessage(prompt)}>
-            {icon}<strong>{title}</strong><span>{prompt}</span>
+        {domain.ui.suggestions.map((suggestion) => (
+          <button key={suggestion.id} type="button" className="suggestion-card" onClick={() => void sendMessage(suggestion.prompt)}>
+            {domainSuggestionIcon(suggestion)}
+            <strong>{suggestion.title}</strong>
+            <span>{suggestion.prompt}</span>
           </button>
         ))}
       </div>
@@ -2176,8 +2732,13 @@ type RenderUnit =
 
 function buildRenderUnits(blocks: MessageBlock[]): RenderUnit[] {
   const units: RenderUnit[] = [];
+  const hideReconnectStatus = blocks.some((block) => !isReconnectStatusBlock(block));
   let index = 0;
   while (index < blocks.length) {
+    if (hideReconnectStatus && isReconnectStatusBlock(blocks[index])) {
+      index += 1;
+      continue;
+    }
     if (isCommandBlock(blocks[index])) {
       const group: Array<Extract<MessageBlock, { type: 'tool' }>> = [];
       const startIndex = index;
@@ -2198,7 +2759,11 @@ function isCommandBlock(block: MessageBlock): boolean {
   return block.type === 'tool' && toolPresentation(block.title).kind === 'command';
 }
 
-function Composer({ conversation, disabled, bottom }: { conversation: Conversation; disabled?: boolean; bottom?: boolean }) {
+function isReconnectStatusBlock(block: MessageBlock): boolean {
+  return block.type === 'error' && /^Reconnecting\.\.\.\s+\d+\/\d+$/i.test(block.content.trim());
+}
+
+function Composer({ domain, conversation, disabled, bottom }: { domain: DomainConfig; conversation: Conversation; disabled?: boolean; bottom?: boolean }) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -2245,11 +2810,11 @@ function Composer({ conversation, disabled, bottom }: { conversation: Conversati
               submit();
             }
           }}
-          placeholder={disabled ? '请先修复 Codex CLI 状态' : bottom ? '要求后续变更' : '要求 Codex 执行任务'}
+          placeholder={disabled ? '请先修复 Codex CLI 状态' : bottom ? domain.ui.followupPlaceholder : domain.ui.composerPlaceholder}
           rows={1}
         />
         <div className="composer-toolbar">
-          <ComposerPlusMenu onAttach={addAttachments} disabled={disabled || isStreaming} />
+          <ComposerPlusMenu domain={domain} onAttach={addAttachments} disabled={disabled || isStreaming} />
           <ApprovalPicker />
           <span className="spacer" />
           <ModelPicker />
@@ -2473,7 +3038,7 @@ function ImageLightbox() {
 }
 
 // The "+" composer menu: attach files, toggle plan/goal modes, browse plugins.
-function ComposerPlusMenu({ onAttach, disabled }: { onAttach: (items: MessageAttachment[]) => void; disabled?: boolean }) {
+function ComposerPlusMenu({ domain, onAttach, disabled }: { domain: DomainConfig; onAttach: (items: MessageAttachment[]) => void; disabled?: boolean }) {
   const planMode = useChatStore((state) => state.planMode);
   const pursueGoal = useChatStore((state) => state.pursueGoal);
   const setPlanMode = useChatStore((state) => state.setPlanMode);
@@ -2886,19 +3451,23 @@ function ComposerMeta({ conversation }: { conversation: Conversation }) {
 }
 
 function ModelPicker() {
-  const model = useChatStore((state) => state.model);
+  const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
+  const modelProfiles = useChatStore((state) => state.modelProfiles);
   const reasoningEffort = useChatStore((state) => state.reasoningEffort);
   const speed = useChatStore((state) => state.speed);
-  const setModel = useChatStore((state) => state.setModel);
+  const setModelProfile = useChatStore((state) => state.setModelProfile);
   const setReasoningEffort = useChatStore((state) => state.setReasoningEffort);
   const setSpeed = useChatStore((state) => state.setSpeed);
   const [open, setOpen] = useState(false);
   const [submenu, setSubmenu] = useState<'model' | 'speed' | null>(null);
+  const enabledProfiles = modelProfiles.filter((profile) => profile.enabled);
+  const builtInProfiles = enabledProfiles.filter((profile) => profile.builtIn);
+  const customProfiles = enabledProfiles.filter((profile) => !profile.builtIn);
   const close = () => { setOpen(false); setSubmenu(null); };
   return (
     <div className="model-picker">
       <button type="button" className={`composer-pill model-pill ${open ? 'active' : ''}`} onClick={() => setOpen((value) => !value)} title="选择模型与推理强度">
-        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelLabel(model)}</span><span className="model-pill-effort">{effortLabel(reasoningEffort)}</span><ChevronDown size={12} />
+        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelProfileLabel(modelProfiles, selectedModelProfileId)}</span><span className="model-pill-effort">{effortLabel(reasoningEffort)}</span><ChevronDown size={12} />
       </button>
       {open && (
         <>
@@ -2908,8 +3477,26 @@ function ModelPicker() {
             {EFFORT_OPTIONS.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === reasoningEffort} className="model-menu-item" onMouseEnter={() => setSubmenu(null)} onClick={() => { setReasoningEffort(option.id as ReasoningEffort); close(); }}><span>{option.label}</span>{option.id === reasoningEffort && <Check size={14} className="model-menu-check" />}</button>)}
             <div className="model-menu-divider" />
             <div className="model-flyout-row" onMouseEnter={() => setSubmenu('model')}>
-              <button type="button" className="model-menu-item submenu-trigger"><span>{modelLabel(model)}</span><ChevronRight size={14} className="model-menu-chevron" /></button>
-              {submenu === 'model' && <div className="model-flyout"><div className="model-flyout-panel" role="menu"><div className="model-menu-label">模型</div>{MODEL_OPTIONS.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === model} className="model-menu-item" onClick={() => { setModel(option.id); close(); }}><span>{option.label}</span>{option.id === model && <Check size={14} className="model-menu-check" />}</button>)}</div></div>}
+              <button type="button" className="model-menu-item submenu-trigger"><span>{modelProfileLabel(modelProfiles, selectedModelProfileId)}</span><ChevronRight size={14} className="model-menu-chevron" /></button>
+              {submenu === 'model' && (
+                <div className="model-flyout">
+                  <div className="model-flyout-panel" role="menu">
+                    <div className="model-menu-label">内置模型</div>
+                    {builtInProfiles.map((option) => (
+                      <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfileId} className="model-menu-item" onClick={() => { setModelProfile(option.id); close(); }}>
+                        <span>{option.label}</span>{option.id === selectedModelProfileId && <Check size={14} className="model-menu-check" />}
+                      </button>
+                    ))}
+                    {customProfiles.length > 0 && <div className="model-menu-divider" />}
+                    {customProfiles.length > 0 && <div className="model-menu-label">自定义模型</div>}
+                    {customProfiles.map((option) => (
+                      <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfileId} className="model-menu-item model-profile-item" onClick={() => { setModelProfile(option.id); close(); }}>
+                        <span><strong>{option.label}</strong><em>{option.providerId} · {option.model}</em></span>{option.id === selectedModelProfileId && <Check size={14} className="model-menu-check" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="model-flyout-row" onMouseEnter={() => setSubmenu('speed')}>
               <button type="button" className="model-menu-item submenu-trigger"><span>速度</span><ChevronRight size={14} className="model-menu-chevron" /></button>
@@ -3470,15 +4057,26 @@ function ReviewFindingCard({ finding, cwd }: { finding: ReviewFinding; cwd: stri
 
 type DiffLineType = 'add' | 'del' | 'context';
 
+interface DiffSegment {
+  text: string;
+  changed: boolean;
+}
+
 interface DiffLine {
   type: DiffLineType;
   oldNo: number | null;
   newNo: number | null;
   text: string;
+  // Word-level pieces, set on paired del/add lines so we can highlight only the
+  // characters that actually changed instead of the whole line.
+  segments?: DiffSegment[];
 }
 
 interface DiffHunk {
   header: string;
+  // Verbatim hunk text (the `@@` line plus its body) used to build a patch that
+  // `git apply --cached` can stage or unstage on its own.
+  rawText: string;
   oldStart: number;
   newStart: number;
   oldEnd: number;
@@ -3487,47 +4085,181 @@ interface DiffHunk {
 }
 
 interface ParsedDiff {
+  // Verbatim file header (diff --git / index / --- / +++) for patch building.
+  fileHeader: string;
   hunks: DiffHunk[];
   additions: number;
   deletions: number;
   binary: boolean;
 }
 
+const WORD_TOKEN_RE = /(\s+|[A-Za-z0-9_]+|[^\sA-Za-z0-9_])/g;
+
+function tokenizeLine(value: string): string[] {
+  return value.match(WORD_TOKEN_RE) ?? [];
+}
+
+// Token-level diff (LCS) between a removed and an added line so the UI can
+// underline just the changed words, the way Codex/Cursor inline diffs do.
+function diffTokens(a: string, b: string): { left: DiffSegment[]; right: DiffSegment[] } {
+  const at = tokenizeLine(a);
+  const bt = tokenizeLine(b);
+  if (at.length > 400 || bt.length > 400) {
+    return { left: [{ text: a, changed: true }], right: [{ text: b, changed: true }] };
+  }
+  const n = at.length;
+  const m = bt.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let x = n - 1; x >= 0; x--) {
+    for (let y = m - 1; y >= 0; y--) {
+      dp[x][y] = at[x] === bt[y] ? dp[x + 1][y + 1] + 1 : Math.max(dp[x + 1][y], dp[x][y + 1]);
+    }
+  }
+  const left: DiffSegment[] = [];
+  const right: DiffSegment[] = [];
+  const push = (arr: DiffSegment[], text: string, changed: boolean) => {
+    const last = arr[arr.length - 1];
+    if (last && last.changed === changed) last.text += text;
+    else arr.push({ text, changed });
+  };
+  let x = 0;
+  let y = 0;
+  while (x < n && y < m) {
+    if (at[x] === bt[y]) {
+      push(left, at[x], false);
+      push(right, bt[y], false);
+      x += 1;
+      y += 1;
+    } else if (dp[x + 1][y] >= dp[x][y + 1]) {
+      push(left, at[x], true);
+      x += 1;
+    } else {
+      push(right, bt[y], true);
+      y += 1;
+    }
+  }
+  while (x < n) push(left, at[x++], true);
+  while (y < m) push(right, bt[y++], true);
+  return { left, right };
+}
+
+// Annotate consecutive del→add runs with word-level segments in place.
+function annotateWordDiff(lines: DiffLine[]) {
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].type !== 'del') {
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j < lines.length && lines[j].type === 'del') j += 1;
+    let k = j;
+    while (k < lines.length && lines[k].type === 'add') k += 1;
+    const pairs = Math.min(j - i, k - j);
+    for (let p = 0; p < pairs; p++) {
+      const { left, right } = diffTokens(lines[i + p].text, lines[j + p].text);
+      lines[i + p].segments = left;
+      lines[j + p].segments = right;
+    }
+    i = k;
+  }
+}
+
+interface SplitRow {
+  left: DiffLine | null;
+  right: DiffLine | null;
+}
+
+// Rearrange a hunk's lines into side-by-side rows: context spans both columns,
+// while removed/added runs are paired left/right.
+function buildSplitRows(lines: DiffLine[]): SplitRow[] {
+  const rows: SplitRow[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.type === 'context') {
+      rows.push({ left: line, right: line });
+      i += 1;
+      continue;
+    }
+    if (line.type === 'del') {
+      let j = i;
+      while (j < lines.length && lines[j].type === 'del') j += 1;
+      let k = j;
+      while (k < lines.length && lines[k].type === 'add') k += 1;
+      const dels = lines.slice(i, j);
+      const adds = lines.slice(j, k);
+      const max = Math.max(dels.length, adds.length);
+      for (let p = 0; p < max; p++) rows.push({ left: dels[p] ?? null, right: adds[p] ?? null });
+      i = k;
+      continue;
+    }
+    rows.push({ left: null, right: line });
+    i += 1;
+  }
+  return rows;
+}
+
 // Parse a single-file `git diff` payload into hunks with old/new line numbers so
 // the review panel can render an inline, Cursor-style diff instead of raw text.
 function parseUnifiedDiff(diff: string): ParsedDiff {
   const hunks: DiffHunk[] = [];
+  const headerLines: string[] = [];
   let additions = 0;
   let deletions = 0;
   let binary = false;
-  if (!diff) return { hunks, additions, deletions, binary };
+  if (!diff) return { fileHeader: '', hunks, additions, deletions, binary };
 
   let current: DiffHunk | null = null;
+  let rawLines: string[] = [];
+  let seenHunk = false;
   let oldNo = 0;
   let newNo = 0;
-  for (const raw of diff.split('\n')) {
-    if (raw.startsWith('Binary files') || raw.startsWith('GIT binary patch')) {
-      binary = true;
-      continue;
+
+  const flush = () => {
+    if (current) {
+      current.rawText = rawLines.join('\n');
+      annotateWordDiff(current.lines);
     }
+  };
+
+  for (const raw of diff.split('\n')) {
     if (raw.startsWith('@@')) {
+      flush();
+      seenHunk = true;
       const match = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)/.exec(raw);
       if (match) {
         oldNo = Number(match[1]);
         newNo = Number(match[2]);
         current = {
           header: match[3].trim(),
+          rawText: '',
           oldStart: oldNo,
           newStart: newNo,
           oldEnd: oldNo,
           newEnd: newNo,
           lines: [],
         };
+        rawLines = [raw];
         hunks.push(current);
+      } else {
+        current = null;
+        rawLines = [];
       }
       continue;
     }
-    if (!current) continue; // file headers (diff --git / index / --- / +++)
+    if (!seenHunk) {
+      // File header region (diff --git / index / --- / +++ / binary marker).
+      if (raw.startsWith('Binary files') || raw.startsWith('GIT binary patch')) binary = true;
+      headerLines.push(raw);
+      continue;
+    }
+    if (!current) continue;
+    rawLines.push(raw);
+    if (raw.startsWith('Binary files') || raw.startsWith('GIT binary patch')) {
+      binary = true;
+      continue;
+    }
     if (raw.startsWith('+')) {
       current.lines.push({ type: 'add', oldNo: null, newNo, text: raw.slice(1) });
       current.newEnd = newNo;
@@ -3549,35 +4281,106 @@ function parseUnifiedDiff(diff: string): ParsedDiff {
       newNo += 1;
     }
   }
-  return { hunks, additions, deletions, binary };
+  flush();
+  return { fileHeader: headerLines.join('\n'), hunks, additions, deletions, binary };
+}
+
+// Builds a standalone patch (header + one hunk) so a single block can be staged
+// or unstaged with `git apply --cached`.
+function buildHunkPatch(parsed: ParsedDiff, hunk: DiffHunk): string {
+  const header = parsed.fileHeader.trim();
+  return `${header}\n${hunk.rawText}\n`;
+}
+
+type ContextRegion =
+  | { kind: 'lines'; lines: DiffLine[] }
+  | { kind: 'gap'; id: number; lines: DiffLine[] };
+
+// Splits a full-context hunk into visible blocks (changes plus `pad` lines of
+// surrounding context) and collapsible "unmodified" gaps the user can expand,
+// matching GitHub/Codex-style review diffs.
+function buildContextRegions(lines: DiffLine[], pad = 3): ContextRegion[] {
+  const n = lines.length;
+  const keep = new Array<boolean>(n).fill(false);
+  for (let i = 0; i < n; i++) {
+    if (lines[i].type !== 'context') {
+      for (let j = Math.max(0, i - pad); j <= Math.min(n - 1, i + pad); j++) keep[j] = true;
+    }
+  }
+  const regions: ContextRegion[] = [];
+  let i = 0;
+  while (i < n) {
+    const start = i;
+    if (keep[i]) {
+      while (i < n && keep[i]) i += 1;
+      regions.push({ kind: 'lines', lines: lines.slice(start, i) });
+    } else {
+      while (i < n && !keep[i]) i += 1;
+      const slice = lines.slice(start, i);
+      // Tiny gaps aren't worth a collapse affordance — just show them.
+      if (slice.length <= 1) regions.push({ kind: 'lines', lines: slice });
+      else regions.push({ kind: 'gap', id: start, lines: slice });
+    }
+  }
+  return regions;
 }
 
 interface FileDiffState {
   change: GitFileChange;
   raw: string;
   parsed: ParsedDiff;
+  // Whether the rendered diff reflects the staged (index) side. Determines
+  // whether a per-hunk action stages (forward) or unstages (reverse) the block.
+  showingStaged: boolean;
   error?: string;
 }
 
-// "审查 / 查看代码更改" — a Cursor-style review panel that shows every changed
-// file's diff inline and lets you stage, commit and push without leaving it.
-function ReviewChangesPanel({
-  onClose,
-  onOpenCodexReview,
-}: {
-  onClose: () => void;
-  onOpenCodexReview: () => void;
-}) {
+type ReviewStatusFilter = 'all' | 'staged' | 'unstaged';
+type ReviewViewMode = 'unified' | 'split';
+
+const REVIEW_VIEW_KEY = 'alpha:review-view-mode';
+
+const REVIEW_CONTEXT_LINES = 100000;
+const DISCARD_ALL_KEY = '__all__';
+
+// "审查 / 查看代码更改" — a two-pane review workspace (reference-style): a top
+// toolbar with a status selector, totals, commit/push and create-PR actions; a
+// left diff column with word-level highlights, per-hunk staging, discard,
+// "mark viewed" and expandable unchanged-context; and a right file-tree.
+function ReviewChangesPanel() {
   const conversation = useCurrentConversation();
   const cwd = conversation?.cwd || '';
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [diffs, setDiffs] = useState<Record<string, FileDiffState>>({});
+  const [fullDiffs, setFullDiffs] = useState<Record<string, ParsedDiff | 'loading'>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [viewed, setViewed] = useState<Record<string, boolean>>({});
+  const [expandedRegions, setExpandedRegions] = useState<Record<string, boolean>>({});
+  const [folderCollapsed, setFolderCollapsed] = useState<Record<string, boolean>>({});
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<ReviewStatusFilter>('all');
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [commitOpen, setCommitOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<ReviewViewMode>(() => {
+    if (typeof window === 'undefined') return 'unified';
+    return window.localStorage.getItem(REVIEW_VIEW_KEY) === 'split' ? 'split' : 'unified';
+  });
   const [commitMessage, setCommitMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const fileRefs = useRef<Record<string, HTMLElement | null>>({});
+  const diffsRef = useRef(diffs);
+  diffsRef.current = diffs;
+  const fullDiffsRef = useRef(fullDiffs);
+  fullDiffsRef.current = fullDiffs;
+
+  useEffect(() => {
+    window.localStorage.setItem(REVIEW_VIEW_KEY, viewMode);
+  }, [viewMode]);
 
   const refresh = useCallback(async () => {
     if (!cwd) {
@@ -3590,20 +4393,27 @@ function ReviewChangesPanel({
     try {
       const next = await gitStatus(cwd);
       setStatus(next);
+      setFullDiffs({});
+      setExpandedRegions({});
       if (!next.isRepository) {
         setDiffs({});
         return;
       }
       const entries = await Promise.all(
         next.changes.map(async (change): Promise<readonly [string, FileDiffState]> => {
+          const untracked = change.status === 'untracked';
+          const showingStaged = !untracked && change.staged && !change.unstaged;
           try {
-            const raw = await gitDiff(cwd, change.path, change.staged && !change.unstaged);
-            return [change.path, { change, raw, parsed: parseUnifiedDiff(raw) }] as const;
+            const raw = untracked
+              ? await gitDiff(cwd, change.path, false, true)
+              : await gitDiff(cwd, change.path, showingStaged);
+            return [change.path, { change, raw, parsed: parseUnifiedDiff(raw), showingStaged }] as const;
           } catch (err) {
-            return [change.path, { change, raw: '', parsed: parseUnifiedDiff(''), error: stringifyError(err) }] as const;
+            return [change.path, { change, raw: '', parsed: parseUnifiedDiff(''), showingStaged, error: stringifyError(err) }] as const;
           }
         }),
       );
+      const present = new Set(entries.map(([path]) => path));
       setDiffs(Object.fromEntries(entries));
       setCollapsed((prev) => {
         const merged: Record<string, boolean> = {};
@@ -3613,6 +4423,13 @@ function ReviewChangesPanel({
         }
         return merged;
       });
+      // Drop transient marks for files that no longer have pending changes.
+      setViewed((prev) => {
+        const merged: Record<string, boolean> = {};
+        for (const path of Object.keys(prev)) if (present.has(path)) merged[path] = prev[path];
+        return merged;
+      });
+      setSelectedFile((prev) => (prev && present.has(prev) ? prev : null));
     } catch (err) {
       setError(stringifyError(err));
     } finally {
@@ -3624,18 +4441,44 @@ function ReviewChangesPanel({
     void refresh();
   }, [refresh]);
 
-  const runGit = async (action: () => Promise<unknown>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await action();
-      await refresh();
-    } catch (err) {
-      setError(stringifyError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const runGit = useCallback(
+    async (action: () => Promise<unknown>) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await action();
+        await refresh();
+      } catch (err) {
+        setError(stringifyError(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [refresh],
+  );
+
+  // Lazily fetch a file's full-context diff so unchanged regions can be expanded.
+  const requestFullContext = useCallback(
+    (path: string) => {
+      if (fullDiffsRef.current[path]) return;
+      const state = diffsRef.current[path];
+      if (!state || state.error || state.parsed.binary || state.change.status === 'untracked') return;
+      setFullDiffs((prev) => ({ ...prev, [path]: 'loading' }));
+      void (async () => {
+        try {
+          const raw = await gitDiff(cwd, path, state.showingStaged, false, REVIEW_CONTEXT_LINES);
+          setFullDiffs((prev) => ({ ...prev, [path]: parseUnifiedDiff(raw) }));
+        } catch {
+          setFullDiffs((prev) => {
+            const nextDiffs = { ...prev };
+            delete nextDiffs[path];
+            return nextDiffs;
+          });
+        }
+      })();
+    },
+    [cwd],
+  );
 
   const changes = status?.changes ?? [];
   const totals = useMemo(() => {
@@ -3647,87 +4490,215 @@ function ReviewChangesPanel({
     }
     return { add, del };
   }, [diffs]);
+  const stagedCount = changes.filter((change) => change.staged).length;
   const unstagedCount = changes.filter((change) => change.unstaged || change.status === 'untracked').length;
+
   const normalizedFilter = filter.trim().toLowerCase();
-  const visibleChanges = normalizedFilter
-    ? changes.filter((change) => change.path.toLowerCase().includes(normalizedFilter))
-    : changes;
+  const visibleChanges = useMemo(
+    () =>
+      changes.filter((change) => {
+        if (statusFilter === 'staged' && !change.staged) return false;
+        if (statusFilter === 'unstaged' && !(change.unstaged || change.status === 'untracked')) return false;
+        if (normalizedFilter && !change.path.toLowerCase().includes(normalizedFilter)) return false;
+        return true;
+      }),
+    [changes, statusFilter, normalizedFilter],
+  );
+  const tree = useMemo(() => buildFileTree(visibleChanges), [visibleChanges]);
+
   const branch = status?.branch || '';
+  const ahead = status?.ahead ?? 0;
+  const behind = status?.behind ?? 0;
+  const statusLabel = statusFilter === 'all' ? '全部' : statusFilter === 'staged' ? '已暂存' : '未暂存';
+  const statusCount = statusFilter === 'all' ? changes.length : statusFilter === 'staged' ? stagedCount : unstagedCount;
+
+  const toggleViewed = (path: string) => {
+    setViewed((prev) => {
+      const nowViewed = !prev[path];
+      setCollapsed((c) => ({ ...c, [path]: nowViewed }));
+      return { ...prev, [path]: nowViewed };
+    });
+  };
+
+  const selectFile = (path: string) => {
+    setSelectedFile(path);
+    setCollapsed((prev) => ({ ...prev, [path]: false }));
+    requestAnimationFrame(() => {
+      fileRefs.current[path]?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+  };
+
+  const stageAll = () => void runGit(() => gitStage(cwd, changes.map((change) => change.path)));
+  const unstageAll = () => void runGit(() => gitUnstage(cwd, changes.filter((change) => change.staged).map((change) => change.path)));
+  const discardAll = () => { setConfirmDiscard(null); void runGit(() => gitDiscard(cwd, changes.map((change) => change.path))); };
+  const createPullRequest = () => void runGit(() => ghPrCreateWeb(cwd));
 
   return (
-    <aside className="review-panel">
-      <header className="panel-header">
-        <div>
-          <h2>审查</h2>
+    <aside className="review-panel right-dock-panel wide">
+      <header className="panel-header" data-tauri-drag-region>
+        <div data-tauri-drag-region>
+          <h2>审查更改</h2>
           <span>{cwd ? shortenPath(cwd) : '未指定工作目录'}</span>
         </div>
-        <button className="icon-btn" type="button" onClick={onClose} aria-label="关闭审查面板"><X size={15} /></button>
       </header>
 
       {status?.isRepository ? (
         <>
-          <div className="review-bar">
-            {branch && <span className="review-branch"><GitBranch size={13} />{branch}</span>}
-            <span className="review-pill">未暂存 {unstagedCount}</span>
-            <span className="review-stat add">+{totals.add}</span>
-            <span className="review-stat del">-{totals.del}</span>
-            <button type="button" className="icon-mini" onClick={() => void refresh()} disabled={busy} title="刷新"><RefreshCw size={13} className={busy ? 'spin' : ''} /></button>
-          </div>
-
-          <div className="review-actions">
-            <button type="button" className="panel-btn" onClick={() => setCommitOpen((value) => !value)} disabled={changes.length === 0 && !commitOpen}><GitCommitHorizontal size={13} />提交或推送</button>
-            <button type="button" className="panel-btn" onClick={onOpenCodexReview} disabled={!cwd}><Sparkles size={13} />让 Codex 审查</button>
-          </div>
-
-          {commitOpen && (
-            <div className="git-commit-box">
-              <textarea value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Commit message" rows={3} />
-              <div className="review-commit-actions">
-                <button type="button" className="panel-btn primary" disabled={!commitMessage.trim() || busy} onClick={() => void runGit(async () => { await gitCommit(cwd, commitMessage); setCommitMessage(''); })}><GitCommitHorizontal size={13} />提交</button>
-                <button type="button" className="panel-btn" disabled={!status.isRepository || busy} onClick={() => void runGit(() => gitPush(cwd, !status.upstream))}><Upload size={13} />推送</button>
-                <button type="button" className="panel-btn" disabled={!status.isRepository || busy} onClick={() => void runGit(() => gitPull(cwd))}><Download size={13} />拉取</button>
-              </div>
+          <div className="review-topbar">
+            <div className="review-status">
+              <button type="button" className="review-status-btn" onClick={() => setStatusMenuOpen((open) => !open)}>
+                <span>{statusLabel}</span>
+                <strong>{statusCount}</strong>
+                <ChevronDown size={13} />
+              </button>
+              {statusMenuOpen && (
+                <>
+                  <div className="review-status-backdrop" onClick={() => setStatusMenuOpen(false)} />
+                  <div className="review-status-menu">
+                    <button type="button" className={statusFilter === 'all' ? 'active' : ''} onClick={() => { setStatusFilter('all'); setStatusMenuOpen(false); }}>全部<span>{changes.length}</span></button>
+                    <button type="button" className={statusFilter === 'staged' ? 'active' : ''} onClick={() => { setStatusFilter('staged'); setStatusMenuOpen(false); }}>已暂存<span>{stagedCount}</span></button>
+                    <button type="button" className={statusFilter === 'unstaged' ? 'active' : ''} onClick={() => { setStatusFilter('unstaged'); setStatusMenuOpen(false); }}>未暂存<span>{unstagedCount}</span></button>
+                  </div>
+                </>
+              )}
             </div>
-          )}
+            <span className="review-totals"><span className="add">+{totals.add}</span><span className="del">-{totals.del}</span></span>
+            {branch && <span className="review-branch" title={status.upstream || branch}><GitBranch size={12} />{branch}</span>}
+            {behind > 0 && <span className="review-track" title={`落后远端 ${behind}`}><Download size={11} />{behind}</span>}
+            {ahead > 0 && <span className="review-track" title={`领先远端 ${ahead}`}><Upload size={11} />{ahead}</span>}
+            <span className="review-toolbar-spacer" />
+            <div className="review-viewtoggle" role="group" aria-label="差异视图">
+              <button type="button" className={viewMode === 'unified' ? 'active' : ''} onClick={() => setViewMode('unified')} title="单栏视图"><FileDiff size={13} /></button>
+              <button type="button" className={viewMode === 'split' ? 'active' : ''} onClick={() => setViewMode('split')} title="分栏视图"><Columns2 size={13} /></button>
+            </div>
+            <button type="button" className="icon-mini" onClick={() => void refresh()} disabled={busy} title="刷新"><RefreshCw size={14} className={busy ? 'spin' : ''} /></button>
+            <button type="button" className={`panel-btn ${commitOpen ? 'primary' : ''}`} onClick={() => setCommitOpen((open) => !open)} disabled={changes.length === 0}><GitCommitHorizontal size={13} />提交或推送</button>
+            <button type="button" className="panel-btn" onClick={createPullRequest} disabled={busy} title="gh pr create --web"><GitPullRequest size={13} />创建拉取请求</button>
+          </div>
 
           {error && <div className="panel-error"><AlertCircle size={14} />{error}</div>}
 
-          <div className="review-filter">
-            <Search size={13} />
-            <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选文件…" spellCheck={false} />
-          </div>
+          <div className="review-split">
+            <div className="review-pane">
+              <div className="review-scroll" ref={scrollRef}>
+                {commitOpen && (
+                  <div className="review-commit">
+                    <textarea
+                      value={commitMessage}
+                      onChange={(event) => setCommitMessage(event.target.value)}
+                      placeholder={stagedCount > 0 ? '提交信息（描述这次改动）' : '先暂存文件，再填写提交信息'}
+                      rows={2}
+                      spellCheck={false}
+                    />
+                    <div className="review-commit-row">
+                      <button
+                        type="button"
+                        className="panel-btn primary"
+                        disabled={!commitMessage.trim() || stagedCount === 0 || busy}
+                        onClick={() => void runGit(async () => { await gitCommit(cwd, commitMessage); setCommitMessage(''); })}
+                        title={stagedCount === 0 ? '没有已暂存的更改' : undefined}
+                      >
+                        <GitCommitHorizontal size={13} />提交{stagedCount > 0 ? ` (${stagedCount})` : ''}
+                      </button>
+                      <button
+                        type="button"
+                        className="panel-btn"
+                        disabled={!commitMessage.trim() || stagedCount === 0 || busy}
+                        onClick={() => void runGit(async () => { await gitCommit(cwd, commitMessage); setCommitMessage(''); await gitPush(cwd, !status.upstream); })}
+                      >
+                        <Upload size={13} />提交并推送
+                      </button>
+                      <button type="button" className="icon-mini" disabled={busy} onClick={() => void runGit(() => gitPull(cwd))} title="拉取"><Download size={13} /></button>
+                      <button type="button" className="icon-mini" disabled={busy} onClick={() => void runGit(() => gitPush(cwd, !status.upstream))} title="推送"><Upload size={13} /></button>
+                    </div>
+                  </div>
+                )}
 
-          <div className="review-files">
-            {changes.length === 0 ? (
-              <div className="git-empty">工作区干净，没有需要审查的更改。</div>
-            ) : visibleChanges.length === 0 ? (
-              <div className="git-empty">没有匹配「{filter}」的文件。</div>
-            ) : (
-              visibleChanges.map((change) => {
-                const state = diffs[change.path];
-                return (
-                  <ReviewFileDiff
-                    key={`${change.path}-${change.indexStatus}-${change.workingTreeStatus}`}
-                    change={change}
-                    state={state}
-                    collapsed={collapsed[change.path] ?? false}
-                    busy={busy}
-                    onToggle={() => setCollapsed((prev) => ({ ...prev, [change.path]: !(prev[change.path] ?? false) }))}
-                    onStage={() => void runGit(() => gitStage(cwd, [change.path]))}
-                    onUnstage={() => void runGit(() => gitUnstage(cwd, [change.path]))}
-                    onOpen={() => void revealPath(`${cwd}/${change.path}`)}
+                <div className="review-files">
+                  {changes.length === 0 ? (
+                    <div className="review-clean-state"><CheckCheck size={20} /><strong>工作区干净</strong><span>没有需要审查的更改。</span></div>
+                  ) : visibleChanges.length === 0 ? (
+                    <div className="git-empty">没有匹配的文件。</div>
+                  ) : (
+                    visibleChanges.map((change) => {
+                      const state = diffs[change.path];
+                      return (
+                        <ReviewFileDiff
+                          key={`${change.path}-${change.indexStatus}-${change.workingTreeStatus}`}
+                          change={change}
+                          state={state}
+                          fullState={fullDiffs[change.path]}
+                          collapsed={collapsed[change.path] ?? false}
+                          viewed={viewed[change.path] ?? false}
+                          selected={selectedFile === change.path}
+                          viewMode={viewMode}
+                          busy={busy}
+                          confirmDiscard={confirmDiscard === change.path}
+                          expandedRegions={expandedRegions}
+                          registerRef={(el) => { fileRefs.current[change.path] = el; }}
+                          requestFullContext={requestFullContext}
+                          onToggle={() => setCollapsed((prev) => ({ ...prev, [change.path]: !(prev[change.path] ?? false) }))}
+                          onToggleViewed={() => toggleViewed(change.path)}
+                          onToggleRegion={(key) => setExpandedRegions((prev) => ({ ...prev, [key]: !prev[key] }))}
+                          onStage={() => void runGit(() => gitStage(cwd, [change.path]))}
+                          onUnstage={() => void runGit(() => gitUnstage(cwd, [change.path]))}
+                          onStageHunk={(hunk) => state && void runGit(() => gitApplyPatch(cwd, buildHunkPatch(state.parsed, hunk), false))}
+                          onUnstageHunk={(hunk) => state && void runGit(() => gitApplyPatch(cwd, buildHunkPatch(state.parsed, hunk), true))}
+                          onRequestDiscard={() => setConfirmDiscard(change.path)}
+                          onCancelDiscard={() => setConfirmDiscard(null)}
+                          onConfirmDiscard={() => { setConfirmDiscard(null); void runGit(() => gitDiscard(cwd, [change.path])); }}
+                          onOpen={() => void revealPath(joinPath(cwd, change.path))}
+                        />
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {changes.length > 0 && (
+                <div className="review-floating">
+                  {confirmDiscard === DISCARD_ALL_KEY ? (
+                    <>
+                      <span className="review-floating-warn"><AlertTriangle size={13} />丢弃全部未提交更改？</span>
+                      <button type="button" className="panel-btn danger" disabled={busy} onClick={discardAll}>确认丢弃</button>
+                      <button type="button" className="panel-btn" onClick={() => setConfirmDiscard(null)}>取消</button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" className="panel-btn" disabled={busy} onClick={() => setConfirmDiscard(DISCARD_ALL_KEY)}><Undo2 size={13} />还原全部</button>
+                      {stagedCount === changes.length
+                        ? <button type="button" className="panel-btn" disabled={busy || stagedCount === 0} onClick={unstageAll}><RotateCcw size={13} />取消暂存全部</button>
+                        : <button type="button" className="panel-btn primary" disabled={busy} onClick={stageAll}><Plus size={13} />暂存全部</button>}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <aside className="review-tree-pane">
+              <div className="review-tree-head">
+                <Search size={12} />
+                <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选文件…" spellCheck={false} />
+                {filter && <button type="button" className="review-search-clear" onClick={() => setFilter('')} aria-label="清除筛选"><X size={12} /></button>}
+              </div>
+              <div className="review-tree-scroll">
+                {visibleChanges.length === 0 ? (
+                  <div className="review-tree-empty">没有文件</div>
+                ) : (
+                  <ReviewTree
+                    entries={tree}
+                    depth={0}
+                    folderCollapsed={folderCollapsed}
+                    selected={selectedFile}
+                    viewed={viewed}
+                    diffs={diffs}
+                    onToggleFolder={(path) => setFolderCollapsed((prev) => ({ ...prev, [path]: !prev[path] }))}
+                    onSelect={selectFile}
                   />
-                );
-              })
-            )}
+                )}
+              </div>
+            </aside>
           </div>
-
-          {changes.length > 0 && (
-            <footer className="review-footer">
-              <button type="button" className="panel-btn" disabled={busy || !changes.some((change) => change.staged)} onClick={() => void runGit(() => gitUnstage(cwd, changes.filter((change) => change.staged).map((change) => change.path)))}><RotateCcw size={13} />取消暂存全部</button>
-              <button type="button" className="panel-btn primary" disabled={busy || changes.length === 0} onClick={() => void runGit(() => gitStage(cwd, changes.map((change) => change.path)))}><Plus size={13} />暂存全部</button>
-            </footer>
-          )}
         </>
       ) : (
         <div className="git-empty-state">
@@ -3741,83 +4712,358 @@ function ReviewChangesPanel({
   );
 }
 
+// Renders one segment-aware diff line's text, underlining only changed words.
+function DiffLineText({ line }: { line: DiffLine }) {
+  if (line.segments && line.segments.length > 0) {
+    return (
+      <code className="review-line-text">
+        {line.segments.map((seg, index) =>
+          seg.changed ? <mark key={index} className="review-word">{seg.text}</mark> : <span key={index}>{seg.text}</span>,
+        )}
+      </code>
+    );
+  }
+  return <code className="review-line-text">{line.text.length ? line.text : ' '}</code>;
+}
+
 function ReviewFileDiff({
   change,
   state,
+  fullState,
   collapsed,
+  viewed,
+  selected,
+  viewMode,
   busy,
+  confirmDiscard,
+  expandedRegions,
+  registerRef,
+  requestFullContext,
   onToggle,
+  onToggleViewed,
+  onToggleRegion,
   onStage,
   onUnstage,
+  onStageHunk,
+  onUnstageHunk,
+  onRequestDiscard,
+  onCancelDiscard,
+  onConfirmDiscard,
   onOpen,
 }: {
   change: GitFileChange;
   state: FileDiffState | undefined;
+  fullState: ParsedDiff | 'loading' | undefined;
   collapsed: boolean;
+  viewed: boolean;
+  selected: boolean;
+  viewMode: ReviewViewMode;
   busy: boolean;
+  confirmDiscard: boolean;
+  expandedRegions: Record<string, boolean>;
+  registerRef: (el: HTMLElement | null) => void;
+  requestFullContext: (path: string) => void;
   onToggle: () => void;
+  onToggleViewed: () => void;
+  onToggleRegion: (key: string) => void;
   onStage: () => void;
   onUnstage: () => void;
+  onStageHunk: (hunk: DiffHunk) => void;
+  onUnstageHunk: (hunk: DiffHunk) => void;
+  onRequestDiscard: () => void;
+  onCancelDiscard: () => void;
+  onConfirmDiscard: () => void;
   onOpen: () => void;
 }) {
   const parsed = state?.parsed;
   const adds = parsed?.additions ?? 0;
   const dels = parsed?.deletions ?? 0;
+  const untracked = change.status === 'untracked';
+  const lastSlash = change.path.lastIndexOf('/');
+  const dir = lastSlash >= 0 ? change.path.slice(0, lastSlash + 1) : '';
+  const name = lastSlash >= 0 ? change.path.slice(lastSlash + 1) : change.path;
+  // Per-hunk staging needs a real file header to build a patch; untracked/binary
+  // files only support whole-file staging.
+  const hunkActionable = Boolean(parsed && parsed.fileHeader && !parsed.binary && !untracked);
+  const canExpandContext = Boolean(parsed && !parsed.binary && parsed.hunks.length > 0 && !untracked && !state?.error);
+
+  const full = fullState && fullState !== 'loading' ? fullState : null;
+  const fullLines = useMemo(() => (full ? full.hunks.flatMap((hunk) => hunk.lines) : []), [full]);
+  const totalOld = useMemo(
+    () => fullLines.reduce((max, line) => (line.oldNo != null && line.oldNo > max ? line.oldNo : max), 0),
+    [fullLines],
+  );
+
+  // Pull a file once it is expanded so unchanged gaps can be revealed.
+  useEffect(() => {
+    if (!collapsed && canExpandContext) requestFullContext(change.path);
+  }, [collapsed, canExpandContext, change.path, requestFullContext]);
+
+  const renderRows = (lines: DiffLine[], keyPrefix: string): ReactNode =>
+    viewMode === 'split' ? (
+      buildSplitRows(lines).map((row, rowIndex) => (
+        <div className="review-srow" key={`${keyPrefix}-${rowIndex}`}>
+          <div className={`review-scell ${row.left ? row.left.type : 'empty'}`}>
+            <span className="review-ln">{row.left?.oldNo ?? ''}</span>
+            {row.left ? <DiffLineText line={row.left} /> : <code className="review-line-text"> </code>}
+          </div>
+          <div className={`review-scell ${row.right ? row.right.type : 'empty'}`}>
+            <span className="review-ln">{row.right?.newNo ?? ''}</span>
+            {row.right ? <DiffLineText line={row.right} /> : <code className="review-line-text"> </code>}
+          </div>
+        </div>
+      ))
+    ) : (
+      lines.map((line, lineIndex) => (
+        <div className={`review-line ${line.type}`} key={`${keyPrefix}-${lineIndex}`}>
+          <span className="review-ln">{(line.type === 'del' ? line.oldNo : line.newNo) ?? ''}</span>
+          <span className="review-line-sign">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}</span>
+          <DiffLineText line={line} />
+        </div>
+      ))
+    );
+
+  const renderGap = (key: string, count: number | null, fromOld: number, toOld: number | null): ReactNode => {
+    const regionKey = `${change.path}|${key}`;
+    const expanded = expandedRegions[regionKey];
+    if (expanded) {
+      if (!full) return <div className="review-gap-loading" key={regionKey}><Loader2 size={12} className="spin" />加载未更改内容…</div>;
+      const lines = fullLines.filter(
+        (line) => line.type === 'context' && line.oldNo != null && line.oldNo >= fromOld && (toOld == null || line.oldNo <= toOld),
+      );
+      return <Fragment key={regionKey}>{renderRows(lines, regionKey)}</Fragment>;
+    }
+    return (
+      <button
+        type="button"
+        className="review-gap"
+        key={regionKey}
+        onClick={() => { if (!full) requestFullContext(change.path); onToggleRegion(regionKey); }}
+      >
+        <ChevronsUpDown size={12} />
+        {count != null ? `展开 ${count} 行未更改` : '展开未更改内容'}
+      </button>
+    );
+  };
+
+  const renderHunk = (hunk: DiffHunk, index: number): ReactNode => (
+    <div className="review-hunk" key={`hunk-${index}`}>
+      <div className="review-hunk-bar">
+        <span className="review-hunk-loc">@@ -{hunk.oldStart},{Math.max(hunk.oldEnd - hunk.oldStart, 0) + 1} +{hunk.newStart},{Math.max(hunk.newEnd - hunk.newStart, 0) + 1} @@{hunk.header ? ` ${hunk.header}` : ''}</span>
+        {hunkActionable && (
+          state?.showingStaged
+            ? <button type="button" className="review-hunk-btn" disabled={busy} onClick={() => onUnstageHunk(hunk)}><Minus size={11} />取消暂存此块</button>
+            : <button type="button" className="review-hunk-btn" disabled={busy} onClick={() => onStageHunk(hunk)}><Plus size={11} />暂存此块</button>
+        )}
+      </div>
+      {renderRows(hunk.lines, `h${index}`)}
+    </div>
+  );
+
+  const renderBody = (): ReactNode => {
+    if (!state) return <div className="review-diff-note"><Loader2 size={13} className="spin" />读取差异…</div>;
+    if (state.error) return <div className="review-diff-note error">{state.error}</div>;
+    if (parsed?.binary) return <div className="review-diff-note">二进制文件已更改。</div>;
+    if (!parsed || parsed.hunks.length === 0) {
+      return <div className="review-diff-note">{untracked ? '新文件为空，无内容可显示。' : '没有可显示的文本差异。'}</div>;
+    }
+    const hunks = parsed.hunks;
+    const body: ReactNode[] = [];
+    const first = hunks[0];
+    if (canExpandContext && first.oldStart > 1) body.push(renderGap('lead', first.oldStart - 1, 1, first.oldStart - 1));
+    hunks.forEach((hunk, index) => {
+      if (index > 0) {
+        const prev = hunks[index - 1];
+        const count = hunk.oldStart - prev.oldEnd - 1;
+        if (canExpandContext && count > 0) body.push(renderGap(`mid-${index}`, count, prev.oldEnd + 1, hunk.oldStart - 1));
+      }
+      body.push(renderHunk(hunk, index));
+    });
+    const last = hunks[hunks.length - 1];
+    if (canExpandContext && full && totalOld > last.oldEnd) body.push(renderGap('trail', totalOld - last.oldEnd, last.oldEnd + 1, null));
+    return body;
+  };
 
   return (
-    <section className="review-file">
+    <section className={`review-file ${viewed ? 'viewed' : ''} ${selected ? 'selected' : ''} ${collapsed ? 'collapsed' : ''}`} ref={registerRef}>
       <header className="review-file-head">
         <button type="button" className="review-file-toggle" onClick={onToggle} title={change.path}>
           {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-          <span className={`git-status-dot ${change.status}`}>{change.indexStatus}{change.workingTreeStatus}</span>
-          <span className="review-file-name">{change.path}</span>
+          <span className={`git-status-dot ${change.status}`} title={change.status}>{(change.indexStatus + change.workingTreeStatus).trim() || '··'}</span>
+          <span className="review-file-name">
+            {dir && <span className="review-file-dir">{dir}</span>}
+            <span className="review-file-base">{name}</span>
+          </span>
         </button>
         <span className="review-file-stat">
           {adds > 0 && <span className="add">+{adds}</span>}
           {dels > 0 && <span className="del">-{dels}</span>}
         </span>
         <span className="review-file-actions">
-          {change.staged
-            ? <button type="button" className="icon-mini" onClick={onUnstage} disabled={busy} title="取消暂存"><RotateCcw size={13} /></button>
-            : <button type="button" className="icon-mini" onClick={onStage} disabled={busy} title="暂存"><Plus size={13} /></button>}
-          <button type="button" className="icon-mini" onClick={onOpen} title="在文件管理器中显示"><FolderOpen size={13} /></button>
+          {confirmDiscard ? (
+            <span className="review-confirm">
+              <span className="review-confirm-text">丢弃?</span>
+              <button type="button" className="icon-mini danger" onClick={onConfirmDiscard} disabled={busy} title="确认丢弃"><Check size={13} /></button>
+              <button type="button" className="icon-mini" onClick={onCancelDiscard} title="取消"><X size={13} /></button>
+            </span>
+          ) : (
+            <>
+              <button
+                type="button"
+                className={`icon-mini ${viewed ? 'on' : ''}`}
+                onClick={onToggleViewed}
+                title={viewed ? '标记为未查看' : '标记为已查看'}
+              >
+                {viewed ? <Eye size={13} /> : <EyeOff size={13} />}
+              </button>
+              {change.staged
+                ? <button type="button" className="icon-mini" onClick={onUnstage} disabled={busy} title="取消暂存整个文件"><Minus size={13} /></button>
+                : <button type="button" className="icon-mini" onClick={onStage} disabled={busy} title="暂存整个文件"><Plus size={13} /></button>}
+              <button type="button" className="icon-mini danger-hover" onClick={onRequestDiscard} disabled={busy} title="丢弃此文件的更改"><Undo2 size={13} /></button>
+              <button type="button" className="icon-mini" onClick={onOpen} title="在文件管理器中显示"><FolderOpen size={13} /></button>
+            </>
+          )}
         </span>
       </header>
-      {!collapsed && (
-        <div className="review-diff">
-          {!state ? (
-            <div className="review-diff-note"><Loader2 size={13} className="spin" />读取差异…</div>
-          ) : state.error ? (
-            <div className="review-diff-note">{state.error}</div>
-          ) : parsed && parsed.binary ? (
-            <div className="review-diff-note">二进制文件已更改。</div>
-          ) : !parsed || parsed.hunks.length === 0 ? (
-            <div className="review-diff-note">{change.status === 'untracked' ? '新文件（未跟踪）— 暂存后可查看差异。' : '没有可显示的文本差异。'}</div>
-          ) : (
-            parsed.hunks.map((hunk, index) => {
-              const previous = index > 0 ? parsed.hunks[index - 1] : null;
-              const gap = previous ? hunk.oldStart - previous.oldEnd - 1 : hunk.oldStart - 1;
-              return (
-                <div className="review-hunk" key={`${hunk.oldStart}-${hunk.newStart}-${index}`}>
-                  {gap > 0 && (
-                    <div className="review-hunk-sep">{gap} 行未更改{hunk.header ? ` · ${hunk.header}` : ''}</div>
-                  )}
-                  {hunk.lines.map((line, lineIndex) => (
-                    <div className={`review-line ${line.type}`} key={lineIndex}>
-                      <span className="review-ln">{line.oldNo ?? ''}</span>
-                      <span className="review-ln">{line.newNo ?? ''}</span>
-                      <span className="review-line-sign">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}</span>
-                      <code className="review-line-text">{line.text.length ? line.text : ' '}</code>
-                    </div>
-                  ))}
-                </div>
-              );
-            })
-          )}
-        </div>
-      )}
+      {!collapsed && <div className={`review-diff ${viewMode === 'split' ? 'split' : ''}`}>{renderBody()}</div>}
     </section>
   );
+}
+
+// ---- Review file tree (right pane navigation) ----
+interface ReviewTreeFolder {
+  type: 'folder';
+  name: string;
+  path: string;
+  children: ReviewTreeEntry[];
+}
+interface ReviewTreeFile {
+  type: 'file';
+  name: string;
+  change: GitFileChange;
+}
+type ReviewTreeEntry = ReviewTreeFolder | ReviewTreeFile;
+
+// Collapse single-child folder chains ("a" → "a/b") and sort folders-first.
+function normalizeTree(entries: ReviewTreeEntry[]): ReviewTreeEntry[] {
+  const collapsed = entries.map((entry) => {
+    if (entry.type !== 'folder') return entry;
+    let folder = entry;
+    while (folder.children.length === 1 && folder.children[0].type === 'folder') {
+      const child = folder.children[0] as ReviewTreeFolder;
+      folder = { type: 'folder', name: `${folder.name}/${child.name}`, path: child.path, children: child.children };
+    }
+    return { ...folder, children: normalizeTree(folder.children) } as ReviewTreeFolder;
+  });
+  return collapsed.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function buildFileTree(changes: GitFileChange[]): ReviewTreeEntry[] {
+  const root: ReviewTreeFolder = { type: 'folder', name: '', path: '', children: [] };
+  const folders = new Map<string, ReviewTreeFolder>([['', root]]);
+  for (const change of changes) {
+    const parts = change.path.split('/');
+    const fileName = parts.pop() ?? change.path;
+    let parent = root;
+    let acc = '';
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      let folder = folders.get(acc);
+      if (!folder) {
+        folder = { type: 'folder', name: part, path: acc, children: [] };
+        folders.set(acc, folder);
+        parent.children.push(folder);
+      }
+      parent = folder;
+    }
+    parent.children.push({ type: 'file', name: fileName, change });
+  }
+  return normalizeTree(root.children);
+}
+
+function ReviewTree({
+  entries,
+  depth,
+  folderCollapsed,
+  selected,
+  viewed,
+  diffs,
+  onToggleFolder,
+  onSelect,
+}: {
+  entries: ReviewTreeEntry[];
+  depth: number;
+  folderCollapsed: Record<string, boolean>;
+  selected: string | null;
+  viewed: Record<string, boolean>;
+  diffs: Record<string, FileDiffState>;
+  onToggleFolder: (path: string) => void;
+  onSelect: (path: string) => void;
+}) {
+  return (
+    <>
+      {entries.map((entry) => {
+        if (entry.type === 'folder') {
+          const open = !folderCollapsed[entry.path];
+          return (
+            <div key={`folder-${entry.path}`}>
+              <button type="button" className="tree-folder" style={{ paddingLeft: depth * 12 + 8 }} onClick={() => onToggleFolder(entry.path)}>
+                {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                {open ? <FolderOpen size={13} /> : <Folder size={13} />}
+                <span className="tree-name">{entry.name}</span>
+              </button>
+              {open && (
+                <ReviewTree
+                  entries={entry.children}
+                  depth={depth + 1}
+                  folderCollapsed={folderCollapsed}
+                  selected={selected}
+                  viewed={viewed}
+                  diffs={diffs}
+                  onToggleFolder={onToggleFolder}
+                  onSelect={onSelect}
+                />
+              )}
+            </div>
+          );
+        }
+        const path = entry.change.path;
+        const stats = diffs[path]?.parsed;
+        return (
+          <button
+            key={`file-${path}`}
+            type="button"
+            className={`tree-file ${selected === path ? 'active' : ''} ${viewed[path] ? 'viewed' : ''}`}
+            style={{ paddingLeft: depth * 12 + 8 }}
+            onClick={() => onSelect(path)}
+            title={path}
+          >
+            <span className={`git-status-dot ${entry.change.status}`}>{(entry.change.indexStatus + entry.change.workingTreeStatus).trim() || '··'}</span>
+            {reviewFileIcon(entry.name)}
+            <span className="tree-name">{entry.name}</span>
+            {stats && (stats.additions > 0 || stats.deletions > 0) && (
+              <span className="tree-stat">
+                {stats.additions > 0 && <span className="add">+{stats.additions}</span>}
+                {stats.deletions > 0 && <span className="del">-{stats.deletions}</span>}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </>
+  );
+}
+
+function reviewFileIcon(name: string): ReactNode {
+  const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'].includes(ext)) return <ImageIcon size={13} className="tree-icon" />;
+  if (['md', 'markdown', 'txt'].includes(ext)) return <FileText size={13} className="tree-icon" />;
+  if (['csv', 'tsv', 'xlsx'].includes(ext)) return <FileSpreadsheet size={13} className="tree-icon" />;
+  if (['ts', 'tsx', 'js', 'jsx', 'rs', 'py', 'go', 'java', 'c', 'cpp', 'json', 'css', 'html'].includes(ext)) return <FileCode2 size={13} className="tree-icon" />;
+  return <File size={13} className="tree-icon" />;
 }
 
 function GitPanel({ onClose }: { onClose: () => void }) {
@@ -3886,9 +5132,9 @@ function GitPanel({ onClose }: { onClose: () => void }) {
   const currentBranch = branches.find((branch) => branch.current)?.name || status?.branch || '';
 
   return (
-    <aside className="git-panel">
-      <header className="panel-header">
-        <div>
+    <aside className="git-panel right-dock-panel">
+      <header className="panel-header" data-tauri-drag-region>
+        <div data-tauri-drag-region>
           <h2>Git</h2>
           <span>{cwd ? shortenPath(cwd) : '未指定工作目录'}</span>
         </div>
@@ -3992,6 +5238,7 @@ function GitPanel({ onClose }: { onClose: () => void }) {
 }
 
 function SettingsPage({
+  domain,
   open,
   section,
   onSectionChange,
@@ -3999,6 +5246,7 @@ function SettingsPage({
   theme,
   onThemeChange,
 }: {
+  domain: DomainConfig;
   open: boolean;
   section: SettingsSection;
   onSectionChange: (section: SettingsSection) => void;
@@ -4015,7 +5263,7 @@ function SettingsPage({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [open, onClose]);
   if (!open) return null;
-  const activeLabel = sectionLabel(section);
+  const activeLabel = sectionLabel(section, domain);
   return (
     <div className="settings-page" role="dialog" aria-modal="true" aria-label="设置">
       <nav className="settings-page-nav">
@@ -4031,7 +5279,7 @@ function SettingsPage({
         <div className="settings-page-scroll">
           <div className="settings-content">
             <h1 className="settings-content-title">{activeLabel}</h1>
-            <SettingsContent section={section} theme={theme} onThemeChange={onThemeChange} />
+            <SettingsContent domain={domain} section={section} theme={theme} onThemeChange={onThemeChange} />
           </div>
         </div>
       </div>
@@ -4062,20 +5310,16 @@ function SettingsNavGroup({
   );
 }
 
-function SettingsContent({ section, theme, onThemeChange }: { section: SettingsSection; theme: Theme; onThemeChange: (theme: Theme) => void }) {
-  const model = useChatStore((state) => state.model);
-  const reasoningEffort = useChatStore((state) => state.reasoningEffort);
+function SettingsContent({ domain, section, theme, onThemeChange }: { domain: DomainConfig; section: SettingsSection; theme: Theme; onThemeChange: (theme: Theme) => void }) {
   const speed = useChatStore((state) => state.speed);
+  const workModeId = useChatStore((state) => state.workModeId);
   const approvalMode = useChatStore((state) => state.approvalMode);
-  const setModel = useChatStore((state) => state.setModel);
-  const setReasoningEffort = useChatStore((state) => state.setReasoningEffort);
   const setSpeed = useChatStore((state) => state.setSpeed);
+  const setWorkModeId = useChatStore((state) => state.setWorkModeId);
   const setApprovalMode = useChatStore((state) => state.setApprovalMode);
-  const codexStatus = useChatStore((state) => state.codexStatus);
-  const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
-  const isCheckingCodex = useChatStore((state) => state.isCheckingCodex);
 
   if (section === 'archived') return <ArchivedSettings />;
+  if (section === 'models') return <ModelSettings />;
   if (section === 'appearance') {
     return (
       <>
@@ -4124,9 +5368,7 @@ function SettingsContent({ section, theme, onThemeChange }: { section: SettingsS
   if (section === 'general') {
     return (
       <>
-        <SettingsGroup>
-          <SettingsRow title="工作模式" description="选择 Alpha Studio 显示多少技术细节。"><ModeCard /></SettingsRow>
-        </SettingsGroup>
+        <WorkModePanel value={workModeId} onChange={setWorkModeId} />
         <SettingsGroup>
           <SettingsRow title="默认权限" description="默认情况下，Alpha Studio 可以读取工作区文件。"><Toggle checked /></SettingsRow>
           <SettingsRow title="自动审核" description="自动审核额外访问和权限请求。"><Toggle checked /></SettingsRow>
@@ -4143,28 +5385,212 @@ function SettingsContent({ section, theme, onThemeChange }: { section: SettingsS
     );
   }
   if (section === 'hooks' || section === 'connections' || section === 'snapshots' || section === 'mcp' || section === 'browser' || section === 'computer') {
-    return <PlaceholderSettings section={section} />;
-  }
+    return <PlaceholderSettings domain={domain} section={section} />;
+	  }
+	  return (
+	    <SettingsGroup>
+	      <SettingsRow title={sectionLabel(section, domain)} description="公开源码版保留入口，商业垂直包可通过领域插件扩展这里。"><span className="settings-static">可扩展</span></SettingsRow>
+	    </SettingsGroup>
+	  );
+	}
+
+const EMPTY_MODEL_DRAFT: ModelProfileDraft = {
+  label: '',
+  providerId: 'deepseek',
+  model: '',
+  wireApi: 'responses',
+  baseUrl: '',
+  apiKey: '',
+  enabled: true,
+  supportsReasoningEffort: false,
+};
+
+function ModelSettings() {
+  const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
+  const modelProfiles = useChatStore((state) => state.modelProfiles);
+  const reasoningEffort = useChatStore((state) => state.reasoningEffort);
+  const setModelProfile = useChatStore((state) => state.setModelProfile);
+  const setReasoningEffort = useChatStore((state) => state.setReasoningEffort);
+  const addModelProfile = useChatStore((state) => state.addModelProfile);
+  const updateModelProfile = useChatStore((state) => state.updateModelProfile);
+  const deleteModelProfile = useChatStore((state) => state.deleteModelProfile);
+  const toggleModelProfile = useChatStore((state) => state.toggleModelProfile);
+  const codexStatus = useChatStore((state) => state.codexStatus);
+  const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
+  const isCheckingCodex = useChatStore((state) => state.isCheckingCodex);
+  const modelConfigPath = useChatStore((state) => state.modelConfigPath);
+  const isLoadingModelConfig = useChatStore((state) => state.isLoadingModelConfig);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<ModelProfileDraft>(EMPTY_MODEL_DRAFT);
+
+  const enabledProfiles = modelProfiles.filter((profile) => profile.enabled);
+  const customProfiles = modelProfiles.filter((profile) => !profile.builtIn);
+  const editingProfile = editingId ? customProfiles.find((profile) => profile.id === editingId) : null;
+  const selectedProfile = modelProfiles.find((profile) => profile.id === selectedModelProfileId);
+  const normalizedDraft = normalizeModelProfileDraft(draft);
+  const requiresBaseUrl = normalizedDraft.providerId !== 'openai';
+  const canSave = Boolean(normalizedDraft.label && normalizedDraft.model && (!requiresBaseUrl || normalizedDraft.baseUrl));
+
+  const beginCreate = (template: 'blank' | 'deepseek' | 'claude') => {
+    setEditingId(null);
+    setDraft(modelTemplate(template));
+  };
+  const beginEdit = (profile: ModelProfile) => {
+    if (profile.builtIn) return;
+    setEditingId(profile.id);
+    setDraft(modelProfileToDraft(profile));
+  };
+  const resetForm = () => {
+    setEditingId(null);
+    setDraft(EMPTY_MODEL_DRAFT);
+  };
+  const save = (event: FormEvent) => {
+    event.preventDefault();
+    if (!canSave) return;
+    if (editingProfile) {
+      updateModelProfile(editingProfile.id, normalizedDraft);
+    } else {
+      addModelProfile(normalizedDraft);
+    }
+    resetForm();
+  };
+  const remove = (profile: ModelProfile) => {
+    void confirmDanger(`删除自定义模型「${profile.label}」？`, '删除自定义模型').then((ok) => {
+      if (ok) deleteModelProfile(profile.id);
+    });
+  };
+
   return (
-    <SettingsGroup>
-      <SettingsRow title="模型" description="对话使用的基础模型，可随时切换。">
-        <select className="settings-select" value={model} onChange={(event) => setModel(event.target.value)}>
-          {MODEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-        </select>
-      </SettingsRow>
-      <SettingsRow title="推理强度" description="更高的强度更细致，但响应更慢。">
-        <SettingsSegment value={reasoningEffort} onChange={(id) => setReasoningEffort(id as ReasoningEffort)} options={EFFORT_OPTIONS.map((option) => ({ id: option.id, label: option.label }))} />
-      </SettingsRow>
-      <div className={`settings-status ${codexStatus?.installed && codexStatus.loggedIn ? 'ready' : 'attention'}`}>
-        <span className="settings-status-icon">{isCheckingCodex ? <Loader2 size={16} className="spin" /> : <Terminal size={16} />}</span>
-        <div className="settings-status-main">
-          <strong>{codexStatus?.installed && codexStatus.loggedIn ? `Codex CLI 已就绪${codexStatus.version ? ` · ${codexStatus.version}` : ''}` : 'Codex CLI 未就绪'}</strong>
-          <span>{codexStatus?.path || codexStatus?.error || '请确认 Codex 已安装并登录。'}</span>
+    <>
+      <SettingsGroup>
+        <SettingsRow title="当前模型" description="对话使用的基础模型，可随时切换。">
+          <select className="settings-select model-settings-select" value={selectedModelProfileId} onChange={(event) => setModelProfile(event.target.value)}>
+            {enabledProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
+          </select>
+        </SettingsRow>
+        <SettingsRow title="推理强度" description="更高的强度更细致，但响应更慢；不支持的自定义模型会自动跳过。">
+          <SettingsSegment value={reasoningEffort} onChange={(id) => setReasoningEffort(id as ReasoningEffort)} options={EFFORT_OPTIONS.map((option) => ({ id: option.id, label: option.label }))} />
+        </SettingsRow>
+        <SettingsRow title="配置文件" description="自定义模型和 API Key 会保存到本地 JSON 文件，其他工具可以直接修改。">
+          <span className="settings-static model-config-path">{isLoadingModelConfig ? '正在加载...' : modelConfigPath || '~/.alpha-studio/model-providers.json'}</span>
+        </SettingsRow>
+        {selectedProfile && !selectedProfile.builtIn && selectedProfile.wireApi === 'chat' && (
+          <div className="settings-status adapter model-compat-status">
+            <span className="settings-status-icon"><Network size={16} /></span>
+            <div className="settings-status-main">
+              <strong>当前模型将通过本地 adapter 运行</strong>
+              <span>Alpha Studio 会把 Codex 的 Responses 请求翻译为上游 Chat Completions 请求。</span>
+            </div>
+          </div>
+        )}
+        <div className={`settings-status ${codexStatus?.installed && codexStatus.loggedIn ? 'ready' : 'attention'}`}>
+          <span className="settings-status-icon">{isCheckingCodex ? <Loader2 size={16} className="spin" /> : <Terminal size={16} />}</span>
+          <div className="settings-status-main">
+            <strong>{codexStatus?.installed && codexStatus.loggedIn ? `Codex CLI 已就绪${codexStatus.version ? ` · ${codexStatus.version}` : ''}` : 'Codex CLI 未就绪'}</strong>
+            <span>{codexStatus?.path || codexStatus?.error || '请确认 Codex 已安装并登录。'}</span>
+          </div>
+          <button className="settings-btn" type="button" onClick={() => void refreshCodexStatus()} disabled={isCheckingCodex}>重新检测</button>
         </div>
-        <button className="settings-btn" type="button" onClick={() => void refreshCodexStatus()} disabled={isCheckingCodex}>重新检测</button>
-      </div>
-    </SettingsGroup>
+      </SettingsGroup>
+
+      <div className="settings-subtitle">自定义模型</div>
+      <SettingsGroup>
+        <div className="model-template-row">
+          <button className="settings-btn" type="button" onClick={() => beginCreate('deepseek')}><Plus size={13} />DeepSeek</button>
+          <button className="settings-btn" type="button" onClick={() => beginCreate('claude')}><Plus size={13} />Claude 网关</button>
+          <button className="settings-btn" type="button" onClick={() => beginCreate('blank')}><Plus size={13} />空白</button>
+        </div>
+        {customProfiles.length === 0 ? (
+          <div className="model-empty-row">暂无自定义模型。</div>
+        ) : customProfiles.map((profile) => (
+          <div className="model-profile-row" key={profile.id}>
+            <div className="model-profile-main">
+              <strong>{profile.label}</strong>
+              <span>{profile.providerId} · {profile.model}</span>
+              <code>{profile.apiKey ? 'API Key 已保存' : '未填写 API Key'} · {profile.wireApi === 'responses' ? 'Responses API' : `Chat Completions（本地 adapter，${profile.supportsReasoningEffort ? '思考开启' : '思考关闭'}）`} · {profile.baseUrl || 'built-in provider'}</code>
+            </div>
+            <div className="model-profile-actions">
+              <label className="model-toggle"><input type="checkbox" checked={profile.enabled} onChange={(event) => toggleModelProfile(profile.id, event.target.checked)} /><span>启用</span></label>
+              <button className="settings-btn" type="button" onClick={() => beginEdit(profile)}><Pencil size={13} />编辑</button>
+              <button className="icon-mini danger" type="button" onClick={() => remove(profile)} aria-label="删除自定义模型"><Trash2 size={13} /></button>
+            </div>
+          </div>
+        ))}
+      </SettingsGroup>
+
+      <form className="model-profile-form" onSubmit={save}>
+        <div className="settings-subtitle">{editingProfile ? '编辑模型' : '新增模型'}</div>
+        <div className="model-form-grid">
+          <label>显示名称<input className="settings-input" value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} placeholder="DeepSeek V4" /></label>
+          <label>Provider ID<input className="settings-input" value={draft.providerId} onChange={(event) => setDraft({ ...draft, providerId: event.target.value })} placeholder="deepseek" /></label>
+          <label>模型 ID<input className="settings-input" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder="deepseek-chat" /></label>
+          <label>Base URL<input className="settings-input" value={draft.baseUrl ?? ''} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} placeholder="https://api.deepseek.com/v1" /></label>
+          <label>API Key<input className="settings-input" type="password" value={draft.apiKey ?? ''} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} placeholder="sk-..." /></label>
+          <label>协议
+            <select className="settings-select" value={draft.wireApi} onChange={(event) => setDraft({ ...draft, wireApi: event.target.value as ModelWireApi })}>
+              <option value="responses">Responses API（直连/网关）</option>
+              <option value="chat">Chat Completions（本地 adapter）</option>
+            </select>
+          </label>
+        </div>
+        {draft.wireApi === 'chat' && (
+          <div className="model-form-warning">
+            <Network size={14} />
+            <span>Chat Completions 会通过 Alpha Studio 本地 adapter 接入 Codex；勾选“启用思考模式”会发送 thinking.enabled，取消勾选会发送 thinking.disabled。</span>
+          </div>
+        )}
+        <div className="model-form-options">
+          <label className="model-toggle"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} /><span>启用</span></label>
+          <label className="model-toggle"><input type="checkbox" checked={draft.supportsReasoningEffort} onChange={(event) => setDraft({ ...draft, supportsReasoningEffort: event.target.checked })} /><span>{draft.wireApi === 'chat' ? '启用思考模式' : '支持推理强度'}</span></label>
+        </div>
+        <div className="model-form-actions">
+          <button className="settings-btn primary" type="submit" disabled={!canSave}>{editingProfile ? '保存修改' : '添加模型'}</button>
+          <button className="settings-btn" type="button" onClick={resetForm}>取消</button>
+        </div>
+      </form>
+    </>
   );
+}
+
+function modelTemplate(template: 'blank' | 'deepseek' | 'claude'): ModelProfileDraft {
+  if (template === 'deepseek') {
+    return {
+      label: 'DeepSeek V4',
+      providerId: 'deepseek',
+      model: 'deepseek-v4-flash',
+      wireApi: 'chat',
+      baseUrl: 'https://api.deepseek.com',
+      apiKey: '',
+      enabled: true,
+      supportsReasoningEffort: true,
+    };
+  }
+  if (template === 'claude') {
+    return {
+      label: 'Claude Opus 4.8',
+      providerId: 'openrouter',
+      model: 'anthropic/claude-opus-4.8',
+      wireApi: 'responses',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: '',
+      enabled: true,
+      supportsReasoningEffort: false,
+    };
+  }
+  return EMPTY_MODEL_DRAFT;
+}
+
+function modelProfileToDraft(profile: ModelProfile): ModelProfileDraft {
+  return {
+    label: profile.label,
+    providerId: profile.providerId,
+    model: profile.model,
+    wireApi: profile.wireApi,
+    baseUrl: profile.baseUrl ?? '',
+    apiKey: profile.apiKey ?? '',
+    enabled: profile.enabled,
+    supportsReasoningEffort: profile.supportsReasoningEffort,
+  };
 }
 
 function SettingsGroup({ children }: { children: ReactNode }) {
@@ -4179,6 +5605,28 @@ function SettingsSegment<T extends string>({ options, value, onChange }: { optio
   return <div className="settings-segment" role="group">{options.map((option) => <button key={option.id} type="button" className={`settings-segment-btn ${option.id === value ? 'active' : ''}`} onClick={() => onChange(option.id)}>{option.icon}<span>{option.label}</span></button>)}</div>;
 }
 
+function WorkModePanel({ value, onChange }: { value: WorkModeId; onChange: (id: WorkModeId) => void }) {
+  const activeOption = WORK_MODE_OPTIONS.find((option) => option.id === value) ?? WORK_MODE_OPTIONS[0];
+  if (!activeOption) return null;
+  return (
+    <section className="work-mode-panel" aria-labelledby="work-mode-title">
+      <div className="work-mode-copy">
+        <div>
+          <span className="work-mode-kicker">工作模式</span>
+          <h2 id="work-mode-title">编程协作</h2>
+          <p>选择 Alpha Studio 显示多少技术细节。</p>
+        </div>
+        <div className="work-mode-current" aria-label={`当前模式：${activeOption.title}`}>
+          <span>当前</span>
+          <strong>{activeOption.title}</strong>
+          <em>{activeOption.tag}</em>
+        </div>
+      </div>
+      <ModePicker value={value} onChange={onChange} />
+    </section>
+  );
+}
+
 function CodePreview() {
   return (
     <div className="theme-preview">
@@ -4188,8 +5636,38 @@ function CodePreview() {
   );
 }
 
-function ModeCard() {
-  return <div className="mode-card"><Terminal size={14} /><span><strong>适用于编程</strong><em>更具技术性的回复和控制</em></span><span className="radio-dot active" /></div>;
+function ModePicker({ value, onChange }: { value: WorkModeId; onChange: (id: WorkModeId) => void }) {
+  return (
+    <div className="mode-card-list" role="radiogroup" aria-label="工作模式">
+      {WORK_MODE_OPTIONS.map((option) => {
+        const selected = option.id === value;
+        const availableMode = option.available ? activeDomain(option.id) : null;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            className={`mode-card ${selected ? 'selected' : ''} ${option.available ? '' : 'disabled'}`}
+            role="radio"
+            aria-checked={selected}
+            disabled={!option.available}
+            onClick={() => availableMode && onChange(availableMode.id)}
+          >
+            <span className="mode-card-icon">{modeIcon(option.id)}</span>
+            <span className="mode-card-main">
+              <span className="mode-card-heading">
+                <strong>{option.title}</strong>
+                <span className={`mode-card-tag ${option.available ? '' : 'muted'}`}>{option.tag}</span>
+              </span>
+              <em>{option.description}</em>
+            </span>
+            <span className={`mode-card-radio ${selected ? 'active' : ''}`}>
+              {selected && <Check size={12} strokeWidth={3} />}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function Toggle({ checked }: { checked?: boolean }) {
@@ -4266,11 +5744,11 @@ function WorktreeSettings() {
   );
 }
 
-function PlaceholderSettings({ section }: { section: SettingsSection }) {
+function PlaceholderSettings({ domain, section }: { domain: DomainConfig; section: SettingsSection }) {
   return (
     <SettingsGroup>
-      <SettingsRow title={sectionLabel(section)} description="公开源码版保留入口，商业垂直包可通过领域插件扩展这里。"><span className="settings-static">可扩展</span></SettingsRow>
-      <SettingsRow title="领域包" description="当前启用 core-coding。"><span className="settings-static">{domain.id}</span></SettingsRow>
+      <SettingsRow title={sectionLabel(section, domain)} description="公开源码版保留入口，商业垂直包可通过领域插件扩展这里。"><span className="settings-static">可扩展</span></SettingsRow>
+      <SettingsRow title="领域包" description={`当前启用 ${domain.id}。`}><span className="settings-static">{domain.id}</span></SettingsRow>
     </SettingsGroup>
   );
 }
@@ -4318,9 +5796,10 @@ function settingsIcon(section: SettingsSection): ReactNode {
   const icons: Record<SettingsSection, ReactNode> = {
     general: <SlidersHorizontal size={15} />,
     profile: <UserCircle size={15} />,
-    appearance: <Sun size={15} />,
-    config: <Box size={15} />,
-    personalization: <Sparkles size={15} />,
+	    appearance: <Sun size={15} />,
+	    config: <Box size={15} />,
+	    models: <Cpu size={15} />,
+	    personalization: <Sparkles size={15} />,
     keyboard: <Keyboard size={15} />,
     usage: <History size={15} />,
     snapshots: <Layers size={15} />,
@@ -4337,7 +5816,36 @@ function settingsIcon(section: SettingsSection): ReactNode {
   return icons[section];
 }
 
-function sectionLabel(section: SettingsSection): string {
+function modeIcon(id: string): ReactNode {
+  if (id === 'core-coding') return <Terminal size={14} />;
+  return <Layers size={14} />;
+}
+
+function domainSuggestionIcon(suggestion: DomainSuggestion): ReactNode {
+  const icons: Record<DomainSuggestion['icon'], ReactNode> = {
+    'file-code': <FileCode2 size={16} className="icon" />,
+    code: <Code2 size={16} className="icon" />,
+    wrench: <Wrench size={16} className="icon" />,
+  };
+  return icons[suggestion.icon];
+}
+
+function domainFeatureIcon(icon: DomainFeature['icon']): ReactNode {
+  const icons: Record<DomainFeature['icon'], ReactNode> = {
+    folder: <FolderOpen size={20} />,
+    browser: <Globe size={20} />,
+    review: <GitPullRequest size={20} />,
+    terminal: <SquareTerminal size={20} />,
+  };
+  return icons[icon];
+}
+
+function domainSectionIds(domain: DomainConfig): SettingsSection[] {
+  return [...domain.navigation.personal, ...domain.navigation.integrations, ...domain.navigation.coding, ...domain.navigation.archived]
+    .map((item) => item.id as SettingsSection);
+}
+
+function sectionLabel(section: SettingsSection, domain: DomainConfig): string {
   return [...domain.navigation.personal, ...domain.navigation.integrations, ...domain.navigation.coding, ...domain.navigation.archived]
     .find((item) => item.id === section)?.label || '设置';
 }
@@ -4386,7 +5894,8 @@ function firstLine(value?: string): string {
 }
 
 function messageToPlainText(message: ChatMessage): string {
-  return message.blocks.map((block) => {
+  const hideReconnectStatus = message.blocks.some((block) => !isReconnectStatusBlock(block));
+  return message.blocks.filter((block) => !(hideReconnectStatus && isReconnectStatusBlock(block))).map((block) => {
     if (block.type === 'text' || block.type === 'thinking' || block.type === 'error') return block.content;
     if (block.type === 'tool') return [block.title, block.input, block.output].filter(Boolean).join('\n');
     return '';
@@ -4490,32 +5999,6 @@ function shortenPath(value: string): string {
   const parts = value.split('/').filter(Boolean);
   if (parts.length <= 2) return value;
   return `…/${parts.slice(-2).join('/')}`;
-}
-
-function remoteUrl(remote: GitRemote): string {
-  return remote.pushUrl || remote.fetchUrl || '';
-}
-
-function httpFromRemote(url: string): string | null {
-  if (!url) return null;
-  let cleaned = url.trim().replace(/\.git$/, '');
-  const scpMatch = cleaned.match(/^[^@]+@([^:]+):(.+)$/);
-  if (scpMatch) {
-    return `https://${scpMatch[1]}/${scpMatch[2]}`;
-  }
-  cleaned = cleaned.replace(/^ssh:\/\/[^@]+@/, 'https://').replace(/^git:\/\//, 'https://');
-  if (/^https?:\/\//.test(cleaned)) return cleaned;
-  return null;
-}
-
-function shortenRemote(url: string): string {
-  const http = httpFromRemote(url);
-  if (http) {
-    const without = http.replace(/^https?:\/\//, '');
-    const parts = without.split('/').filter(Boolean);
-    return parts.length <= 1 ? without : `${parts[0]}/${parts.slice(1).join('/')}`;
-  }
-  return url;
 }
 
 function basename(path: string): string {

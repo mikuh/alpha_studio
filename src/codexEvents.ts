@@ -32,7 +32,7 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   // conversationId) from finalizing other conversations that are still running.
   if (event.type === 'stopped') {
     if (conversation.status !== 'streaming') return conversation;
-    return finishStreaming(conversation, now, '[已停止]');
+    return finishStreaming(conversation, now);
   }
 
   if (event.type === 'completed') {
@@ -46,6 +46,11 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
       type: 'error',
       content: event.message || event.text || 'Codex 返回了未知错误。',
     }, { status: 'error', runId: undefined, done: true });
+  }
+
+  if (event.type === 'status') {
+    if (conversation.status !== 'streaming') return conversation;
+    return appendStatusBlock(conversation, now, event.message || event.text || 'Codex 正在重试连接。');
   }
 
   if (event.type === 'text_delta' && event.text) {
@@ -193,7 +198,9 @@ function appendToStreamingAssistant(
     {
       ...conversation,
       status: options?.status || conversation.status,
-      runId: options?.runId,
+      runId: options && Object.prototype.hasOwnProperty.call(options, 'runId')
+        ? options.runId
+        : conversation.runId,
     },
     now,
     (message) => ({
@@ -204,7 +211,20 @@ function appendToStreamingAssistant(
   );
 }
 
-function finishStreaming(conversation: Conversation, now: number, stoppedText?: string): Conversation {
+function appendStatusBlock(conversation: Conversation, now: number, content: string): Conversation {
+  return updateStreamingAssistant(conversation, now, (message) => {
+    const last = message.blocks[message.blocks.length - 1];
+    if (last?.type === 'error' && last.content === content) {
+      return message;
+    }
+    return {
+      ...message,
+      blocks: [...message.blocks, { type: 'error', content }],
+    };
+  });
+}
+
+function finishStreaming(conversation: Conversation, now: number): Conversation {
   return updateStreamingAssistant(
     {
       ...conversation,
@@ -215,9 +235,7 @@ function finishStreaming(conversation: Conversation, now: number, stoppedText?: 
     (message) => ({
       ...message,
       isStreaming: false,
-      blocks: stoppedText
-        ? [...message.blocks, { type: 'text', content: `\n\n${stoppedText}` }]
-        : message.blocks,
+      blocks: message.blocks,
     }),
   );
 }

@@ -146,6 +146,7 @@ export interface CodexChatEvent {
     | 'tool_delta'
     | 'tool_completed'
     | 'tool_failed'
+    | 'status'
     | 'completed'
     | 'error'
     | 'stopped';

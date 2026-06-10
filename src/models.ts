@@ -5,16 +5,169 @@ export interface ModelOption {
   label: string;
 }
 
-export const MODEL_OPTIONS: ModelOption[] = [
-  { id: 'gpt-5.5', label: 'GPT-5.5' },
-  { id: 'gpt-5.4', label: 'GPT-5.4' },
-  { id: 'gpt-5.4-mini', label: 'GPT-5.4-Mini' },
-  { id: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },
-  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Codex-Spark' },
-  { id: 'gpt-5.2', label: 'GPT-5.2' },
+export type ModelWireApi = 'chat' | 'responses';
+
+export interface ModelProfile {
+  id: string;
+  label: string;
+  providerId: string;
+  model: string;
+  wireApi: ModelWireApi;
+  baseUrl?: string;
+  apiKey?: string;
+  enabled: boolean;
+  supportsReasoningEffort: boolean;
+  builtIn?: boolean;
+}
+
+export type ModelProfileDraft = Omit<ModelProfile, 'id' | 'builtIn'>;
+
+export const BUILTIN_MODEL_PROFILES: ModelProfile[] = [
+  { id: 'gpt-5.5', label: 'GPT-5.5', providerId: 'openai', model: 'gpt-5.5', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
+  { id: 'gpt-5.4', label: 'GPT-5.4', providerId: 'openai', model: 'gpt-5.4', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
+  { id: 'gpt-5.4-mini', label: 'GPT-5.4-Mini', providerId: 'openai', model: 'gpt-5.4-mini', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
+  { id: 'gpt-5.3-codex', label: 'GPT-5.3-Codex', providerId: 'openai', model: 'gpt-5.3-codex', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
+  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Codex-Spark', providerId: 'openai', model: 'gpt-5.3-codex-spark', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
+  { id: 'gpt-5.2', label: 'GPT-5.2', providerId: 'openai', model: 'gpt-5.2', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
 ];
 
-export const DEFAULT_MODEL = 'gpt-5.5';
+export const MODEL_OPTIONS: ModelOption[] = BUILTIN_MODEL_PROFILES.map(({ id, label }) => ({ id, label }));
+
+export const DEFAULT_MODEL_PROFILE_ID = 'gpt-5.5';
+export const DEFAULT_MODEL = DEFAULT_MODEL_PROFILE_ID;
+
+export function defaultModelProfiles(): ModelProfile[] {
+  return BUILTIN_MODEL_PROFILES.map((profile) => ({ ...profile }));
+}
+
+export function normalizeModelProfiles(source: unknown, legacyModel?: unknown): ModelProfile[] {
+  const builtIns = defaultModelProfiles();
+  const custom = Array.isArray(source)
+    ? source
+        .map((item) => normalizeModelProfile(item))
+        .filter((item): item is ModelProfile => Boolean(item && !item.builtIn))
+    : [];
+  const profiles = dedupeModelProfiles([...builtIns, ...custom]);
+  const legacy = typeof legacyModel === 'string' ? legacyModel.trim() : '';
+  if (legacy && !profiles.some((profile) => profile.id === legacy || profile.model === legacy)) {
+    profiles.push({
+      id: modelProfileIdFromLegacyModel(legacy),
+      label: legacy,
+      providerId: 'openai',
+      model: legacy,
+      wireApi: 'responses',
+      enabled: true,
+      supportsReasoningEffort: true,
+    });
+  }
+  return profiles;
+}
+
+export function selectedModelProfileId(source: unknown, profiles: ModelProfile[], legacyModel?: unknown): string {
+  const selected = typeof source === 'string' ? source.trim() : '';
+  if (selected && profiles.some((profile) => profile.id === selected && profile.enabled)) return selected;
+  const legacy = typeof legacyModel === 'string' ? legacyModel.trim() : '';
+  if (legacy) {
+    const match = profiles.find((profile) => (profile.id === legacy || profile.model === legacy) && profile.enabled);
+    if (match) return match.id;
+  }
+  return profiles.find((profile) => profile.enabled)?.id ?? DEFAULT_MODEL_PROFILE_ID;
+}
+
+export function resolveModelProfile(profiles: ModelProfile[], id: string): ModelProfile {
+  return (
+    profiles.find((profile) => profile.id === id && profile.enabled) ??
+    profiles.find((profile) => profile.enabled) ??
+    BUILTIN_MODEL_PROFILES[0]
+  );
+}
+
+export function modelProfileLabel(profiles: ModelProfile[], id: string): string {
+  return resolveModelProfile(profiles, id).label;
+}
+
+export function shortModelProfileLabel(profiles: ModelProfile[], id: string): string {
+  return modelProfileLabel(profiles, id).replace(/^GPT-/i, '');
+}
+
+export function normalizeModelProfile(value: unknown): ModelProfile | null {
+  if (!value || typeof value !== 'object') return null;
+  const source = value as Record<string, unknown>;
+  const id = typeof source.id === 'string' ? source.id.trim() : '';
+  const label = typeof source.label === 'string' ? source.label.trim() : '';
+  const providerId = normalizeProviderId(source.providerId);
+  const model = typeof source.model === 'string' ? source.model.trim() : '';
+  if (!id || !label || !providerId || !model) return null;
+  const wireApi = source.wireApi === 'chat' ? 'chat' : 'responses';
+  const baseUrl = optionalTrimmedString(source.baseUrl);
+  const apiKey = optionalTrimmedString(source.apiKey);
+  const builtIn = Boolean(source.builtIn) && BUILTIN_MODEL_PROFILES.some((profile) => profile.id === id);
+  return {
+    id,
+    label,
+    providerId: builtIn ? 'openai' : providerId,
+    model,
+    wireApi: builtIn ? 'responses' : wireApi,
+    baseUrl: builtIn ? undefined : baseUrl,
+    apiKey: builtIn ? undefined : apiKey,
+    enabled: source.enabled !== false,
+    supportsReasoningEffort: source.supportsReasoningEffort === true,
+    builtIn: builtIn || undefined,
+  };
+}
+
+export function normalizeModelProfileDraft(value: ModelProfileDraft): ModelProfileDraft {
+  const providerId = normalizeProviderId(value.providerId) || 'custom';
+  return {
+    label: value.label.trim() || value.model.trim() || providerId,
+    providerId,
+    model: value.model.trim(),
+    wireApi: value.wireApi === 'chat' ? 'chat' : 'responses',
+    baseUrl: optionalTrimmedString(value.baseUrl),
+    apiKey: optionalTrimmedString(value.apiKey),
+    enabled: value.enabled !== false,
+    supportsReasoningEffort: value.supportsReasoningEffort === true,
+  };
+}
+
+export function stripModelProfileSecrets(profiles: ModelProfile[]): ModelProfile[] {
+  return profiles.map((profile) => ({ ...profile, apiKey: undefined }));
+}
+
+export function normalizeProviderId(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function optionalTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function dedupeModelProfiles(profiles: ModelProfile[]): ModelProfile[] {
+  const seen = new Set<string>();
+  const result: ModelProfile[] = [];
+  for (const profile of profiles) {
+    if (seen.has(profile.id)) continue;
+    seen.add(profile.id);
+    result.push(profile);
+  }
+  return result;
+}
+
+function modelProfileIdFromLegacyModel(model: string): string {
+  const slug = model
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `legacy-${slug || 'model'}`;
+}
 
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
