@@ -262,7 +262,7 @@ export function approvalDescription(id: ApprovalMode): string {
 }
 
 // The selected approval mode determines the real `--sandbox` policy handed to the
-// Codex CLI process. `request` always pauses for explicit user authorization, so
+// local execution process. `request` always pauses for explicit user authorization, so
 // its base value is only a fallback; the granted scope comes from the dialog.
 export function baseSandboxForApproval(mode: ApprovalMode): SandboxMode {
   switch (mode) {

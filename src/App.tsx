@@ -105,6 +105,7 @@ import {
 } from 'lucide-react';
 import {
   ghAuthStatus,
+  createBrandDirectory,
   ghPrCreateWeb,
   gitApplyPatch,
   gitBranches,
@@ -210,16 +211,16 @@ const THEME_RESTORE_KEY = 'alpha:codex-theme-restored-main-ui-v2';
 const SIDEBAR_MIN_WIDTH = 244;
 const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 300;
-const RIGHT_SIDEBAR_MIN_WIDTH = 220;
-const RIGHT_SIDEBAR_MAX_WIDTH = 520;
-const RIGHT_SIDEBAR_DEFAULT_WIDTH = 268;
+const RIGHT_SIDEBAR_MIN_WIDTH = 320;
+const RIGHT_SIDEBAR_MAX_WIDTH = 1120;
+const RIGHT_SIDEBAR_DEFAULT_WIDTH = 356;
 const GIT_PANEL_MIN_WIDTH = 360;
 const GIT_PANEL_MAX_WIDTH = 760;
 const GIT_PANEL_DEFAULT_WIDTH = 430;
 const REVIEW_PANEL_MIN_WIDTH = 520;
 const REVIEW_PANEL_MAX_WIDTH = 1120;
 const REVIEW_PANEL_DEFAULT_WIDTH = 704;
-const RIGHT_PANEL_MIN_MAIN_WIDTH = 360;
+const RIGHT_PANEL_MIN_MAIN_WIDTH = 320;
 
 export function App() {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
@@ -413,13 +414,9 @@ export function App() {
               sidebarCollapsed={sidebarCollapsed}
               featuresOpen={rightPanel === 'features'}
               rightPanelOpen={rightPanel !== 'none'}
-              terminalOpen={terminalOpen}
               onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
               onToggleFeatures={() => setRightPanel((value) => (value === 'features' ? 'none' : 'features'))}
               onToggleRightPanel={() => setRightPanel((value) => (value === 'none' ? 'features' : 'none'))}
-              onToggleTerminal={() => setTerminalOpen((value) => !value)}
-              onOpenGit={() => setRightPanel('git')}
-              onOpenQuickGit={() => setQuickGitOpen(true)}
               onOpenSettings={() => openSettings('config')}
             />
             <ChatArea domain={domain} />
@@ -439,6 +436,7 @@ export function App() {
               domain={domain}
               onOpenReviewChanges={() => setRightPanel('review')}
               onOpenTerminal={() => setTerminalOpen(true)}
+              onClose={() => setRightPanel('none')}
             />
           )}
         </div>
@@ -641,6 +639,7 @@ function Sidebar({
   const [menu, setMenu] = useState<SidebarMenu | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [blankBrandOpen, setBlankBrandOpen] = useState(false);
 
   // Keep the active conversation's project expanded so a chat that just got
   // pointed at a folder (e.g. via the composer directory switcher) is visible
@@ -691,12 +690,8 @@ function Sidebar({
         {
           kind: 'item',
           icon: <FolderPlus size={15} />,
-          label: '新建空白项目',
-          onSelect: () => {
-            const id = createProject();
-            setExpanded((prev) => ({ ...prev, [id]: true }));
-            setEditingProjectId(id);
-          },
+          label: '新建空白品牌',
+          onSelect: () => setBlankBrandOpen(true),
         },
         {
           kind: 'item',
@@ -724,12 +719,12 @@ function Sidebar({
         {
           kind: 'item',
           icon: project.pinned ? <PinOff size={15} /> : <Pin size={15} />,
-          label: project.pinned ? '取消置顶' : '置顶项目',
+          label: project.pinned ? '取消置顶' : '置顶品牌',
           onSelect: () => toggleProjectPin(project.id),
         },
         { kind: 'item', icon: <FolderOpen size={15} />, label: '在访达中打开', onSelect: () => void revealOrPickProject(project) },
-        { kind: 'item', icon: <FolderInput size={15} />, label: '设置工作目录', onSelect: () => void chooseProjectFolder(project) },
-        { kind: 'item', icon: <Pencil size={15} />, label: '重命名项目', onSelect: () => setEditingProjectId(project.id) },
+        { kind: 'item', icon: <FolderInput size={15} />, label: '设置品牌目录', onSelect: () => void chooseProjectFolder(project) },
+        { kind: 'item', icon: <Pencil size={15} />, label: '重命名品牌', onSelect: () => setEditingProjectId(project.id) },
         {
           kind: 'item',
           icon: <SquarePen size={15} />,
@@ -740,7 +735,7 @@ function Sidebar({
           },
         },
         { kind: 'separator' },
-        { kind: 'item', icon: <Archive size={15} />, label: '归档项目', danger: true, onSelect: () => archiveProject(project.id) },
+        { kind: 'item', icon: <Archive size={15} />, label: '归档品牌', danger: true, onSelect: () => archiveProject(project.id) },
       ],
     });
   };
@@ -846,10 +841,10 @@ function Sidebar({
           )}
 
           <SidebarHead label={sidebarCopy.projectSectionLabel} menuOpen={menu?.owner === 'project-section' || menu?.owner === 'add'}>
-            <button className="group-action" type="button" onClick={openProjectSectionMenu} aria-label="项目排序与整理" title="排序与整理">
+            <button className="group-action" type="button" onClick={openProjectSectionMenu} aria-label="品牌排序与整理" title="排序与整理">
               <MoreHorizontal size={15} />
             </button>
-            <button className="group-action" type="button" onClick={openNewProjectMenu} aria-label="新建项目" title="新建项目">
+            <button className="group-action" type="button" onClick={openNewProjectMenu} aria-label="新建品牌" title="新建品牌">
               <FolderInput size={15} />
             </button>
           </SidebarHead>
@@ -936,6 +931,17 @@ function Sidebar({
         </div>
       </aside>
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      <BrandCreateDialog
+        open={blankBrandOpen}
+        defaultName={`新品牌 ${liveProjects.length + 1}`}
+        onClose={() => setBlankBrandOpen(false)}
+        onCreated={(name, cwd) => {
+          const id = createProject({ name, cwd });
+          setExpanded((prev) => ({ ...prev, [id]: true }));
+          createConversation(id);
+          setBlankBrandOpen(false);
+        }}
+      />
       <SearchDialog
         open={searchOpen}
         conversations={liveConversations}
@@ -960,6 +966,142 @@ function Sidebar({
         copy={sidebarCopy}
       />
     </>
+  );
+}
+
+function BrandCreateDialog({
+  open,
+  defaultName,
+  onClose,
+  onCreated,
+}: {
+  open: boolean;
+  defaultName: string;
+  onClose: () => void;
+  onCreated: (name: string, cwd: string) => void;
+}) {
+  const [name, setName] = useState(defaultName);
+  const [parent, setParent] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const directoryName = brandDirectoryName(name);
+  const canCreate = Boolean(name.trim() && directoryName && parent.trim() && !busy);
+
+  useEffect(() => {
+    if (!open) return;
+    setName(defaultName);
+    setParent('');
+    setError(null);
+    setBusy(false);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  }, [open, defaultName]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: WindowEventMap['keydown']) => {
+      if (event.key === 'Escape' && !busy) onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, busy, onClose]);
+
+  if (!open) return null;
+
+  const chooseParent = async (): Promise<string | null> => {
+    setError(null);
+    const selected = await pickFolder('选择品牌目录保存位置', '输入父目录的绝对路径（浏览器预览模式）');
+    if (selected) setParent(selected);
+    return selected;
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    const brandName = name.trim();
+    const safeDirectoryName = brandDirectoryName(brandName);
+    if (!brandName) {
+      setError('请输入品牌名称。');
+      return;
+    }
+    if (!safeDirectoryName) {
+      setError('品牌名称无法转换为有效目录名，请换一个名称。');
+      return;
+    }
+    let parentDir = parent.trim();
+    if (!parentDir) {
+      parentDir = (await chooseParent())?.trim() || '';
+      if (!parentDir) return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const cwd = await createBrandDirectory(parentDir, safeDirectoryName);
+      onCreated(brandName, cwd);
+    } catch (err) {
+      setError(`创建品牌目录失败：${stringifyError(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dialog-layer brand-create-layer" role="presentation">
+      <button className="dialog-backdrop" type="button" aria-label="关闭新建品牌" onClick={() => !busy && onClose()} />
+      <form className="brand-create-dialog" role="dialog" aria-modal="true" aria-label="新建空白品牌" onSubmit={submit}>
+        <header className="brand-create-head">
+          <span className="brand-create-icon"><FolderPlus size={18} /></span>
+          <div className="brand-create-title">
+            <strong>新建空白品牌</strong>
+            <span>创建后会生成一个同名品牌目录。</span>
+          </div>
+          <button type="button" className="icon-mini" onClick={onClose} aria-label="关闭" disabled={busy}>
+            <X size={15} />
+          </button>
+        </header>
+
+        <div className="brand-create-body">
+          <label className="brand-create-field">
+            <span>品牌名称</span>
+            <input
+              ref={inputRef}
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value);
+                setError(null);
+              }}
+              disabled={busy}
+              placeholder="输入品牌名称"
+            />
+          </label>
+          <div className="brand-create-field">
+            <span>保存位置</span>
+            <button type="button" className="brand-create-path" onClick={() => void chooseParent()} disabled={busy}>
+              <FolderOpen size={15} />
+              <span>{parent ? shortenPath(parent) : '选择父目录'}</span>
+            </button>
+          </div>
+          {directoryName && (
+            <div className="brand-create-preview">
+              <Folder size={13} />
+              <span>{directoryName}</span>
+            </div>
+          )}
+          {error && <div className="brand-create-error"><AlertCircle size={13} />{error}</div>}
+        </div>
+
+        <div className="brand-create-actions">
+          <button type="button" className="auth-btn ghost" onClick={onClose} disabled={busy}>取消</button>
+          <button type="submit" className="auth-btn primary" disabled={!canCreate}>
+            {busy ? <Loader2 size={13} className="spin" /> : <FolderPlus size={13} />}
+            创建品牌
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -1105,15 +1247,15 @@ function ProjectItem({
         {editing ? (
           <NameInput defaultValue={project.name} onCommit={onCommitRename} onCancel={onCancelRename} />
         ) : (
-          <span className="project-name" title={project.cwd || '未指定工作目录'}>{project.name}</span>
+          <span className="project-name" title={project.cwd || '未指定品牌目录'}>{project.name}</span>
         )}
         {!editing && project.pinned && <Pin size={11} className="project-pin" />}
         {!editing && (
           <span className="project-actions" onClick={(event) => event.stopPropagation()}>
-            <button className="row-icon-btn" type="button" onClick={onNewConversation} aria-label="在项目中新建对话" title="新建对话">
+            <button className="row-icon-btn" type="button" onClick={onNewConversation} aria-label="在品牌中新建对话" title="新建对话">
               <SquarePen size={13} />
             </button>
-            <button className={`row-icon-btn ${menuOpen ? 'active' : ''}`} type="button" onClick={(event) => onOpenMenu(anchorFromButton(event))} aria-label="项目操作" title="更多">
+            <button className={`row-icon-btn ${menuOpen ? 'active' : ''}`} type="button" onClick={(event) => onOpenMenu(anchorFromButton(event))} aria-label="品牌操作" title="更多">
               <MoreHorizontal size={15} />
             </button>
           </span>
@@ -1249,16 +1391,16 @@ function SearchDialog({
             <Plus size={15} />
             <span><strong>{copy.newConversationLabel}</strong><em>从空白上下文开始</em></span>
           </button>
-          {projectResults.length > 0 && <CommandSection label="项目">{projectResults.map((project) => (
+          {projectResults.length > 0 && <CommandSection label="品牌">{projectResults.map((project) => (
             <button key={project.id} type="button" className="command-result" onClick={() => onOpenProject(project.id)}>
               <Folder size={15} />
-              <span><strong>{project.name}</strong><em>{project.cwd ? shortenPath(project.cwd) : '未指定目录'}</em></span>
+              <span><strong>{project.name}</strong><em>{project.cwd ? shortenPath(project.cwd) : '未指定品牌目录'}</em></span>
             </button>
           ))}</CommandSection>}
           {conversationResults.length > 0 && <CommandSection label={normalized ? '匹配对话' : '最近对话'}>{conversationResults.map((conversation) => (
             <button key={conversation.id} type="button" className={`command-result ${conversation.id === currentConversationId ? 'active' : ''}`} onClick={() => onSelectConversation(conversation.id)}>
               {conversation.status === 'streaming' ? <Loader2 size={15} className="spin" /> : <MessageSquare size={15} />}
-              <span><strong>{conversation.title}</strong><em>{conversation.cwd ? shortenPath(conversation.cwd) : '未指定目录'} · {formatRelative(conversation.updatedAt)}</em></span>
+              <span><strong>{conversation.title}</strong><em>{conversation.cwd ? shortenPath(conversation.cwd) : '未指定品牌目录'} · {formatRelative(conversation.updatedAt)}</em></span>
             </button>
           ))}</CommandSection>}
           {projectResults.length === 0 && conversationResults.length === 0 && <div className="command-empty"><Search size={16} /><span>没有匹配结果</span></div>}
@@ -1376,26 +1518,18 @@ function TopBar({
   sidebarCollapsed,
   featuresOpen,
   rightPanelOpen,
-  terminalOpen,
   onToggleSidebar,
   onToggleFeatures,
   onToggleRightPanel,
-  onToggleTerminal,
-  onOpenGit,
-  onOpenQuickGit,
   onOpenSettings,
 }: {
   domain: DomainConfig;
   sidebarCollapsed: boolean;
   featuresOpen: boolean;
   rightPanelOpen: boolean;
-  terminalOpen: boolean;
   onToggleSidebar: () => void;
   onToggleFeatures: () => void;
   onToggleRightPanel: () => void;
-  onToggleTerminal: () => void;
-  onOpenGit: () => void;
-  onOpenQuickGit: () => void;
   onOpenSettings: () => void;
 }) {
   const conversation = useCurrentConversation();
@@ -1463,11 +1597,11 @@ function TopBar({
         },
         {
           kind: 'submenu',
-          icon: <GitBranch size={15} />,
-          label: '分支',
+          icon: <MessageSquarePlus size={15} />,
+          label: '对话副本',
           children: [
-            { kind: 'item', icon: <GitBranch size={15} />, label: '从此对话创建分支', disabled: !hasMessages, onSelect: () => { duplicateConversation(conversation.id); } },
-            { kind: 'item', icon: <SquarePen size={15} />, label: '新建空白分支', onSelect: () => { createConversation(conversation.projectId); } },
+            { kind: 'item', icon: <Copy size={15} />, label: '复制为新对话', disabled: !hasMessages, onSelect: () => { duplicateConversation(conversation.id); } },
+            { kind: 'item', icon: <SquarePen size={15} />, label: '新建空白对话', onSelect: () => { createConversation(conversation.projectId); } },
           ],
         },
         { kind: 'item', icon: <Workflow size={15} />, label: '添加自动化…', onSelect: onOpenSettings },
@@ -1497,20 +1631,20 @@ function TopBar({
       ) : (
         <div className="top-bar-title" data-tauri-drag-region>{domain.name}</div>
       )}
-      <div className="top-bar-actions">
-        <OpenInAppMenu cwd={cwd} />
-        <EnvironmentMenu cwd={cwd} onOpenGit={onOpenGit} onOpenQuickGit={onOpenQuickGit} onOpenSettings={onOpenSettings} />
-        <button className={`icon-btn ${terminalOpen ? 'active' : ''}`} type="button" onClick={onToggleTerminal} aria-label="打开下方终端" title="终端"><PanelBottom size={16} /></button>
-        <button
-          className={`icon-btn ${rightPanelOpen ? 'active' : ''}`}
-          type="button"
-          onClick={onToggleRightPanel}
-          aria-label={rightPanelOpen ? '关闭侧边栏' : '打开侧边栏'}
-          title={rightPanelOpen ? '关闭侧边栏' : '侧边栏'}
-        >
-          <PanelRight size={16} />
-        </button>
-      </div>
+      {!featuresOpen && (
+        <div className="top-bar-actions">
+          <OpenInAppMenu cwd={cwd} />
+          <button
+            className={`icon-btn ${rightPanelOpen ? 'active' : ''}`}
+            type="button"
+            onClick={onToggleRightPanel}
+            aria-label={rightPanelOpen ? '关闭侧边栏' : '打开侧边栏'}
+            title={rightPanelOpen ? '关闭侧边栏' : '侧边栏'}
+          >
+            <PanelRight size={16} />
+          </button>
+        </div>
+      )}
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
     </header>
   );
@@ -1524,7 +1658,7 @@ const OPEN_APP_META: Record<OpenAppId, { label: string; color: string; glyph: st
   pycharm: { label: 'PyCharm', color: '#21d789', glyph: 'PC' },
 };
 
-const OPEN_APP_ORDER: OpenAppId[] = ['vscode', 'cursor', 'finder', 'terminal', 'pycharm'];
+const OPEN_APP_ORDER: OpenAppId[] = ['finder'];
 
 function OpenInAppMenu({ cwd }: { cwd: string }) {
   const [open, setOpen] = useState(false);
@@ -1560,7 +1694,7 @@ function OpenInAppMenu({ cwd }: { cwd: string }) {
         type="button"
         className={`open-app-trigger ${open ? 'active' : ''}`}
         onClick={() => setOpen((value) => !value)}
-        title={cwd ? '用其他软件打开工作目录' : '当前对话未绑定工作目录'}
+        title={cwd ? '打开品牌目录' : '当前对话未绑定品牌目录'}
         aria-label="用其他软件打开"
       >
         <AppWindow size={15} />
@@ -1695,7 +1829,7 @@ function EnvironmentMenu({
               </>
             ) : (
               <div className="environment-empty">
-                {cwd ? `${basename(cwd)} 不是 Git 仓库。` : conversation ? '当前对话未绑定工作目录。' : '请先选择一个对话。'}
+                {cwd ? `${basename(cwd)} 没有可用的版本记录。` : conversation ? '当前对话未绑定品牌目录。' : '请先选择一个对话。'}
               </div>
             )}
             {searchSources.length > 0 && (
@@ -1735,7 +1869,7 @@ function QuickGitDialog({ open, onClose }: { open: boolean; onClose: () => void 
     setError(null);
     try {
       if (!cwd) {
-        setStatus({ cwd: '', isRepository: false, ahead: 0, behind: 0, clean: true, changes: [], error: '当前对话未绑定工作目录。' });
+        setStatus({ cwd: '', isRepository: false, ahead: 0, behind: 0, clean: true, changes: [], error: '当前对话未绑定品牌目录。' });
         setStat(null);
         return;
       }
@@ -2299,13 +2433,19 @@ function FeaturesPanel({
   domain,
   onOpenReviewChanges,
   onOpenTerminal,
+  onClose,
 }: {
   domain: DomainConfig;
   onOpenReviewChanges: () => void;
   onOpenTerminal: () => void;
+  onClose: () => void;
 }) {
   const conversation = useCurrentConversation();
   const cwd = conversation?.cwd || '';
+  const featureByAction = useMemo(
+    () => new Map(domain.ui.features.map((feature) => [feature.action, feature])),
+    [domain.ui.features],
+  );
 
   const runFeature = (feature: DomainFeature) => {
     if (feature.requiresCwd && !cwd) return;
@@ -2327,26 +2467,95 @@ function FeaturesPanel({
     }
   };
 
+  const browserFeature = featureByAction.get('open-url');
+  const filesFeature = featureByAction.get('reveal-cwd');
+  const focusComposer = () => {
+    document.querySelector<HTMLTextAreaElement>('.composer-textarea')?.focus();
+  };
+  const featureActions: Array<{
+    id: string;
+    label: string;
+    icon: ReactNode;
+    shortcut?: string;
+    disabled?: boolean;
+    active?: boolean;
+    title?: string;
+    onClick: () => void;
+  }> = [
+    {
+      id: 'review',
+      label: '审查',
+      icon: <GitPullRequest size={14} />,
+      shortcut: '⌃⇧G',
+      disabled: !cwd,
+      title: cwd ? '审查当前品牌目录的更改' : '当前对话未绑定品牌目录',
+      onClick: onOpenReviewChanges,
+    },
+    {
+      id: 'terminal',
+      label: '终端',
+      icon: <SquareTerminal size={14} />,
+      shortcut: '⌃`',
+      title: '打开底部终端',
+      onClick: onOpenTerminal,
+    },
+    {
+      id: 'browser',
+      label: '浏览器',
+      icon: <Globe size={14} />,
+      shortcut: browserFeature?.shortcut || '⌘T',
+      title: browserFeature?.desc || '打开网页',
+      onClick: () => browserFeature ? runFeature(browserFeature) : void openExternal('https://'),
+    },
+    {
+      id: 'files',
+      label: '文件',
+      icon: <FolderOpen size={14} />,
+      shortcut: filesFeature?.shortcut || '⌘P',
+      disabled: !cwd,
+      title: cwd ? (filesFeature?.desc || '打开品牌文件夹') : '当前对话未绑定品牌目录',
+      onClick: () => filesFeature ? runFeature(filesFeature) : void revealPath(cwd),
+    },
+    {
+      id: 'side-chat',
+      label: '侧边聊天',
+      icon: <MessageSquare size={14} />,
+      shortcut: '⌥⌘S',
+      active: true,
+      title: '聚焦当前对话输入框',
+      onClick: focusComposer,
+    },
+  ];
+
   return (
     <aside className="features-panel right-dock-panel">
       <header className="features-panel-head" data-tauri-drag-region>
-        <span>{domain.ui.rightPanelTitle}</span>
-      </header>
-      <div className="features-list">
-        {domain.ui.features.map((feature) => (
-          <button
-            key={feature.id}
-            type="button"
-            className="feature-card"
-            disabled={feature.requiresCwd && !cwd}
-            onClick={() => runFeature(feature)}
-          >
-            <span className="feature-card-icon">{domainFeatureIcon(feature.icon)}</span>
-            <span className="feature-card-title">{feature.title}</span>
-            <span className="feature-card-desc">{feature.desc}</span>
-            {feature.shortcut && <span className="feature-card-key">{feature.shortcut}</span>}
+        <div className="features-panel-actions">
+          <OpenInAppMenu cwd={cwd} />
+          <button type="button" className="icon-btn active" onClick={onClose} aria-label="关闭侧边栏" title="关闭侧边栏">
+            <PanelRight size={16} />
           </button>
-        ))}
+        </div>
+      </header>
+      <div className="features-panel-body">
+        <div className="features-list">
+          {featureActions.map((feature) => (
+            <button
+              key={feature.id}
+              type="button"
+              className={`feature-card ${feature.active ? 'active' : ''}`}
+              disabled={feature.disabled}
+              onClick={feature.onClick}
+              title={feature.title}
+            >
+              <span className="feature-card-main">
+                <span className="feature-card-icon">{feature.icon}</span>
+                <span className="feature-card-title">{feature.label}</span>
+              </span>
+              {feature.shortcut && <span className="feature-card-key">{feature.shortcut}</span>}
+            </button>
+          ))}
+        </div>
       </div>
     </aside>
   );
@@ -2365,8 +2574,8 @@ function ChatArea({ domain }: { domain: DomainConfig }) {
         <div className="codex-warning">
           <AlertCircle size={16} />
           <div>
-            <strong>{previewRuntime ? '浏览器预览模式' : 'Codex CLI 暂不可用'}</strong>
-            <span>{previewRuntime ? '这里会模拟 Codex 事件流；桌面应用会直连本地 Codex CLI。' : codexStatus?.error || '请确认 Codex 已安装并登录。'}</span>
+            <strong>{previewRuntime ? '浏览器预览模式' : '本地智能引擎暂不可用'}</strong>
+            <span>{previewRuntime ? '这里会模拟品牌工作台事件流；桌面应用会直连本地智能引擎。' : codexStatus?.error || '请确认本地智能引擎已安装并登录。'}</span>
             {codexStatus?.path && <code>{codexStatus.path}</code>}
           </div>
         </div>
@@ -2810,7 +3019,7 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
               submit();
             }
           }}
-          placeholder={disabled ? '请先修复 Codex CLI 状态' : bottom ? domain.ui.followupPlaceholder : domain.ui.composerPlaceholder}
+          placeholder={disabled ? '请先修复本地智能引擎状态' : bottom ? domain.ui.followupPlaceholder : domain.ui.composerPlaceholder}
           rows={1}
         />
         <div className="composer-toolbar">
@@ -3120,7 +3329,7 @@ function ComposerPlusMenu({ domain, onAttach, disabled }: { domain: DomainConfig
                         <span className="plus-plugin-tag">可扩展</span>
                       </div>
                     ))}
-                    <div className="plus-menu-hint">公开源码版保留插件入口，商业垂直包可在此扩展领域能力。</div>
+                    <div className="plus-menu-hint">垂直商用版保留插件入口，可在此扩展领域能力。</div>
                   </div>
                 </div>
               )}
@@ -3132,9 +3341,8 @@ function ComposerPlusMenu({ domain, onAttach, disabled }: { domain: DomainConfig
   );
 }
 
-// The working-directory pill beneath the composer doubles as a switcher: it lists
-// existing project folders and lets you point the conversation at any directory,
-// so a fresh "新对话" can target a workspace without leaving the composer.
+// The brand-directory pill beneath the composer doubles as a switcher: it lists
+// existing brand folders and lets a conversation bind to one brand directory.
 function DirectoryPicker({ conversation }: { conversation: Conversation }) {
   const projects = useChatStore((state) => state.projects);
   const setConversationCwd = useChatStore((state) => state.setConversationCwd);
@@ -3155,9 +3363,9 @@ function DirectoryPicker({ conversation }: { conversation: Conversation }) {
     close();
     const dir = await pickFolder();
     if (!dir) return;
-    // Group the conversation under a project for that folder so it lands in the
-    // sidebar's 项目 section instead of as a stray standalone chat. Reuse a
-    // matching project when one already exists, otherwise spin up a new one.
+    // Group the conversation under a brand for that folder so it lands in the
+    // sidebar's 品牌 section instead of as a stray standalone chat. Reuse a
+    // matching brand when one already exists, otherwise spin up a new one.
     const existing = activeProjects(projects).find((project) => project.cwd === dir);
     const projectId = existing ? existing.id : createProject({ name: basename(dir), cwd: dir });
     setConversationCwd(conversation.id, dir, projectId);
@@ -3172,18 +3380,18 @@ function DirectoryPicker({ conversation }: { conversation: Conversation }) {
       <button
         type="button"
         className={`composer-meta-pill dir-pill ${open ? 'active' : ''}`}
-        title={cwd || '选择工作目录'}
+        title={cwd || '选择品牌目录'}
         onClick={() => setOpen((value) => !value)}
       >
-        <FolderGit2 size={12} />
-        <span>{cwd ? basename(cwd) : '选择目录'}</span>
+        <FolderOpen size={12} />
+        <span>{cwd ? basename(cwd) : '选择品牌目录'}</span>
         <ChevronDown size={11} className="dir-pill-chevron" />
       </button>
       {open && (
         <>
           <button className="menu-backdrop" type="button" aria-label="关闭目录菜单" onClick={close} />
           <div className="model-menu dir-menu" role="menu">
-            {folderProjects.length > 0 && <div className="model-menu-label">项目目录</div>}
+            {folderProjects.length > 0 && <div className="model-menu-label">品牌目录</div>}
             {folderProjects.map((project) => {
               const selected = conversation.projectId === project.id || (!!cwd && cwd === project.cwd);
               return (
@@ -3208,12 +3416,12 @@ function DirectoryPicker({ conversation }: { conversation: Conversation }) {
             {folderProjects.length > 0 && <div className="model-menu-divider" />}
             <button type="button" className="model-menu-item dir-menu-item" onClick={() => void pickCustomFolder()}>
               <FolderInput size={14} />
-              <span>选择其他文件夹…</span>
+              <span>选择其他品牌目录…</span>
             </button>
             {cwd && (
               <button type="button" className="model-menu-item dir-menu-item" onClick={clearFolder}>
                 <FolderOpen size={14} />
-                <span>清除工作目录</span>
+                <span>清除品牌目录</span>
               </button>
             )}
           </div>
@@ -3399,49 +3607,22 @@ function BranchPicker({ cwd, currentBranch, onChanged }: { cwd: string; currentB
   );
 }
 
-// Directory + git context shown beneath the composer, mirroring Codex's footer.
+// Directory context shown beneath the composer.
 function ComposerMeta({ conversation }: { conversation: Conversation }) {
-  const cwd = conversation.cwd;
   const planMode = useChatStore((state) => state.planMode);
   const pursueGoal = useChatStore((state) => state.pursueGoal);
-  const [branch, setBranch] = useState<string | null>(null);
-  const [reloadToken, setReloadToken] = useState(0);
-  useEffect(() => {
-    let cancelled = false;
-    setBranch(null);
-    if (!cwd) return;
-    void (async () => {
-      try {
-        const status = await gitStatus(cwd);
-        if (cancelled) return;
-        setBranch(status.isRepository ? status.branch || 'detached' : null);
-      } catch {
-        if (!cancelled) setBranch(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [cwd, reloadToken]);
 
   return (
     <div className="composer-meta">
       <DirectoryPicker conversation={conversation} />
-      {branch && (
-        <BranchPicker
-          cwd={cwd}
-          currentBranch={branch}
-          onChanged={() => setReloadToken((value) => value + 1)}
-        />
-      )}
       {planMode && (
-        <span className="composer-meta-pill mode-on" title="计划模式已开启：Codex 会先给出可执行计划">
+        <span className="composer-meta-pill mode-on" title="计划模式已开启：Incuboot 会先给出可执行计划">
           <ListChecks size={12} />
           <span>计划模式</span>
         </span>
       )}
       {pursueGoal && (
-        <span className="composer-meta-pill mode-on" title="追求目标已开启：Codex 会持续推进直到目标达成">
+        <span className="composer-meta-pill mode-on" title="追求目标已开启：Incuboot 会持续推进直到目标达成">
           <Target size={12} />
           <span>追求目标</span>
         </span>
@@ -3525,7 +3706,7 @@ function ApprovalPicker() {
         type="button"
         className={`composer-pill approval-pill ${approvalMode === 'full-access' ? 'accent' : ''} ${open ? 'active' : ''}`}
         onClick={() => setOpen((value) => !value)}
-        title="选择 Codex 操作的批准方式"
+        title="选择 Incuboot 操作的批准方式"
       >
         {approvalIcon(approvalMode, 12)}
         <span>{approvalLabel(approvalMode)}</span>
@@ -3701,8 +3882,8 @@ function ReviewDialog({ open, onClose }: { open: boolean; onClose: () => void })
         <button type="button" className="icon-mini" onClick={() => setStep('menu')} aria-label="返回"><ChevronLeft size={16} /></button>
       )}
       <div className="review-dialog-title">
-        <strong>代码审查</strong>
-        <span>{cwd ? basename(cwd) || shortenPath(cwd) : '未绑定工作目录'}</span>
+        <strong>变更审查</strong>
+        <span>{cwd ? basename(cwd) || shortenPath(cwd) : '未绑定品牌目录'}</span>
       </div>
       <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭"><X size={15} /></button>
     </header>
@@ -3713,7 +3894,7 @@ function ReviewDialog({ open, onClose }: { open: boolean; onClose: () => void })
     body = (
       <div className="review-dialog-empty">
         <AlertCircle size={20} />
-        <p>{cwd ? `${basename(cwd)} 不是 Git 仓库，无法进行代码审查。` : '当前对话尚未绑定工作目录。请先在输入框下方选择一个项目文件夹。'}</p>
+        <p>{cwd ? `${basename(cwd)} 没有可用的版本记录，无法进行变更审查。` : '当前对话尚未绑定品牌目录。请先在输入框下方选择一个品牌目录。'}</p>
       </div>
     );
   } else if (step === 'menu') {
@@ -3824,7 +4005,7 @@ function ReviewDialog({ open, onClose }: { open: boolean; onClose: () => void })
   return (
     <div className="dialog-layer review-layer" role="presentation">
       <button className="dialog-backdrop" type="button" aria-label="关闭审查" onClick={onClose} />
-      <section className="review-dialog" role="dialog" aria-modal="true" aria-label="代码审查">
+      <section className="review-dialog" role="dialog" aria-modal="true" aria-label="变更审查">
         {header}
         {error && <div className="review-dialog-error"><AlertCircle size={13} />{error}</div>}
         {busy && <div className="review-dialog-note"><Loader2 size={13} className="spin" />当前对话正在运行，请等待完成后再发起审查。</div>}
@@ -4384,7 +4565,7 @@ function ReviewChangesPanel() {
 
   const refresh = useCallback(async () => {
     if (!cwd) {
-      setStatus({ cwd: '', isRepository: false, ahead: 0, behind: 0, clean: true, changes: [], error: '当前对话未绑定工作目录。' });
+      setStatus({ cwd: '', isRepository: false, ahead: 0, behind: 0, clean: true, changes: [], error: '当前对话未绑定品牌目录。' });
       setDiffs({});
       return;
     }
@@ -4538,7 +4719,7 @@ function ReviewChangesPanel() {
       <header className="panel-header" data-tauri-drag-region>
         <div data-tauri-drag-region>
           <h2>审查更改</h2>
-          <span>{cwd ? shortenPath(cwd) : '未指定工作目录'}</span>
+          <span>{cwd ? shortenPath(cwd) : '未指定品牌目录'}</span>
         </div>
       </header>
 
@@ -4703,8 +4884,8 @@ function ReviewChangesPanel() {
       ) : (
         <div className="git-empty-state">
           <FolderGit2 size={22} />
-          <strong>当前工作目录不是 Git 仓库</strong>
-          <span>{status?.error || '请选择一个包含 .git 的项目目录。'}</span>
+          <strong>当前品牌目录没有版本记录</strong>
+          <span>{status?.error || '请选择一个包含版本记录的品牌目录。'}</span>
           {error && <em>{error}</em>}
         </div>
       )}
@@ -5082,7 +5263,7 @@ function GitPanel({ onClose }: { onClose: () => void }) {
 
   const refresh = async () => {
     if (!cwd) {
-      setStatus({ cwd: '', isRepository: false, ahead: 0, behind: 0, clean: true, changes: [], error: '当前对话未绑定工作目录。' });
+        setStatus({ cwd: '', isRepository: false, ahead: 0, behind: 0, clean: true, changes: [], error: '当前对话未绑定品牌目录。' });
       return;
     }
     setBusy(true);
@@ -5136,9 +5317,9 @@ function GitPanel({ onClose }: { onClose: () => void }) {
       <header className="panel-header" data-tauri-drag-region>
         <div data-tauri-drag-region>
           <h2>Git</h2>
-          <span>{cwd ? shortenPath(cwd) : '未指定工作目录'}</span>
+          <span>{cwd ? shortenPath(cwd) : '未指定品牌目录'}</span>
         </div>
-        <button className="icon-btn" type="button" onClick={onClose} aria-label="关闭 Git 面板"><X size={15} /></button>
+        <button className="icon-btn" type="button" onClick={onClose} aria-label="关闭版本面板"><X size={15} /></button>
       </header>
       <div className="git-toolbar">
         <button type="button" className="panel-btn" onClick={() => void refresh()} disabled={busy}><RefreshCw size={13} className={busy ? 'spin' : ''} />刷新</button>
@@ -5228,8 +5409,8 @@ function GitPanel({ onClose }: { onClose: () => void }) {
       ) : (
         <div className="git-empty-state">
           <FolderGit2 size={22} />
-          <strong>当前工作目录不是 Git 仓库</strong>
-          <span>{status?.error || '请选择一个包含 .git 的项目目录。'}</span>
+          <strong>当前品牌目录没有版本记录</strong>
+          <span>{status?.error || '请选择一个包含版本记录的品牌目录。'}</span>
           {error && <em>{error}</em>}
         </div>
       )}
@@ -5270,8 +5451,6 @@ function SettingsPage({
         <div className="settings-page-traffic" data-tauri-drag-region />
         <button className="settings-back" type="button" onClick={onClose}><ChevronLeft size={16} /><span>返回应用</span></button>
         <SettingsNavGroup label="个人" items={domain.navigation.personal} section={section} onSectionChange={onSectionChange} />
-        <SettingsNavGroup label="集成" items={domain.navigation.integrations} section={section} onSectionChange={onSectionChange} />
-        <SettingsNavGroup label="编码" items={domain.navigation.coding} section={section} onSectionChange={onSectionChange} />
         <SettingsNavGroup label="已归档" items={domain.navigation.archived} section={section} onSectionChange={onSectionChange} />
       </nav>
       <div className="settings-page-main">
@@ -5298,6 +5477,8 @@ function SettingsNavGroup({
   section: SettingsSection;
   onSectionChange: (section: SettingsSection) => void;
 }) {
+  if (items.length === 0) return null;
+
   return (
     <div className="settings-nav-list">
       <div className="settings-nav-grouplabel">{label}</div>
@@ -5328,7 +5509,7 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
           <SettingsRow title="主题" description="使用浅色、深色或匹配系统设置。">
             <SettingsSegment value={theme} onChange={onThemeChange} options={[{ id: 'light', label: '浅色', icon: <Sun size={13} /> }, { id: 'dark', label: '深色', icon: <Moon size={13} /> }]} />
           </SettingsRow>
-          <SettingsRow title="强调色" description="用于按钮、选中状态和 Git 状态。"><ColorSwatch value="#339CFF" /></SettingsRow>
+          <SettingsRow title="强调色" description="用于按钮、选中状态和品牌重点信息。"><ColorSwatch value="#339CFF" /></SettingsRow>
           <SettingsRow title="UI 字号" description="调整工作台界面的基础字号。"><span className="settings-static">14 px</span></SettingsRow>
         </SettingsGroup>
       </>
@@ -5337,7 +5518,7 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
   if (section === 'config') {
     return (
       <SettingsGroup>
-        <SettingsRow title="批准方式" description="选择 Codex 执行操作前如何请求授权。">
+        <SettingsRow title="批准方式" description="选择 Incuboot 执行操作前如何请求授权。">
           <select className="settings-select" value={approvalMode} onChange={(event) => setApprovalMode(event.target.value as ApprovalMode)}>
             {APPROVAL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.title}</option>)}
           </select>
@@ -5352,7 +5533,7 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
     return (
       <>
         <SettingsGroup>
-          <SettingsRow title="个性" description="选择 Alpha Studio 回复的默认语气。"><span className="settings-static">亲和</span></SettingsRow>
+          <SettingsRow title="个性" description="选择 Incuboot 回复的默认语气。"><span className="settings-static">亲和</span></SettingsRow>
         </SettingsGroup>
         <div className="settings-subtitle">自定义指令</div>
         <textarea className="settings-textarea" placeholder="添加自定义指令..." />
@@ -5370,12 +5551,12 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
       <>
         <WorkModePanel value={workModeId} onChange={setWorkModeId} />
         <SettingsGroup>
-          <SettingsRow title="默认权限" description="默认情况下，Alpha Studio 可以读取工作区文件。"><Toggle checked /></SettingsRow>
+          <SettingsRow title="默认权限" description="默认情况下，Incuboot 可以读取品牌目录文件。"><Toggle checked /></SettingsRow>
           <SettingsRow title="自动审核" description="自动审核额外访问和权限请求。"><Toggle checked /></SettingsRow>
           <SettingsRow title="完全访问权限" description="允许编辑电脑上的文件并运行联网命令。"><Toggle checked /></SettingsRow>
         </SettingsGroup>
         <SettingsGroup>
-          <SettingsRow title="默认打开目标" description="默认打开文件和文件夹的位置。"><span className="settings-static">按项目目录</span></SettingsRow>
+          <SettingsRow title="默认打开目标" description="默认打开文件和文件夹的位置。"><span className="settings-static">按品牌目录</span></SettingsRow>
           <SettingsRow title="语言" description="应用 UI 语言。"><span className="settings-static">自动检测</span></SettingsRow>
           <SettingsRow title="速度" description="选择用于聊天、子智能体和压缩的推理层级。">
             <SettingsSegment value={speed} onChange={(id) => setSpeed(id as Speed)} options={SPEED_OPTIONS.map((option) => ({ id: option.id, label: option.label, icon: option.fast ? <Zap size={13} /> : undefined }))} />
@@ -5389,7 +5570,7 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
 	  }
 	  return (
 	    <SettingsGroup>
-	      <SettingsRow title={sectionLabel(section, domain)} description="公开源码版保留入口，商业垂直包可通过领域插件扩展这里。"><span className="settings-static">可扩展</span></SettingsRow>
+	      <SettingsRow title={sectionLabel(section, domain)} description="品牌系统保留扩展入口，可通过领域插件接入更多能力。"><span className="settings-static">可扩展</span></SettingsRow>
 	    </SettingsGroup>
 	  );
 	}
@@ -5479,15 +5660,15 @@ function ModelSettings() {
             <span className="settings-status-icon"><Network size={16} /></span>
             <div className="settings-status-main">
               <strong>当前模型将通过本地 adapter 运行</strong>
-              <span>Alpha Studio 会把 Codex 的 Responses 请求翻译为上游 Chat Completions 请求。</span>
+              <span>Incuboot 会把本地执行请求翻译为上游 Chat Completions 请求。</span>
             </div>
           </div>
         )}
         <div className={`settings-status ${codexStatus?.installed && codexStatus.loggedIn ? 'ready' : 'attention'}`}>
           <span className="settings-status-icon">{isCheckingCodex ? <Loader2 size={16} className="spin" /> : <Terminal size={16} />}</span>
           <div className="settings-status-main">
-            <strong>{codexStatus?.installed && codexStatus.loggedIn ? `Codex CLI 已就绪${codexStatus.version ? ` · ${codexStatus.version}` : ''}` : 'Codex CLI 未就绪'}</strong>
-            <span>{codexStatus?.path || codexStatus?.error || '请确认 Codex 已安装并登录。'}</span>
+            <strong>{codexStatus?.installed && codexStatus.loggedIn ? `本地智能引擎已就绪${codexStatus.version ? ` · ${codexStatus.version}` : ''}` : '本地智能引擎未就绪'}</strong>
+            <span>{codexStatus?.path || codexStatus?.error || '请确认本地智能引擎已安装并登录。'}</span>
           </div>
           <button className="settings-btn" type="button" onClick={() => void refreshCodexStatus()} disabled={isCheckingCodex}>重新检测</button>
         </div>
@@ -5536,7 +5717,7 @@ function ModelSettings() {
         {draft.wireApi === 'chat' && (
           <div className="model-form-warning">
             <Network size={14} />
-            <span>Chat Completions 会通过 Alpha Studio 本地 adapter 接入 Codex；勾选“启用思考模式”会发送 thinking.enabled，取消勾选会发送 thinking.disabled。</span>
+            <span>Chat Completions 会通过 Incuboot 本地 adapter 接入；勾选“启用思考模式”会发送 thinking.enabled，取消勾选会发送 thinking.disabled。</span>
           </div>
         )}
         <div className="model-form-options">
@@ -5613,8 +5794,8 @@ function WorkModePanel({ value, onChange }: { value: WorkModeId; onChange: (id: 
       <div className="work-mode-copy">
         <div>
           <span className="work-mode-kicker">工作模式</span>
-          <h2 id="work-mode-title">编程协作</h2>
-          <p>选择 Alpha Studio 显示多少技术细节。</p>
+          <h2 id="work-mode-title">品牌协作</h2>
+          <p>选择 Incuboot 如何组织品牌目录与智能能力。</p>
         </div>
         <div className="work-mode-current" aria-label={`当前模式：${activeOption.title}`}>
           <span>当前</span>
@@ -5630,8 +5811,8 @@ function WorkModePanel({ value, onChange }: { value: WorkModeId; onChange: (id: 
 function CodePreview() {
   return (
     <div className="theme-preview">
-      <div className="code-pane before"><code><span>1&nbsp; const themePreview = &#123;</span><span>2&nbsp;&nbsp;&nbsp; surface: "sidebar",</span><span>3&nbsp;&nbsp;&nbsp; accent: "#2563eb",</span><span>4&nbsp;&nbsp;&nbsp; contrast: 42,</span><span>5&nbsp; &#125;;</span></code></div>
-      <div className="code-pane after"><code><span>1&nbsp; const themePreview = &#123;</span><span>2&nbsp;&nbsp;&nbsp; surface: "sidebar-elevated",</span><span>3&nbsp;&nbsp;&nbsp; accent: "#0ea5e9",</span><span>4&nbsp;&nbsp;&nbsp; contrast: 68,</span><span>5&nbsp; &#125;;</span></code></div>
+      <div className="code-pane before"><code><span>品牌定位：健康生活方式</span><span>受众：年轻家庭</span><span>语气：温暖、可信、清晰</span><span>资产：Logo / 色板 / 文案</span></code></div>
+      <div className="code-pane after"><code><span>品牌定位：家庭健康顾问</span><span>受众：城市新家庭</span><span>语气：专业但有温度</span><span>下一步：补齐场景图与案例</span></code></div>
     </div>
   );
 }
@@ -5681,13 +5862,13 @@ function ColorSwatch({ value }: { value: string }) {
 function ProfileSettings() {
   return (
     <div className="profile-settings">
-      <div className="avatar">AS</div>
-      <h2>Alpha Studio</h2>
-      <span>@local · Noncommercial</span>
+      <div className="avatar">IB</div>
+      <h2>Incuboot</h2>
+      <span>@local · 私有商用</span>
       <div className="profile-metrics">
-        <span><strong>公开源码</strong><em>非商业版</em></span>
-        <span><strong>Core</strong><em>领域包</em></span>
-        <span><strong>Codex CLI</strong><em>本地连接</em></span>
+        <span><strong>品牌系统</strong><em>工作模式</em></span>
+        <span><strong>品牌目录</strong><em>资料组织</em></span>
+        <span><strong>本地智能</strong><em>执行连接</em></span>
       </div>
     </div>
   );
@@ -5697,9 +5878,9 @@ function KeyboardSettings() {
   const rows = [
     ['归档聊天', 'Archive the current chat', '⇧⌘A'],
     ['新对话', 'Start a new chat', '⌘N'],
-    ['搜索', 'Search chats and projects', '⌘K'],
+    ['搜索', 'Search chats and brands', '⌘K'],
     ['置顶对话', 'Pin or unpin the current chat', '⌥⌘P'],
-    ['Git 面板', 'Open the Git side panel', ''],
+    ['品牌目录', 'Open the current brand folder', ''],
   ];
   return <SettingsGroup>{rows.map(([title, desc, key]) => <SettingsRow key={title} title={title} description={desc}><span className="shortcut-pill">{key || '未指定'}</span></SettingsRow>)}</SettingsGroup>;
 }
@@ -5707,9 +5888,9 @@ function KeyboardSettings() {
 function UsageSettings() {
   return (
     <SettingsGroup>
-      <SettingsRow title="当前版本" description="公开源码非商业版。"><span className="settings-static">0.1.0</span></SettingsRow>
-      <SettingsRow title="许可证" description="PolyForm Noncommercial License 1.0.0。"><span className="settings-static">Noncommercial</span></SettingsRow>
-      <SettingsRow title="商业授权" description="垂直领域商业包需要单独授权。"><span className="settings-static">未启用</span></SettingsRow>
+      <SettingsRow title="当前版本" description="垂直商用版。"><span className="settings-static">0.1.0</span></SettingsRow>
+      <SettingsRow title="许可证" description="私有商业授权，未开放源码分发。"><span className="settings-static">Proprietary</span></SettingsRow>
+      <SettingsRow title="商业授权" description="当前构建已启用垂直领域商业授权。"><span className="settings-static">已启用</span></SettingsRow>
     </SettingsGroup>
   );
 }
@@ -5717,10 +5898,10 @@ function UsageSettings() {
 function GitSettings() {
   return (
     <SettingsGroup>
-      <SettingsRow title="状态和 Diff" description="在 Git 面板中查看工作区改动。"><Toggle checked /></SettingsRow>
-      <SettingsRow title="提交" description="允许暂存、取消暂存和 commit。"><Toggle checked /></SettingsRow>
-      <SettingsRow title="远端同步" description="支持 pull --ff-only 和 push。"><Toggle checked /></SettingsRow>
-      <SettingsRow title="危险操作" description="force push、reset、rebase 不在公开版内置。"><span className="settings-static">禁用</span></SettingsRow>
+      <SettingsRow title="版本记录" description="为品牌目录保留可追溯的本地变更记录。"><Toggle checked /></SettingsRow>
+      <SettingsRow title="保存节点" description="允许把一组品牌资料变更保存为一个节点。"><Toggle checked /></SettingsRow>
+      <SettingsRow title="远端同步" description="可接入团队共享目录或版本服务。"><Toggle checked /></SettingsRow>
+      <SettingsRow title="危险操作" description="破坏性覆盖操作默认禁用。"><span className="settings-static">禁用</span></SettingsRow>
     </SettingsGroup>
   );
 }
@@ -5728,9 +5909,9 @@ function GitSettings() {
 function EnvironmentSettings() {
   return (
     <SettingsGroup>
-      <SettingsRow title="Node.js" description="由工作区或系统环境提供。"><span className="settings-static">自动检测</span></SettingsRow>
-      <SettingsRow title="Python" description="由工作区或系统环境提供。"><span className="settings-static">自动检测</span></SettingsRow>
-      <SettingsRow title="终端" description="命令通过 Codex CLI 和 Tauri 后端运行。"><span className="settings-static">本地</span></SettingsRow>
+      <SettingsRow title="品牌目录访问" description="由本机文件系统和桌面权限提供。"><span className="settings-static">自动检测</span></SettingsRow>
+      <SettingsRow title="图片与文档" description="支持读取品牌素材、文档和参考文件。"><span className="settings-static">本地</span></SettingsRow>
+      <SettingsRow title="联网能力" description="需要时可检索公开网页和品牌参考资料。"><span className="settings-static">按权限</span></SettingsRow>
     </SettingsGroup>
   );
 }
@@ -5738,8 +5919,8 @@ function EnvironmentSettings() {
 function WorktreeSettings() {
   return (
     <SettingsGroup>
-      <SettingsRow title="工作树" description="为未来多工作树编码流预留。"><span className="settings-static">计划中</span></SettingsRow>
-      <SettingsRow title="默认目录" description="每个项目可以绑定自己的工作目录。"><span className="settings-static">按项目管理</span></SettingsRow>
+      <SettingsRow title="品牌目录" description="一个品牌对应一个本地目录。"><span className="settings-static">已启用</span></SettingsRow>
+      <SettingsRow title="默认目录" description="每个品牌可以绑定自己的品牌目录。"><span className="settings-static">按品牌管理</span></SettingsRow>
     </SettingsGroup>
   );
 }
@@ -5747,7 +5928,7 @@ function WorktreeSettings() {
 function PlaceholderSettings({ domain, section }: { domain: DomainConfig; section: SettingsSection }) {
   return (
     <SettingsGroup>
-      <SettingsRow title={sectionLabel(section, domain)} description="公开源码版保留入口，商业垂直包可通过领域插件扩展这里。"><span className="settings-static">可扩展</span></SettingsRow>
+      <SettingsRow title={sectionLabel(section, domain)} description="品牌系统保留扩展入口，可通过领域插件接入更多能力。"><span className="settings-static">可扩展</span></SettingsRow>
       <SettingsRow title="领域包" description={`当前启用 ${domain.id}。`}><span className="settings-static">{domain.id}</span></SettingsRow>
     </SettingsGroup>
   );
@@ -5764,7 +5945,7 @@ function ArchivedSettings() {
   const archivedConv = archivedConversations(conversations).filter((conversation) => conversation.title.toLowerCase().includes(query.toLowerCase()));
   const archivedProj = archivedProjects(projects).filter((project) => project.name.toLowerCase().includes(query.toLowerCase()));
   const clearAll = async () => {
-    if (!(await confirmDanger('永久删除所有已归档项目和对话？此操作无法恢复。', '清空归档'))) return;
+    if (!(await confirmDanger('永久删除所有已归档品牌和对话？此操作无法恢复。', '清空归档'))) return;
     const projectIds = new Set(archivedProj.map((project) => project.id));
     archivedProj.forEach((project) => permanentlyDeleteProject(project.id));
     archivedConv.filter((conversation) => !conversation.projectId || !projectIds.has(conversation.projectId)).forEach((conversation) => permanentlyDeleteConversation(conversation.id));
@@ -5773,9 +5954,9 @@ function ArchivedSettings() {
     <div className="archive-settings">
       <div className="archive-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索已归档聊天" /></div>
       <div className="archive-list">
-        {archivedProj.map((project) => <ArchiveRow key={project.id} title={project.name} meta={`${formatDate(project.archivedAt)} · 项目`} onRestore={() => unarchiveProject(project.id)} onDelete={() => void confirmDanger(`永久删除项目「${project.name}」及其中对话？`, '永久删除项目').then((ok) => ok && permanentlyDeleteProject(project.id))} />)}
+        {archivedProj.map((project) => <ArchiveRow key={project.id} title={project.name} meta={`${formatDate(project.archivedAt)} · 品牌`} onRestore={() => unarchiveProject(project.id)} onDelete={() => void confirmDanger(`永久删除品牌「${project.name}」及其中对话？`, '永久删除品牌').then((ok) => ok && permanentlyDeleteProject(project.id))} />)}
         {archivedConv.map((conversation) => <ArchiveRow key={conversation.id} title={conversation.title} meta={`${formatDate(conversation.archivedAt)} · ${conversation.cwd ? shortenPath(conversation.cwd) : '未指定目录'}`} onRestore={() => unarchiveConversation(conversation.id)} onDelete={() => void confirmDanger(`永久删除对话「${conversation.title}」？`, '永久删除对话').then((ok) => ok && permanentlyDeleteConversation(conversation.id))} />)}
-        {archivedProj.length === 0 && archivedConv.length === 0 && <div className="archive-empty"><Archive size={20} /><span>没有已归档项目或对话。</span></div>}
+        {archivedProj.length === 0 && archivedConv.length === 0 && <div className="archive-empty"><Archive size={20} /><span>没有已归档品牌或对话。</span></div>}
       </div>
       {(archivedProj.length > 0 || archivedConv.length > 0) && <button className="archive-delete-all" type="button" onClick={() => void clearAll()}><Trash2 size={14} />全部永久删除</button>}
     </div>
@@ -5817,14 +5998,14 @@ function settingsIcon(section: SettingsSection): ReactNode {
 }
 
 function modeIcon(id: string): ReactNode {
-  if (id === 'core-coding') return <Terminal size={14} />;
+  if (id === 'brand-system') return <Sparkles size={14} />;
   return <Layers size={14} />;
 }
 
 function domainSuggestionIcon(suggestion: DomainSuggestion): ReactNode {
   const icons: Record<DomainSuggestion['icon'], ReactNode> = {
-    'file-code': <FileCode2 size={16} className="icon" />,
-    code: <Code2 size={16} className="icon" />,
+    folder: <FolderOpen size={16} className="icon" />,
+    sparkles: <Sparkles size={16} className="icon" />,
     wrench: <Wrench size={16} className="icon" />,
   };
   return icons[suggestion.icon];
@@ -5875,7 +6056,7 @@ type ToolKind = 'command' | 'file-read' | 'file-edit' | 'search' | 'web' | 'log'
 function toolPresentation(title: string): { kind: ToolKind; icon: ReactNode; running: string; done: string; failed: string } {
   const normalized = title.trim().toLowerCase();
   const has = (...keys: string[]) => keys.some((key) => normalized.includes(key));
-  if (has('stderr')) return { kind: 'log', icon: <FileText size={14} />, running: 'Codex 日志', done: 'Codex 日志', failed: 'Codex 日志' };
+  if (has('stderr')) return { kind: 'log', icon: <FileText size={14} />, running: '系统日志', done: '系统日志', failed: '系统日志' };
   if (has('exec', 'shell', 'command', 'bash', 'execute', 'terminal')) return { kind: 'command', icon: <Terminal size={14} />, running: '正在运行', done: '已运行', failed: '运行失败' };
   if (has('web_search', 'websearch', 'web.run', 'web.search', 'browse_search')) return { kind: 'web', icon: <Globe size={14} />, running: '正在搜索网页', done: '已搜索网页', failed: '网页搜索失败' };
   if (has('search', 'grep', 'glob', 'ripgrep', 'find', 'query')) return { kind: 'search', icon: <Search size={14} />, running: '正在搜索', done: '已搜索', failed: '搜索失败' };
@@ -5905,7 +6086,7 @@ function messageToPlainText(message: ChatMessage): string {
 function conversationToPlainText(conversation: Conversation): string {
   return conversation.messages
     .map((message) => {
-      const who = message.role === 'user' ? '我' : 'Codex';
+      const who = message.role === 'user' ? '我' : 'Incuboot';
       const body = messageToPlainText(message);
       return body ? `${who}：${body}` : '';
     })
@@ -5921,7 +6102,7 @@ async function openInNewWindow(): Promise<void> {
       const label = `chat-${Date.now().toString(36)}`;
       new WebviewWindow(label, {
         url: target || '/',
-        title: 'Alpha Studio',
+        title: 'Incuboot',
         width: 1100,
         height: 760,
       });
@@ -5954,17 +6135,20 @@ async function openExternal(url: string): Promise<void> {
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
-async function pickFolder(): Promise<string | null> {
+async function pickFolder(
+  title = '选择品牌目录',
+  browserPrompt = '输入品牌目录的绝对路径（浏览器预览模式）',
+): Promise<string | null> {
   if (isTauriRuntime()) {
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
-      const selected = await open({ directory: true, multiple: false, title: '选择工作目录' });
+      const selected = await open({ directory: true, multiple: false, title });
       return typeof selected === 'string' ? selected : null;
     } catch {
       return null;
     }
   }
-  const manual = window.prompt('输入工作目录的绝对路径（浏览器预览模式）');
+  const manual = window.prompt(browserPrompt);
   return manual?.trim() || null;
 }
 
@@ -6004,6 +6188,15 @@ function shortenPath(value: string): string {
 function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || path;
+}
+
+function brandDirectoryName(name: string): string {
+  return name
+    .trim()
+    .replace(/[\\/:*?"<>|\u0000]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/^\.+|\.+$/g, '')
+    .trim();
 }
 
 // eslint-disable-next-line no-control-regex

@@ -14,7 +14,7 @@ export function buildCodingPrompt(
   const modeLines: string[] = [];
   if (options.planMode) {
     modeLines.push(
-      '当前处于「计划模式」：先只读地调研代码与上下文，输出分步骤的可执行计划，并在获得用户确认前不要修改文件或运行有副作用的命令。',
+      '当前处于「计划模式」：先只读地调研品牌资料与上下文，输出分步骤的可执行计划，并在获得用户确认前不要修改文件或运行有副作用的命令。',
     );
   }
   if (options.pursueGoal) {

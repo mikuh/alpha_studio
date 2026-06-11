@@ -1,23 +1,22 @@
-# Alpha Studio
+# Incuboot
 
-Alpha Studio is a source-available, noncommercial local coding workspace that wraps the OpenAI Codex CLI in a desktop-style UI.
+Incuboot is a private vertical commercial brand intelligence workspace for organizing brand directories, conversations, assets, and strategy work in a desktop-style UI.
 
-This public edition keeps the core product general-purpose: chats, projects, local work directories, Codex event streaming, archive-first history management, settings, and Git workflows. Vertical domain packs are intentionally separated so commercial editions can extend the same shell without changing the public core.
+This commercial edition keeps the core product focused on brand work: chats, brands, one local brand directory per brand, local event streaming, archive-first history management, settings, and extensible brand workflows. Vertical domain packs can extend the same shell without changing the private core.
 
 ## License
 
-This repository is licensed under the [PolyForm Noncommercial License 1.0.0](./LICENSE.md).
+This repository is proprietary and private. All rights reserved.
 
-You may use, study, modify, and redistribute this software for noncommercial purposes under that license. Commercial use requires a separate commercial license from the licensor.
+Do not copy, redistribute, sublicense, publish, or use this software outside authorized Incuboot commercial deployments without written permission.
 
-This is a source-available noncommercial project, not an OSI-approved open source project.
+This project is not open source and is not available for public source distribution.
 
 ## Requirements
 
 - Node.js and npm
 - Rust toolchain for Tauri development
-- OpenAI Codex CLI installed and logged in locally
-- Git for repository features
+- Local AI runtime installed and logged in
 
 ## Development
 
@@ -37,16 +36,16 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## Product Shape
 
-- Codex-style chat UI with local CLI event streaming
-- Project-bound working directories
-- Archive-first conversations and projects
-- Git status, diff, stage, unstage, commit, branch, pull, and push
-- Settings sections for personal, integrations, coding, and archived content
-- Light-first visual design inspired by Codex settings screenshots
+- Chat UI with local event streaming
+- Brand-bound local directories
+- One brand mapped to one local directory
+- Archive-first conversations and brands
+- Settings sections for personal, integrations, brand capabilities, and archived content
+- Light-first visual design for focused brand operations
 
 ## Extension Model
 
-The public edition ships with the `core-coding` domain in [`src/domain.ts`](./src/domain.ts). Commercial vertical editions can provide private domain packages that extend:
+The commercial edition ships with the `brand-system` domain in [`src/domain.ts`](./src/domain.ts). Private vertical packages can extend:
 
 - prompt packs
 - navigation entries
@@ -54,8 +53,8 @@ The public edition ships with the `core-coding` domain in [`src/domain.ts`](./sr
 - right-side panels
 - domain-specific commands or data sources
 
-The public core should stay domain-neutral and avoid embedding vertical commercial logic.
+The private core should stay focused and avoid embedding unrelated vertical logic.
 
 ## Notice
 
-Alpha Studio uses its own brand, text, icons, and assets. The UI is a Codex-style reference implementation intended to feel familiar to Codex users, but it does not copy Codex trademarks, logos, or proprietary assets.
+Incuboot uses its own brand, text, icons, and assets.

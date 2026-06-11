@@ -146,10 +146,10 @@ export const useChatStore = create<ChatState>()(
         const latest = get().conversations.find((item) => item.id === conversationId);
         const decision = await requestAuthorization({
           conversationId,
-          title: 'Codex 请求操作权限',
+          title: 'Incuboot 请求操作权限',
           description: latest?.cwd
-            ? '允许 Codex 在当前工作目录读取、修改文件并运行命令吗？'
-            : '允许 Codex 读取、修改文件并运行命令吗？',
+            ? '允许 Incuboot 在当前品牌目录读取、修改文件并运行命令吗？'
+            : '允许 Incuboot 读取、修改文件并运行命令吗？',
           cwd: latest?.cwd || '',
         });
         if (decision === 'deny') {
@@ -309,8 +309,8 @@ export const useChatStore = create<ChatState>()(
         }));
       },
 
-      // Fork a conversation into a new, independent one (same project/cwd) that
-      // carries over the existing transcript. New message ids keep the branch
+      // Duplicate a conversation into a new, independent one (same brand/cwd) that
+      // carries over the existing transcript. New message ids keep the copy
       // from clobbering the source while editing.
       duplicateConversation: (id: string) => {
         const source = get().conversations.find((item) => item.id === id);
@@ -319,7 +319,7 @@ export const useChatStore = create<ChatState>()(
         const clone: Conversation = {
           ...source,
           id: createId('conv'),
-          title: `${source.title} 分支`,
+          title: `${source.title} 副本`,
           messages: source.messages.map((message) => ({
             ...message,
             id: createId('msg'),
@@ -343,10 +343,10 @@ export const useChatStore = create<ChatState>()(
         return clone.id;
       },
 
-      // Point a single conversation at a working directory. Picking an existing
-      // project carries its id so the conversation stays grouped; choosing a raw
+      // Point a single conversation at a brand directory. Picking an existing
+      // brand carries its id so the conversation stays grouped; choosing a raw
       // folder passes projectId=null to detach it into a standalone chat. Passing
-      // undefined leaves the current project association untouched.
+      // undefined leaves the current brand association untouched.
       setConversationCwd: (id, cwd, projectId) => {
         const next = cwd.trim();
         set((state) => ({
@@ -367,7 +367,7 @@ export const useChatStore = create<ChatState>()(
 
       createProject: (input) => {
         const now = Date.now();
-        const fallbackName = `新项目 ${activeProjects(get().projects).length + 1}`;
+        const fallbackName = `新品牌 ${activeProjects(get().projects).length + 1}`;
         const project: Project = {
           id: createId('proj'),
           name: input?.name?.trim() || fallbackName,
@@ -1136,8 +1136,8 @@ function codexModelRequest(profile: ModelProfile, reasoningEffort: ReasoningEffo
   };
 }
 
-// Folds attached file references into the prompt so Codex can locate them in the
-// working directory (the visible transcript renders the chips separately).
+// Folds attached file references into the prompt so the assistant can locate
+// them in the brand directory (the visible transcript renders the chips separately).
 function promptWithAttachments(text: string, attachments?: MessageAttachment[]): string {
   if (!attachments || attachments.length === 0) return text;
   const lines = attachments.map((item) => `- ${item.path || item.name}${item.kind === 'image' ? '（图片）' : ''}`);
@@ -1192,13 +1192,13 @@ function simulateBrowserReply(conversationId: string, dispatch: (event: CodexCha
   let delay = 160;
   const push = (event: CodexChatEvent) => events.push({ delay, event });
 
-  push({ type: 'reasoning_delta', runId, conversationId, text: '先做一次只读体检：看工作区状态、目录结构和关键文件，再决定下一步。' });
+  push({ type: 'reasoning_delta', runId, conversationId, text: '先做一次只读体检：查看品牌目录结构、关键素材和说明文件，再决定下一步。' });
   delay += 260;
 
   const commands = [
-    { id: 'status', cmd: 'git status --short', out: ' M src/App.tsx\n M src/store.ts\n M src/styles.css\n' },
-    { id: 'ls', cmd: 'ls -la src', out: 'total 96\n-rw-r--r--  1 user  staff   72K App.tsx\n-rw-r--r--  1 user  staff   18K store.ts\n-rw-r--r--  1 user  staff   54K styles.css\n' },
-    { id: 'disk', cmd: 'du -sh node_modules 2>/dev/null || echo missing', out: 'missing\n' },
+    { id: 'ls', cmd: 'find . -maxdepth 2 -type f', out: './brand-guidelines.md\n./assets/logo-primary.png\n./assets/palette.json\n./content/about.md\n' },
+    { id: 'brief', cmd: 'sed -n 1,80p brand-guidelines.md', out: '# Brand Guidelines\n\n定位：面向年轻家庭的健康生活方式品牌。\n语气：温暖、可信、清晰。\n' },
+    { id: 'assets', cmd: 'ls assets', out: 'logo-primary.png\nlogo-mono.png\npalette.json\n' },
   ];
   for (const command of commands) {
     push({ type: 'tool_started', runId, conversationId, itemId: `${runId}-${command.id}`, title: 'command_execution', text: command.cmd });
@@ -1210,10 +1210,10 @@ function simulateBrowserReply(conversationId: string, dispatch: (event: CodexCha
   }
 
   const chunks = [
-    '预览模式已按 Codex 风格渲染事件流：',
-    '\n\n1. 连续的命令会折叠成「已运行 N 条命令」，可展开查看每条命令与终端结果。',
+    '预览模式已按品牌工作台风格渲染事件流：',
+    '\n\n1. 品牌目录中的资料、素材和内容会被整理成可追溯上下文。',
     '\n2. 推理与文本会分段流式追加，任务进行时底部显示「正在思考」。',
-    '\n3. 桌面模式会把这些预览事件替换为真实 Codex CLI 输出。',
+    '\n3. 桌面模式会把这些预览事件替换为真实本地执行结果。',
   ];
   for (const text of chunks) {
     push({ type: 'text_delta', runId, conversationId, text });

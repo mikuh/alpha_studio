@@ -1,8 +1,8 @@
 [package]
 name = "alpha-studio"
 version = "0.1.0"
-description = "Alpha Studio - noncommercial local coding workspace"
-authors = ["Alpha Studio"]
+description = "Incuboot - private vertical commercial brand intelligence workspace"
+authors = ["Incuboot"]
 edition = "2021"
 
 [lib]

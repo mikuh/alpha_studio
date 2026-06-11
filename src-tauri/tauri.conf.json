@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Alpha Studio",
+  "productName": "Incuboot",
   "version": "0.1.0",
   "identifier": "com.alpha-studio.desktop",
   "build": {
@@ -14,7 +14,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "Alpha Studio",
+        "title": "Incuboot",
         "width": 1360,
         "height": 860,
         "minWidth": 1060,
@@ -52,9 +52,9 @@
       "icons/icon.icns",
       "icons/icon.png"
     ],
-    "category": "DeveloperTool",
-    "shortDescription": "Alpha Studio - noncommercial local coding workspace",
-    "longDescription": "Alpha Studio wraps OpenAI Codex CLI with a source-available noncommercial coding workspace UI.",
+    "category": "Business",
+    "shortDescription": "Incuboot - private vertical commercial brand intelligence workspace",
+    "longDescription": "Incuboot organizes brand directories, conversations, assets, and strategy work in a private vertical commercial desktop UI.",
     "macOS": {
       "minimumSystemVersion": "10.15"
     }

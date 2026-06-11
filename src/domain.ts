@@ -3,9 +3,9 @@ export interface DomainPromptPack {
   responseGuidance: string[];
 }
 
-export type WorkModeId = 'core-coding';
+export type WorkModeId = 'brand-system';
 
-export type DomainSuggestionIcon = 'file-code' | 'code' | 'wrench';
+export type DomainSuggestionIcon = 'folder' | 'sparkles' | 'wrench';
 
 export type DomainFeatureIcon = 'folder' | 'browser' | 'review' | 'terminal';
 
@@ -71,60 +71,60 @@ export interface DomainConfig {
   };
 }
 
-export const coreCodingDomain: DomainConfig = {
-  id: 'core-coding',
-  name: 'Alpha Studio',
-  edition: 'Source-Available Noncommercial Edition',
-  assistantName: 'Alpha Studio',
-  modeTitle: '适用于编程',
-  modeDescription: '更具技术性的回复和控制',
-  modeTag: '公开源码版',
+export const brandSystemDomain: DomainConfig = {
+  id: 'brand-system',
+  name: 'Incuboot',
+  edition: 'Brand Intelligence Edition',
+  assistantName: 'Incuboot',
+  modeTitle: '智能品牌系统',
+  modeDescription: '围绕品牌目录组织资料、资产、策略和对话',
+  modeTag: '品牌工作台',
   prompt: {
     systemLines: [
-      '你是 Alpha Studio，一个公开源码非商业版的本地编码工作台助手。',
-      '你的默认任务是帮助用户理解代码、修改项目、运行检查、解释结果，并把风险和下一步清楚说明。',
-      '优先使用当前工作区、项目文件、Git 状态和用户提供的上下文；无法确认的事实要明确说出不确定性。',
-      '执行代码变更时保持范围收敛，尊重现有架构和用户未提交的改动。',
-      '当任务涉及命令、文件、依赖或 Git 操作时，说明关键动作与验证结果。',
+      '你是 Incuboot，一个面向智能品牌系统的本地品牌工作台助手。',
+      '你的默认任务是帮助用户梳理品牌资料、分析素材、生成品牌策略与内容、沉淀品牌目录，并把依据和下一步清楚说明。',
+      '优先使用当前品牌目录、已附加文件、历史对话和用户提供的上下文；无法确认的事实要明确说出不确定性。',
+      '执行文件变更时保持范围收敛，尊重现有目录结构和用户未保存的内容。',
+      '当任务涉及命令、文件、依赖或联网操作时，说明关键动作与验证结果。',
     ],
     responseGuidance: [
-      '回答应简洁、直接、适合工程协作。',
-      '需要计划时给出可执行步骤；需要实现时优先完成实现和验证。',
-      '不要引入任何垂直行业设定，除非用户明确要求。',
+      '回答应简洁、直接、适合品牌协作。',
+      '需要计划时给出可执行步骤；需要产出时优先给出可直接使用或可落地修改的内容。',
+      '不要默认进入编程、代码审查或软件项目语境，除非用户明确要求。',
     ],
   },
   ui: {
-    emptyHeading: '把编码任务交给 Alpha Studio',
-    composerPlaceholder: '要求 Codex 执行任务',
-    followupPlaceholder: '要求后续变更',
+    emptyHeading: '把品牌系统交给 Incuboot',
+    composerPlaceholder: '描述品牌任务、上传素材或选择品牌目录',
+    followupPlaceholder: '继续优化品牌资料、策略或内容',
     sidebar: {
       newConversationLabel: '新对话',
-      searchPlaceholder: '搜索对话、项目或工作目录',
-      projectSectionLabel: '项目',
-      projectEmpty: '用项目把对话绑定到本地工作目录',
-      projectConversationEmpty: '暂无对话',
-      conversationSectionLabel: '对话',
+      searchPlaceholder: '搜索对话、品牌或品牌目录',
+      projectSectionLabel: '品牌',
+      projectEmpty: '用品牌目录把对话、素材和资料放在一起',
+      projectConversationEmpty: '暂无品牌对话',
+      conversationSectionLabel: '未归类对话',
       conversationEmpty: '暂无未归类的对话',
       settingsLabel: '设置',
     },
-    rightPanelTitle: '编码工具',
+    rightPanelTitle: '品牌工具',
     suggestions: [
       {
-        id: 'understand-codebase',
-        title: '理解代码库',
-        prompt: '先扫描这个项目结构，告诉我主要模块、入口和运行方式。',
-        icon: 'file-code',
+        id: 'organize-brand-folder',
+        title: '梳理品牌资料',
+        prompt: '先扫描这个品牌目录，整理品牌定位、视觉资产、内容素材和待补充信息。',
+        icon: 'folder',
       },
       {
-        id: 'implement-feature',
-        title: '实现功能',
-        prompt: '帮我实现一个小功能：先读代码，再给出修改并运行必要验证。',
-        icon: 'code',
+        id: 'brand-audit',
+        title: '品牌体检',
+        prompt: '分析这个品牌目前的定位、受众、语气和视觉一致性，给我一个可执行的优化清单。',
+        icon: 'sparkles',
       },
       {
-        id: 'fix-tests',
-        title: '修复测试',
-        prompt: '检查当前失败测试或类型错误，定位原因并修复。',
+        id: 'draft-brand-content',
+        title: '生成内容',
+        prompt: '基于当前品牌资料，生成一组适合官网、社媒和提案使用的品牌文案。',
         icon: 'wrench',
       },
     ],
@@ -132,8 +132,8 @@ export const coreCodingDomain: DomainConfig = {
       {
         id: 'files',
         icon: 'folder',
-        title: '文件',
-        desc: '浏览项目文件',
+        title: '品牌目录',
+        desc: '打开品牌文件夹',
         shortcut: '⌘P',
         requiresCwd: true,
         action: 'reveal-cwd',
@@ -141,27 +141,10 @@ export const coreCodingDomain: DomainConfig = {
       {
         id: 'browser',
         icon: 'browser',
-        title: '浏览器',
-        desc: '打开网站',
+        title: '参考网页',
+        desc: '打开品牌参考链接',
         shortcut: '⌘T',
         action: 'open-url',
-      },
-      {
-        id: 'review',
-        icon: 'review',
-        title: '审查',
-        desc: '查看代码更改',
-        shortcut: '⌃⇧G',
-        requiresCwd: true,
-        action: 'open-review',
-      },
-      {
-        id: 'terminal',
-        icon: 'terminal',
-        title: '终端',
-        desc: '启动交互式 shell',
-        shortcut: '⌃`',
-        action: 'open-terminal',
       },
     ],
   },
@@ -176,19 +159,8 @@ export const coreCodingDomain: DomainConfig = {
       { id: 'keyboard', label: '键盘快捷键' },
       { id: 'usage', label: '使用情况和计费' },
     ],
-    integrations: [
-      { id: 'snapshots', label: '应用快照' },
-      { id: 'mcp', label: 'MCP 服务器' },
-      { id: 'browser', label: '浏览器' },
-      { id: 'computer', label: '电脑操控' },
-    ],
-    coding: [
-      { id: 'hooks', label: '钩子' },
-      { id: 'connections', label: '连接' },
-      { id: 'git', label: 'Git' },
-      { id: 'environment', label: '环境' },
-      { id: 'worktrees', label: '工作树' },
-    ],
+    integrations: [],
+    coding: [],
     archived: [{ id: 'archived', label: '已归档对话' }],
   },
 };
@@ -201,27 +173,27 @@ export interface WorkModeOption {
   available: boolean;
 }
 
-export const DEFAULT_WORK_MODE_ID: WorkModeId = coreCodingDomain.id;
+export const DEFAULT_WORK_MODE_ID: WorkModeId = brandSystemDomain.id;
 
 export const WORK_MODE_OPTIONS: WorkModeOption[] = [
   {
-    id: coreCodingDomain.id,
-    title: coreCodingDomain.modeTitle,
-    description: coreCodingDomain.modeDescription,
-    tag: coreCodingDomain.modeTag,
+    id: brandSystemDomain.id,
+    title: brandSystemDomain.modeTitle,
+    description: brandSystemDomain.modeDescription,
+    tag: brandSystemDomain.modeTag,
     available: true,
   },
   {
     id: 'vertical-packs',
-    title: '更多垂直领域',
-    description: '商业领域包接入后会在这里出现',
+    title: '更多品牌能力',
+    description: '行业品牌包接入后会在这里出现',
     tag: '即将推出',
     available: false,
   },
 ];
 
 export const DOMAIN_REGISTRY: Record<WorkModeId, DomainConfig> = {
-  [coreCodingDomain.id]: coreCodingDomain,
+  [brandSystemDomain.id]: brandSystemDomain,
 };
 
 export function isWorkModeId(value: unknown): value is WorkModeId {
@@ -229,5 +201,5 @@ export function isWorkModeId(value: unknown): value is WorkModeId {
 }
 
 export function activeDomain(modeId: unknown = DEFAULT_WORK_MODE_ID): DomainConfig {
-  return isWorkModeId(modeId) ? DOMAIN_REGISTRY[modeId] : coreCodingDomain;
+  return isWorkModeId(modeId) ? DOMAIN_REGISTRY[modeId] : brandSystemDomain;
 }

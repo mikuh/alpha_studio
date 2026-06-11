@@ -1,8 +1,9 @@
 {
   "name": "alpha-studio",
   "version": "0.1.0",
-  "description": "Alpha Studio - noncommercial local coding workspace",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "description": "Incuboot - private vertical commercial brand intelligence workspace",
+  "private": true,
+  "license": "UNLICENSED",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for Alpha Studio",
+  "description": "Default capability for Incuboot",
   "windows": ["main", "chat-*"],
   "permissions": [
     "core:default",

@@ -168,6 +168,19 @@ pub struct OpenInAppRequest {
 
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct BrandDirectoryCreateRequest {
+    parent: String,
+    name: String,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrandDirectoryCreateResult {
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalStartRequest {
     cwd: Option<String>,
     rows: Option<u16>,
@@ -434,12 +447,12 @@ async fn codex_chat_start(
     if !check.installed {
         return Err(check
             .error
-            .unwrap_or_else(|| "Codex CLI is not installed or cannot be executed.".to_string()));
+            .unwrap_or_else(|| "本地智能引擎未安装或无法执行。".to_string()));
     }
     if !check.logged_in {
         return Err(check
             .error
-            .unwrap_or_else(|| "Codex CLI is installed but not logged in.".to_string()));
+            .unwrap_or_else(|| "本地智能引擎已安装但尚未登录。".to_string()));
     }
 
     let run_id = generate_run_id();
@@ -691,7 +704,7 @@ impl CodexDriver {
                 "params": {
                     "clientInfo": {
                         "name": "alpha-studio",
-                        "title": "Alpha Studio",
+                        "title": "Incuboot",
                         "version": env!("CARGO_PKG_VERSION"),
                     },
                     "capabilities": {
@@ -1186,6 +1199,22 @@ async fn open_in_app(request: OpenInAppRequest) -> Result<(), String> {
         let _ = path;
         Err("Opening in external apps is only supported on macOS in this build.".to_string())
     }
+}
+
+#[tauri::command]
+async fn brand_directory_create(
+    request: BrandDirectoryCreateRequest,
+) -> Result<BrandDirectoryCreateResult, String> {
+    let parent = validate_existing_directory(&request.parent, "父目录")?;
+    let name = sanitize_brand_directory_name(&request.name)?;
+    let target = Path::new(parent).join(name);
+    if target.exists() {
+        return Err(format!("品牌目录已存在：{}", target.to_string_lossy()));
+    }
+    fs::create_dir(&target).map_err(|e| format!("创建品牌目录失败：{e}"))?;
+    Ok(BrandDirectoryCreateResult {
+        path: target.to_string_lossy().to_string(),
+    })
 }
 
 #[tauri::command]
@@ -2982,7 +3011,7 @@ fn check_codex() -> CodexCheckResult {
                 error: if logged_in {
                     None
                 } else {
-                    Some("Codex CLI is installed but `codex login status` did not report an active login.".to_string())
+                    Some("本地智能引擎已安装，但登录状态检查未发现可用会话。".to_string())
                 },
             }
         }
@@ -2992,7 +3021,7 @@ fn check_codex() -> CodexCheckResult {
             path: String::new(),
             logged_in: false,
             error: Some(
-                "No working Codex CLI was found. Install or repair Codex first.".to_string(),
+                "没有找到可用的本地智能引擎，请先安装或修复后再试。".to_string(),
             ),
         },
     }
@@ -3046,18 +3075,39 @@ fn resolve_cwd(value: Option<&str>) -> Result<String, String> {
 }
 
 fn validate_cwd(cwd: &str) -> Result<&str, String> {
-    let cwd = cwd.trim();
-    if cwd.is_empty() {
-        return Err("Working directory is required for Git operations.".to_string());
+    validate_existing_directory(cwd, "工作目录")
+}
+
+fn validate_existing_directory<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{label}不能为空。"));
     }
-    let path = Path::new(cwd);
+    let path = Path::new(value);
     if !path.exists() {
-        return Err(format!("Working directory does not exist: {cwd}"));
+        return Err(format!("{label}不存在：{value}"));
     }
     if !path.is_dir() {
-        return Err(format!("Working directory is not a directory: {cwd}"));
+        return Err(format!("{label}不是文件夹：{value}"));
     }
-    Ok(cwd)
+    Ok(value)
+}
+
+fn sanitize_brand_directory_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        return Err("品牌目录名称不能为空。".to_string());
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err("品牌目录名称无效。".to_string());
+    }
+    let has_forbidden = trimmed
+        .chars()
+        .any(|ch| matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0'));
+    if has_forbidden {
+        return Err("品牌目录名称不能包含路径分隔符或特殊字符。".to_string());
+    }
+    Ok(trimmed.to_string())
 }
 
 fn sanitize_paths(paths: &[String]) -> Result<Vec<String>, String> {
@@ -4031,6 +4081,7 @@ pub fn run() {
             codex_chat_stop,
             list_open_apps,
             open_in_app,
+            brand_directory_create,
             terminal_start,
             terminal_write,
             terminal_resize,
@@ -4055,7 +4106,7 @@ pub fn run() {
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title("Alpha Studio");
+                let _ = window.set_title("Incuboot");
                 #[cfg(target_os = "macos")]
                 {
                     use window_vibrancy::{
@@ -4072,12 +4123,25 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running Alpha Studio");
+        .expect("error while running Incuboot");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitizes_brand_directory_names() {
+        assert_eq!(
+            sanitize_brand_directory_name("  Acme Brand  ").unwrap(),
+            "Acme Brand"
+        );
+        assert_eq!(sanitize_brand_directory_name("品牌").unwrap(), "品牌");
+        assert!(sanitize_brand_directory_name("").is_err());
+        assert!(sanitize_brand_directory_name("../Brand").is_err());
+        assert!(sanitize_brand_directory_name("Brand/Assets").is_err());
+        assert!(sanitize_brand_directory_name("Brand:Assets").is_err());
+    }
 
     #[test]
     fn parses_thread_started() {

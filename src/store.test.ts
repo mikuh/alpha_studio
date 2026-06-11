@@ -92,7 +92,7 @@ describe('archive semantics', () => {
     expect(useChatStore.getState().conversations.filter(isDraftConversation)).toHaveLength(1);
   });
 
-  it('migrates old persisted legacy state into coding-era state', () => {
+  it('migrates old persisted legacy state into brand-system state', () => {
     const legacyTitle = ['\u65b0\u7684', '\u5bf9\u8bdd'].join('\u6295\u7814');
     const migrated = migratePersistedState({
       conversations: [conversation('old', { title: legacyTitle })],
@@ -107,7 +107,7 @@ describe('archive semantics', () => {
     expect('watchlist' in migrated).toBe(false);
     expect(migrated.selectedModelProfileId).toBe(DEFAULT_MODEL_PROFILE_ID);
     expect(migrated.modelProfiles.some((profile) => profile.id === DEFAULT_MODEL_PROFILE_ID)).toBe(true);
-    expect(migrated.workModeId).toBe('core-coding');
+    expect(migrated.workModeId).toBe('brand-system');
   });
 
   it('migrates an unknown legacy model into a custom OpenAI profile', () => {
@@ -139,9 +139,9 @@ describe('archive semantics', () => {
     expect(id).toBeTruthy();
     expect(useChatStore.getState().selectedModelProfileId).toBe(id);
 
-    useChatStore.getState().updateModelProfile(id!, { label: 'DeepSeek Coding', model: 'deepseek-reasoner' });
+    useChatStore.getState().updateModelProfile(id!, { label: 'DeepSeek Brand', model: 'deepseek-reasoner' });
     expect(useChatStore.getState().modelProfiles.find((profile) => profile.id === id)).toMatchObject({
-      label: 'DeepSeek Coding',
+      label: 'DeepSeek Brand',
       model: 'deepseek-reasoner',
     });
 
@@ -154,9 +154,9 @@ describe('archive semantics', () => {
   });
 
   it('persists the active work mode in store state', () => {
-    useChatStore.getState().setWorkModeId('core-coding');
+    useChatStore.getState().setWorkModeId('brand-system');
 
-    expect(useChatStore.getState().workModeId).toBe('core-coding');
+    expect(useChatStore.getState().workModeId).toBe('brand-system');
   });
 });
 

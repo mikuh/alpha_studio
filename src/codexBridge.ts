@@ -55,7 +55,7 @@ export async function checkCodex(): Promise<CodexStatus> {
       version: 'browser preview',
       path: '',
       loggedIn: false,
-      error: '浏览器预览模式不会启动 Codex CLI。请使用 npm run tauri:dev。',
+      error: '浏览器预览模式不会启动本地智能引擎。请使用 npm run tauri:dev。',
     };
   }
   return invoke<CodexStatus>('codex_check');
@@ -90,6 +90,13 @@ export async function revealPath(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function createBrandDirectory(parent: string, name: string): Promise<string> {
+  const fallback = joinPath(parent, name);
+  if (!isTauriRuntime()) return fallback;
+  const result = await invoke<{ path: string }>('brand_directory_create', { request: { parent, name } });
+  return result.path;
 }
 
 export async function subscribeCodexEvents(
@@ -205,7 +212,7 @@ export async function listOpenApps(): Promise<OpenAppId[]> {
 }
 
 export async function openInApp(app: OpenAppId, path: string): Promise<void> {
-  if (!path) throw new Error('当前对话还没有绑定工作目录。');
+  if (!path) throw new Error('当前对话还没有绑定品牌目录。');
   if (!isTauriRuntime()) return;
   await invoke('open_in_app', { request: { app, path } });
 }
@@ -252,4 +259,10 @@ function browserGitStatus(cwd: string): GitStatus {
     changes: [],
     error: '浏览器预览模式不会读取本地 Git 仓库。请使用 npm run tauri:dev。',
   };
+}
+
+function joinPath(parent: string, name: string): string {
+  const base = parent.replace(/[\\/]+$/g, '');
+  const child = name.replace(/^[\\/]+/g, '');
+  return base ? `${base}/${child}` : child;
 }
