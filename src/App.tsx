@@ -181,6 +181,14 @@ import type {
 } from './types';
 
 type RightPanel = 'none' | 'git' | 'features' | 'review';
+type FeatureSidebarTabKind = 'partner-marketing';
+
+interface FeatureSidebarTab {
+  id: string;
+  kind: FeatureSidebarTabKind;
+  title: string;
+}
+
 type Theme = 'light' | 'dark';
 type SettingsSection =
   | 'general'
@@ -221,6 +229,7 @@ const REVIEW_PANEL_MIN_WIDTH = 520;
 const REVIEW_PANEL_MAX_WIDTH = 1120;
 const REVIEW_PANEL_DEFAULT_WIDTH = 704;
 const RIGHT_PANEL_MIN_MAIN_WIDTH = 320;
+const PARTNER_MARKETING_LABEL = '合作推广营销';
 
 export function App() {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
@@ -2442,6 +2451,11 @@ function FeaturesPanel({
 }) {
   const conversation = useCurrentConversation();
   const cwd = conversation?.cwd || '';
+  const [tabState, setTabState] = useState<{ tabs: FeatureSidebarTab[]; activeId: string | null }>({
+    tabs: [],
+    activeId: null,
+  });
+  const nextFeatureTabId = useRef(1);
   const featureByAction = useMemo(
     () => new Map(domain.ui.features.map((feature) => [feature.action, feature])),
     [domain.ui.features],
@@ -2472,6 +2486,40 @@ function FeaturesPanel({
   const focusComposer = () => {
     document.querySelector<HTMLTextAreaElement>('.composer-textarea')?.focus();
   };
+  const addPartnerMarketingTab = () => {
+    const tabNumber = nextFeatureTabId.current;
+    nextFeatureTabId.current += 1;
+    const tab: FeatureSidebarTab = {
+      id: `partner-marketing-${tabNumber}`,
+      kind: 'partner-marketing',
+      title: tabNumber === 1 ? PARTNER_MARKETING_LABEL : `${PARTNER_MARKETING_LABEL} ${tabNumber}`,
+    };
+    setTabState((state) => ({
+      tabs: [...state.tabs, tab],
+      activeId: tab.id,
+    }));
+  };
+  const selectFeatureTab = (id: string) => {
+    setTabState((state) => ({
+      ...state,
+      activeId: id,
+    }));
+  };
+  const closeFeatureTab = (event: ReactMouseEvent, id: string) => {
+    event.stopPropagation();
+    setTabState((state) => {
+      const closingIndex = state.tabs.findIndex((tab) => tab.id === id);
+      if (closingIndex < 0) return state;
+      const tabs = state.tabs.filter((tab) => tab.id !== id);
+      const activeId = state.activeId === id
+        ? tabs[closingIndex]?.id || tabs[closingIndex - 1]?.id || null
+        : tabs.some((tab) => tab.id === state.activeId)
+          ? state.activeId
+          : tabs[0]?.id || null;
+      return { tabs, activeId };
+    });
+  };
+  const activeTab = tabState.tabs.find((tab) => tab.id === tabState.activeId) || null;
   const featureActions: Array<{
     id: string;
     label: string;
@@ -2483,13 +2531,11 @@ function FeaturesPanel({
     onClick: () => void;
   }> = [
     {
-      id: 'review',
-      label: '审查',
-      icon: <GitPullRequest size={14} />,
-      shortcut: '⌃⇧G',
-      disabled: !cwd,
-      title: cwd ? '审查当前品牌目录的更改' : '当前对话未绑定品牌目录',
-      onClick: onOpenReviewChanges,
+      id: 'partner-marketing',
+      label: PARTNER_MARKETING_LABEL,
+      icon: <Target size={14} />,
+      title: '打开合作推广营销标签',
+      onClick: addPartnerMarketingTab,
     },
     {
       id: 'terminal',
@@ -2529,7 +2575,38 @@ function FeaturesPanel({
 
   return (
     <aside className="features-panel right-dock-panel">
-      <header className="features-panel-head" data-tauri-drag-region>
+      <header className={`features-panel-head ${tabState.tabs.length > 0 ? 'with-tabs' : ''}`} data-tauri-drag-region>
+        {tabState.tabs.length > 0 && (
+          <div className="feature-tabs" role="tablist" aria-label="侧边栏标签">
+            {tabState.tabs.map((tab) => (
+              <div key={tab.id} className={`feature-tab ${tab.id === activeTab?.id ? 'active' : ''}`}>
+                <button
+                  type="button"
+                  className="feature-tab-select"
+                  role="tab"
+                  aria-selected={tab.id === activeTab?.id}
+                  onClick={() => selectFeatureTab(tab.id)}
+                  title={tab.title}
+                >
+                  <Target size={13} />
+                  <span className="feature-tab-title">{tab.title}</span>
+                </button>
+                <button
+                  type="button"
+                  className="feature-tab-close"
+                  onClick={(event) => closeFeatureTab(event, tab.id)}
+                  aria-label={`关闭 ${tab.title}`}
+                  title="关闭标签"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            ))}
+            <button type="button" className="feature-tab-add" onClick={addPartnerMarketingTab} aria-label="新增标签" title="新增标签">
+              <Plus size={14} />
+            </button>
+          </div>
+        )}
         <div className="features-panel-actions">
           <OpenInAppMenu cwd={cwd} />
           <button type="button" className="icon-btn active" onClick={onClose} aria-label="关闭侧边栏" title="关闭侧边栏">
@@ -2537,27 +2614,55 @@ function FeaturesPanel({
           </button>
         </div>
       </header>
-      <div className="features-panel-body">
-        <div className="features-list">
-          {featureActions.map((feature) => (
-            <button
-              key={feature.id}
-              type="button"
-              className={`feature-card ${feature.active ? 'active' : ''}`}
-              disabled={feature.disabled}
-              onClick={feature.onClick}
-              title={feature.title}
-            >
-              <span className="feature-card-main">
-                <span className="feature-card-icon">{feature.icon}</span>
-                <span className="feature-card-title">{feature.label}</span>
-              </span>
-              {feature.shortcut && <span className="feature-card-key">{feature.shortcut}</span>}
-            </button>
-          ))}
-        </div>
+      <div className={`features-panel-body ${activeTab ? 'with-tab-content' : ''}`}>
+        {activeTab ? (
+          <FeatureTabContent tab={activeTab} />
+        ) : (
+          <div className="features-list">
+            {featureActions.map((feature) => (
+              <button
+                key={feature.id}
+                type="button"
+                className={`feature-card ${feature.active ? 'active' : ''}`}
+                disabled={feature.disabled}
+                onClick={feature.onClick}
+                title={feature.title}
+              >
+                <span className="feature-card-main">
+                  <span className="feature-card-icon">{feature.icon}</span>
+                  <span className="feature-card-title">{feature.label}</span>
+                </span>
+                {feature.shortcut && <span className="feature-card-key">{feature.shortcut}</span>}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </aside>
+  );
+}
+
+function FeatureTabContent({ tab }: { tab: FeatureSidebarTab }) {
+  switch (tab.kind) {
+    case 'partner-marketing':
+      return <PartnerMarketingTab title={tab.title} />;
+  }
+}
+
+function PartnerMarketingTab({ title }: { title: string }) {
+  return (
+    <section className="feature-tab-content partner-marketing-panel" role="tabpanel" aria-label={title}>
+      <div className="partner-marketing-head">
+        <span className="partner-marketing-icon"><Target size={22} /></span>
+        <div>
+          <h2>{title}</h2>
+          <p>待配置</p>
+        </div>
+      </div>
+      <div className="partner-marketing-placeholder">
+        <span>合作推广营销内容待开发</span>
+      </div>
+    </section>
   );
 }
 
