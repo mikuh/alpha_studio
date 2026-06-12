@@ -246,3 +246,172 @@ export interface TerminalEvent {
   sessionId: string;
   chunk?: string;
 }
+
+export type EmailCategory = 'influencer' | 'affiliate' | 'ad' | 'other';
+
+export interface MarketingEmailAccountConfig {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  tls: boolean;
+  username: string;
+  mailbox: string;
+  scanLimit: number;
+  syncIntervalMinutes: number;
+  enabled: boolean;
+  password?: string;
+}
+
+export type MarketingEmailAccount = Omit<MarketingEmailAccountConfig, 'password'> & {
+  lastSyncedAt?: number | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export interface MarketingEmailLead {
+  id: string;
+  accountId: string;
+  imapUid: string;
+  messageId?: string | null;
+  threadId?: string | null;
+  fromName?: string | null;
+  fromEmail: string;
+  rawFrom: string;
+  subject: string;
+  snippet: string;
+  receivedAt?: number | null;
+  category: EmailCategory;
+  hidden: boolean;
+  confidence: number;
+  kolId?: string | null;
+  agentReviewedAt?: number | null;
+  agentReviewNote: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KolProfile {
+  id: string;
+  name: string;
+  email: string;
+  country?: string | null;
+  relationship: string;
+  collaborationStatus: string;
+  stage: string;
+  owner?: string | null;
+  priority: string;
+  tags: string;
+  source: string;
+  archived: boolean;
+  brandFitScore?: number | null;
+  riskNote?: string | null;
+  nextFollowUpAt?: number | null;
+  lastContactedAt?: number | null;
+  agentNotes?: string | null;
+  humanNotes?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KolPlatformAccount {
+  id: string;
+  kolId: string;
+  platform: string;
+  handle?: string | null;
+  url?: string | null;
+  followerCount?: number | null;
+  avgViews?: number | null;
+  avgLikes?: number | null;
+  avgComments?: number | null;
+  audienceGender?: string | null;
+  audienceAge?: string | null;
+  audienceInterests?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KolCollaboration {
+  id: string;
+  kolId: string;
+  status: string;
+  goal?: string | null;
+  method?: string | null;
+  platform?: string | null;
+  quotedPrice?: string | null;
+  paymentStatus?: string | null;
+  contractStatus?: string | null;
+  shippingStatus?: string | null;
+  productValue?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KolPost {
+  id: string;
+  kolId: string;
+  collaborationId?: string | null;
+  platform?: string | null;
+  url?: string | null;
+  topic?: string | null;
+  contentQuality?: string | null;
+  publishedAt?: number | null;
+  impressions?: number | null;
+  views?: number | null;
+  likes?: number | null;
+  comments?: number | null;
+  salesAmount?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AutomationAuditLog {
+  id: string;
+  actor: string;
+  targetTable: string;
+  targetId: string;
+  field: string;
+  oldValue?: string | null;
+  newValue?: string | null;
+  reason: string;
+  createdAt: number;
+}
+
+export interface MarketingDbSnapshot {
+  path: string;
+  accounts: MarketingEmailAccount[];
+  leads: MarketingEmailLead[];
+  kolProfiles: KolProfile[];
+  platformAccounts: KolPlatformAccount[];
+  collaborations: KolCollaboration[];
+  posts: KolPost[];
+  auditLogs: AutomationAuditLog[];
+}
+
+export interface KolProfilePatch {
+  name?: string;
+  email?: string;
+  country?: string | null;
+  relationship?: string;
+  collaborationStatus?: string;
+  stage?: string;
+  owner?: string | null;
+  priority?: string;
+  tags?: string;
+  archived?: boolean;
+  brandFitScore?: number | null;
+  riskNote?: string | null;
+  nextFollowUpAt?: number | null;
+  agentNotes?: string | null;
+  humanNotes?: string | null;
+}
+
+export interface MarketingEmailSyncResult {
+  synced: number;
+  inserted: number;
+  updated: number;
+  hidden: number;
+  other: number;
+  kolCreated: number;
+  path: string;
+}

@@ -1,5 +1,8 @@
 use base64::Engine as _;
+use keyring_core::Entry as KeyringEntry;
+use mail_parser::MessageParser;
 use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -388,6 +391,263 @@ pub struct CodexChatEvent {
     raw: Option<Value>,
 }
 
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingEmailAccountConfig {
+    id: String,
+    label: String,
+    host: String,
+    port: u16,
+    tls: bool,
+    username: String,
+    mailbox: String,
+    scan_limit: u32,
+    sync_interval_minutes: u32,
+    enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingEmailSecretSaveRequest {
+    account: MarketingEmailAccountConfig,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingEmailSecretSaveResult {
+    saved: bool,
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingEmailTestConnectionRequest {
+    account: MarketingEmailAccountConfig,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingEmailTestConnectionResult {
+    ok: bool,
+    message: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingEmailSyncRequest {
+    account: MarketingEmailAccountConfig,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingEmailSyncResult {
+    synced: u32,
+    inserted: u32,
+    updated: u32,
+    hidden: u32,
+    other: u32,
+    kol_created: u32,
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingDbQueryRequest {
+    include_hidden: Option<bool>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingDbSnapshot {
+    path: String,
+    accounts: Vec<MarketingEmailAccount>,
+    leads: Vec<MarketingEmailLead>,
+    kol_profiles: Vec<KolProfile>,
+    platform_accounts: Vec<KolPlatformAccount>,
+    collaborations: Vec<KolCollaboration>,
+    posts: Vec<KolPost>,
+    audit_logs: Vec<AutomationAuditLog>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingEmailAccount {
+    id: String,
+    label: String,
+    host: String,
+    port: u16,
+    tls: bool,
+    username: String,
+    mailbox: String,
+    scan_limit: u32,
+    sync_interval_minutes: u32,
+    enabled: bool,
+    last_synced_at: Option<i64>,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingEmailLead {
+    id: String,
+    account_id: String,
+    imap_uid: String,
+    message_id: Option<String>,
+    thread_id: Option<String>,
+    from_name: Option<String>,
+    from_email: String,
+    raw_from: String,
+    subject: String,
+    snippet: String,
+    received_at: Option<i64>,
+    category: String,
+    hidden: bool,
+    confidence: f64,
+    kol_id: Option<String>,
+    agent_reviewed_at: Option<i64>,
+    agent_review_note: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KolProfile {
+    id: String,
+    name: String,
+    email: String,
+    country: Option<String>,
+    relationship: String,
+    collaboration_status: String,
+    stage: String,
+    owner: Option<String>,
+    priority: String,
+    tags: String,
+    source: String,
+    archived: bool,
+    brand_fit_score: Option<i64>,
+    risk_note: Option<String>,
+    next_follow_up_at: Option<i64>,
+    last_contacted_at: Option<i64>,
+    agent_notes: Option<String>,
+    human_notes: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KolPlatformAccount {
+    id: String,
+    kol_id: String,
+    platform: String,
+    handle: Option<String>,
+    url: Option<String>,
+    follower_count: Option<i64>,
+    avg_views: Option<i64>,
+    avg_likes: Option<i64>,
+    avg_comments: Option<i64>,
+    audience_gender: Option<String>,
+    audience_age: Option<String>,
+    audience_interests: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KolCollaboration {
+    id: String,
+    kol_id: String,
+    status: String,
+    goal: Option<String>,
+    method: Option<String>,
+    platform: Option<String>,
+    quoted_price: Option<String>,
+    payment_status: Option<String>,
+    contract_status: Option<String>,
+    shipping_status: Option<String>,
+    product_value: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KolPost {
+    id: String,
+    kol_id: String,
+    collaboration_id: Option<String>,
+    platform: Option<String>,
+    url: Option<String>,
+    topic: Option<String>,
+    content_quality: Option<String>,
+    published_at: Option<i64>,
+    impressions: Option<i64>,
+    views: Option<i64>,
+    likes: Option<i64>,
+    comments: Option<i64>,
+    sales_amount: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationAuditLog {
+    id: String,
+    actor: String,
+    target_table: String,
+    target_id: String,
+    field: String,
+    old_value: Option<String>,
+    new_value: Option<String>,
+    reason: String,
+    created_at: i64,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingDbUpdateKolRequest {
+    id: String,
+    patch: KolProfilePatch,
+    reason: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct KolProfilePatch {
+    name: Option<String>,
+    email: Option<String>,
+    country: Option<Option<String>>,
+    relationship: Option<String>,
+    collaboration_status: Option<String>,
+    stage: Option<String>,
+    owner: Option<Option<String>>,
+    priority: Option<String>,
+    tags: Option<String>,
+    archived: Option<bool>,
+    brand_fit_score: Option<Option<i64>>,
+    risk_note: Option<Option<String>>,
+    next_follow_up_at: Option<Option<i64>>,
+    agent_notes: Option<Option<String>>,
+    human_notes: Option<Option<String>>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingAgentApplyUpdateRequest {
+    target_table: String,
+    target_id: String,
+    field: String,
+    old_value: Option<String>,
+    new_value: Option<String>,
+    reason: String,
+}
+
 #[tauri::command]
 async fn codex_check() -> Result<CodexCheckResult, String> {
     Ok(check_codex())
@@ -435,6 +695,85 @@ async fn model_config_save(
     Ok(ModelConfigSaveResult {
         path: path.to_string_lossy().to_string(),
     })
+}
+
+#[tauri::command]
+async fn marketing_db_query(
+    request: Option<MarketingDbQueryRequest>,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    marketing_snapshot(
+        &conn,
+        request.and_then(|item| item.include_hidden).unwrap_or(true),
+    )
+}
+
+#[tauri::command]
+async fn marketing_email_secret_save(
+    request: MarketingEmailSecretSaveRequest,
+) -> Result<MarketingEmailSecretSaveResult, String> {
+    let account = normalize_marketing_account(request.account)?;
+    if let Some(password) = account
+        .password
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        save_marketing_email_password(&account.id, password)?;
+    }
+    let conn = marketing_connection()?;
+    save_marketing_email_account(&conn, &account)?;
+    Ok(MarketingEmailSecretSaveResult {
+        saved: true,
+        path: marketing_db_path()?.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+async fn marketing_email_test_connection(
+    request: MarketingEmailTestConnectionRequest,
+) -> Result<MarketingEmailTestConnectionResult, String> {
+    let account = normalize_marketing_account(request.account)?;
+    let password = marketing_email_password(&account)?;
+    test_marketing_imap_connection(&account, &password)?;
+    Ok(MarketingEmailTestConnectionResult {
+        ok: true,
+        message: format!("已连接 {} / {}", account.host, account.mailbox),
+    })
+}
+
+#[tauri::command]
+async fn marketing_email_sync_readonly(
+    request: MarketingEmailSyncRequest,
+) -> Result<MarketingEmailSyncResult, String> {
+    let account = normalize_marketing_account(request.account)?;
+    let password = marketing_email_password(&account)?;
+    let fetched = fetch_marketing_emails_readonly(&account, &password)?;
+    let conn = marketing_connection()?;
+    save_marketing_email_account(&conn, &account)?;
+    let result = upsert_marketing_email_leads(&conn, &account, fetched)?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn marketing_db_update_kol(
+    request: MarketingDbUpdateKolRequest,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    let reason = request
+        .reason
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "人工更新 KOL 档案".to_string());
+    apply_kol_patch(&conn, &request.id, request.patch, &reason, "user")?;
+    marketing_snapshot(&conn, true)
+}
+
+#[tauri::command]
+async fn marketing_agent_apply_update(
+    request: MarketingAgentApplyUpdateRequest,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    apply_agent_update(&conn, request)?;
+    marketing_snapshot(&conn, true)
 }
 
 #[tauri::command]
@@ -1784,6 +2123,1410 @@ fn model_config_path() -> Result<PathBuf, String> {
         .join("model-providers.json"))
 }
 
+fn marketing_db_path() -> Result<PathBuf, String> {
+    let home = home_dir().ok_or_else(|| "Cannot resolve home directory.".to_string())?;
+    Ok(Path::new(&home)
+        .join(".alpha-studio")
+        .join("marketing.sqlite"))
+}
+
+fn marketing_connection() -> Result<Connection, String> {
+    let path = marketing_db_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create marketing data directory: {e}"))?;
+    }
+    let conn = Connection::open(&path).map_err(|e| format!("Failed to open marketing DB: {e}"))?;
+    initialize_marketing_db(&conn)?;
+    Ok(conn)
+}
+
+fn initialize_marketing_db(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS marketing_email_accounts (
+          id TEXT PRIMARY KEY,
+          label TEXT NOT NULL,
+          host TEXT NOT NULL,
+          port INTEGER NOT NULL,
+          tls INTEGER NOT NULL DEFAULT 1,
+          username TEXT NOT NULL,
+          mailbox TEXT NOT NULL DEFAULT 'INBOX',
+          scan_limit INTEGER NOT NULL DEFAULT 200,
+          sync_interval_minutes INTEGER NOT NULL DEFAULT 15,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          last_synced_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS kol_profiles (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          country TEXT,
+          relationship TEXT NOT NULL DEFAULT '达人',
+          collaboration_status TEXT NOT NULL DEFAULT '待分配',
+          stage TEXT NOT NULL DEFAULT '线索',
+          owner TEXT,
+          priority TEXT NOT NULL DEFAULT 'normal',
+          tags TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL DEFAULT 'Email',
+          archived INTEGER NOT NULL DEFAULT 0,
+          brand_fit_score INTEGER,
+          risk_note TEXT,
+          next_follow_up_at INTEGER,
+          last_contacted_at INTEGER,
+          agent_notes TEXT,
+          human_notes TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS kol_platform_accounts (
+          id TEXT PRIMARY KEY,
+          kol_id TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          handle TEXT,
+          url TEXT,
+          follower_count INTEGER,
+          avg_views INTEGER,
+          avg_likes INTEGER,
+          avg_comments INTEGER,
+          audience_gender TEXT,
+          audience_age TEXT,
+          audience_interests TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(kol_id) REFERENCES kol_profiles(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS kol_collaborations (
+          id TEXT PRIMARY KEY,
+          kol_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT '待分配',
+          goal TEXT,
+          method TEXT,
+          platform TEXT,
+          quoted_price TEXT,
+          payment_status TEXT,
+          contract_status TEXT,
+          shipping_status TEXT,
+          product_value TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(kol_id) REFERENCES kol_profiles(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS kol_posts (
+          id TEXT PRIMARY KEY,
+          kol_id TEXT NOT NULL,
+          collaboration_id TEXT,
+          platform TEXT,
+          url TEXT,
+          topic TEXT,
+          content_quality TEXT,
+          published_at INTEGER,
+          impressions INTEGER,
+          views INTEGER,
+          likes INTEGER,
+          comments INTEGER,
+          sales_amount TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(kol_id) REFERENCES kol_profiles(id) ON DELETE CASCADE,
+          FOREIGN KEY(collaboration_id) REFERENCES kol_collaborations(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS marketing_email_leads (
+          id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL,
+          imap_uid TEXT NOT NULL,
+          message_id TEXT,
+          thread_id TEXT,
+          from_name TEXT,
+          from_email TEXT NOT NULL,
+          raw_from TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          snippet TEXT NOT NULL,
+          received_at INTEGER,
+          category TEXT NOT NULL DEFAULT 'other',
+          hidden INTEGER NOT NULL DEFAULT 0,
+          confidence REAL NOT NULL DEFAULT 0.6,
+          kol_id TEXT,
+          agent_reviewed_at INTEGER,
+          agent_review_note TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(account_id, imap_uid),
+          FOREIGN KEY(account_id) REFERENCES marketing_email_accounts(id) ON DELETE CASCADE,
+          FOREIGN KEY(kol_id) REFERENCES kol_profiles(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS automation_audit_logs (
+          id TEXT PRIMARY KEY,
+          actor TEXT NOT NULL,
+          target_table TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          field TEXT NOT NULL,
+          old_value TEXT,
+          new_value TEXT,
+          reason TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_marketing_email_leads_category ON marketing_email_leads(category, hidden);
+        CREATE INDEX IF NOT EXISTS idx_marketing_email_leads_from_email ON marketing_email_leads(from_email);
+        CREATE INDEX IF NOT EXISTS idx_kol_profiles_status ON kol_profiles(collaboration_status, archived);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_target ON automation_audit_logs(target_table, target_id, created_at);
+        PRAGMA user_version = 1;
+        "#,
+    )
+    .map_err(|e| format!("Failed to initialize marketing DB: {e}"))?;
+    migrate_marketing_email_leads(conn)?;
+    Ok(())
+}
+
+fn migrate_marketing_email_leads(conn: &Connection) -> Result<(), String> {
+    if !marketing_table_has_column(conn, "marketing_email_leads", "agent_reviewed_at")? {
+        conn.execute(
+            "ALTER TABLE marketing_email_leads ADD COLUMN agent_reviewed_at INTEGER",
+            [],
+        )
+        .map_err(|e| format!("Failed to add email review timestamp column: {e}"))?;
+    }
+    if !marketing_table_has_column(conn, "marketing_email_leads", "agent_review_note")? {
+        conn.execute(
+            "ALTER TABLE marketing_email_leads ADD COLUMN agent_review_note TEXT NOT NULL DEFAULT ''",
+            [],
+        )
+        .map_err(|e| format!("Failed to add email review note column: {e}"))?;
+    }
+    conn.execute(
+        "UPDATE marketing_email_leads SET category = 'other', hidden = 0, kol_id = NULL WHERE category = 'ad' OR category NOT IN ('influencer', 'affiliate', 'other')",
+        [],
+    )
+    .map_err(|e| format!("Failed to migrate email categories: {e}"))?;
+    Ok(())
+}
+
+fn marketing_table_has_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| format!("Failed to inspect {table}: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("Failed to read {table} columns: {e}"))?;
+    for row in rows {
+        if row.map_err(|e| format!("Failed to read {table} column: {e}"))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn normalize_marketing_account(
+    account: MarketingEmailAccountConfig,
+) -> Result<MarketingEmailAccountConfig, String> {
+    let id = optional_trim(&account.id)
+        .unwrap_or_else(|| stable_marketing_account_id(&account.username, &account.host));
+    let host = required_trim(account.host, "IMAP 主机")?;
+    let username = required_trim(account.username, "邮箱用户名")?;
+    Ok(MarketingEmailAccountConfig {
+        id,
+        label: optional_trim(&account.label).unwrap_or_else(|| username.clone()),
+        host,
+        port: if account.port == 0 { 993 } else { account.port },
+        tls: account.tls,
+        username,
+        mailbox: optional_trim(&account.mailbox).unwrap_or_else(|| "INBOX".to_string()),
+        scan_limit: account.scan_limit.clamp(1, 1000),
+        sync_interval_minutes: account.sync_interval_minutes.clamp(1, 1440),
+        enabled: account.enabled,
+        password: account.password.and_then(|value| optional_trim(&value)),
+    })
+}
+
+fn stable_marketing_account_id(username: &str, host: &str) -> String {
+    let source = format!("{username}@{host}").to_lowercase();
+    let slug = source
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    format!("email-{}", if slug.is_empty() { "account" } else { &slug })
+}
+
+fn required_trim(value: String, label: &str) -> Result<String, String> {
+    optional_trim(&value).ok_or_else(|| format!("{label}不能为空。"))
+}
+
+fn optional_trim(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn save_marketing_email_account(
+    conn: &Connection,
+    account: &MarketingEmailAccountConfig,
+) -> Result<(), String> {
+    let now = now_millis();
+    conn.execute(
+        r#"
+        INSERT INTO marketing_email_accounts
+          (id, label, host, port, tls, username, mailbox, scan_limit, sync_interval_minutes, enabled, created_at, updated_at)
+        VALUES
+          (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+        ON CONFLICT(id) DO UPDATE SET
+          label=excluded.label,
+          host=excluded.host,
+          port=excluded.port,
+          tls=excluded.tls,
+          username=excluded.username,
+          mailbox=excluded.mailbox,
+          scan_limit=excluded.scan_limit,
+          sync_interval_minutes=excluded.sync_interval_minutes,
+          enabled=excluded.enabled,
+          updated_at=excluded.updated_at
+        "#,
+        params![
+            account.id,
+            account.label,
+            account.host,
+            i64::from(account.port),
+            bool_to_int(account.tls),
+            account.username,
+            account.mailbox,
+            i64::from(account.scan_limit),
+            i64::from(account.sync_interval_minutes),
+            bool_to_int(account.enabled),
+            now,
+        ],
+    )
+    .map_err(|e| format!("Failed to save email account: {e}"))?;
+    Ok(())
+}
+
+fn save_marketing_email_password(account_id: &str, password: &str) -> Result<(), String> {
+    keyring::use_native_store(false).map_err(|e| format!("Failed to open system keyring: {e}"))?;
+    let entry = KeyringEntry::new("com.alpha-studio.marketing.email", account_id)
+        .map_err(|e| format!("Failed to create keyring entry: {e}"))?;
+    entry
+        .set_password(password)
+        .map_err(|e| format!("Failed to save email password: {e}"))
+}
+
+fn marketing_email_password(account: &MarketingEmailAccountConfig) -> Result<String, String> {
+    if let Some(password) = account
+        .password
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(password.to_string());
+    }
+    keyring::use_native_store(false).map_err(|e| format!("Failed to open system keyring: {e}"))?;
+    let entry = KeyringEntry::new("com.alpha-studio.marketing.email", &account.id)
+        .map_err(|e| format!("Failed to create keyring entry: {e}"))?;
+    entry
+        .get_password()
+        .map_err(|_| "没有找到这个邮箱账号的应用密码。请先在邮件营销设置里保存密码。".to_string())
+}
+
+fn test_marketing_imap_connection(
+    account: &MarketingEmailAccountConfig,
+    password: &str,
+) -> Result<(), String> {
+    if !account.tls {
+        return Err("当前版本仅支持 TLS IMAP（通常为 993 端口）。".to_string());
+    }
+    let tls = native_tls::TlsConnector::builder()
+        .build()
+        .map_err(|e| format!("Failed to build TLS connector: {e}"))?;
+    let client = imap::connect((account.host.as_str(), account.port), &account.host, &tls)
+        .map_err(|e| format!("Failed to connect IMAP server: {e}"))?;
+    let mut session = client
+        .login(&account.username, password)
+        .map_err(|(e, _)| format!("Failed to login IMAP account: {e}"))?;
+    session
+        .select(&account.mailbox)
+        .map_err(|e| format!("Failed to open mailbox {}: {e}", account.mailbox))?;
+    session.logout().ok();
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct RawMarketingEmail {
+    imap_uid: String,
+    message_id: Option<String>,
+    thread_id: Option<String>,
+    from_name: Option<String>,
+    from_email: String,
+    raw_from: String,
+    subject: String,
+    snippet: String,
+    received_at: Option<i64>,
+}
+
+fn fetch_marketing_emails_readonly(
+    account: &MarketingEmailAccountConfig,
+    password: &str,
+) -> Result<Vec<RawMarketingEmail>, String> {
+    if !account.tls {
+        return Err("当前版本仅支持 TLS IMAP（通常为 993 端口）。".to_string());
+    }
+    let tls = native_tls::TlsConnector::builder()
+        .build()
+        .map_err(|e| format!("Failed to build TLS connector: {e}"))?;
+    let client = imap::connect((account.host.as_str(), account.port), &account.host, &tls)
+        .map_err(|e| format!("Failed to connect IMAP server: {e}"))?;
+    let mut session = client
+        .login(&account.username, password)
+        .map_err(|(e, _)| format!("Failed to login IMAP account: {e}"))?;
+    session
+        .select(&account.mailbox)
+        .map_err(|e| format!("Failed to open mailbox {}: {e}", account.mailbox))?;
+
+    let mut uids: Vec<u32> = session
+        .uid_search("ALL")
+        .map_err(|e| format!("Failed to search mailbox: {e}"))?
+        .into_iter()
+        .collect();
+    uids.sort_unstable();
+    uids.reverse();
+    uids.truncate(account.scan_limit as usize);
+
+    let uid_set = uids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut emails = Vec::new();
+    if !uid_set.is_empty() {
+        let fetches = session
+            .uid_fetch(uid_set, "(UID BODY.PEEK[])")
+            .map_err(|e| format!("Failed to fetch mailbox messages: {e}"))?;
+        for fetch in fetches.iter() {
+            let Some(body) = fetch.body() else {
+                continue;
+            };
+            let uid = fetch.uid.unwrap_or(fetch.message).to_string();
+            if let Some(email) = parse_marketing_email(uid, body) {
+                emails.push(email);
+            }
+        }
+    }
+
+    session.logout().ok();
+    emails.sort_by(|a, b| b.received_at.cmp(&a.received_at));
+    Ok(emails)
+}
+
+fn parse_marketing_email(imap_uid: String, body: &[u8]) -> Option<RawMarketingEmail> {
+    let message = MessageParser::default().parse(body)?;
+    let from = message.from().and_then(|address| address.first());
+    let from_name = from.and_then(|item| item.name()).map(str::to_string);
+    let from_email = from
+        .and_then(|item| item.address())
+        .map(str::to_string)
+        .unwrap_or_else(|| "unknown@example.local".to_string());
+    let raw_from = match (&from_name, &from_email) {
+        (Some(name), email) if !name.is_empty() => format!("{name} <{email}>"),
+        (_, email) => email.clone(),
+    };
+    let subject = message.subject().unwrap_or("(无主题)").trim().to_string();
+    let snippet = message
+        .body_preview(480)
+        .map(|value| value.to_string())
+        .or_else(|| message.body_text(0).map(|value| value.to_string()))
+        .unwrap_or_default();
+    Some(RawMarketingEmail {
+        imap_uid,
+        message_id: message.message_id().map(str::to_string),
+        thread_id: message.thread_name().map(str::to_string),
+        from_name,
+        from_email,
+        raw_from,
+        subject,
+        snippet: compact_text(&snippet, 600),
+        received_at: message.date().map(|date| date.to_timestamp() * 1000),
+    })
+}
+
+fn compact_text(value: &str, limit: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= limit {
+        compact
+    } else {
+        format!("{}...", compact.chars().take(limit).collect::<String>())
+    }
+}
+
+fn upsert_marketing_email_leads(
+    conn: &Connection,
+    account: &MarketingEmailAccountConfig,
+    emails: Vec<RawMarketingEmail>,
+) -> Result<MarketingEmailSyncResult, String> {
+    let mut inserted = 0u32;
+    let mut updated = 0u32;
+    let mut hidden = 0u32;
+    let mut other = 0u32;
+    let mut kol_created = 0u32;
+    for email in emails.iter() {
+        let existing_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM marketing_email_leads WHERE account_id = ?1 AND imap_uid = ?2",
+                params![account.id, email.imap_uid],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to inspect email lead: {e}"))?;
+        let classification = classify_marketing_email(email);
+        let is_hidden = false;
+        let mut kol_id = None;
+        if classification.category == "influencer" {
+            let (id, created) = upsert_kol_from_email(conn, email)?;
+            kol_id = Some(id);
+            if created {
+                kol_created += 1;
+            }
+        }
+        let now = now_millis();
+        let id = existing_id.clone().unwrap_or_else(|| generate_id("lead"));
+        conn.execute(
+            r#"
+            INSERT INTO marketing_email_leads
+              (id, account_id, imap_uid, message_id, thread_id, from_name, from_email, raw_from, subject, snippet, received_at, category, hidden, confidence, kol_id, agent_reviewed_at, agent_review_note, created_at, updated_at)
+            VALUES
+              (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?16, ?16)
+            ON CONFLICT(account_id, imap_uid) DO UPDATE SET
+              message_id=excluded.message_id,
+              thread_id=excluded.thread_id,
+              from_name=excluded.from_name,
+              from_email=excluded.from_email,
+              raw_from=excluded.raw_from,
+              subject=excluded.subject,
+              snippet=excluded.snippet,
+              received_at=excluded.received_at,
+              category=excluded.category,
+              hidden=CASE WHEN marketing_email_leads.hidden = 1 THEN 1 ELSE excluded.hidden END,
+              confidence=excluded.confidence,
+              kol_id=excluded.kol_id,
+              agent_reviewed_at=excluded.agent_reviewed_at,
+              agent_review_note=excluded.agent_review_note,
+              updated_at=excluded.updated_at
+            "#,
+            params![
+                id,
+                account.id,
+                email.imap_uid,
+                email.message_id,
+                email.thread_id,
+                email.from_name,
+                email.from_email.to_lowercase(),
+                email.raw_from,
+                email.subject,
+                email.snippet,
+                email.received_at,
+                classification.category.as_str(),
+                bool_to_int(is_hidden),
+                classification.confidence,
+                kol_id,
+                now,
+                classification.review_note,
+            ],
+        )
+        .map_err(|e| format!("Failed to save email lead: {e}"))?;
+        if existing_id.is_some() {
+            updated += 1;
+        } else {
+            inserted += 1;
+        }
+        if is_hidden {
+            hidden += 1;
+        }
+        if classification.category == "other" {
+            other += 1;
+        }
+    }
+    let now = now_millis();
+    conn.execute(
+        "UPDATE marketing_email_accounts SET last_synced_at = ?1, updated_at = ?1 WHERE id = ?2",
+        params![now, account.id],
+    )
+    .map_err(|e| format!("Failed to update email account sync time: {e}"))?;
+    insert_audit_log(
+        conn,
+        "agent",
+        "marketing_email_leads",
+        &account.id,
+        "sync",
+        None,
+        Some(format!("{} emails", emails.len())),
+        "只读同步邮件并写入本地营销库",
+    )?;
+    Ok(MarketingEmailSyncResult {
+        synced: emails.len() as u32,
+        inserted,
+        updated,
+        hidden,
+        other,
+        kol_created,
+        path: marketing_db_path()?.to_string_lossy().to_string(),
+    })
+}
+
+#[derive(Clone, Debug)]
+struct MarketingClassification {
+    category: String,
+    confidence: f64,
+    review_note: String,
+}
+
+fn classify_marketing_email(email: &RawMarketingEmail) -> MarketingClassification {
+    let text = format!(
+        "{} {} {}",
+        email.subject.to_lowercase(),
+        email.snippet.to_lowercase(),
+        email.from_email.to_lowercase()
+    );
+    let affiliate_terms = [
+        "affiliate",
+        "commission",
+        "partner program",
+        "referral",
+        "cps",
+        "联盟",
+        "佣金",
+        "分销",
+        "返佣",
+    ];
+    let affiliate_hits = matching_terms(&text, &affiliate_terms);
+    if !affiliate_hits.is_empty() {
+        return MarketingClassification {
+            category: "affiliate".to_string(),
+            confidence: 0.82,
+            review_note: marketing_review_note(email, "联盟", &affiliate_hits),
+        };
+    }
+    let strong_influencer_terms = [
+        "influencer",
+        "content creator",
+        "tiktok creator",
+        "instagram creator",
+        "youtube creator",
+        "ugc creator",
+        "网红",
+        "达人",
+        "博主",
+    ];
+    let influencer_terms = [
+        "creator",
+        "ugc",
+        "tiktok",
+        "instagram",
+        "youtube",
+        "xiao hong shu",
+        "小红书",
+        "抖音",
+        "followers",
+        "粉丝",
+        "ig reel",
+        "reel",
+        "shorts",
+        "unboxing",
+        "product review",
+        "collaboration",
+        "collab",
+        "合作",
+        "种草",
+        "带货",
+    ];
+    let strong_hits = matching_terms(&text, &strong_influencer_terms);
+    let influencer_hits = matching_terms(&text, &influencer_terms);
+    if !strong_hits.is_empty() || influencer_hits.len() >= 2 {
+        let mut evidence = strong_hits;
+        for hit in influencer_hits {
+            if !evidence.contains(&hit) {
+                evidence.push(hit);
+            }
+        }
+        return MarketingClassification {
+            category: "influencer".to_string(),
+            confidence: if evidence.len() >= 3 { 0.88 } else { 0.76 },
+            review_note: marketing_review_note(email, "达人", &evidence),
+        };
+    }
+    let other_terms = [
+        "seo",
+        "guest post",
+        "lead generation",
+        "crypto",
+        "casino",
+        "discount",
+        "limited offer",
+        "unsubscribe",
+        "广告",
+        "推广服务",
+        "建站",
+        "外链",
+        "发票",
+    ];
+    let other_hits = matching_terms(&text, &other_terms);
+    if !other_hits.is_empty() {
+        return MarketingClassification {
+            category: "other".to_string(),
+            confidence: 0.72,
+            review_note: marketing_review_note(email, "其他", &other_hits),
+        };
+    }
+    MarketingClassification {
+        category: "other".to_string(),
+        confidence: 0.58,
+        review_note: marketing_review_note(email, "其他", &[]),
+    }
+}
+
+fn matching_terms(text: &str, terms: &[&str]) -> Vec<String> {
+    terms
+        .iter()
+        .filter(|term| text.contains(**term))
+        .map(|term| (*term).to_string())
+        .collect()
+}
+
+fn marketing_review_note(email: &RawMarketingEmail, label: &str, evidence: &[String]) -> String {
+    let basis = if evidence.is_empty() {
+        "未发现明确达人或联盟合作证据".to_string()
+    } else {
+        format!("命中 {}", evidence.join(", "))
+    };
+    compact_text(
+        &format!(
+            "Agent 已阅读邮件内容；分类：{label}；依据：{basis}；发件人：{}；主题：{}；摘要：{}",
+            email.raw_from, email.subject, email.snippet
+        ),
+        900,
+    )
+}
+
+fn upsert_kol_from_email(
+    conn: &Connection,
+    email: &RawMarketingEmail,
+) -> Result<(String, bool), String> {
+    let normalized_email = email.from_email.to_lowercase();
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM kol_profiles WHERE lower(email) = lower(?1)",
+            params![normalized_email],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to find KOL profile: {e}"))?;
+    let now = now_millis();
+    if let Some(id) = existing {
+        conn.execute(
+            "UPDATE kol_profiles SET last_contacted_at = COALESCE(?1, last_contacted_at), agent_notes = CASE WHEN COALESCE(agent_notes, '') = '' THEN ?2 ELSE agent_notes END, updated_at = ?3 WHERE id = ?4",
+            params![email.received_at, kol_agent_notes_from_email(email), now, id],
+        )
+        .map_err(|e| format!("Failed to update KOL profile contact time: {e}"))?;
+        return Ok((id, false));
+    }
+    let id = generate_id("kol");
+    let fallback_name = normalized_email
+        .split('@')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("未命名达人")
+        .to_string();
+    let name = email.from_name.clone().unwrap_or(fallback_name);
+    conn.execute(
+        r#"
+        INSERT INTO kol_profiles
+          (id, name, email, relationship, collaboration_status, stage, priority, tags, source, archived, last_contacted_at, agent_notes, created_at, updated_at)
+        VALUES
+          (?1, ?2, ?3, '达人', '待分配', '线索', 'normal', '', 'Email', 0, ?4, ?5, ?6, ?6)
+        "#,
+        params![
+            id,
+            name,
+            normalized_email,
+            email.received_at,
+            kol_agent_notes_from_email(email),
+            now,
+        ],
+    )
+    .map_err(|e| format!("Failed to create KOL profile: {e}"))?;
+    insert_audit_log(
+        conn,
+        "agent",
+        "kol_profiles",
+        &id,
+        "created",
+        None,
+        Some(normalized_email),
+        "达人邮件自动创建 KOL 档案",
+    )?;
+    Ok((id, true))
+}
+
+fn kol_agent_notes_from_email(email: &RawMarketingEmail) -> String {
+    compact_text(
+        &format!(
+            "由邮件内容创建。发件人：{}；主题：{}；邮件摘要：{}",
+            email.raw_from, email.subject, email.snippet
+        ),
+        900,
+    )
+}
+
+fn marketing_snapshot(
+    conn: &Connection,
+    include_hidden: bool,
+) -> Result<MarketingDbSnapshot, String> {
+    Ok(MarketingDbSnapshot {
+        path: marketing_db_path()?.to_string_lossy().to_string(),
+        accounts: query_accounts(conn)?,
+        leads: query_email_leads(conn, include_hidden)?,
+        kol_profiles: query_kol_profiles(conn)?,
+        platform_accounts: query_platform_accounts(conn)?,
+        collaborations: query_collaborations(conn)?,
+        posts: query_posts(conn)?,
+        audit_logs: query_audit_logs(conn)?,
+    })
+}
+
+fn query_accounts(conn: &Connection) -> Result<Vec<MarketingEmailAccount>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, label, host, port, tls, username, mailbox, scan_limit, sync_interval_minutes, enabled, last_synced_at, created_at, updated_at FROM marketing_email_accounts ORDER BY updated_at DESC",
+        )
+        .map_err(|e| format!("Failed to prepare account query: {e}"))?;
+    let rows = stmt
+        .query_map([], row_to_account)
+        .map_err(|e| format!("Failed to query accounts: {e}"))?;
+    collect_rows(rows)
+}
+
+fn row_to_account(row: &Row<'_>) -> rusqlite::Result<MarketingEmailAccount> {
+    Ok(MarketingEmailAccount {
+        id: row.get(0)?,
+        label: row.get(1)?,
+        host: row.get(2)?,
+        port: row.get::<_, i64>(3)? as u16,
+        tls: int_to_bool(row.get(4)?),
+        username: row.get(5)?,
+        mailbox: row.get(6)?,
+        scan_limit: row.get::<_, i64>(7)? as u32,
+        sync_interval_minutes: row.get::<_, i64>(8)? as u32,
+        enabled: int_to_bool(row.get(9)?),
+        last_synced_at: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
+fn query_email_leads(
+    conn: &Connection,
+    include_hidden: bool,
+) -> Result<Vec<MarketingEmailLead>, String> {
+    let sql = if include_hidden {
+        "SELECT id, account_id, imap_uid, message_id, thread_id, from_name, from_email, raw_from, subject, snippet, received_at, category, hidden, confidence, kol_id, agent_reviewed_at, agent_review_note, created_at, updated_at FROM marketing_email_leads ORDER BY COALESCE(received_at, updated_at) DESC"
+    } else {
+        "SELECT id, account_id, imap_uid, message_id, thread_id, from_name, from_email, raw_from, subject, snippet, received_at, category, hidden, confidence, kol_id, agent_reviewed_at, agent_review_note, created_at, updated_at FROM marketing_email_leads WHERE hidden = 0 ORDER BY COALESCE(received_at, updated_at) DESC"
+    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| format!("Failed to prepare email lead query: {e}"))?;
+    let rows = stmt
+        .query_map([], row_to_email_lead)
+        .map_err(|e| format!("Failed to query email leads: {e}"))?;
+    collect_rows(rows)
+}
+
+fn row_to_email_lead(row: &Row<'_>) -> rusqlite::Result<MarketingEmailLead> {
+    Ok(MarketingEmailLead {
+        id: row.get(0)?,
+        account_id: row.get(1)?,
+        imap_uid: row.get(2)?,
+        message_id: row.get(3)?,
+        thread_id: row.get(4)?,
+        from_name: row.get(5)?,
+        from_email: row.get(6)?,
+        raw_from: row.get(7)?,
+        subject: row.get(8)?,
+        snippet: row.get(9)?,
+        received_at: row.get(10)?,
+        category: row.get(11)?,
+        hidden: int_to_bool(row.get(12)?),
+        confidence: row.get(13)?,
+        kol_id: row.get(14)?,
+        agent_reviewed_at: row.get(15)?,
+        agent_review_note: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
+    })
+}
+
+fn query_kol_profiles(conn: &Connection) -> Result<Vec<KolProfile>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, email, country, relationship, collaboration_status, stage, owner, priority, tags, source, archived, brand_fit_score, risk_note, next_follow_up_at, last_contacted_at, agent_notes, human_notes, created_at, updated_at FROM kol_profiles ORDER BY updated_at DESC",
+        )
+        .map_err(|e| format!("Failed to prepare KOL query: {e}"))?;
+    let rows = stmt
+        .query_map([], row_to_kol_profile)
+        .map_err(|e| format!("Failed to query KOL profiles: {e}"))?;
+    collect_rows(rows)
+}
+
+fn row_to_kol_profile(row: &Row<'_>) -> rusqlite::Result<KolProfile> {
+    Ok(KolProfile {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        email: row.get(2)?,
+        country: row.get(3)?,
+        relationship: row.get(4)?,
+        collaboration_status: row.get(5)?,
+        stage: row.get(6)?,
+        owner: row.get(7)?,
+        priority: row.get(8)?,
+        tags: row.get(9)?,
+        source: row.get(10)?,
+        archived: int_to_bool(row.get(11)?),
+        brand_fit_score: row.get(12)?,
+        risk_note: row.get(13)?,
+        next_follow_up_at: row.get(14)?,
+        last_contacted_at: row.get(15)?,
+        agent_notes: row.get(16)?,
+        human_notes: row.get(17)?,
+        created_at: row.get(18)?,
+        updated_at: row.get(19)?,
+    })
+}
+
+fn query_platform_accounts(conn: &Connection) -> Result<Vec<KolPlatformAccount>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kol_id, platform, handle, url, follower_count, avg_views, avg_likes, avg_comments, audience_gender, audience_age, audience_interests, created_at, updated_at FROM kol_platform_accounts ORDER BY updated_at DESC",
+        )
+        .map_err(|e| format!("Failed to prepare platform account query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(KolPlatformAccount {
+                id: row.get(0)?,
+                kol_id: row.get(1)?,
+                platform: row.get(2)?,
+                handle: row.get(3)?,
+                url: row.get(4)?,
+                follower_count: row.get(5)?,
+                avg_views: row.get(6)?,
+                avg_likes: row.get(7)?,
+                avg_comments: row.get(8)?,
+                audience_gender: row.get(9)?,
+                audience_age: row.get(10)?,
+                audience_interests: row.get(11)?,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query platform accounts: {e}"))?;
+    collect_rows(rows)
+}
+
+fn query_collaborations(conn: &Connection) -> Result<Vec<KolCollaboration>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kol_id, status, goal, method, platform, quoted_price, payment_status, contract_status, shipping_status, product_value, created_at, updated_at FROM kol_collaborations ORDER BY updated_at DESC",
+        )
+        .map_err(|e| format!("Failed to prepare collaboration query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(KolCollaboration {
+                id: row.get(0)?,
+                kol_id: row.get(1)?,
+                status: row.get(2)?,
+                goal: row.get(3)?,
+                method: row.get(4)?,
+                platform: row.get(5)?,
+                quoted_price: row.get(6)?,
+                payment_status: row.get(7)?,
+                contract_status: row.get(8)?,
+                shipping_status: row.get(9)?,
+                product_value: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query collaborations: {e}"))?;
+    collect_rows(rows)
+}
+
+fn query_posts(conn: &Connection) -> Result<Vec<KolPost>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kol_id, collaboration_id, platform, url, topic, content_quality, published_at, impressions, views, likes, comments, sales_amount, created_at, updated_at FROM kol_posts ORDER BY updated_at DESC",
+        )
+        .map_err(|e| format!("Failed to prepare post query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(KolPost {
+                id: row.get(0)?,
+                kol_id: row.get(1)?,
+                collaboration_id: row.get(2)?,
+                platform: row.get(3)?,
+                url: row.get(4)?,
+                topic: row.get(5)?,
+                content_quality: row.get(6)?,
+                published_at: row.get(7)?,
+                impressions: row.get(8)?,
+                views: row.get(9)?,
+                likes: row.get(10)?,
+                comments: row.get(11)?,
+                sales_amount: row.get(12)?,
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query posts: {e}"))?;
+    collect_rows(rows)
+}
+
+fn query_audit_logs(conn: &Connection) -> Result<Vec<AutomationAuditLog>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, actor, target_table, target_id, field, old_value, new_value, reason, created_at FROM automation_audit_logs ORDER BY created_at DESC LIMIT 200",
+        )
+        .map_err(|e| format!("Failed to prepare audit log query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(AutomationAuditLog {
+                id: row.get(0)?,
+                actor: row.get(1)?,
+                target_table: row.get(2)?,
+                target_id: row.get(3)?,
+                field: row.get(4)?,
+                old_value: row.get(5)?,
+                new_value: row.get(6)?,
+                reason: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query audit logs: {e}"))?;
+    collect_rows(rows)
+}
+
+fn collect_rows<T>(
+    rows: rusqlite::MappedRows<'_, impl FnMut(&Row<'_>) -> rusqlite::Result<T>>,
+) -> Result<Vec<T>, String> {
+    let mut items = Vec::new();
+    for row in rows {
+        items.push(row.map_err(|e| format!("Failed to read marketing DB row: {e}"))?);
+    }
+    Ok(items)
+}
+
+fn apply_kol_patch(
+    conn: &Connection,
+    kol_id: &str,
+    patch: KolProfilePatch,
+    reason: &str,
+    actor: &str,
+) -> Result<(), String> {
+    if let Some(value) = patch.name {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "name",
+            Some(value),
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.email {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "email",
+            Some(value.to_lowercase()),
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.country {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "country",
+            value,
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.relationship {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "relationship",
+            Some(value),
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.collaboration_status {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "collaboration_status",
+            Some(value),
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.stage {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "stage",
+            Some(value),
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.owner {
+        update_text_field(conn, "kol_profiles", kol_id, "owner", value, reason, actor)?;
+    }
+    if let Some(value) = patch.priority {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "priority",
+            Some(value),
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.tags {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "tags",
+            Some(value),
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.archived {
+        update_int_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "archived",
+            Some(bool_to_int(value)),
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.brand_fit_score {
+        update_int_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "brand_fit_score",
+            value,
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.risk_note {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "risk_note",
+            value,
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.next_follow_up_at {
+        update_int_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "next_follow_up_at",
+            value,
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.agent_notes {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "agent_notes",
+            value,
+            reason,
+            actor,
+        )?;
+    }
+    if let Some(value) = patch.human_notes {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "human_notes",
+            value,
+            reason,
+            actor,
+        )?;
+    }
+    Ok(())
+}
+
+fn apply_agent_update(
+    conn: &Connection,
+    request: MarketingAgentApplyUpdateRequest,
+) -> Result<(), String> {
+    let _claimed_old_value = request.old_value.as_deref();
+    let field = request.field.trim();
+    if field.is_empty() {
+        return Err("字段名不能为空。".to_string());
+    }
+    match request.target_table.as_str() {
+        "kol_profiles" if is_allowed_kol_text_field(field) => update_text_field(
+            conn,
+            "kol_profiles",
+            &request.target_id,
+            field,
+            request.new_value,
+            &request.reason,
+            "agent",
+        ),
+        "kol_profiles" if is_allowed_kol_int_field(field) => update_int_field(
+            conn,
+            "kol_profiles",
+            &request.target_id,
+            field,
+            parse_optional_i64(request.new_value.as_deref())?,
+            &request.reason,
+            "agent",
+        ),
+        "marketing_email_leads" if field == "category" => {
+            let Some(value) = request.new_value.as_deref() else {
+                return Err("category 不能为空。".to_string());
+            };
+            let category = normalize_email_category_value(value)?;
+            update_text_field(
+                conn,
+                "marketing_email_leads",
+                &request.target_id,
+                field,
+                Some(category),
+                &request.reason,
+                "agent",
+            )
+        }
+        "marketing_email_leads" if field == "hidden" => update_int_field(
+            conn,
+            "marketing_email_leads",
+            &request.target_id,
+            field,
+            parse_optional_bool_int(request.new_value.as_deref())?,
+            &request.reason,
+            "agent",
+        ),
+        _ => Err(format!(
+            "不允许 agent 更新 {}.{}",
+            request.target_table, request.field
+        )),
+    }
+}
+
+fn normalize_email_category_value(value: &str) -> Result<String, String> {
+    match value.trim() {
+        "influencer" | "affiliate" | "other" => Ok(value.trim().to_string()),
+        "ad" => Ok("other".to_string()),
+        _ => Err("category 必须是 influencer、affiliate 或 other。".to_string()),
+    }
+}
+
+fn is_allowed_kol_text_field(field: &str) -> bool {
+    matches!(
+        field,
+        "name"
+            | "email"
+            | "country"
+            | "relationship"
+            | "collaboration_status"
+            | "stage"
+            | "owner"
+            | "priority"
+            | "tags"
+            | "risk_note"
+            | "agent_notes"
+            | "human_notes"
+    )
+}
+
+fn is_allowed_kol_int_field(field: &str) -> bool {
+    matches!(field, "archived" | "brand_fit_score" | "next_follow_up_at")
+}
+
+fn update_text_field(
+    conn: &Connection,
+    table: &str,
+    id: &str,
+    field: &str,
+    value: Option<String>,
+    reason: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let old_value = db_text_value(conn, table, id, field)?;
+    if old_value == value {
+        return Ok(());
+    }
+    let sql = format!("UPDATE {table} SET {field} = ?1, updated_at = ?2 WHERE id = ?3");
+    conn.execute(&sql, params![value, now_millis(), id])
+        .map_err(|e| format!("Failed to update {table}.{field}: {e}"))?;
+    insert_audit_log(
+        conn,
+        actor,
+        table,
+        id,
+        field,
+        old_value,
+        db_text_value(conn, table, id, field)?,
+        reason,
+    )
+}
+
+fn update_int_field(
+    conn: &Connection,
+    table: &str,
+    id: &str,
+    field: &str,
+    value: Option<i64>,
+    reason: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let old_value = db_text_value(conn, table, id, field)?;
+    let new_value_string = value.map(|item| item.to_string());
+    if old_value == new_value_string {
+        return Ok(());
+    }
+    let sql = format!("UPDATE {table} SET {field} = ?1, updated_at = ?2 WHERE id = ?3");
+    conn.execute(&sql, params![value, now_millis(), id])
+        .map_err(|e| format!("Failed to update {table}.{field}: {e}"))?;
+    insert_audit_log(
+        conn,
+        actor,
+        table,
+        id,
+        field,
+        old_value,
+        new_value_string,
+        reason,
+    )
+}
+
+fn db_text_value(
+    conn: &Connection,
+    table: &str,
+    id: &str,
+    field: &str,
+) -> Result<Option<String>, String> {
+    let sql = format!("SELECT CAST({field} AS TEXT) FROM {table} WHERE id = ?1");
+    conn.query_row(&sql, params![id], |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("Failed to read {table}.{field}: {e}"))
+}
+
+fn insert_audit_log(
+    conn: &Connection,
+    actor: &str,
+    target_table: &str,
+    target_id: &str,
+    field: &str,
+    old_value: Option<String>,
+    new_value: Option<String>,
+    reason: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO automation_audit_logs (id, actor, target_table, target_id, field, old_value, new_value, reason, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            generate_id("audit"),
+            actor,
+            target_table,
+            target_id,
+            field,
+            old_value,
+            new_value,
+            reason,
+            now_millis(),
+        ],
+    )
+    .map_err(|e| format!("Failed to write audit log: {e}"))?;
+    Ok(())
+}
+
+fn parse_optional_i64(value: Option<&str>) -> Result<Option<i64>, String> {
+    match value.and_then(optional_trim) {
+        Some(value) => value
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| format!("{value} 不是有效数字。")),
+        None => Ok(None),
+    }
+}
+
+fn parse_optional_bool_int(value: Option<&str>) -> Result<Option<i64>, String> {
+    match value.and_then(optional_trim).as_deref() {
+        Some("true") | Some("1") | Some("yes") => Ok(Some(1)),
+        Some("false") | Some("0") | Some("no") => Ok(Some(0)),
+        Some(value) => Err(format!("{value} 不是有效布尔值。")),
+        None => Ok(None),
+    }
+}
+
+fn bool_to_int(value: bool) -> i64 {
+    if value {
+        1
+    } else {
+        0
+    }
+}
+
+fn int_to_bool(value: i64) -> bool {
+    value != 0
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as i64)
+        .unwrap_or_default()
+}
+
 #[cfg(target_os = "macos")]
 fn app_bundle_exists(bundle: &str) -> bool {
     if Path::new("/Applications").join(bundle).exists() {
@@ -3020,9 +4763,7 @@ fn check_codex() -> CodexCheckResult {
             version: String::new(),
             path: String::new(),
             logged_in: false,
-            error: Some(
-                "没有找到可用的本地智能引擎，请先安装或修复后再试。".to_string(),
-            ),
+            error: Some("没有找到可用的本地智能引擎，请先安装或修复后再试。".to_string()),
         },
     }
 }
@@ -3101,9 +4842,12 @@ fn sanitize_brand_directory_name(name: &str) -> Result<String, String> {
     if trimmed == "." || trimmed == ".." {
         return Err("品牌目录名称无效。".to_string());
     }
-    let has_forbidden = trimmed
-        .chars()
-        .any(|ch| matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0'));
+    let has_forbidden = trimmed.chars().any(|ch| {
+        matches!(
+            ch,
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0'
+        )
+    });
     if has_forbidden {
         return Err("品牌目录名称不能包含路径分隔符或特殊字符。".to_string());
     }
@@ -4077,6 +5821,12 @@ pub fn run() {
             codex_check,
             model_config_load,
             model_config_save,
+            marketing_db_query,
+            marketing_db_update_kol,
+            marketing_email_secret_save,
+            marketing_email_test_connection,
+            marketing_email_sync_readonly,
+            marketing_agent_apply_update,
             codex_chat_start,
             codex_chat_stop,
             list_open_apps,
@@ -4859,6 +6609,155 @@ mod tests {
         );
         assert_eq!(config.model_profiles[0].api_key.as_deref(), Some("sk-test"));
         assert!(config.path.is_empty());
+    }
+
+    #[test]
+    fn marketing_db_initializes_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_marketing_db(&conn).unwrap();
+        initialize_marketing_db(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+        conn.execute(
+            "INSERT INTO kol_profiles (id, name, email, created_at, updated_at) VALUES ('kol-1', 'Ada', 'ada@example.com', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let kol = query_kol_profiles(&conn).unwrap();
+        assert_eq!(kol[0].collaboration_status, "待分配");
+        assert_eq!(kol[0].source, "Email");
+    }
+
+    #[test]
+    fn marketing_parser_handles_basic_email() {
+        let raw = b"From: Mia Chen <mia@example.com>\r\nSubject: Collaboration with Incuboot\r\nMessage-ID: <m1@example.com>\r\nDate: Tue, 10 Jun 2025 10:00:00 +0000\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nI would love to collaborate on an IG Reel.";
+
+        let parsed = parse_marketing_email("42".to_string(), raw).unwrap();
+
+        assert_eq!(parsed.imap_uid, "42");
+        assert_eq!(parsed.from_name.as_deref(), Some("Mia Chen"));
+        assert_eq!(parsed.from_email, "mia@example.com");
+        assert_eq!(parsed.message_id.as_deref(), Some("m1@example.com"));
+        assert_eq!(parsed.subject, "Collaboration with Incuboot");
+        assert!(parsed.snippet.contains("IG Reel"));
+        assert!(parsed.received_at.is_some());
+    }
+
+    #[test]
+    fn marketing_sync_reviews_email_content_and_only_upserts_supported_kols() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_marketing_db(&conn).unwrap();
+        let account = MarketingEmailAccountConfig {
+            id: "email-test".to_string(),
+            label: "Test".to_string(),
+            host: "imap.example.com".to_string(),
+            port: 993,
+            tls: true,
+            username: "marketing@example.com".to_string(),
+            mailbox: "INBOX".to_string(),
+            scan_limit: 200,
+            sync_interval_minutes: 15,
+            enabled: true,
+            password: None,
+        };
+        save_marketing_email_account(&conn, &account).unwrap();
+        let emails = vec![
+            RawMarketingEmail {
+                imap_uid: "1".to_string(),
+                message_id: Some("creator-1".to_string()),
+                thread_id: Some("Collab".to_string()),
+                from_name: Some("Mia".to_string()),
+                from_email: "mia@example.com".to_string(),
+                raw_from: "Mia <mia@example.com>".to_string(),
+                subject: "TikTok creator collaboration".to_string(),
+                snippet: "I am a TikTok creator with 82k followers and can make an IG Reel review for your product.".to_string(),
+                received_at: Some(1000),
+            },
+            RawMarketingEmail {
+                imap_uid: "2".to_string(),
+                message_id: Some("ordinary-1".to_string()),
+                thread_id: Some("Product question".to_string()),
+                from_name: Some("Sam".to_string()),
+                from_email: "sam@example.com".to_string(),
+                raw_from: "Sam <sam@example.com>".to_string(),
+                subject: "Product question".to_string(),
+                snippet: "Can you send the retail price list and shipping details for our team?".to_string(),
+                received_at: Some(900),
+            },
+            RawMarketingEmail {
+                imap_uid: "3".to_string(),
+                message_id: Some("affiliate-1".to_string()),
+                thread_id: Some("Affiliate".to_string()),
+                from_name: Some("Partner".to_string()),
+                from_email: "partner@example.com".to_string(),
+                raw_from: "Partner <partner@example.com>".to_string(),
+                subject: "Affiliate partnership".to_string(),
+                snippet: "We can promote through a CPS affiliate program with commission reporting.".to_string(),
+                received_at: Some(800),
+            },
+        ];
+
+        let result = upsert_marketing_email_leads(&conn, &account, emails).unwrap();
+        assert_eq!(result.inserted, 3);
+        assert_eq!(result.hidden, 0);
+        assert_eq!(result.kol_created, 1);
+
+        let snapshot = marketing_snapshot(&conn, true).unwrap();
+        assert_eq!(snapshot.kol_profiles.len(), 1);
+        assert_eq!(snapshot.leads.iter().filter(|lead| lead.hidden).count(), 0);
+        assert_eq!(
+            snapshot
+                .leads
+                .iter()
+                .filter(|lead| lead.category == "influencer")
+                .count(),
+            1
+        );
+        assert_eq!(
+            snapshot
+                .leads
+                .iter()
+                .filter(|lead| lead.category == "affiliate")
+                .count(),
+            1
+        );
+        assert_eq!(
+            snapshot
+                .leads
+                .iter()
+                .filter(|lead| lead.category == "other")
+                .count(),
+            1
+        );
+        let kol = &snapshot.kol_profiles[0];
+        let notes = kol.agent_notes.as_deref().unwrap_or_default();
+        assert!(notes.contains("TikTok creator collaboration"));
+        assert!(notes.contains("Mia <mia@example.com>"));
+        assert!(notes.contains("82k followers"));
+        assert_eq!(snapshot.audit_logs.len(), 2);
+
+        let second = upsert_marketing_email_leads(
+            &conn,
+            &account,
+            vec![RawMarketingEmail {
+                imap_uid: "1".to_string(),
+                message_id: Some("creator-1".to_string()),
+                thread_id: Some("Collab".to_string()),
+                from_name: Some("Mia".to_string()),
+                from_email: "mia@example.com".to_string(),
+                raw_from: "Mia <mia@example.com>".to_string(),
+                subject: "Collaboration updated".to_string(),
+                snippet: "Updated thread from a TikTok creator about an IG Reel.".to_string(),
+                received_at: Some(1100),
+            }],
+        )
+        .unwrap();
+        assert_eq!(second.inserted, 0);
+        assert_eq!(second.updated, 1);
+        assert_eq!(query_kol_profiles(&conn).unwrap().len(), 1);
     }
 
     fn codex_request_with_provider(

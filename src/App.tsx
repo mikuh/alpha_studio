@@ -1,11 +1,13 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
-	  ChangeEvent,
-	  CSSProperties,
-	  FormEvent,
-	  KeyboardEvent as ReactKeyboardEvent,
+  ChangeEvent,
+  CSSProperties,
+  Dispatch,
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   ReactNode,
+  SetStateAction,
 } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -34,6 +36,7 @@ import {
   Columns2,
   Copy,
   Cpu,
+  Database,
   Download,
   Eye,
   EyeOff,
@@ -61,11 +64,14 @@ import {
   ListChecks,
   Loader2,
   Lock,
+  Mail,
+  Maximize2,
   MessageCircle,
   MessageSquare,
   MessageSquarePlus,
   Mic,
   Minus,
+  Minimize2,
   Monitor,
   Moon,
   MoreHorizontal,
@@ -98,6 +104,7 @@ import {
   Undo2,
   Upload,
   UserCircle,
+  Users,
   Workflow,
   Wrench,
   X,
@@ -124,6 +131,12 @@ import {
   gitUnstage,
   isTauriRuntime,
   listOpenApps,
+  marketingAgentApplyUpdate,
+  marketingDbQuery,
+  marketingDbUpdateKol,
+  marketingEmailSecretSave,
+  marketingEmailSyncReadonly,
+  marketingEmailTestConnection,
   openInApp,
   revealPath,
   subscribeTerminalEvents,
@@ -170,6 +183,11 @@ import type {
   GitFileChange,
   GitRemote,
   GitStatus,
+  KolProfile,
+  KolProfilePatch,
+  MarketingDbSnapshot,
+  MarketingEmailAccountConfig,
+  MarketingEmailLead,
   MessageAttachment,
   MessageBlock,
   OpenAppId,
@@ -189,12 +207,47 @@ interface FeatureSidebarTab {
   title: string;
 }
 
+interface FeatureSidebarTabState {
+  tabs: FeatureSidebarTab[];
+  activeId: string | null;
+}
+
+interface FeatureAgentContext {
+  id: string;
+  kind: FeatureSidebarTabKind | 'feature-hub';
+  title: string;
+  body: string;
+}
+
+interface ComposerContextToggle {
+  enabled: boolean;
+  available: boolean;
+  label: string;
+  title: string;
+  onToggle: () => void;
+}
+
+interface AgentContextTrace {
+  title: string;
+  input?: string;
+  output?: string;
+  status?: 'completed' | 'failed';
+}
+
+interface ResolvedAgentContext {
+  context: string;
+  trace?: AgentContextTrace;
+}
+
+type AgentContextResolver = () => Promise<ResolvedAgentContext | undefined>;
+
 type Theme = 'light' | 'dark';
 type SettingsSection =
   | 'general'
   | 'profile'
   | 'appearance'
   | 'config'
+  | 'marketing-email'
   | 'models'
   | 'personalization'
   | 'keyboard'
@@ -217,10 +270,9 @@ const REVIEW_PANEL_WIDTH_KEY = 'alpha:review-panel-width';
 const THEME_KEY = 'alpha:codex-theme';
 const THEME_RESTORE_KEY = 'alpha:codex-theme-restored-main-ui-v2';
 const SIDEBAR_MIN_WIDTH = 244;
-const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 300;
+const SIDEBAR_FULLSCREEN_THRESHOLD = 4;
 const RIGHT_SIDEBAR_MIN_WIDTH = 320;
-const RIGHT_SIDEBAR_MAX_WIDTH = 1120;
 const RIGHT_SIDEBAR_DEFAULT_WIDTH = 356;
 const GIT_PANEL_MIN_WIDTH = 360;
 const GIT_PANEL_MAX_WIDTH = 760;
@@ -230,6 +282,15 @@ const REVIEW_PANEL_MAX_WIDTH = 1120;
 const REVIEW_PANEL_DEFAULT_WIDTH = 704;
 const RIGHT_PANEL_MIN_MAIN_WIDTH = 320;
 const PARTNER_MARKETING_LABEL = '合作推广营销';
+
+function getSidebarMaxWidth() {
+  if (typeof window === 'undefined') return SIDEBAR_DEFAULT_WIDTH;
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.floor(window.innerWidth));
+}
+
+function clampSidebarWidth(width: number, max = getSidebarMaxWidth()) {
+  return Math.min(max, Math.max(SIDEBAR_MIN_WIDTH, width));
+}
 
 export function App() {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
@@ -241,17 +302,22 @@ export function App() {
   const domain = activeDomain(workModeId);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarMaxWidth, setSidebarMaxWidth] = useState(() => getSidebarMaxWidth());
+  const sidebarMaxWidthRef = useRef(sidebarMaxWidth);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     if (typeof window === 'undefined') return SIDEBAR_DEFAULT_WIDTH;
     const saved = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
-    return Number.isFinite(saved) && saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH
-      ? saved
+    return Number.isFinite(saved) && saved >= SIDEBAR_MIN_WIDTH
+      ? clampSidebarWidth(saved)
       : SIDEBAR_DEFAULT_WIDTH;
   });
+  const sidebarRestoreWidth = useRef(
+    sidebarWidth >= sidebarMaxWidth - SIDEBAR_FULLSCREEN_THRESHOLD ? SIDEBAR_DEFAULT_WIDTH : sidebarWidth,
+  );
   const [rightSidebarWidth, setRightSidebarWidth] = useState(() => {
     if (typeof window === 'undefined') return RIGHT_SIDEBAR_DEFAULT_WIDTH;
     const saved = Number(window.localStorage.getItem(RIGHT_SIDEBAR_WIDTH_KEY));
-    return Number.isFinite(saved) && saved >= RIGHT_SIDEBAR_MIN_WIDTH && saved <= RIGHT_SIDEBAR_MAX_WIDTH
+    return Number.isFinite(saved) && saved >= RIGHT_SIDEBAR_MIN_WIDTH && saved <= getSidebarMaxWidth()
       ? saved
       : RIGHT_SIDEBAR_DEFAULT_WIDTH;
   });
@@ -270,7 +336,16 @@ export function App() {
       : REVIEW_PANEL_DEFAULT_WIDTH;
   });
   const [rightPanel, setRightPanel] = useState<RightPanel>('none');
+  const [featuresPanelFullscreen, setFeaturesPanelFullscreen] = useState(false);
+  const featuresPanelRestoreWidth = useRef(rightSidebarWidth);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [featureTabState, setFeatureTabState] = useState<FeatureSidebarTabState>({
+    tabs: [],
+    activeId: null,
+  });
+  const [featureAgentContext, setFeatureAgentContext] = useState<FeatureAgentContext | null>(null);
+  const [mainComposerUsesFeatureContext, setMainComposerUsesFeatureContext] = useState(false);
+  const nextFeatureTabId = useRef(1);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [quickGitOpen, setQuickGitOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
@@ -298,6 +373,22 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const previousMax = sidebarMaxWidthRef.current;
+      const nextMax = getSidebarMaxWidth();
+      sidebarMaxWidthRef.current = nextMax;
+      setSidebarMaxWidth(nextMax);
+      setSidebarWidth((current) => {
+        const wasFullscreen = current >= previousMax - SIDEBAR_FULLSCREEN_THRESHOLD;
+        if (wasFullscreen || current > nextMax) return nextMax;
+        return current;
+      });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem(RIGHT_SIDEBAR_WIDTH_KEY, String(rightSidebarWidth));
@@ -363,13 +454,67 @@ export function App() {
     setSettingsSection(section);
     setSettingsOpen(true);
   };
+  const nextFeatureTabNumber = useCallback(() => {
+    const tabNumber = nextFeatureTabId.current;
+    nextFeatureTabId.current += 1;
+    return tabNumber;
+  }, []);
+
+  const featurePanelMaxWidth = Math.max(
+    RIGHT_SIDEBAR_MIN_WIDTH,
+    sidebarCollapsed ? sidebarMaxWidth : sidebarMaxWidth - sidebarWidth,
+  );
+  const clampFeaturePanelWidth = useCallback(
+    (width: number) => Math.min(featurePanelMaxWidth, Math.max(RIGHT_SIDEBAR_MIN_WIDTH, width)),
+    [featurePanelMaxWidth],
+  );
+  const toggleFeaturesPanelFullscreen = useCallback(() => {
+    if (featuresPanelFullscreen) {
+      setRightSidebarWidth(clampFeaturePanelWidth(featuresPanelRestoreWidth.current || RIGHT_SIDEBAR_DEFAULT_WIDTH));
+      setFeaturesPanelFullscreen(false);
+      return;
+    }
+    featuresPanelRestoreWidth.current = rightSidebarWidth;
+    setRightSidebarWidth(featurePanelMaxWidth);
+    setFeaturesPanelFullscreen(true);
+  }, [clampFeaturePanelWidth, featurePanelMaxWidth, featuresPanelFullscreen, rightSidebarWidth]);
+
+  useEffect(() => {
+    if (rightPanel !== 'features' && featuresPanelFullscreen) {
+      setRightSidebarWidth(clampFeaturePanelWidth(featuresPanelRestoreWidth.current || RIGHT_SIDEBAR_DEFAULT_WIDTH));
+      setFeaturesPanelFullscreen(false);
+    }
+  }, [clampFeaturePanelWidth, featuresPanelFullscreen, rightPanel]);
+
+  useEffect(() => {
+    if (featuresPanelFullscreen) {
+      setRightSidebarWidth(featurePanelMaxWidth);
+      return;
+    }
+    if (rightPanel === 'features') {
+      setRightSidebarWidth((current) => Math.min(current, featurePanelMaxWidth));
+    }
+  }, [featurePanelMaxWidth, featuresPanelFullscreen, rightPanel]);
+
+  useEffect(() => {
+    if (!featuresPanelFullscreen) {
+      featuresPanelRestoreWidth.current = rightSidebarWidth;
+    }
+  }, [featuresPanelFullscreen, rightSidebarWidth]);
+
+  useEffect(() => {
+    if (rightPanel === 'features') return;
+    setMainComposerUsesFeatureContext(false);
+    setFeatureAgentContext(null);
+  }, [rightPanel]);
 
   const rightPanelResizer =
     rightPanel === 'features'
       ? {
           min: RIGHT_SIDEBAR_MIN_WIDTH,
-          max: RIGHT_SIDEBAR_MAX_WIDTH,
+          max: featurePanelMaxWidth,
           defaultWidth: RIGHT_SIDEBAR_DEFAULT_WIDTH,
+          minMainWidth: 0,
           onCommit: setRightSidebarWidth,
         }
       : rightPanel === 'git'
@@ -377,6 +522,7 @@ export function App() {
             min: GIT_PANEL_MIN_WIDTH,
             max: GIT_PANEL_MAX_WIDTH,
             defaultWidth: GIT_PANEL_DEFAULT_WIDTH,
+            minMainWidth: RIGHT_PANEL_MIN_MAIN_WIDTH,
             onCommit: setGitPanelWidth,
           }
         : rightPanel === 'review'
@@ -384,13 +530,57 @@ export function App() {
               min: REVIEW_PANEL_MIN_WIDTH,
               max: REVIEW_PANEL_MAX_WIDTH,
               defaultWidth: REVIEW_PANEL_DEFAULT_WIDTH,
+              minMainWidth: RIGHT_PANEL_MIN_MAIN_WIDTH,
               onCommit: setReviewPanelWidth,
             }
           : null;
+  const sidebarFullscreen = !sidebarCollapsed && sidebarWidth >= sidebarMaxWidth - SIDEBAR_FULLSCREEN_THRESHOLD;
+  const commitSidebarWidth = useCallback((width: number) => {
+    setSidebarWidth(clampSidebarWidth(width, sidebarMaxWidthRef.current));
+  }, []);
+  const toggleSidebarFullscreen = useCallback(() => {
+    setSidebarWidth((current) => {
+      const max = sidebarMaxWidthRef.current;
+      if (current >= max - SIDEBAR_FULLSCREEN_THRESHOLD) {
+        return clampSidebarWidth(sidebarRestoreWidth.current || SIDEBAR_DEFAULT_WIDTH, max);
+      }
+      sidebarRestoreWidth.current = current;
+      return max;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarFullscreen) {
+      sidebarRestoreWidth.current = sidebarWidth;
+    }
+  }, [sidebarFullscreen, sidebarWidth]);
+
+  const activeFeatureAgentContext = rightPanel === 'features' ? featureAgentContext : null;
+  const mainComposerAgentContext =
+    mainComposerUsesFeatureContext && activeFeatureAgentContext ? activeFeatureAgentContext.body : undefined;
+  const mainComposerAgentContextResolver = useCallback(async () => {
+    if (!mainComposerUsesFeatureContext || !activeFeatureAgentContext) return undefined;
+    return resolveFeatureAgentContext(activeFeatureAgentContext);
+  }, [activeFeatureAgentContext, mainComposerUsesFeatureContext]);
+  const mainComposerContextToggle =
+    rightPanel === 'features'
+      ? {
+          enabled: mainComposerUsesFeatureContext && Boolean(activeFeatureAgentContext),
+          available: Boolean(activeFeatureAgentContext),
+          label: activeFeatureAgentContext?.title || '侧栏上下文',
+          title: activeFeatureAgentContext
+            ? `将「${activeFeatureAgentContext.title}」上下文带入本次对话`
+            : '侧栏上下文正在准备',
+          onToggle: () => {
+            if (!activeFeatureAgentContext) return;
+            setMainComposerUsesFeatureContext((value) => !value);
+          },
+        }
+      : undefined;
 
   return (
     <div
-      className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanel !== 'none' ? 'right-panel-open' : ''} ${rightPanel === 'features' ? 'features-panel-open' : ''} ${rightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'}`}
+      className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${sidebarFullscreen ? 'sidebar-fullscreen' : ''} ${rightPanel !== 'none' ? 'right-panel-open' : ''} ${rightPanel === 'features' ? 'features-panel-open' : ''} ${rightPanel === 'features' && featuresPanelFullscreen ? 'features-panel-fullscreen' : ''} ${rightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'}`}
       data-work-mode={domain.id}
       style={
         {
@@ -404,15 +594,17 @@ export function App() {
       <Sidebar
         domain={domain}
         collapsed={sidebarCollapsed}
+        fullscreen={sidebarFullscreen}
         onCollapse={() => setSidebarCollapsed(true)}
+        onToggleFullscreen={toggleSidebarFullscreen}
         onOpenSettings={openSettings}
       />
       {!sidebarCollapsed && (
         <SidebarResizer
           min={SIDEBAR_MIN_WIDTH}
-          max={SIDEBAR_MAX_WIDTH}
+          max={sidebarMaxWidth}
           defaultWidth={SIDEBAR_DEFAULT_WIDTH}
-          onCommit={setSidebarWidth}
+          onCommit={commitSidebarWidth}
         />
       )}
       <div className="workspace">
@@ -428,13 +620,19 @@ export function App() {
               onToggleRightPanel={() => setRightPanel((value) => (value === 'none' ? 'features' : 'none'))}
               onOpenSettings={() => openSettings('config')}
             />
-            <ChatArea domain={domain} />
+            <ChatArea
+              domain={domain}
+              agentContext={mainComposerAgentContext}
+              agentContextResolver={mainComposerAgentContextResolver}
+              contextToggle={mainComposerContextToggle}
+            />
           </main>
           {rightPanelResizer && (
             <RightPanelResizer
               min={rightPanelResizer.min}
               max={rightPanelResizer.max}
               defaultWidth={rightPanelResizer.defaultWidth}
+              minMainWidth={rightPanelResizer.minMainWidth}
               onCommit={rightPanelResizer.onCommit}
             />
           )}
@@ -443,8 +641,14 @@ export function App() {
           {rightPanel === 'features' && (
             <FeaturesPanel
               domain={domain}
+              tabState={featureTabState}
+              onTabStateChange={setFeatureTabState}
+              onNextTabNumber={nextFeatureTabNumber}
               onOpenReviewChanges={() => setRightPanel('review')}
               onOpenTerminal={() => setTerminalOpen(true)}
+              fullscreen={featuresPanelFullscreen}
+              onToggleFullscreen={toggleFeaturesPanelFullscreen}
+              onAgentContextChange={setFeatureAgentContext}
               onClose={() => setRightPanel('none')}
             />
           )}
@@ -520,11 +724,13 @@ function RightPanelResizer({
   min,
   max,
   defaultWidth,
+  minMainWidth = RIGHT_PANEL_MIN_MAIN_WIDTH,
   onCommit,
 }: {
   min: number;
   max: number;
   defaultWidth: number;
+  minMainWidth?: number;
   onCommit: (width: number) => void;
 }) {
   const drag = useRef<{ x: number; w: number; rowWidth: number }>({ x: 0, w: 0, rowWidth: 0 });
@@ -532,7 +738,7 @@ function RightPanelResizer({
 
   const commitWidth = (next: number) => {
     const rowLimitedMax = drag.current.rowWidth
-      ? Math.max(min, Math.min(max, drag.current.rowWidth - RIGHT_PANEL_MIN_MAIN_WIDTH))
+      ? Math.max(min, Math.min(max, drag.current.rowWidth - minMainWidth))
       : max;
     onCommit(Math.min(rowLimitedMax, Math.max(min, next)));
   };
@@ -557,7 +763,7 @@ function RightPanelResizer({
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
     };
-  }, [active, min, max, onCommit]);
+  }, [active, min, max, minMainWidth, onCommit]);
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     const row = event.currentTarget.closest('.workspace-row') as HTMLElement | null;
@@ -601,12 +807,16 @@ function RightPanelResizer({
 function Sidebar({
   domain,
   collapsed,
+  fullscreen,
   onCollapse,
+  onToggleFullscreen,
   onOpenSettings,
 }: {
   domain: DomainConfig;
   collapsed: boolean;
+  fullscreen: boolean;
   onCollapse: () => void;
+  onToggleFullscreen: () => void;
   onOpenSettings: (section?: SettingsSection) => void;
 }) {
   const conversations = useChatStore((state) => state.conversations);
@@ -808,6 +1018,15 @@ function Sidebar({
     <>
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`} aria-hidden={collapsed}>
         <div className="sidebar-traffic" data-tauri-drag-region>
+          <button
+            className="sidebar-collapse-btn"
+            type="button"
+            onClick={onToggleFullscreen}
+            aria-label={fullscreen ? '退出侧栏全屏' : '侧栏全屏'}
+            title={fullscreen ? '退出全屏' : '侧栏全屏'}
+          >
+            {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
           <button className="sidebar-collapse-btn" type="button" onClick={onCollapse} aria-label="收起侧栏" title="收起侧栏">
             <PanelLeftClose size={16} />
           </button>
@@ -2440,22 +2659,33 @@ function TerminalPanel({ theme, onClose }: { theme: Theme; onClose: () => void }
 
 function FeaturesPanel({
   domain,
+  tabState,
+  onTabStateChange,
+  onNextTabNumber,
   onOpenReviewChanges,
   onOpenTerminal,
+  fullscreen,
+  onToggleFullscreen,
+  onAgentContextChange,
   onClose,
 }: {
   domain: DomainConfig;
+  tabState: FeatureSidebarTabState;
+  onTabStateChange: Dispatch<SetStateAction<FeatureSidebarTabState>>;
+  onNextTabNumber: () => number;
   onOpenReviewChanges: () => void;
   onOpenTerminal: () => void;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
+  onAgentContextChange: Dispatch<SetStateAction<FeatureAgentContext | null>>;
   onClose: () => void;
 }) {
   const conversation = useCurrentConversation();
   const cwd = conversation?.cwd || '';
-  const [tabState, setTabState] = useState<{ tabs: FeatureSidebarTab[]; activeId: string | null }>({
-    tabs: [],
-    activeId: null,
-  });
-  const nextFeatureTabId = useRef(1);
+  const codexStatus = useChatStore((state) => state.codexStatus);
+  const previewRuntime = !isTauriRuntime();
+  const codexReady = previewRuntime || Boolean(codexStatus?.installed && codexStatus.loggedIn);
+  const [featureMenu, setFeatureMenu] = useState<SidebarMenu | null>(null);
   const featureByAction = useMemo(
     () => new Map(domain.ui.features.map((feature) => [feature.action, feature])),
     [domain.ui.features],
@@ -2487,27 +2717,26 @@ function FeaturesPanel({
     document.querySelector<HTMLTextAreaElement>('.composer-textarea')?.focus();
   };
   const addPartnerMarketingTab = () => {
-    const tabNumber = nextFeatureTabId.current;
-    nextFeatureTabId.current += 1;
+    const tabNumber = onNextTabNumber();
     const tab: FeatureSidebarTab = {
       id: `partner-marketing-${tabNumber}`,
       kind: 'partner-marketing',
       title: tabNumber === 1 ? PARTNER_MARKETING_LABEL : `${PARTNER_MARKETING_LABEL} ${tabNumber}`,
     };
-    setTabState((state) => ({
+    onTabStateChange((state) => ({
       tabs: [...state.tabs, tab],
       activeId: tab.id,
     }));
   };
   const selectFeatureTab = (id: string) => {
-    setTabState((state) => ({
+    onTabStateChange((state) => ({
       ...state,
       activeId: id,
     }));
   };
   const closeFeatureTab = (event: ReactMouseEvent, id: string) => {
     event.stopPropagation();
-    setTabState((state) => {
+    onTabStateChange((state) => {
       const closingIndex = state.tabs.findIndex((tab) => tab.id === id);
       if (closingIndex < 0) return state;
       const tabs = state.tabs.filter((tab) => tab.id !== id);
@@ -2520,6 +2749,16 @@ function FeaturesPanel({
     });
   };
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.activeId) || null;
+  useEffect(() => {
+    if (activeTab) return;
+    onAgentContextChange({
+      id: 'feature-hub',
+      kind: 'feature-hub',
+      title: '功能入口',
+      body: buildFeatureHubAgentContext(),
+    });
+    return () => onAgentContextChange(null);
+  }, [activeTab, onAgentContextChange]);
   const featureActions: Array<{
     id: string;
     label: string;
@@ -2572,6 +2811,22 @@ function FeaturesPanel({
       onClick: focusComposer,
     },
   ];
+  const openFeatureAddMenu = (event: ReactMouseEvent) => {
+    const anchor = anchorFromButton(event);
+    const menuItems = featureActions.map<MenuNode>((feature) => ({
+      kind: 'item',
+      icon: feature.icon,
+      label: feature.label,
+      shortcut: feature.shortcut,
+      disabled: feature.disabled,
+      onSelect: feature.onClick,
+    }));
+    setFeatureMenu({
+      owner: 'feature-tab-add',
+      ...anchor,
+      items: menuItems,
+    });
+  };
 
   return (
     <aside className="features-panel right-dock-panel">
@@ -2602,13 +2857,30 @@ function FeaturesPanel({
                 </button>
               </div>
             ))}
-            <button type="button" className="feature-tab-add" onClick={addPartnerMarketingTab} aria-label="新增标签" title="新增标签">
+            <button
+              type="button"
+              className={`feature-tab-add ${featureMenu ? 'active' : ''}`}
+              onClick={openFeatureAddMenu}
+              aria-label="新增功能页标签"
+              aria-haspopup="menu"
+              aria-expanded={Boolean(featureMenu)}
+              title="新增功能页"
+            >
               <Plus size={14} />
             </button>
           </div>
         )}
         <div className="features-panel-actions">
           <OpenInAppMenu cwd={cwd} />
+          <button
+            type="button"
+            className={`icon-btn ${fullscreen ? 'active' : ''}`}
+            onClick={onToggleFullscreen}
+            aria-label={fullscreen ? '退出功能侧栏全屏' : '功能侧栏全屏'}
+            title={fullscreen ? '退出全屏' : '功能侧栏全屏'}
+          >
+            {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
           <button type="button" className="icon-btn active" onClick={onClose} aria-label="关闭侧边栏" title="关闭侧边栏">
             <PanelRight size={16} />
           </button>
@@ -2616,7 +2888,12 @@ function FeaturesPanel({
       </header>
       <div className={`features-panel-body ${activeTab ? 'with-tab-content' : ''}`}>
         {activeTab ? (
-          <FeatureTabContent tab={activeTab} />
+          <FeatureTabContent
+            tab={activeTab}
+            domain={domain}
+            fullscreen={fullscreen}
+            onAgentContextChange={onAgentContextChange}
+          />
         ) : (
           <div className="features-list">
             {featureActions.map((feature) => (
@@ -2638,35 +2915,684 @@ function FeaturesPanel({
           </div>
         )}
       </div>
+      {fullscreen && !activeTab && conversation && (
+        <FeatureAgentDock
+          domain={domain}
+          conversation={conversation}
+          disabled={!codexReady}
+          agentContext={buildFeatureHubAgentContext()}
+          agentContextResolver={() => resolveFeatureAgentContext({
+            id: 'feature-hub',
+            kind: 'feature-hub',
+            title: '功能入口',
+            body: buildFeatureHubAgentContext(),
+          })}
+        />
+      )}
+      {featureMenu && <ContextMenu menu={featureMenu} onClose={() => setFeatureMenu(null)} />}
     </aside>
   );
 }
 
-function FeatureTabContent({ tab }: { tab: FeatureSidebarTab }) {
+function FeatureTabContent({
+  tab,
+  domain,
+  fullscreen,
+  onAgentContextChange,
+}: {
+  tab: FeatureSidebarTab;
+  domain: DomainConfig;
+  fullscreen: boolean;
+  onAgentContextChange: Dispatch<SetStateAction<FeatureAgentContext | null>>;
+}) {
   switch (tab.kind) {
     case 'partner-marketing':
-      return <PartnerMarketingTab title={tab.title} />;
+      return (
+        <PartnerMarketingTab
+          title={tab.title}
+          domain={domain}
+          fullscreen={fullscreen}
+          onAgentContextChange={onAgentContextChange}
+        />
+      );
   }
 }
 
-function PartnerMarketingTab({ title }: { title: string }) {
+function PartnerMarketingTab({
+  title,
+  domain,
+  fullscreen,
+  onAgentContextChange,
+}: {
+  title: string;
+  domain: DomainConfig;
+  fullscreen: boolean;
+  onAgentContextChange: Dispatch<SetStateAction<FeatureAgentContext | null>>;
+}) {
+  const conversation = useCurrentConversation();
+  const codexStatus = useChatStore((state) => state.codexStatus);
+  const [snapshot, setSnapshot] = useState<MarketingDbSnapshot | null>(null);
+  const [view, setView] = useState<'inbox' | 'kol' | 'hidden' | 'logs'>('inbox');
+  const [query, setQuery] = useState('');
+  const [selectedKolId, setSelectedKolId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
+    setError(null);
+    try {
+      setSnapshot(await marketingDbQuery(true));
+    } catch (err) {
+      if (!quiet) setError(stringifyError(err));
+    } finally {
+      if (!quiet) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const wasStreaming = useRef(false);
+  useEffect(() => {
+    if (!conversation) return;
+    if (conversation.status === 'streaming') {
+      wasStreaming.current = true;
+      return;
+    }
+    if (!wasStreaming.current) return;
+    wasStreaming.current = false;
+    void refresh(true);
+  }, [conversation?.status, refresh]);
+
+  const account = snapshot?.accounts[0] ?? null;
+  useEffect(() => {
+    if (!account?.enabled || account.syncIntervalMinutes <= 0) return;
+    const timer = window.setInterval(() => {
+      void syncEmails(false);
+    }, account.syncIntervalMinutes * 60_000);
+    return () => window.clearInterval(timer);
+  }, [account?.id, account?.enabled, account?.syncIntervalMinutes]);
+
+  const syncEmails = async (announce = true) => {
+    if (!account) {
+      setError('请先在设置 > 邮件营销中配置 IMAP 邮箱。');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    if (announce) setMessage('正在只读同步邮箱...');
+    try {
+      const result = await marketingEmailSyncReadonly(account);
+      setMessage(`同步完成：${result.synced} 封，新增 ${result.inserted}，隐藏广告 ${result.hidden}，新增 KOL ${result.kolCreated}`);
+      setSnapshot(await marketingDbQuery(true));
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyLeadUpdate = async (lead: MarketingEmailLead, hidden: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await marketingAgentApplyUpdate({
+        targetTable: 'marketing_email_leads',
+        targetId: lead.id,
+        field: 'hidden',
+        oldValue: lead.hidden ? '1' : '0',
+        newValue: hidden ? '1' : '0',
+        reason: hidden ? '手动隐藏邮件线索' : '从隐藏广告恢复邮件线索',
+      });
+      setSnapshot(next);
+      setMessage(hidden ? '已隐藏邮件线索。' : '已恢复邮件线索。');
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateKol = async (kol: KolProfile, patch: KolProfilePatch) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await marketingDbUpdateKol(kol.id, patch, '工作区更新 KOL 档案');
+      setSnapshot(next);
+      setMessage('KOL 档案已更新。');
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const leads = (snapshot?.leads ?? []).filter((lead) => {
+    if (view === 'hidden') {
+      if (!lead.hidden) return false;
+    } else if (lead.hidden) {
+      return false;
+    }
+    if (view === 'inbox' && lead.category === 'ad') return false;
+    if (!normalizedQuery) return true;
+    return [lead.subject, lead.rawFrom, lead.fromEmail, lead.snippet, categoryLabel(lead.category)]
+      .some((value) => value.toLowerCase().includes(normalizedQuery));
+  });
+  const kols = (snapshot?.kolProfiles ?? []).filter((kol) => {
+    if (!normalizedQuery) return true;
+    return [kol.name, kol.email, kol.country ?? '', kol.owner ?? '', kol.tags, kol.collaborationStatus, kol.stage]
+      .some((value) => value.toLowerCase().includes(normalizedQuery));
+  });
+  const selectedKol = selectedKolId ? snapshot?.kolProfiles.find((kol) => kol.id === selectedKolId) ?? null : null;
+  const activeLeads = snapshot?.leads.filter((lead) => !lead.hidden && lead.category !== 'ad').length ?? 0;
+  const hiddenAds = snapshot?.leads.filter((lead) => lead.hidden).length ?? 0;
+  const previewRuntime = !isTauriRuntime();
+  const codexReady = previewRuntime || Boolean(codexStatus?.installed && codexStatus.loggedIn);
+  const agentContext = useMemo(
+    () => buildPartnerMarketingAgentContext({
+      title,
+      dbPath: snapshot?.path,
+      view,
+      query,
+      accountLabel: account?.label,
+      activeLeads,
+      hiddenAds,
+      kolCount: snapshot?.kolProfiles.length ?? 0,
+      selectedKol,
+    }),
+    [account?.label, activeLeads, hiddenAds, query, selectedKol, snapshot?.kolProfiles.length, snapshot?.path, title, view],
+  );
+  useEffect(() => {
+    onAgentContextChange({
+      id: 'partner-marketing',
+      kind: 'partner-marketing',
+      title,
+      body: agentContext,
+    });
+    return () => onAgentContextChange(null);
+  }, [agentContext, onAgentContextChange, title]);
+
   return (
-    <section className="feature-tab-content partner-marketing-panel" role="tabpanel" aria-label={title}>
-      <div className="partner-marketing-head">
-        <span className="partner-marketing-icon"><Target size={22} /></span>
-        <div>
-          <h2>{title}</h2>
-          <p>待配置</p>
+    <section className={`feature-tab-content partner-marketing-panel ${fullscreen ? 'with-agent-dock' : ''}`} role="tabpanel" aria-label={title}>
+      <div className="partner-marketing-content">
+        <div className="partner-marketing-head">
+          <span className="partner-marketing-icon"><Users size={22} /></span>
+          <div>
+            <h2>{title}</h2>
+            <p>{account ? `${account.label} · ${account.mailbox} · ${formatMaybeDate(account.lastSyncedAt)}` : '本地 KOL Database · 邮件只读同步'}</p>
+          </div>
+          <span className="spacer" />
+          <button className="settings-btn" type="button" onClick={() => void refresh()} disabled={loading || busy}><RefreshCw size={13} />刷新</button>
+          <button className="settings-btn primary" type="button" onClick={() => void syncEmails()} disabled={busy || !account}><Mail size={13} />同步邮件</button>
         </div>
+
+        <div className="marketing-toolbar">
+          <div className="marketing-tabs" role="tablist">
+            {([
+              ['inbox', '邮件线索', activeLeads],
+              ['kol', 'KOL Database', snapshot?.kolProfiles.length ?? 0],
+              ['hidden', '隐藏广告', hiddenAds],
+              ['logs', '自动化日志', snapshot?.auditLogs.length ?? 0],
+            ] as const).map(([id, label, count]) => (
+              <button key={id} type="button" className={view === id ? 'active' : ''} onClick={() => setView(id)}>
+                <span>{label}</span><em>{count}</em>
+              </button>
+            ))}
+          </div>
+          <label className="marketing-search">
+            <Search size={14} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮件、KOL、状态或标签" />
+          </label>
+        </div>
+
+        {(message || error) && (
+          <div className={`marketing-status ${error ? 'error' : ''}`}>
+            <Info size={14} />
+            <span>{error || message}</span>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="partner-marketing-placeholder"><Loader2 size={18} className="spin" /><span>正在读取本地营销库...</span></div>
+        ) : view === 'kol' ? (
+          <div className="marketing-split">
+            <div className="marketing-table-wrap">
+              <KolTable kols={kols} selectedId={selectedKolId} onSelect={setSelectedKolId} />
+            </div>
+            <KolDetailPanel kol={selectedKol ?? kols[0] ?? null} busy={busy} onSave={updateKol} />
+          </div>
+        ) : view === 'logs' ? (
+          <AutomationLogList logs={snapshot?.auditLogs ?? []} />
+        ) : (
+          <EmailLeadList
+            leads={leads}
+            kols={snapshot?.kolProfiles ?? []}
+            hiddenView={view === 'hidden'}
+            busy={busy}
+            onRestore={(lead) => void applyLeadUpdate(lead, false)}
+            onHide={(lead) => void applyLeadUpdate(lead, true)}
+            onOpenKol={(id) => {
+              setSelectedKolId(id);
+              setView('kol');
+            }}
+          />
+        )}
       </div>
-      <div className="partner-marketing-placeholder">
-        <span>合作推广营销内容待开发</span>
-      </div>
+      {fullscreen && conversation && (
+        <FeatureAgentDock
+          domain={domain}
+          conversation={conversation}
+          disabled={!codexReady}
+          agentContext={agentContext}
+          agentContextResolver={() => resolveFeatureAgentContext({
+            id: 'partner-marketing',
+            kind: 'partner-marketing',
+            title,
+            body: agentContext,
+          })}
+        />
+      )}
     </section>
   );
 }
 
-function ChatArea({ domain }: { domain: DomainConfig }) {
+function FeatureAgentDock({
+  domain,
+  conversation,
+  disabled,
+  agentContext,
+  agentContextResolver,
+}: {
+  domain: DomainConfig;
+  conversation: Conversation;
+  disabled: boolean;
+  agentContext: string;
+  agentContextResolver?: AgentContextResolver;
+}) {
+  return (
+    <div className="features-agent-dock">
+      <Composer
+        domain={domain}
+        conversation={conversation}
+        disabled={disabled}
+        bottom
+        className="feature-agent-composer"
+        agentContext={agentContext}
+        agentContextResolver={agentContextResolver}
+        placeholder="让 agent 分析邮件线索、整理 KOL、隐藏广告或更新合作状态"
+      />
+    </div>
+  );
+}
+
+async function resolveComposerAgentContext(agentContext?: string, resolver?: AgentContextResolver): Promise<ResolvedAgentContext | undefined> {
+  const fallback = agentContext?.trim() || undefined;
+  if (!resolver) return fallback ? { context: fallback } : undefined;
+  try {
+    const resolved = await resolver();
+    if (resolved?.context.trim()) return { ...resolved, context: resolved.context.trim() };
+    return fallback ? { context: fallback } : undefined;
+  } catch (error) {
+    const message = stringifyError(error);
+    const context = [
+      fallback,
+      '',
+      `注意：发送前实时读取侧栏上下文失败：${message}。请优先使用上方已提供的侧栏上下文；如需准确数据，请查询侧栏对应的本地数据库。`,
+    ].filter(Boolean).join('\n');
+    return context ? {
+      context,
+      trace: {
+        title: 'tool: $sidebar-control',
+        input: '预取右侧栏上下文；等价 CLI：alpha-sidebar marketing snapshot',
+        output: `读取侧栏上下文失败：${message}`,
+        status: 'failed',
+      },
+    } : undefined;
+  }
+}
+
+async function resolveFeatureAgentContext(context: FeatureAgentContext): Promise<ResolvedAgentContext> {
+  if (context.kind !== 'partner-marketing') {
+    return {
+      context: context.body,
+      trace: {
+        title: 'tool: $sidebar-control',
+        input: '加载右侧功能入口上下文',
+        output: '已启用 $sidebar-control。当前位于右侧功能入口，等待具体功能页或侧栏任务。',
+        status: 'completed',
+      },
+    };
+  }
+  const snapshot = await marketingDbQuery(true);
+  const liveContext = buildPartnerMarketingLiveSnapshotContext(snapshot);
+  return {
+    context: [
+    context.body,
+    '',
+    liveContext,
+    ].join('\n'),
+    trace: buildPartnerMarketingTrace(snapshot),
+  };
+}
+
+function buildFeatureHubAgentContext(): string {
+  return [
+    '你正在响应 Alpha Studio 右侧功能栏相关请求。',
+    '必须使用 $sidebar-control 技能规则处理右侧栏请求。技能路径：~/.codex/skills/sidebar-control/SKILL.md；正式 CLI：/Users/geb/codes/alpha_studio/src-tauri/target/debug/alpha-sidebar；缺失时用 cargo run --manifest-path /Users/geb/codes/alpha_studio/src-tauri/Cargo.toml --quiet --bin alpha-sidebar -- <args>。',
+    '当前还停留在功能入口列表；如果用户要求合作推广营销、邮件线索、KOL Database、隐藏广告或自动化日志相关操作，请把它视为「合作推广营销」功能页任务。',
+    '语义路由：在带入侧栏上下文开启时，用户说“线索”“多少线索”“客户线索”默认指右侧「合作推广营销」里的 marketing_email_leads 邮件线索，不是当前品牌目录中的文件。',
+    '除非用户明确要求检查品牌目录、代码或本地文件，否则不要用 find/grep/rg 去 cwd 里搜索“线索”。',
+    '优先帮助用户完成操作，而不是只解释界面。需要数据库操作时，使用本地营销 SQLite 数据库；如果路径未在当前上下文出现，可先从应用源码或默认数据目录定位 ~/.alpha-studio/marketing.sqlite。',
+    '侧栏人工操作映射：打开文件夹=定位当前品牌目录；打开终端=在当前品牌目录运行命令；浏览器=打开用户指定 URL；审查改动=发起只读代码审查；合作推广营销=读取/更新本地营销库。',
+    '不要读取、输出或要求展示邮箱密码、Keychain 密钥或其它秘密。',
+  ].join('\n');
+}
+
+function buildPartnerMarketingAgentContext({
+  title,
+  dbPath,
+  view,
+  query,
+  accountLabel,
+  activeLeads,
+  hiddenAds,
+  kolCount,
+  selectedKol,
+}: {
+  title: string;
+  dbPath?: string;
+  view: 'inbox' | 'kol' | 'hidden' | 'logs';
+  query: string;
+  accountLabel?: string;
+  activeLeads: number;
+  hiddenAds: number;
+  kolCount: number;
+  selectedKol: KolProfile | null;
+}): string {
+  const selectedKolLine = selectedKol
+    ? `当前选中的 KOL：${selectedKol.name} <${selectedKol.email}>，id=${selectedKol.id}，关系=${selectedKol.relationship}，状态=${selectedKol.collaborationStatus}，阶段=${selectedKol.stage}，负责人=${selectedKol.owner || '未分配'}，优先级=${selectedKol.priority}，标签=${selectedKol.tags || '无'}。`
+    : '当前未显式选中 KOL；如果用户提到某个达人，请先在数据库中查找匹配记录。';
+  return [
+    '你正在响应 Alpha Studio 右侧「合作推广营销」功能页相关请求。',
+    '必须使用 $sidebar-control 技能规则处理本请求。技能路径：~/.codex/skills/sidebar-control/SKILL.md；正式 CLI：/Users/geb/codes/alpha_studio/src-tauri/target/debug/alpha-sidebar；缺失时用 cargo run --manifest-path /Users/geb/codes/alpha_studio/src-tauri/Cargo.toml --quiet --bin alpha-sidebar -- <args>。',
+    '用户希望通过这次对话完成当前面板里的营销操作，而不仅是解释页面。',
+    '语义路由：用户说“线索”“多少线索”“现在有多少线索”“客户线索”时，默认指当前侧栏的邮件线索数量，也就是 marketing_email_leads 中非隐藏且非广告的记录数。',
+    '语义路由：用户说“Google 改为已合作”“把某人状态改成…”时，默认指 kol_profiles 里的 KOL 档案字段更新，不是项目文件修改。',
+    '除非用户明确要求检查品牌目录、代码或本地文件，否则不要用 find/grep/rg 去 cwd 里搜索“线索”、KOL 名称或合作状态；应直接使用下方实时快照，或通过 alpha-sidebar CLI 查询/更新 SQLite 营销库。',
+    '',
+    `当前功能页：${title}`,
+    `当前视图：${view}；搜索词：${query.trim() || '无'}；邮箱账号：${accountLabel || '未配置或未载入'}`,
+    `当前统计：邮件线索 ${activeLeads}，KOL ${kolCount}，隐藏广告 ${hiddenAds}。`,
+    selectedKolLine,
+    '',
+    '本地营销数据库：',
+    `- SQLite 路径：${dbPath || '~/.alpha-studio/marketing.sqlite'}`,
+    '- 主要表：marketing_email_leads、kol_profiles、kol_platform_accounts、kol_collaborations、kol_posts、automation_audit_logs。',
+    '',
+    '侧栏开放接口和等价操作：',
+    '- 推荐给 agent 的确定性入口：alpha-sidebar marketing snapshot；accounts list|get；email test|sync；leads count|get|list|update；kols get|list|find|update；logs list。',
+    '- 前端读取快照：marketingDbQuery(true) / Tauri command marketing_db_query；agent 等价操作是查询上述 SQLite 表。',
+    '- 前端隐藏/恢复邮件线索：marketingAgentApplyUpdate({ targetTable: "marketing_email_leads", targetId, field: "hidden", newValue: "1|0", reason })。',
+    '- 前端调整邮件分类：marketingAgentApplyUpdate({ targetTable: "marketing_email_leads", targetId, field: "category", newValue: "influencer|affiliate|ad|other", reason })。',
+    '- 前端保存 KOL 档案：marketingDbUpdateKol(id, patch, reason)；agent 写入时使用同一字段白名单。',
+    '- 前端刷新=重新读取数据库；打开某个 KOL=根据 kol_profiles.id 读取详情；搜索/切换标签页=对快照做过滤，不修改数据。',
+    '- 邮件同步=alpha-sidebar marketing email sync [--account-id ID|--all]，内部复用只读 IMAP 同步并从 Keychain 读取密码；agent 不应读取、输出或请求秘密。',
+    '',
+    '可写字段白名单：',
+    '- marketing_email_leads：hidden、category。',
+    '- kol_profiles：name、email、country、relationship、collaboration_status、stage、owner、priority、tags、archived、brand_fit_score、risk_note、next_follow_up_at、agent_notes、human_notes。',
+    '- 写入时必须先读取当前值，更新目标行 updated_at，并向 automation_audit_logs 写入 actor="agent"、target_table、target_id、field、old_value、new_value、reason、created_at。',
+    '- hidden/archived 使用 0/1；priority 使用 high/normal/low；category 使用 influencer/affiliate/ad/other。',
+    '',
+    '操作原则：',
+    '- 需要分析时先查询数据库，再给结论和下一步。',
+    '- 需要修改时，在获得当前授权策略允许后直接执行最小必要更新，并说明改了哪些记录。',
+    '- 不要读取、输出或要求展示邮箱密码、Keychain 密钥或其它秘密。',
+    '- 邮箱同步优先通过 CLI 触发；仅当 CLI 返回 secret_unavailable 或 external_error 时，说明需要先在设置中保存密码或处理邮箱连接问题。',
+    '- 完成数据库修改后，面板会在回合结束时自动刷新。',
+  ].join('\n');
+}
+
+function buildPartnerMarketingLiveSnapshotContext(snapshot: MarketingDbSnapshot): string {
+  const visibleLeads = snapshot.leads.filter((lead) => !lead.hidden);
+  const panelLeads = visibleLeads.filter((lead) => lead.category !== 'ad');
+  const hiddenLeads = snapshot.leads.filter((lead) => lead.hidden);
+  const visibleAds = visibleLeads.filter((lead) => lead.category === 'ad');
+  const categoryCounts = (['influencer', 'affiliate', 'ad', 'other'] as const)
+    .map((category) => {
+      const count = visibleLeads.filter((lead) => lead.category === category).length;
+      return `${categoryLabel(category)} ${count}`;
+    })
+    .join('，');
+  const latestLeads = panelLeads.slice(0, 5).map((lead) => (
+    `- id=${lead.id}；${categoryLabel(lead.category)}；${lead.subject}；${lead.rawFrom}；${formatMaybeDate(lead.receivedAt)}`
+  ));
+  return [
+    '发送瞬间实时侧栏快照：',
+    `- 当前侧栏「邮件线索」数量：${panelLeads.length}。这是用户问“现在有多少线索”时应直接回答的数字。`,
+    `- 全部邮件记录：${snapshot.leads.length}；非隐藏记录：${visibleLeads.length}；隐藏记录/隐藏广告：${hiddenLeads.length}；非隐藏广告分类：${visibleAds.length}；KOL Database：${snapshot.kolProfiles.length}。`,
+    `- 非隐藏分类统计：${categoryCounts}。`,
+    `- 数据库路径：${snapshot.path || '~/.alpha-studio/marketing.sqlite'}。`,
+    '最近邮件线索样例：',
+    ...(latestLeads.length ? latestLeads : ['- 无']),
+    '',
+    '回答规则：',
+    '- 如果用户只问数量，直接用“当前侧栏邮件线索数量”回答，不需要再检索品牌目录。',
+    '- 如果用户要求进一步分析、筛选或修改，使用 alpha-sidebar CLI 查询 SQLite 营销库或执行白名单更新。',
+    '- 如果 KOL 名称匹配多条记录，列出候选 id/name/email/status 并询问用户选哪条；只有用户明确说“全部”才批量更新。',
+  ].join('\n');
+}
+
+function buildPartnerMarketingTrace(snapshot: MarketingDbSnapshot): AgentContextTrace {
+  const visibleLeads = snapshot.leads.filter((lead) => !lead.hidden);
+  const panelLeads = visibleLeads.filter((lead) => lead.category !== 'ad');
+  const hiddenLeads = snapshot.leads.filter((lead) => lead.hidden);
+  const kolCount = snapshot.kolProfiles.length;
+  const output = [
+    '使用 $sidebar-control 读取右侧「合作推广营销」实时快照。',
+    '',
+    JSON.stringify({
+      emailLeads: panelLeads.length,
+      allEmailRecords: snapshot.leads.length,
+      hidden: hiddenLeads.length,
+      kolProfiles: kolCount,
+      dbPath: snapshot.path || '~/.alpha-studio/marketing.sqlite',
+    }, null, 2),
+  ].join('\n');
+  return {
+    title: 'tool: $sidebar-control',
+    input: '预取右侧「合作推广营销」实时快照；等价 CLI：alpha-sidebar marketing snapshot',
+    output,
+    status: 'completed',
+  };
+}
+
+function EmailLeadList({
+  leads,
+  kols,
+  hiddenView,
+  busy,
+  onRestore,
+  onHide,
+  onOpenKol,
+}: {
+  leads: MarketingEmailLead[];
+  kols: KolProfile[];
+  hiddenView: boolean;
+  busy: boolean;
+  onRestore: (lead: MarketingEmailLead) => void;
+  onHide: (lead: MarketingEmailLead) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  if (leads.length === 0) {
+    return <div className="partner-marketing-placeholder"><Mail size={18} /><span>{hiddenView ? '暂无隐藏广告邮件。' : '暂无邮件线索，请先在设置中配置邮箱并同步。'}</span></div>;
+  }
+  const kolById = new Map(kols.map((kol) => [kol.id, kol]));
+  return (
+    <div className="marketing-lead-list">
+      {leads.map((lead) => {
+        const kol = lead.kolId ? kolById.get(lead.kolId) : null;
+        return (
+          <article key={lead.id} className={`marketing-lead-card ${lead.hidden ? 'hidden-lead' : ''}`}>
+            <div className="marketing-lead-main">
+              <div className="marketing-lead-top">
+                <span className={`marketing-category ${lead.category}`}>{categoryLabel(lead.category)}</span>
+                <strong>{lead.subject}</strong>
+              </div>
+              <span className="marketing-lead-from">{lead.rawFrom} · {formatMaybeDate(lead.receivedAt)} · 置信度 {Math.round(lead.confidence * 100)}%</span>
+              <p>{lead.snippet || '无正文预览'}</p>
+              {kol && <button className="marketing-link-btn" type="button" onClick={() => onOpenKol(kol.id)}><Users size={13} />打开 {kol.name}</button>}
+            </div>
+            <div className="marketing-lead-actions">
+              {hiddenView ? (
+                <button className="settings-btn" type="button" onClick={() => onRestore(lead)} disabled={busy}>恢复</button>
+              ) : (
+                <button className="settings-btn" type="button" onClick={() => onHide(lead)} disabled={busy}>隐藏</button>
+              )}
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function KolTable({ kols, selectedId, onSelect }: { kols: KolProfile[]; selectedId: string | null; onSelect: (id: string) => void }) {
+  if (kols.length === 0) {
+    return <div className="partner-marketing-placeholder"><Database size={18} /><span>暂无 KOL 档案。达人邮件同步后会自动生成记录。</span></div>;
+  }
+  return (
+    <table className="marketing-kol-table">
+      <thead>
+        <tr>
+          <th>用户名</th>
+          <th>关系</th>
+          <th>合作状态</th>
+          <th>负责人</th>
+          <th>优先级</th>
+          <th>最近联系</th>
+        </tr>
+      </thead>
+      <tbody>
+        {kols.map((kol) => (
+          <tr key={kol.id} className={kol.id === selectedId ? 'selected' : ''} onClick={() => onSelect(kol.id)}>
+            <td><strong>{kol.name}</strong><span>{kol.email}</span></td>
+            <td>{kol.relationship}</td>
+            <td><span className="marketing-stage">{kol.collaborationStatus}</span></td>
+            <td>{kol.owner || '未分配'}</td>
+            <td>{priorityLabel(kol.priority)}</td>
+            <td>{formatMaybeDate(kol.lastContactedAt)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function KolDetailPanel({ kol, busy, onSave }: { kol: KolProfile | null; busy: boolean; onSave: (kol: KolProfile, patch: KolProfilePatch) => void }) {
+  const [draft, setDraft] = useState<KolProfilePatch>({});
+  useEffect(() => {
+    setDraft(kol ? {
+      name: kol.name,
+      email: kol.email,
+      country: kol.country ?? '',
+      relationship: kol.relationship,
+      collaborationStatus: kol.collaborationStatus,
+      stage: kol.stage,
+      owner: kol.owner ?? '',
+      priority: kol.priority,
+      tags: kol.tags,
+      brandFitScore: kol.brandFitScore ?? null,
+      riskNote: kol.riskNote ?? '',
+      nextFollowUpAt: kol.nextFollowUpAt ?? null,
+      agentNotes: kol.agentNotes ?? '',
+      humanNotes: kol.humanNotes ?? '',
+    } : {});
+  }, [kol?.id]);
+
+  if (!kol) {
+    return <aside className="marketing-detail-panel"><div className="partner-marketing-placeholder"><Users size={18} /><span>选择一个 KOL 查看详情。</span></div></aside>;
+  }
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    onSave(kol, {
+      ...draft,
+      country: emptyToNull(draft.country),
+      owner: emptyToNull(draft.owner),
+      riskNote: emptyToNull(draft.riskNote),
+      agentNotes: emptyToNull(draft.agentNotes),
+      humanNotes: emptyToNull(draft.humanNotes),
+      brandFitScore: normalizeOptionalNumber(draft.brandFitScore),
+      nextFollowUpAt: normalizeOptionalNumber(draft.nextFollowUpAt),
+    });
+  };
+  return (
+    <aside className="marketing-detail-panel">
+      <header>
+        <span className="marketing-avatar">{initials(kol.name)}</span>
+        <div><strong>{kol.name}</strong><span>{kol.email}</span></div>
+      </header>
+      <form className="marketing-detail-form" onSubmit={submit}>
+        <label>用户名<input className="settings-input" value={draft.name ?? ''} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+        <label>邮箱<input className="settings-input" value={draft.email ?? ''} onChange={(event) => setDraft({ ...draft, email: event.target.value })} /></label>
+        <label>国家<input className="settings-input" value={draft.country ?? ''} onChange={(event) => setDraft({ ...draft, country: event.target.value })} /></label>
+        <label>合作状态
+          <select className="settings-select" value={draft.collaborationStatus ?? '待分配'} onChange={(event) => setDraft({ ...draft, collaborationStatus: event.target.value })}>
+            {['待分配', '跟进中', '已合作', '不适合'].map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+        </label>
+        <label>阶段<input className="settings-input" value={draft.stage ?? ''} onChange={(event) => setDraft({ ...draft, stage: event.target.value })} /></label>
+        <label>负责人<input className="settings-input" value={draft.owner ?? ''} onChange={(event) => setDraft({ ...draft, owner: event.target.value })} /></label>
+        <label>优先级
+          <select className="settings-select" value={draft.priority ?? 'normal'} onChange={(event) => setDraft({ ...draft, priority: event.target.value })}>
+            <option value="high">高</option>
+            <option value="normal">普通</option>
+            <option value="low">低</option>
+          </select>
+        </label>
+        <label>品牌适配分<input className="settings-input" type="number" min={0} max={100} value={draft.brandFitScore ?? ''} onChange={(event) => setDraft({ ...draft, brandFitScore: event.target.value ? Number(event.target.value) : null })} /></label>
+        <label>标签<input className="settings-input" value={draft.tags ?? ''} onChange={(event) => setDraft({ ...draft, tags: event.target.value })} placeholder="beauty,tiktok" /></label>
+        <label>风险备注<textarea className="settings-textarea" value={draft.riskNote ?? ''} onChange={(event) => setDraft({ ...draft, riskNote: event.target.value })} /></label>
+        <label>人工备注<textarea className="settings-textarea" value={draft.humanNotes ?? ''} onChange={(event) => setDraft({ ...draft, humanNotes: event.target.value })} /></label>
+        <button className="settings-btn primary" type="submit" disabled={busy}>保存档案</button>
+      </form>
+    </aside>
+  );
+}
+
+function AutomationLogList({ logs }: { logs: MarketingDbSnapshot['auditLogs'] }) {
+  if (logs.length === 0) {
+    return <div className="partner-marketing-placeholder"><Database size={18} /><span>暂无自动化日志。</span></div>;
+  }
+  return (
+    <div className="marketing-log-list">
+      {logs.map((log) => (
+        <article key={log.id}>
+          <strong>{log.actor === 'agent' ? 'Agent' : '用户'} 更新 {log.targetTable}.{log.field}</strong>
+          <span>{formatMaybeDate(log.createdAt)} · {log.reason}</span>
+          <code>{log.oldValue ?? '空'} → {log.newValue ?? '空'}</code>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ChatArea({
+  domain,
+  agentContext,
+  agentContextResolver,
+  contextToggle,
+}: {
+  domain: DomainConfig;
+  agentContext?: string;
+  agentContextResolver?: AgentContextResolver;
+  contextToggle?: ComposerContextToggle;
+}) {
   const conversation = useCurrentConversation();
   const codexStatus = useChatStore((state) => state.codexStatus);
   if (!conversation) return null;
@@ -2685,20 +3611,70 @@ function ChatArea({ domain }: { domain: DomainConfig }) {
           </div>
         </div>
       )}
-      {isEmpty ? <EmptyState domain={domain} conversation={conversation} disabled={!codexReady} /> : <><div className="message-scroll"><MessageList conversation={conversation} /></div><Composer domain={domain} conversation={conversation} disabled={!codexReady} bottom /></>}
+      {isEmpty ? (
+        <EmptyState
+          domain={domain}
+          conversation={conversation}
+          disabled={!codexReady}
+          agentContext={agentContext}
+          agentContextResolver={agentContextResolver}
+          contextToggle={contextToggle}
+        />
+      ) : (
+        <>
+          <div className="message-scroll"><MessageList conversation={conversation} /></div>
+          <Composer
+            domain={domain}
+            conversation={conversation}
+            disabled={!codexReady}
+            bottom
+            agentContext={agentContext}
+            agentContextResolver={agentContextResolver}
+            contextToggle={contextToggle}
+          />
+        </>
+      )}
     </div>
   );
 }
 
-function EmptyState({ domain, conversation, disabled }: { domain: DomainConfig; conversation: Conversation; disabled: boolean }) {
+function EmptyState({
+  domain,
+  conversation,
+  disabled,
+  agentContext,
+  agentContextResolver,
+  contextToggle,
+}: {
+  domain: DomainConfig;
+  conversation: Conversation;
+  disabled: boolean;
+  agentContext?: string;
+  agentContextResolver?: AgentContextResolver;
+  contextToggle?: ComposerContextToggle;
+}) {
   const sendMessage = useChatStore((state) => state.sendMessage);
+  const sendSuggestion = async (suggestion: DomainSuggestion) => {
+    const resolvedAgentContext = await resolveComposerAgentContext(agentContext, agentContextResolver);
+    void sendMessage(suggestion.prompt, undefined, resolvedAgentContext ? {
+      agentContext: resolvedAgentContext.context,
+      agentContextTrace: resolvedAgentContext.trace,
+    } : undefined);
+  };
   return (
     <div className="empty-state">
       <h1 className="empty-heading">{domain.ui.emptyHeading}</h1>
-      <Composer domain={domain} conversation={conversation} disabled={disabled} />
+      <Composer
+        domain={domain}
+        conversation={conversation}
+        disabled={disabled}
+        agentContext={agentContext}
+        agentContextResolver={agentContextResolver}
+        contextToggle={contextToggle}
+      />
       <div className="suggestion-row">
         {domain.ui.suggestions.map((suggestion) => (
-          <button key={suggestion.id} type="button" className="suggestion-card" onClick={() => void sendMessage(suggestion.prompt)}>
+          <button key={suggestion.id} type="button" className="suggestion-card" onClick={() => void sendSuggestion(suggestion)}>
             {domainSuggestionIcon(suggestion)}
             <strong>{suggestion.title}</strong>
             <span>{suggestion.prompt}</span>
@@ -3077,7 +4053,27 @@ function isReconnectStatusBlock(block: MessageBlock): boolean {
   return block.type === 'error' && /^Reconnecting\.\.\.\s+\d+\/\d+$/i.test(block.content.trim());
 }
 
-function Composer({ domain, conversation, disabled, bottom }: { domain: DomainConfig; conversation: Conversation; disabled?: boolean; bottom?: boolean }) {
+function Composer({
+  domain,
+  conversation,
+  disabled,
+  bottom,
+  className,
+  placeholder,
+  agentContext,
+  agentContextResolver,
+  contextToggle,
+}: {
+  domain: DomainConfig;
+  conversation: Conversation;
+  disabled?: boolean;
+  bottom?: boolean;
+  className?: string;
+  placeholder?: string;
+  agentContext?: string;
+  agentContextResolver?: AgentContextResolver;
+  contextToggle?: ComposerContextToggle;
+}) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -3095,15 +4091,20 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
   };
   const removeAttachment = (id: string) => setAttachments((prev) => prev.filter((item) => item.id !== id));
   const canSend = Boolean(value.trim() || attachments.length);
-  const submit = () => {
+  const submit = async () => {
     if (!canSend || isStreaming || disabled) return;
     const outgoing = attachments;
+    const outgoingValue = value.trim();
     setValue('');
     setAttachments([]);
-    void sendMessage(value.trim(), outgoing);
+    const resolvedAgentContext = await resolveComposerAgentContext(agentContext, agentContextResolver);
+    void sendMessage(outgoingValue, outgoing, resolvedAgentContext ? {
+      agentContext: resolvedAgentContext.context,
+      agentContextTrace: resolvedAgentContext.trace,
+    } : undefined);
   };
   return (
-    <div className={`composer-wrap ${bottom ? 'bottom' : ''}`}>
+    <div className={`composer-wrap ${bottom ? 'bottom' : ''} ${className ?? ''}`}>
       <div className="composer-card">
         {attachments.length > 0 && (
           <div className="composer-attachments">
@@ -3121,19 +4122,32 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
           onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              submit();
+              void submit();
             }
           }}
-          placeholder={disabled ? '请先修复本地智能引擎状态' : bottom ? domain.ui.followupPlaceholder : domain.ui.composerPlaceholder}
+          placeholder={disabled ? '请先修复本地智能引擎状态' : placeholder || (bottom ? domain.ui.followupPlaceholder : domain.ui.composerPlaceholder)}
           rows={1}
         />
         <div className="composer-toolbar">
           <ComposerPlusMenu domain={domain} onAttach={addAttachments} disabled={disabled || isStreaming} />
           <ApprovalPicker />
+          {contextToggle && (
+            <button
+              type="button"
+              className={`composer-pill side-context-pill ${contextToggle.enabled ? 'active accent' : ''}`}
+              onClick={contextToggle.onToggle}
+              disabled={!contextToggle.available || disabled || isStreaming}
+              aria-pressed={contextToggle.enabled}
+              title={contextToggle.title}
+            >
+              <PanelRight size={14} />
+              <span>{contextToggle.enabled ? contextToggle.label : '带入侧栏'}</span>
+            </button>
+          )}
           <span className="spacer" />
           <ModelPicker />
           <button className="composer-icon-btn" type="button" disabled aria-label="语音"><Mic size={15} /></button>
-          {isStreaming ? <button className="send-button stop" type="button" onClick={() => void stopCurrentConversation()} aria-label="停止"><Square size={12} fill="currentColor" strokeWidth={0} /></button> : <button className="send-button" type="button" onClick={submit} disabled={!canSend || disabled} aria-label="发送"><ArrowUp size={18} /></button>}
+          {isStreaming ? <button className="send-button stop" type="button" onClick={() => void stopCurrentConversation()} aria-label="停止"><Square size={12} fill="currentColor" strokeWidth={0} /></button> : <button className="send-button" type="button" onClick={() => void submit()} disabled={!canSend || disabled} aria-label="发送"><ArrowUp size={18} /></button>}
         </div>
       </div>
       <ComposerMeta conversation={conversation} />
@@ -5606,6 +6620,7 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
 
   if (section === 'archived') return <ArchivedSettings />;
   if (section === 'models') return <ModelSettings />;
+  if (section === 'marketing-email') return <MarketingEmailSettings />;
   if (section === 'appearance') {
     return (
       <>
@@ -5690,6 +6705,139 @@ const EMPTY_MODEL_DRAFT: ModelProfileDraft = {
   enabled: true,
   supportsReasoningEffort: false,
 };
+
+const DEFAULT_MARKETING_EMAIL_ACCOUNT: MarketingEmailAccountConfig = {
+  id: 'email-primary',
+  label: 'Marketing Inbox',
+  host: '',
+  port: 993,
+  tls: true,
+  username: '',
+  mailbox: 'INBOX',
+  scanLimit: 200,
+  syncIntervalMinutes: 15,
+  enabled: true,
+  password: '',
+};
+
+function MarketingEmailSettings() {
+  const [draft, setDraft] = useState<MarketingEmailAccountConfig>(DEFAULT_MARKETING_EMAIL_ACCOUNT);
+  const [dbPath, setDbPath] = useState('~/.alpha-studio/marketing.sqlite');
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    void marketingDbQuery(true)
+      .then((snapshot) => {
+        if (disposed) return;
+        setDbPath(snapshot.path);
+        const account = snapshot.accounts[0];
+        if (account) {
+          setDraft({ ...account, password: '' });
+        }
+      })
+      .catch((err) => {
+        if (!disposed) setError(stringifyError(err));
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const save = async (event?: FormEvent) => {
+    event?.preventDefault();
+    setBusy(true);
+    setError(null);
+    setStatus('正在保存邮箱配置...');
+    try {
+      const path = await marketingEmailSecretSave(draft);
+      if (path) setDbPath(path);
+      setStatus('邮箱配置已保存到本地数据库，密码已写入系统 Keychain。');
+      setDraft((current) => ({ ...current, password: '' }));
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const test = async () => {
+    setBusy(true);
+    setError(null);
+    setStatus('正在测试 IMAP 连接...');
+    try {
+      const result = await marketingEmailTestConnection(draft);
+      setStatus(result.message);
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sync = async () => {
+    setBusy(true);
+    setError(null);
+    setStatus('正在只读同步最近邮件...');
+    try {
+      await marketingEmailSecretSave(draft);
+      const result = await marketingEmailSyncReadonly(draft);
+      setDbPath(result.path);
+      setStatus(`同步完成：${result.synced} 封，新增 ${result.inserted}，更新 ${result.updated}，隐藏广告 ${result.hidden}。`);
+      setDraft((current) => ({ ...current, password: '' }));
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const canUse = Boolean(draft.host.trim() && draft.username.trim() && (draft.password?.trim() || isTauriRuntime()));
+
+  return (
+    <>
+      <SettingsGroup>
+        <SettingsRow title="本地数据库" description="邮件分类、KOL 档案和自动化日志都保存在本机 SQLite。">
+          <span className="settings-static model-config-path">{dbPath}</span>
+        </SettingsRow>
+        <SettingsRow title="邮箱只读策略" description="同步使用 BODY.PEEK，不在邮箱系统内打标签、移动、删除或标记已读。">
+          <span className="settings-static">只读同步</span>
+        </SettingsRow>
+      </SettingsGroup>
+
+      <form className="marketing-settings-form" onSubmit={save}>
+        <div className="settings-subtitle">IMAP 邮箱</div>
+        <div className="model-form-grid">
+          <label>显示名称<input className="settings-input" value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} placeholder="Marketing Inbox" /></label>
+          <label>IMAP 主机<input className="settings-input" value={draft.host} onChange={(event) => setDraft({ ...draft, host: event.target.value })} placeholder="imap.gmail.com" /></label>
+          <label>端口<input className="settings-input" type="number" value={draft.port} onChange={(event) => setDraft({ ...draft, port: Number(event.target.value) || 993 })} /></label>
+          <label>用户名<input className="settings-input" value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} placeholder="marketing@example.com" /></label>
+          <label>应用密码<input className="settings-input" type="password" value={draft.password ?? ''} onChange={(event) => setDraft({ ...draft, password: event.target.value })} placeholder="留空表示继续使用已保存密码" /></label>
+          <label>邮箱文件夹<input className="settings-input" value={draft.mailbox} onChange={(event) => setDraft({ ...draft, mailbox: event.target.value })} placeholder="INBOX" /></label>
+          <label>单次扫描<input className="settings-input" type="number" min={1} max={1000} value={draft.scanLimit} onChange={(event) => setDraft({ ...draft, scanLimit: Number(event.target.value) || 200 })} /></label>
+          <label>同步间隔（分钟）<input className="settings-input" type="number" min={1} max={1440} value={draft.syncIntervalMinutes} onChange={(event) => setDraft({ ...draft, syncIntervalMinutes: Number(event.target.value) || 15 })} /></label>
+        </div>
+        <div className="model-form-options">
+          <label className="model-toggle"><input type="checkbox" checked={draft.tls} onChange={(event) => setDraft({ ...draft, tls: event.target.checked, port: event.target.checked ? 993 : draft.port })} /><span>TLS</span></label>
+          <label className="model-toggle"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} /><span>启用定时同步</span></label>
+        </div>
+        {(status || error) && (
+          <div className={`settings-status ${error ? 'attention' : 'ready'}`}>
+            <span className="settings-status-icon">{busy ? <Loader2 size={16} className="spin" /> : error ? <AlertTriangle size={16} /> : <Check size={16} />}</span>
+            <div className="settings-status-main">
+              <strong>{error ? '邮件营销设置需要处理' : '邮件营销设置'}</strong>
+              <span>{error || status}</span>
+            </div>
+          </div>
+        )}
+        <div className="model-form-actions">
+          <button className="settings-btn primary" type="submit" disabled={busy || !canUse}>保存配置</button>
+          <button className="settings-btn" type="button" onClick={() => void test()} disabled={busy || !canUse}>测试连接</button>
+          <button className="settings-btn" type="button" onClick={() => void sync()} disabled={busy || !canUse}>立即同步</button>
+        </div>
+      </form>
+    </>
+  );
+}
 
 function ModelSettings() {
   const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
@@ -6084,6 +7232,7 @@ function settingsIcon(section: SettingsSection): ReactNode {
     profile: <UserCircle size={15} />,
 	    appearance: <Sun size={15} />,
 	    config: <Box size={15} />,
+    'marketing-email': <Mail size={15} />,
 	    models: <Cpu size={15} />,
 	    personalization: <Sparkles size={15} />,
     keyboard: <Keyboard size={15} />,
@@ -6267,6 +7416,47 @@ async function confirmDanger(message: string, title: string): Promise<boolean> {
     }
   }
   return window.confirm(`${title}\n\n${message}`);
+}
+
+function categoryLabel(category: MarketingEmailLead['category']): string {
+  if (category === 'affiliate') return '联盟';
+  if (category === 'ad') return '广告';
+  if (category === 'other') return '其他';
+  return '达人';
+}
+
+function priorityLabel(priority: string): string {
+  if (priority === 'high') return '高';
+  if (priority === 'low') return '低';
+  return '普通';
+}
+
+function formatMaybeDate(value?: number | null): string {
+  if (!value) return '未同步';
+  return formatDate(value);
+}
+
+function initials(name: string): string {
+  const cleaned = name.trim();
+  if (!cleaned) return 'K';
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  return cleaned.slice(0, 2).toUpperCase();
+}
+
+function emptyToNull(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function normalizeOptionalNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function formatRelative(value: number): string {

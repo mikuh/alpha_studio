@@ -154,6 +154,7 @@ export const brandSystemDomain: DomainConfig = {
       { id: 'profile', label: '个人资料' },
       { id: 'appearance', label: '外观' },
       { id: 'config', label: '配置' },
+      { id: 'marketing-email', label: '邮件营销' },
       { id: 'models', label: '模型' },
       { id: 'personalization', label: '个性化' },
       { id: 'keyboard', label: '键盘快捷键' },

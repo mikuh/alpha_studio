@@ -99,11 +99,21 @@ interface ChatState {
   setPursueGoal: (pursueGoal: boolean) => void;
   resolveAuthorization: (id: string, decision: ApprovalDecision) => void;
   refreshCodexStatus: () => Promise<void>;
-  sendMessage: (message: string, attachments?: MessageAttachment[]) => Promise<void>;
+  sendMessage: (message: string, attachments?: MessageAttachment[], options?: SendMessageOptions) => Promise<void>;
   startReview: (request: ReviewRequest) => Promise<void>;
   editUserMessageAndResend: (conversationId: string, messageId: string, message: string, attachments?: MessageAttachment[]) => Promise<void>;
   stopCurrentConversation: () => Promise<void>;
   handleCodexEvent: (event: CodexChatEvent) => void;
+}
+
+interface SendMessageOptions {
+  agentContext?: string;
+  agentContextTrace?: {
+    title: string;
+    input?: string;
+    output?: string;
+    status?: 'completed' | 'failed';
+  };
 }
 
 interface PersistedChatState {
@@ -589,7 +599,7 @@ export const useChatStore = create<ChatState>()(
         }
       },
 
-      sendMessage: async (message: string, attachments?: MessageAttachment[]) => {
+      sendMessage: async (message: string, attachments?: MessageAttachment[], options?: SendMessageOptions) => {
         const trimmed = message.trim();
         const attachmentList = attachments && attachments.length ? attachments : undefined;
         if (!trimmed && !attachmentList) return;
@@ -614,7 +624,14 @@ export const useChatStore = create<ChatState>()(
           role: 'assistant',
           timestamp: Date.now(),
           isStreaming: true,
-          blocks: [],
+          blocks: options?.agentContextTrace ? [{
+            type: 'tool',
+            id: createId('tool'),
+            title: options.agentContextTrace.title,
+            status: options.agentContextTrace.status ?? 'completed',
+            input: options.agentContextTrace.input,
+            output: options.agentContextTrace.output,
+          }] : [],
         };
         const nextTitle = conversation.messages.length === 0
           ? buildConversationTitle(trimmed || attachmentList?.[0]?.name || '')
@@ -647,7 +664,8 @@ export const useChatStore = create<ChatState>()(
 	        try {
 	          const latest = get().conversations.find((item) => item.id === conversationId);
 	          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
-	          const prompt = buildCodingPrompt(promptWithAttachments(trimmed, attachmentList), {
+	          const promptBody = promptWithOptionalAgentContext(promptWithAttachments(trimmed, attachmentList), options?.agentContext);
+	          const prompt = buildCodingPrompt(promptBody, {
 	            planMode: get().planMode,
 	            pursueGoal: get().pursueGoal,
 	          }, activeDomain(get().workModeId));
@@ -1143,6 +1161,20 @@ function promptWithAttachments(text: string, attachments?: MessageAttachment[]):
   const lines = attachments.map((item) => `- ${item.path || item.name}${item.kind === 'image' ? '（图片）' : ''}`);
   const section = ['附带文件：', ...lines].join('\n');
   return text ? `${text}\n\n${section}` : section;
+}
+
+function promptWithOptionalAgentContext(userPrompt: string, agentContext?: string): string {
+  const context = agentContext?.trim();
+  if (!context) return userPrompt;
+  return [
+    '以下是当前已开启的可操作侧栏上下文，包含界面状态、可写接口和操作约束：',
+    context,
+    '',
+    '重要：当用户请求可以解释为侧栏操作时，必须优先按上述侧栏上下文/技能处理，不要先去当前工作目录搜索文件。只有用户明确要求查看项目文件、代码或品牌目录时，才把 cwd 当作主要数据源。',
+    '',
+    '用户请求：',
+    userPrompt,
+  ].join('\n');
 }
 
 function buildEditedPrompt(message: string, previousMessages: ChatMessage[]): string {

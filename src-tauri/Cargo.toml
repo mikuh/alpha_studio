@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Incuboot - private vertical commercial brand intelligence workspace"
 authors = ["Incuboot"]
 edition = "2021"
+default-run = "alpha-studio"
 
 [lib]
 name = "alpha_studio_lib"
@@ -22,6 +23,12 @@ tokio = { version = "1", features = ["full"] }
 portable-pty = "0.9"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+imap = "2.4.1"
+keyring = "4.0.1"
+keyring-core = "1.0.0"
+mail-parser = "0.11.3"
+native-tls = "0.2.18"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
 window-vibrancy = "0.7"

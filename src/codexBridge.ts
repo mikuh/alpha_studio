@@ -11,6 +11,10 @@ import type {
   GitDiffStat,
   GitRemote,
   GitStatus,
+  KolProfilePatch,
+  MarketingDbSnapshot,
+  MarketingEmailAccountConfig,
+  MarketingEmailSyncResult,
   OpenAppId,
   SandboxMode,
   TerminalEvent,
@@ -79,6 +83,44 @@ export async function saveModelConfig(config: ModelConfigFile): Promise<string |
   if (!isTauriRuntime()) return null;
   const result = await invoke<{ path: string }>('model_config_save', { request: config });
   return result.path;
+}
+
+export async function marketingDbQuery(includeHidden = true): Promise<MarketingDbSnapshot> {
+  if (!isTauriRuntime()) return browserMarketingSnapshot();
+  return invoke<MarketingDbSnapshot>('marketing_db_query', { request: { includeHidden } });
+}
+
+export async function marketingEmailSecretSave(account: MarketingEmailAccountConfig): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const result = await invoke<{ saved: boolean; path: string }>('marketing_email_secret_save', { request: { account } });
+  return result.path;
+}
+
+export async function marketingEmailTestConnection(account: MarketingEmailAccountConfig): Promise<{ ok: boolean; message: string }> {
+  if (!isTauriRuntime()) return { ok: true, message: '浏览器预览模式不会连接真实邮箱。' };
+  return invoke<{ ok: boolean; message: string }>('marketing_email_test_connection', { request: { account } });
+}
+
+export async function marketingEmailSyncReadonly(account: MarketingEmailAccountConfig): Promise<MarketingEmailSyncResult> {
+  if (!isTauriRuntime()) return browserMarketingSyncResult();
+  return invoke<MarketingEmailSyncResult>('marketing_email_sync_readonly', { request: { account } });
+}
+
+export async function marketingDbUpdateKol(id: string, patch: KolProfilePatch, reason?: string): Promise<MarketingDbSnapshot> {
+  if (!isTauriRuntime()) return browserMarketingSnapshot();
+  return invoke<MarketingDbSnapshot>('marketing_db_update_kol', { request: { id, patch, reason } });
+}
+
+export async function marketingAgentApplyUpdate(request: {
+  targetTable: string;
+  targetId: string;
+  field: string;
+  oldValue?: string | null;
+  newValue?: string | null;
+  reason: string;
+}): Promise<MarketingDbSnapshot> {
+  if (!isTauriRuntime()) return browserMarketingSnapshot();
+  return invoke<MarketingDbSnapshot>('marketing_agent_apply_update', { request });
 }
 
 export async function revealPath(path: string): Promise<boolean> {
@@ -247,6 +289,145 @@ export async function subscribeTerminalEvents(
   return listen<TerminalEvent>(TERMINAL_EVENT, (event) => {
     handler(event.payload);
   });
+}
+
+function browserMarketingSyncResult(): MarketingEmailSyncResult {
+  return {
+    synced: 3,
+    inserted: 0,
+    updated: 3,
+    hidden: 1,
+    other: 0,
+    kolCreated: 1,
+    path: '~/.alpha-studio/marketing.sqlite',
+  };
+}
+
+function browserMarketingSnapshot(): MarketingDbSnapshot {
+  const now = Date.now();
+  return {
+    path: '~/.alpha-studio/marketing.sqlite',
+    accounts: [
+      {
+        id: 'email-preview',
+        label: 'Preview Inbox',
+        host: 'imap.example.com',
+        port: 993,
+        tls: true,
+        username: 'marketing@example.com',
+        mailbox: 'INBOX',
+        scanLimit: 200,
+        syncIntervalMinutes: 15,
+        enabled: true,
+        lastSyncedAt: now - 1000 * 60 * 8,
+        createdAt: now - 1000 * 60 * 60,
+        updatedAt: now - 1000 * 60 * 8,
+      },
+    ],
+    leads: [
+      {
+        id: 'lead-preview-1',
+        accountId: 'email-preview',
+        imapUid: '901',
+        messageId: '<creator@example.com>',
+        threadId: 'Collaboration with Incuboot',
+        fromName: 'Mia Chen',
+        fromEmail: 'mia.creator@example.com',
+        rawFrom: 'Mia Chen <mia.creator@example.com>',
+        subject: 'Collaboration with Incuboot',
+        snippet: 'I love the product direction and would like to discuss a TikTok + IG Reel package for next month.',
+        receivedAt: now - 1000 * 60 * 24,
+        category: 'influencer',
+        hidden: false,
+        confidence: 0.86,
+        kolId: 'kol-preview-1',
+        agentReviewedAt: now - 1000 * 60 * 12,
+        agentReviewNote: '预览模式自动识别为达人合作线索。',
+        createdAt: now - 1000 * 60 * 24,
+        updatedAt: now - 1000 * 60 * 12,
+      },
+      {
+        id: 'lead-preview-2',
+        accountId: 'email-preview',
+        imapUid: '902',
+        messageId: '<affiliate@example.com>',
+        threadId: 'Affiliate partnership',
+        fromName: 'Partner Desk',
+        fromEmail: 'partner@example.com',
+        rawFrom: 'Partner Desk <partner@example.com>',
+        subject: 'Affiliate partnership proposal',
+        snippet: 'We can promote your offer through a CPS affiliate program with weekly reporting.',
+        receivedAt: now - 1000 * 60 * 48,
+        category: 'affiliate',
+        hidden: false,
+        confidence: 0.78,
+        agentReviewedAt: now - 1000 * 60 * 48,
+        agentReviewNote: '预览模式自动识别为联盟合作线索。',
+        createdAt: now - 1000 * 60 * 48,
+        updatedAt: now - 1000 * 60 * 48,
+      },
+      {
+        id: 'lead-preview-3',
+        accountId: 'email-preview',
+        imapUid: '903',
+        messageId: '<seo@example.com>',
+        threadId: 'SEO services',
+        fromName: 'Growth SEO',
+        fromEmail: 'sales@seo.example.com',
+        rawFrom: 'Growth SEO <sales@seo.example.com>',
+        subject: 'Limited offer for guest post backlinks',
+        snippet: 'We provide guest post backlinks and lead generation packages at a discount.',
+        receivedAt: now - 1000 * 60 * 72,
+        category: 'ad',
+        hidden: true,
+        confidence: 0.81,
+        agentReviewedAt: now - 1000 * 60 * 72,
+        agentReviewNote: '预览模式自动隐藏广告邮件。',
+        createdAt: now - 1000 * 60 * 72,
+        updatedAt: now - 1000 * 60 * 72,
+      },
+    ],
+    kolProfiles: [
+      {
+        id: 'kol-preview-1',
+        name: 'Mia Chen',
+        email: 'mia.creator@example.com',
+        country: 'US',
+        relationship: '达人',
+        collaborationStatus: '待分配',
+        stage: '线索',
+        owner: 'Marketing',
+        priority: 'high',
+        tags: 'beauty,tiktok',
+        source: 'Email',
+        archived: false,
+        brandFitScore: 82,
+        riskNote: '',
+        nextFollowUpAt: now + 1000 * 60 * 60 * 24,
+        lastContactedAt: now - 1000 * 60 * 24,
+        agentNotes: '由邮件线索自动创建。',
+        humanNotes: '',
+        createdAt: now - 1000 * 60 * 24,
+        updatedAt: now - 1000 * 60 * 12,
+      },
+    ],
+    platformAccounts: [],
+    collaborations: [],
+    posts: [],
+    auditLogs: [
+      {
+        id: 'audit-preview-1',
+        actor: 'agent',
+        targetTable: 'marketing_email_leads',
+        targetId: 'email-preview',
+        field: 'sync',
+        oldValue: null,
+        newValue: '3 emails',
+        reason: '只读同步邮件并写入本地营销库',
+        createdAt: now - 1000 * 60 * 8,
+      },
+    ],
+  };
 }
 
 function browserGitStatus(cwd: string): GitStatus {
