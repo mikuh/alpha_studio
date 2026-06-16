@@ -469,6 +469,18 @@ pub struct MarketingDbSnapshot {
     collaborations: Vec<KolCollaboration>,
     posts: Vec<KolPost>,
     audit_logs: Vec<AutomationAuditLog>,
+    settings: MarketingSettings,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingSettings {
+    /// When true, agent-run evaluations (and classifications) finalize
+    /// automatically instead of waiting for a human to confirm.
+    agent_auto_confirm: bool,
+    /// When true, the agent may compose AND send Step 3 replies on its own
+    /// (one-click reply via SMTP). When false it only drafts; a human sends.
+    agent_auto_reply: bool,
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -509,6 +521,7 @@ pub struct MarketingEmailLead {
     kol_id: Option<String>,
     agent_reviewed_at: Option<i64>,
     agent_review_note: String,
+    human_confirmed: bool,
     created_at: i64,
     updated_at: i64,
 }
@@ -534,6 +547,12 @@ pub struct KolProfile {
     last_contacted_at: Option<i64>,
     agent_notes: Option<String>,
     human_notes: Option<String>,
+    pipeline_stage: String,
+    evaluation: Option<String>,
+    outreach: Option<String>,
+    intake: Option<String>,
+    collaboration: Option<String>,
+    shipment: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -635,6 +654,7 @@ pub struct KolProfilePatch {
     next_follow_up_at: Option<Option<i64>>,
     agent_notes: Option<Option<String>>,
     human_notes: Option<Option<String>>,
+    pipeline_stage: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Debug)]
@@ -646,6 +666,201 @@ pub struct MarketingAgentApplyUpdateRequest {
     old_value: Option<String>,
     new_value: Option<String>,
     reason: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingLeadClassifyRequest {
+    id: String,
+    category: String,
+    hidden: Option<bool>,
+    confirmed: Option<bool>,
+    actor: Option<String>,
+    reason: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalCriterionInput {
+    key: String,
+    #[serde(default)]
+    label: Option<String>,
+    // Accepted for API symmetry; the canonical hard/soft kind comes from the rubric catalog.
+    #[serde(default)]
+    #[allow(dead_code)]
+    kind: Option<String>,
+    status: String,
+    #[serde(default)]
+    detail: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingKolEvaluateRequest {
+    id: String,
+    #[serde(default)]
+    criteria: Vec<EvalCriterionInput>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    recommendation: Option<String>,
+    #[serde(default)]
+    confirmed: Option<bool>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingKolOutreachRequest {
+    id: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    script_id: Option<String>,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    /// "sent" (default) or "skipped".
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingKolReplyRequest {
+    id: String,
+    /// Final, rendered reply body (already variable-substituted by the UI).
+    body: String,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    script_id: Option<String>,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    /// When false, record the outreach without actually sending (default true).
+    #[serde(default)]
+    send: Option<bool>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingKolIntakeRequest {
+    id: String,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    relationship: Option<String>,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    platforms: Option<String>,
+    #[serde(default)]
+    links: Option<String>,
+    #[serde(default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    metrics: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    /// "done" (default) or "draft".
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingKolCollabRequest {
+    id: String,
+    /// "sent" (合同已发) | "signed" (已签约) | "declined" (流失). Default "sent".
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    script_id: Option<String>,
+    #[serde(default)]
+    contract_url: Option<String>,
+    #[serde(default)]
+    video_count: Option<i64>,
+    #[serde(default)]
+    note: Option<String>,
+    /// Optional contract email body to send via SMTP before recording.
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    /// When true, send `body` as an email first (default false).
+    #[serde(default)]
+    send: Option<bool>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingKolShipRequest {
+    id: String,
+    /// "shipped" (default) | "delivered" | "issue".
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    carrier: Option<String>,
+    #[serde(default)]
+    tracking: Option<String>,
+    #[serde(default)]
+    tracking_url: Option<String>,
+    #[serde(default)]
+    address: Option<String>,
+    #[serde(default)]
+    units: Option<String>,
+    #[serde(default)]
+    expected_post_at: Option<i64>,
+    #[serde(default)]
+    note: Option<String>,
+    /// Optional shipping-notice email body to send via SMTP before recording.
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    /// When true, send `body` as an email first (default false).
+    #[serde(default)]
+    send: Option<bool>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[tauri::command]
@@ -774,6 +989,238 @@ async fn marketing_agent_apply_update(
     let conn = marketing_connection()?;
     apply_agent_update(&conn, request)?;
     marketing_snapshot(&conn, true)
+}
+
+#[tauri::command]
+async fn marketing_lead_classify(
+    request: MarketingLeadClassifyRequest,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    let actor = normalize_actor(request.actor);
+    let reason = request
+        .reason
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Step 1 初步分类：确认邮件类别".to_string());
+    classify_marketing_lead(
+        &conn,
+        &request.id,
+        &request.category,
+        request.hidden,
+        request.confirmed.unwrap_or(true),
+        &reason,
+        &actor,
+    )?;
+    marketing_snapshot(&conn, true)
+}
+
+#[tauri::command]
+async fn marketing_kol_evaluate(
+    request: MarketingKolEvaluateRequest,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    let actor = normalize_actor(request.actor.clone());
+    let reason = request
+        .reason
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Step 2 网红评估：写入评估结论".to_string());
+    apply_kol_evaluation(&conn, request, &reason, &actor)?;
+    marketing_snapshot(&conn, true)
+}
+
+#[tauri::command]
+async fn marketing_kol_outreach(
+    request: MarketingKolOutreachRequest,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    let actor = normalize_actor(request.actor.clone());
+    let reason = request
+        .reason
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Step 3 评估后处理：记录外联动作".to_string());
+    apply_kol_outreach(&conn, request, &reason, &actor)?;
+    marketing_snapshot(&conn, true)
+}
+
+#[tauri::command]
+async fn marketing_kol_reply(
+    request: MarketingKolReplyRequest,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    let actor = normalize_actor(request.actor.clone());
+    let reason = request
+        .reason
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Step 3 评估后处理：一键回复".to_string());
+    apply_kol_reply(&conn, request, &reason, &actor)?;
+    marketing_snapshot(&conn, true)
+}
+
+#[tauri::command]
+async fn marketing_kol_intake(
+    request: MarketingKolIntakeRequest,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    let actor = normalize_actor(request.actor.clone());
+    let reason = request
+        .reason
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Step 4 录入系统".to_string());
+    apply_kol_intake(&conn, request, &reason, &actor)?;
+    marketing_snapshot(&conn, true)
+}
+
+#[tauri::command]
+async fn marketing_kol_collaborate(
+    request: MarketingKolCollabRequest,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    let actor = normalize_actor(request.actor.clone());
+    let reason = request
+        .reason
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Step 5 合作推进".to_string());
+    apply_kol_collaborate(&conn, request, &reason, &actor)?;
+    marketing_snapshot(&conn, true)
+}
+
+#[tauri::command]
+async fn marketing_kol_ship(
+    request: MarketingKolShipRequest,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    let actor = normalize_actor(request.actor.clone());
+    let reason = request
+        .reason
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Step 6 发货流程".to_string());
+    apply_kol_ship(&conn, request, &reason, &actor)?;
+    marketing_snapshot(&conn, true)
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketingSettingsUpdate {
+    #[serde(default)]
+    agent_auto_confirm: Option<bool>,
+    #[serde(default)]
+    agent_auto_reply: Option<bool>,
+}
+
+/// Persist workflow preferences (e.g. whether the agent may self-confirm
+/// evaluations without a human review). Returns the refreshed snapshot.
+#[tauri::command]
+async fn marketing_settings_set(
+    request: MarketingSettingsUpdate,
+) -> Result<MarketingDbSnapshot, String> {
+    let conn = marketing_connection()?;
+    if let Some(value) = request.agent_auto_confirm {
+        set_marketing_setting(
+            &conn,
+            SETTING_AGENT_AUTO_CONFIRM,
+            if value { "true" } else { "false" },
+        )?;
+    }
+    if let Some(value) = request.agent_auto_reply {
+        set_marketing_setting(
+            &conn,
+            SETTING_AGENT_AUTO_REPLY,
+            if value { "true" } else { "false" },
+        )?;
+    }
+    marketing_snapshot(&conn, true)
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateRequest {
+    text: String,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateResult {
+    text: String,
+    source_lang: String,
+    target_lang: String,
+}
+
+/// Lightweight, key-less translation used to make foreign-language email leads
+/// readable. Uses the public Google translate endpoint via the Rust backend so
+/// the webview is not blocked by CORS.
+#[tauri::command]
+async fn translate_text(request: TranslateRequest) -> Result<TranslateResult, String> {
+    let target = request
+        .target
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "zh-CN".to_string());
+    let source = request
+        .source
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "auto".to_string());
+    let trimmed = request.text.trim();
+    if trimmed.is_empty() {
+        return Ok(TranslateResult {
+            text: String::new(),
+            source_lang: source,
+            target_lang: target,
+        });
+    }
+    // Keep the GET URL within safe limits; email snippets are already capped.
+    let text: String = trimmed.chars().take(4500).collect();
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://translate.googleapis.com/translate_a/single")
+        .query(&[
+            ("client", "gtx"),
+            ("sl", source.as_str()),
+            ("tl", target.as_str()),
+            ("dt", "t"),
+            ("q", text.as_str()),
+        ])
+        .header("user-agent", "Mozilla/5.0")
+        .send()
+        .await
+        .map_err(|e| format!("翻译请求失败：{e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("翻译服务返回 {}", response.status()));
+    }
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|e| format!("翻译响应解析失败：{e}"))?;
+
+    let mut translated = String::new();
+    if let Some(chunks) = body.get(0).and_then(Value::as_array) {
+        for chunk in chunks {
+            if let Some(part) = chunk.get(0).and_then(Value::as_str) {
+                translated.push_str(part);
+            }
+        }
+    }
+    if translated.trim().is_empty() {
+        return Err("翻译结果为空".to_string());
+    }
+    let detected = body
+        .get(2)
+        .and_then(Value::as_str)
+        .unwrap_or(source.as_str())
+        .to_string();
+    Ok(TranslateResult {
+        text: translated,
+        source_lang: detected,
+        target_lang: target,
+    })
 }
 
 #[tauri::command]
@@ -2181,6 +2628,9 @@ fn initialize_marketing_db(conn: &Connection) -> Result<(), String> {
           last_contacted_at INTEGER,
           agent_notes TEXT,
           human_notes TEXT,
+          pipeline_stage TEXT NOT NULL DEFAULT 'evaluate',
+          evaluation TEXT,
+          outreach TEXT,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
@@ -2258,6 +2708,7 @@ fn initialize_marketing_db(conn: &Connection) -> Result<(), String> {
           kol_id TEXT,
           agent_reviewed_at INTEGER,
           agent_review_note TEXT NOT NULL DEFAULT '',
+          human_confirmed INTEGER NOT NULL DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           UNIQUE(account_id, imap_uid),
@@ -2275,6 +2726,12 @@ fn initialize_marketing_db(conn: &Connection) -> Result<(), String> {
           new_value TEXT,
           reason TEXT NOT NULL,
           created_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS marketing_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_marketing_email_leads_category ON marketing_email_leads(category, hidden);
@@ -2304,11 +2761,105 @@ fn migrate_marketing_email_leads(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|e| format!("Failed to add email review note column: {e}"))?;
     }
+    if !marketing_table_has_column(conn, "marketing_email_leads", "human_confirmed")? {
+        conn.execute(
+            "ALTER TABLE marketing_email_leads ADD COLUMN human_confirmed INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| format!("Failed to add email human_confirmed column: {e}"))?;
+    }
+    if !marketing_table_has_column(conn, "kol_profiles", "pipeline_stage")? {
+        conn.execute(
+            "ALTER TABLE kol_profiles ADD COLUMN pipeline_stage TEXT NOT NULL DEFAULT 'evaluate'",
+            [],
+        )
+        .map_err(|e| format!("Failed to add KOL pipeline_stage column: {e}"))?;
+    }
+    if !marketing_table_has_column(conn, "kol_profiles", "evaluation")? {
+        conn.execute("ALTER TABLE kol_profiles ADD COLUMN evaluation TEXT", [])
+            .map_err(|e| format!("Failed to add KOL evaluation column: {e}"))?;
+    }
+    if !marketing_table_has_column(conn, "kol_profiles", "outreach")? {
+        conn.execute("ALTER TABLE kol_profiles ADD COLUMN outreach TEXT", [])
+            .map_err(|e| format!("Failed to add KOL outreach column: {e}"))?;
+    }
+    if !marketing_table_has_column(conn, "kol_profiles", "intake")? {
+        conn.execute("ALTER TABLE kol_profiles ADD COLUMN intake TEXT", [])
+            .map_err(|e| format!("Failed to add KOL intake column: {e}"))?;
+    }
+    if !marketing_table_has_column(conn, "kol_profiles", "collaboration")? {
+        conn.execute("ALTER TABLE kol_profiles ADD COLUMN collaboration TEXT", [])
+            .map_err(|e| format!("Failed to add KOL collaboration column: {e}"))?;
+    }
+    if !marketing_table_has_column(conn, "kol_profiles", "shipment")? {
+        conn.execute("ALTER TABLE kol_profiles ADD COLUMN shipment TEXT", [])
+            .map_err(|e| format!("Failed to add KOL shipment column: {e}"))?;
+    }
     conn.execute(
         "UPDATE marketing_email_leads SET category = 'other', hidden = 0, kol_id = NULL WHERE category = 'ad' OR category NOT IN ('influencer', 'affiliate', 'other')",
         [],
     )
     .map_err(|e| format!("Failed to migrate email categories: {e}"))?;
+    review_cached_marketing_email_leads(conn)?;
+    Ok(())
+}
+
+fn review_cached_marketing_email_leads(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, imap_uid, message_id, thread_id, from_name, from_email, raw_from, subject, snippet, received_at FROM marketing_email_leads WHERE agent_reviewed_at IS NULL OR COALESCE(agent_review_note, '') = ''",
+        )
+        .map_err(|e| format!("Failed to prepare cached email review query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                RawMarketingEmail {
+                    imap_uid: row.get(1)?,
+                    message_id: row.get(2)?,
+                    thread_id: row.get(3)?,
+                    from_name: row.get(4)?,
+                    from_email: row.get(5)?,
+                    raw_from: row.get(6)?,
+                    subject: row.get(7)?,
+                    snippet: row.get(8)?,
+                    received_at: row.get(9)?,
+                },
+            ))
+        })
+        .map_err(|e| format!("Failed to query cached emails for review: {e}"))?;
+    let mut reviewed = Vec::new();
+    for row in rows {
+        reviewed.push(row.map_err(|e| format!("Failed to read cached email for review: {e}"))?);
+    }
+    drop(stmt);
+    let now = now_millis();
+    for (id, email) in reviewed {
+        let classification = classify_marketing_email(&email);
+        let kol_id = if classification.category == "influencer" {
+            conn.query_row(
+                "SELECT id FROM kol_profiles WHERE lower(email) = lower(?1)",
+                params![email.from_email],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to find reviewed KOL profile: {e}"))?
+        } else {
+            None
+        };
+        conn.execute(
+            "UPDATE marketing_email_leads SET category = ?1, hidden = 0, confidence = ?2, kol_id = ?3, agent_reviewed_at = ?4, agent_review_note = ?5, updated_at = ?4 WHERE id = ?6",
+            params![
+                classification.category,
+                classification.confidence,
+                kol_id,
+                now,
+                classification.review_note,
+                id,
+            ],
+        )
+        .map_err(|e| format!("Failed to backfill cached email review: {e}"))?;
+    }
     Ok(())
 }
 
@@ -2618,10 +3169,10 @@ fn upsert_marketing_email_leads(
               subject=excluded.subject,
               snippet=excluded.snippet,
               received_at=excluded.received_at,
-              category=excluded.category,
-              hidden=CASE WHEN marketing_email_leads.hidden = 1 THEN 1 ELSE excluded.hidden END,
+              category=CASE WHEN marketing_email_leads.human_confirmed = 1 THEN marketing_email_leads.category ELSE excluded.category END,
+              hidden=CASE WHEN marketing_email_leads.hidden = 1 OR marketing_email_leads.human_confirmed = 1 THEN marketing_email_leads.hidden ELSE excluded.hidden END,
               confidence=excluded.confidence,
-              kol_id=excluded.kol_id,
+              kol_id=CASE WHEN marketing_email_leads.human_confirmed = 1 THEN marketing_email_leads.kol_id ELSE excluded.kol_id END,
               agent_reviewed_at=excluded.agent_reviewed_at,
               agent_review_note=excluded.agent_review_note,
               updated_at=excluded.updated_at
@@ -2903,6 +3454,50 @@ fn marketing_snapshot(
         collaborations: query_collaborations(conn)?,
         posts: query_posts(conn)?,
         audit_logs: query_audit_logs(conn)?,
+        settings: query_marketing_settings(conn)?,
+    })
+}
+
+const SETTING_AGENT_AUTO_CONFIRM: &str = "agent_auto_confirm";
+const SETTING_AGENT_AUTO_REPLY: &str = "agent_auto_reply";
+
+fn get_marketing_setting(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT value FROM marketing_settings WHERE key = ?1",
+        params![key],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| format!("Failed to read marketing setting {key}: {e}"))
+}
+
+fn set_marketing_setting(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO marketing_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value, now_millis()],
+    )
+    .map_err(|e| format!("Failed to write marketing setting {key}: {e}"))?;
+    Ok(())
+}
+
+fn parse_bool_setting(value: Option<String>) -> bool {
+    matches!(
+        value.as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+fn query_marketing_settings(conn: &Connection) -> Result<MarketingSettings, String> {
+    Ok(MarketingSettings {
+        agent_auto_confirm: parse_bool_setting(get_marketing_setting(
+            conn,
+            SETTING_AGENT_AUTO_CONFIRM,
+        )?),
+        agent_auto_reply: parse_bool_setting(get_marketing_setting(
+            conn,
+            SETTING_AGENT_AUTO_REPLY,
+        )?),
     })
 }
 
@@ -2941,9 +3536,9 @@ fn query_email_leads(
     include_hidden: bool,
 ) -> Result<Vec<MarketingEmailLead>, String> {
     let sql = if include_hidden {
-        "SELECT id, account_id, imap_uid, message_id, thread_id, from_name, from_email, raw_from, subject, snippet, received_at, category, hidden, confidence, kol_id, agent_reviewed_at, agent_review_note, created_at, updated_at FROM marketing_email_leads ORDER BY COALESCE(received_at, updated_at) DESC"
+        "SELECT id, account_id, imap_uid, message_id, thread_id, from_name, from_email, raw_from, subject, snippet, received_at, category, hidden, confidence, kol_id, agent_reviewed_at, agent_review_note, human_confirmed, created_at, updated_at FROM marketing_email_leads ORDER BY COALESCE(received_at, updated_at) DESC"
     } else {
-        "SELECT id, account_id, imap_uid, message_id, thread_id, from_name, from_email, raw_from, subject, snippet, received_at, category, hidden, confidence, kol_id, agent_reviewed_at, agent_review_note, created_at, updated_at FROM marketing_email_leads WHERE hidden = 0 ORDER BY COALESCE(received_at, updated_at) DESC"
+        "SELECT id, account_id, imap_uid, message_id, thread_id, from_name, from_email, raw_from, subject, snippet, received_at, category, hidden, confidence, kol_id, agent_reviewed_at, agent_review_note, human_confirmed, created_at, updated_at FROM marketing_email_leads WHERE hidden = 0 ORDER BY COALESCE(received_at, updated_at) DESC"
     };
     let mut stmt = conn
         .prepare(sql)
@@ -2973,15 +3568,16 @@ fn row_to_email_lead(row: &Row<'_>) -> rusqlite::Result<MarketingEmailLead> {
         kol_id: row.get(14)?,
         agent_reviewed_at: row.get(15)?,
         agent_review_note: row.get(16)?,
-        created_at: row.get(17)?,
-        updated_at: row.get(18)?,
+        human_confirmed: int_to_bool(row.get(17)?),
+        created_at: row.get(18)?,
+        updated_at: row.get(19)?,
     })
 }
 
 fn query_kol_profiles(conn: &Connection) -> Result<Vec<KolProfile>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, email, country, relationship, collaboration_status, stage, owner, priority, tags, source, archived, brand_fit_score, risk_note, next_follow_up_at, last_contacted_at, agent_notes, human_notes, created_at, updated_at FROM kol_profiles ORDER BY updated_at DESC",
+            "SELECT id, name, email, country, relationship, collaboration_status, stage, owner, priority, tags, source, archived, brand_fit_score, risk_note, next_follow_up_at, last_contacted_at, agent_notes, human_notes, pipeline_stage, evaluation, outreach, intake, collaboration, shipment, created_at, updated_at FROM kol_profiles ORDER BY updated_at DESC",
         )
         .map_err(|e| format!("Failed to prepare KOL query: {e}"))?;
     let rows = stmt
@@ -3010,8 +3606,14 @@ fn row_to_kol_profile(row: &Row<'_>) -> rusqlite::Result<KolProfile> {
         last_contacted_at: row.get(15)?,
         agent_notes: row.get(16)?,
         human_notes: row.get(17)?,
-        created_at: row.get(18)?,
-        updated_at: row.get(19)?,
+        pipeline_stage: row.get(18)?,
+        evaluation: row.get(19)?,
+        outreach: row.get(20)?,
+        intake: row.get(21)?,
+        collaboration: row.get(22)?,
+        shipment: row.get(23)?,
+        created_at: row.get(24)?,
+        updated_at: row.get(25)?,
     })
 }
 
@@ -3300,6 +3902,17 @@ fn apply_kol_patch(
             actor,
         )?;
     }
+    if let Some(value) = patch.pipeline_stage {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            kol_id,
+            "pipeline_stage",
+            Some(value),
+            reason,
+            actor,
+        )?;
+    }
     Ok(())
 }
 
@@ -3346,15 +3959,17 @@ fn apply_agent_update(
                 "agent",
             )
         }
-        "marketing_email_leads" if field == "hidden" => update_int_field(
-            conn,
-            "marketing_email_leads",
-            &request.target_id,
-            field,
-            parse_optional_bool_int(request.new_value.as_deref())?,
-            &request.reason,
-            "agent",
-        ),
+        "marketing_email_leads" if field == "hidden" || field == "human_confirmed" => {
+            update_int_field(
+                conn,
+                "marketing_email_leads",
+                &request.target_id,
+                field,
+                parse_optional_bool_int(request.new_value.as_deref())?,
+                &request.reason,
+                "agent",
+            )
+        }
         _ => Err(format!(
             "不允许 agent 更新 {}.{}",
             request.target_table, request.field
@@ -3368,6 +3983,986 @@ fn normalize_email_category_value(value: &str) -> Result<String, String> {
         "ad" => Ok("other".to_string()),
         _ => Err("category 必须是 influencer、affiliate 或 other。".to_string()),
     }
+}
+
+fn normalize_actor(actor: Option<String>) -> String {
+    match actor.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
+        Some("agent") => "agent".to_string(),
+        _ => "user".to_string(),
+    }
+}
+
+/// Step 1 初步分类：confirm/override a lead's category, optionally hide it, mark it
+/// human-confirmed, and (for 达人) make sure a linked KOL profile exists.
+fn classify_marketing_lead(
+    conn: &Connection,
+    lead_id: &str,
+    category: &str,
+    hidden: Option<bool>,
+    confirmed: bool,
+    reason: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let category = normalize_email_category_value(category)?;
+    let lead = conn
+        .query_row(
+            "SELECT from_name, from_email, raw_from, subject, snippet, received_at, message_id, thread_id, imap_uid FROM marketing_email_leads WHERE id = ?1",
+            params![lead_id],
+            |row| {
+                Ok(RawMarketingEmail {
+                    from_name: row.get(0)?,
+                    from_email: row.get(1)?,
+                    raw_from: row.get(2)?,
+                    subject: row.get(3)?,
+                    snippet: row.get(4)?,
+                    received_at: row.get(5)?,
+                    message_id: row.get(6)?,
+                    thread_id: row.get(7)?,
+                    imap_uid: row.get(8)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read email lead: {e}"))?
+        .ok_or_else(|| format!("找不到邮件线索 {lead_id}。"))?;
+
+    update_text_field(
+        conn,
+        "marketing_email_leads",
+        lead_id,
+        "category",
+        Some(category.clone()),
+        reason,
+        actor,
+    )?;
+    if let Some(hidden) = hidden {
+        update_int_field(
+            conn,
+            "marketing_email_leads",
+            lead_id,
+            "hidden",
+            Some(bool_to_int(hidden)),
+            reason,
+            actor,
+        )?;
+    }
+    if confirmed {
+        update_int_field(
+            conn,
+            "marketing_email_leads",
+            lead_id,
+            "human_confirmed",
+            Some(1),
+            reason,
+            actor,
+        )?;
+    }
+    if category == "influencer" {
+        let (kol_id, _created) = upsert_kol_from_email(conn, &lead)?;
+        update_text_field(
+            conn,
+            "marketing_email_leads",
+            lead_id,
+            "kol_id",
+            Some(kol_id),
+            reason,
+            actor,
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct NormalizedCriterion {
+    key: String,
+    label: String,
+    kind: String,
+    status: String,
+    detail: String,
+}
+
+fn eval_criterion_meta(key: &str) -> (&'static str, &'static str) {
+    match key {
+        "vertical" => ("应用场景与 ZERO BREEZE 垂直", "hard"),
+        "language" => ("国家/语言合适（非西/德语）", "hard"),
+        "followers" => ("粉丝量 ≥ 10k", "soft"),
+        "views" => ("播放量 ≥ 粉丝数 30%", "soft"),
+        "engagement" => ("平均点赞/评论 ≥ 100", "soft"),
+        "recency" => ("近 30 天持续更新", "soft"),
+        _ => ("其他指标", "soft"),
+    }
+}
+
+const EVAL_CRITERIA_KEYS: [&str; 6] = [
+    "vertical",
+    "language",
+    "followers",
+    "views",
+    "engagement",
+    "recency",
+];
+
+fn normalize_eval_status(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "pass" | "yes" | "true" | "1" | "ok" => "pass".to_string(),
+        "fail" | "no" | "false" | "0" => "fail".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+/// Build the canonical 6-criterion rubric, overriding defaults with any provided input.
+fn normalize_eval_criteria(inputs: &[EvalCriterionInput]) -> Vec<NormalizedCriterion> {
+    EVAL_CRITERIA_KEYS
+        .iter()
+        .map(|key| {
+            let (default_label, kind) = eval_criterion_meta(key);
+            let provided = inputs.iter().find(|item| item.key.trim() == *key);
+            let status = provided
+                .map(|item| normalize_eval_status(&item.status))
+                .unwrap_or_else(|| "unknown".to_string());
+            let label = provided
+                .and_then(|item| item.label.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| default_label.to_string());
+            let detail = provided
+                .and_then(|item| item.detail.clone())
+                .unwrap_or_default();
+            NormalizedCriterion {
+                key: (*key).to_string(),
+                label,
+                kind: kind.to_string(),
+                status,
+                detail: compact_text(&detail, 400),
+            }
+        })
+        .collect()
+}
+
+/// Verdict rule: both hard requirements pass AND at least two soft requirements pass.
+fn compute_eval_verdict(criteria: &[NormalizedCriterion]) -> String {
+    if criteria.is_empty() {
+        return "pending".to_string();
+    }
+    let hard: Vec<&NormalizedCriterion> = criteria.iter().filter(|c| c.kind == "hard").collect();
+    let soft: Vec<&NormalizedCriterion> = criteria.iter().filter(|c| c.kind == "soft").collect();
+    // Hard requirements gate everything: any fail is an immediate reject; any
+    // unknown hard criterion leaves the outcome undecidable (pending).
+    if hard.iter().any(|c| c.status == "fail") {
+        return "fail".to_string();
+    }
+    if hard.iter().any(|c| c.status == "unknown") {
+        return "pending".to_string();
+    }
+    // All hard criteria pass. Need at least two soft passes.
+    let soft_pass = soft.iter().filter(|c| c.status == "pass").count();
+    let soft_unknown = soft.iter().filter(|c| c.status == "unknown").count();
+    if soft_pass >= 2 {
+        "pass".to_string()
+    } else if soft_pass + soft_unknown >= 2 {
+        // Could still reach the threshold once the unknown soft metrics are resolved.
+        "pending".to_string()
+    } else {
+        "fail".to_string()
+    }
+}
+
+fn compute_eval_score(criteria: &[NormalizedCriterion]) -> i64 {
+    if criteria.is_empty() {
+        return 0;
+    }
+    let pass = criteria.iter().filter(|c| c.status == "pass").count() as i64;
+    ((pass * 100) / criteria.len() as i64).clamp(0, 100)
+}
+
+fn default_recommendation(verdict: &str) -> String {
+    match verdict {
+        "pass" => "proposal".to_string(),
+        "fail" => "reject".to_string(),
+        _ => "hold".to_string(),
+    }
+}
+
+/// Step 2 网红评估：persist the structured evaluation JSON and advance the pipeline.
+fn apply_kol_evaluation(
+    conn: &Connection,
+    request: MarketingKolEvaluateRequest,
+    reason: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let exists: Option<String> = conn
+        .query_row(
+            "SELECT id FROM kol_profiles WHERE id = ?1",
+            params![request.id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read KOL profile: {e}"))?;
+    if exists.is_none() {
+        return Err(format!("找不到 KOL {}。", request.id));
+    }
+    let criteria = normalize_eval_criteria(&request.criteria);
+    let verdict = compute_eval_verdict(&criteria);
+    let score = compute_eval_score(&criteria);
+    let confirmed = request.confirmed.unwrap_or(false);
+    let recommendation = request
+        .recommendation
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| default_recommendation(&verdict));
+    let summary = compact_text(&request.summary.unwrap_or_default(), 1200);
+    let now = now_millis();
+    let evaluation = serde_json::json!({
+        "status": verdict,
+        "confirmed": confirmed,
+        "by": actor,
+        "at": now,
+        "score": score,
+        "summary": summary,
+        "recommendation": recommendation,
+        "criteria": criteria.iter().map(|c| serde_json::json!({
+            "key": c.key,
+            "label": c.label,
+            "kind": c.kind,
+            "status": c.status,
+            "detail": c.detail,
+        })).collect::<Vec<_>>(),
+    });
+    let evaluation_text = serde_json::to_string(&evaluation)
+        .map_err(|e| format!("Failed to encode evaluation: {e}"))?;
+    update_text_field(
+        conn,
+        "kol_profiles",
+        &request.id,
+        "evaluation",
+        Some(evaluation_text),
+        reason,
+        actor,
+    )?;
+    let stage = if confirmed {
+        match verdict.as_str() {
+            "pass" => "qualified",
+            "fail" => "rejected",
+            _ => "evaluate",
+        }
+    } else {
+        "evaluate"
+    };
+    update_text_field(
+        conn,
+        "kol_profiles",
+        &request.id,
+        "pipeline_stage",
+        Some(stage.to_string()),
+        reason,
+        actor,
+    )?;
+    if confirmed {
+        let status = match verdict.as_str() {
+            "pass" => "跟进中",
+            "fail" => "不适合",
+            _ => "待分配",
+        };
+        update_text_field(
+            conn,
+            "kol_profiles",
+            &request.id,
+            "collaboration_status",
+            Some(status.to_string()),
+            reason,
+            actor,
+        )?;
+    }
+    Ok(())
+}
+
+/// Step 3 评估后处理：record the outreach action (proposal / rejection / skip).
+/// Sending a proposal to a qualified KOL advances the pipeline to onboarding so
+/// the record is handed off to Step 4+; rejections stay rejected.
+fn apply_kol_outreach(
+    conn: &Connection,
+    request: MarketingKolOutreachRequest,
+    reason: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let stage: Option<String> = conn
+        .query_row(
+            "SELECT pipeline_stage FROM kol_profiles WHERE id = ?1",
+            params![request.id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read KOL profile: {e}"))?;
+    let stage = match stage {
+        Some(value) => value,
+        None => return Err(format!("找不到 KOL {}。", request.id)),
+    };
+    let status = match request.status.as_deref().map(str::trim) {
+        Some("skipped") | Some("skip") => "skipped",
+        _ => "sent",
+    };
+    let kind = request
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(if status == "skipped" {
+            "skip"
+        } else if stage == "rejected" {
+            "reject"
+        } else {
+            "proposal"
+        })
+        .to_string();
+    let script_id = request
+        .script_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let channel = request
+        .channel
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let note = compact_text(&request.note.unwrap_or_default(), 600);
+    let now = now_millis();
+    let outreach = serde_json::json!({
+        "status": status,
+        "kind": kind,
+        "scriptId": script_id,
+        "channel": channel,
+        "note": if note.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(note) },
+        "by": actor,
+        "at": now,
+    });
+    let outreach_text =
+        serde_json::to_string(&outreach).map_err(|e| format!("Failed to encode outreach: {e}"))?;
+    update_text_field(
+        conn,
+        "kol_profiles",
+        &request.id,
+        "outreach",
+        Some(outreach_text),
+        reason,
+        actor,
+    )?;
+    if status == "sent" {
+        update_int_field(
+            conn,
+            "kol_profiles",
+            &request.id,
+            "last_contacted_at",
+            Some(now),
+            reason,
+            actor,
+        )?;
+        // A proposal to a qualified KOL kicks off Step 4+ (推进合作).
+        if stage == "qualified" {
+            update_text_field(
+                conn,
+                "kol_profiles",
+                &request.id,
+                "pipeline_stage",
+                Some("onboarding".to_string()),
+                reason,
+                actor,
+            )?;
+            update_text_field(
+                conn,
+                "kol_profiles",
+                &request.id,
+                "collaboration_status",
+                Some("已发提案".to_string()),
+                reason,
+                actor,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Step 3 一键回复：actually send the reply email via SMTP, then record the
+/// outreach (channel=Email) so the pipeline advances exactly like a manual mark.
+fn apply_kol_reply(
+    conn: &Connection,
+    request: MarketingKolReplyRequest,
+    reason: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let kol: Option<(String, String)> = conn
+        .query_row(
+            "SELECT name, email FROM kol_profiles WHERE id = ?1",
+            params![request.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read KOL profile: {e}"))?;
+    let (kol_name, kol_email) = kol.ok_or_else(|| format!("找不到 KOL {}。", request.id))?;
+
+    let body = request.body.trim().to_string();
+    if body.is_empty() {
+        return Err("回复内容为空，请先填写话术。".to_string());
+    }
+
+    let send = request.send.unwrap_or(true);
+    if send {
+        send_kol_email(
+            conn,
+            &request.id,
+            &kol_name,
+            &kol_email,
+            request.to.as_deref(),
+            request.subject.as_deref(),
+            &body,
+            "Partnership with ZERO BREEZE",
+        )?;
+    }
+
+    apply_kol_outreach(
+        conn,
+        MarketingKolOutreachRequest {
+            id: request.id,
+            kind: request.kind,
+            script_id: request.script_id,
+            channel: request
+                .channel
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| Some("Email".to_string())),
+            note: request.note,
+            status: Some("sent".to_string()),
+            actor: None,
+            reason: Some(reason.to_string()),
+        },
+        reason,
+        actor,
+    )?;
+    Ok(())
+}
+
+fn clean_opt(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Linear position of a KOL in the 6-step funnel; used to gate Step 4–6 worklists
+/// and to advance the pipeline only forward.
+fn stage_rank(stage: &str) -> i32 {
+    match stage {
+        "classify" => 0,
+        "evaluate" => 1,
+        "qualified" | "rejected" => 2,
+        "onboarding" => 3,
+        "intake" => 4,
+        "signed" => 5,
+        "shipped" => 6,
+        "completed" => 7,
+        _ => 1,
+    }
+}
+
+fn read_kol_stage(conn: &Connection, id: &str) -> Result<String, String> {
+    conn.query_row(
+        "SELECT pipeline_stage FROM kol_profiles WHERE id = ?1",
+        params![id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| format!("Failed to read KOL profile: {e}"))?
+    .ok_or_else(|| format!("找不到 KOL {id}。"))
+}
+
+fn read_kol_name_email(conn: &Connection, id: &str) -> Result<(String, String), String> {
+    conn.query_row(
+        "SELECT name, email FROM kol_profiles WHERE id = ?1",
+        params![id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )
+    .optional()
+    .map_err(|e| format!("Failed to read KOL profile: {e}"))?
+    .ok_or_else(|| format!("找不到 KOL {id}。"))
+}
+
+/// Step 4 录入系统: store the structured intake record and mirror owner/relationship
+/// into the real columns; a `done` intake advances onboarding → intake.
+fn apply_kol_intake(
+    conn: &Connection,
+    request: MarketingKolIntakeRequest,
+    reason: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let stage = read_kol_stage(conn, &request.id)?;
+    let status = match request.status.as_deref().map(str::trim) {
+        Some("draft") => "draft",
+        _ => "done",
+    };
+    let owner = clean_opt(request.owner);
+    let relationship = clean_opt(request.relationship);
+    let note = {
+        let n = compact_text(&request.note.unwrap_or_default(), 800);
+        if n.is_empty() {
+            None
+        } else {
+            Some(n)
+        }
+    };
+    let now = now_millis();
+    let intake = serde_json::json!({
+        "status": status,
+        "username": clean_opt(request.username),
+        "owner": owner.clone(),
+        "channel": clean_opt(request.channel),
+        "relationship": relationship.clone(),
+        "phone": clean_opt(request.phone),
+        "platforms": clean_opt(request.platforms),
+        "links": clean_opt(request.links),
+        "contentType": clean_opt(request.content_type),
+        "language": clean_opt(request.language),
+        "metrics": clean_opt(request.metrics),
+        "note": note,
+        "by": actor,
+        "at": now,
+    });
+    let intake_text =
+        serde_json::to_string(&intake).map_err(|e| format!("Failed to encode intake: {e}"))?;
+    update_text_field(
+        conn,
+        "kol_profiles",
+        &request.id,
+        "intake",
+        Some(intake_text),
+        reason,
+        actor,
+    )?;
+    if let Some(owner) = owner {
+        update_text_field(conn, "kol_profiles", &request.id, "owner", Some(owner), reason, actor)?;
+    }
+    if let Some(relationship) = relationship {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            &request.id,
+            "relationship",
+            Some(relationship),
+            reason,
+            actor,
+        )?;
+    }
+    if status == "done" && stage == "onboarding" {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            &request.id,
+            "pipeline_stage",
+            Some("intake".to_string()),
+            reason,
+            actor,
+        )?;
+        update_text_field(
+            conn,
+            "kol_profiles",
+            &request.id,
+            "collaboration_status",
+            Some("已录入系统".to_string()),
+            reason,
+            actor,
+        )?;
+    }
+    Ok(())
+}
+
+/// Step 5 合作推进: optionally send the contract email, then record the contract
+/// push / signing; a `signed` status advances the pipeline to `signed`.
+fn apply_kol_collaborate(
+    conn: &Connection,
+    request: MarketingKolCollabRequest,
+    reason: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let (kol_name, kol_email) = read_kol_name_email(conn, &request.id)?;
+    let stage = read_kol_stage(conn, &request.id)?;
+    let status = match request.status.as_deref().map(str::trim) {
+        Some("signed") => "signed",
+        Some("declined") => "declined",
+        _ => "sent",
+    };
+    if request.send.unwrap_or(false) {
+        let body = clean_opt(request.body.clone())
+            .ok_or_else(|| "合同邮件内容为空，请先填写正文。".to_string())?;
+        send_kol_email(
+            conn,
+            &request.id,
+            &kol_name,
+            &kol_email,
+            request.to.as_deref(),
+            request.subject.as_deref(),
+            &body,
+            "Your ZERO BREEZE collaboration contract",
+        )?;
+    }
+    let note = {
+        let n = compact_text(&request.note.unwrap_or_default(), 800);
+        if n.is_empty() {
+            None
+        } else {
+            Some(n)
+        }
+    };
+    let now = now_millis();
+    let collab = serde_json::json!({
+        "status": status,
+        "scriptId": clean_opt(request.script_id),
+        "contractUrl": clean_opt(request.contract_url),
+        "videoCount": request.video_count,
+        "note": note,
+        "by": actor,
+        "at": now,
+    });
+    let collab_text =
+        serde_json::to_string(&collab).map_err(|e| format!("Failed to encode collaboration: {e}"))?;
+    update_text_field(
+        conn,
+        "kol_profiles",
+        &request.id,
+        "collaboration",
+        Some(collab_text),
+        reason,
+        actor,
+    )?;
+    if request.send.unwrap_or(false) {
+        update_int_field(
+            conn,
+            "kol_profiles",
+            &request.id,
+            "last_contacted_at",
+            Some(now),
+            reason,
+            actor,
+        )?;
+    }
+    let collaboration_status = match status {
+        "signed" => "已签约",
+        "declined" => "已流失",
+        _ => "已发合同",
+    };
+    update_text_field(
+        conn,
+        "kol_profiles",
+        &request.id,
+        "collaboration_status",
+        Some(collaboration_status.to_string()),
+        reason,
+        actor,
+    )?;
+    if status == "signed" && stage_rank(&stage) < stage_rank("signed") {
+        update_text_field(
+            conn,
+            "kol_profiles",
+            &request.id,
+            "pipeline_stage",
+            Some("signed".to_string()),
+            reason,
+            actor,
+        )?;
+    }
+    Ok(())
+}
+
+/// Step 6 发货流程: optionally send the shipping notice, then record fulfillment;
+/// `shipped` advances to `shipped`, `delivered` advances to `completed`.
+fn apply_kol_ship(
+    conn: &Connection,
+    request: MarketingKolShipRequest,
+    reason: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let (kol_name, kol_email) = read_kol_name_email(conn, &request.id)?;
+    let stage = read_kol_stage(conn, &request.id)?;
+    let status = match request.status.as_deref().map(str::trim) {
+        Some("delivered") => "delivered",
+        Some("issue") => "issue",
+        _ => "shipped",
+    };
+    if request.send.unwrap_or(false) {
+        let body = clean_opt(request.body.clone())
+            .ok_or_else(|| "发货通知内容为空，请先填写正文。".to_string())?;
+        send_kol_email(
+            conn,
+            &request.id,
+            &kol_name,
+            &kol_email,
+            request.to.as_deref(),
+            request.subject.as_deref(),
+            &body,
+            "Your ZERO BREEZE shipment",
+        )?;
+    }
+    let note = {
+        let n = compact_text(&request.note.unwrap_or_default(), 800);
+        if n.is_empty() {
+            None
+        } else {
+            Some(n)
+        }
+    };
+    let now = now_millis();
+    let shipment = serde_json::json!({
+        "status": status,
+        "carrier": clean_opt(request.carrier),
+        "tracking": clean_opt(request.tracking),
+        "trackingUrl": clean_opt(request.tracking_url),
+        "address": clean_opt(request.address),
+        "units": clean_opt(request.units),
+        "expectedPostAt": request.expected_post_at,
+        "note": note,
+        "by": actor,
+        "at": now,
+    });
+    let shipment_text =
+        serde_json::to_string(&shipment).map_err(|e| format!("Failed to encode shipment: {e}"))?;
+    update_text_field(
+        conn,
+        "kol_profiles",
+        &request.id,
+        "shipment",
+        Some(shipment_text),
+        reason,
+        actor,
+    )?;
+    if request.send.unwrap_or(false) {
+        update_int_field(
+            conn,
+            "kol_profiles",
+            &request.id,
+            "last_contacted_at",
+            Some(now),
+            reason,
+            actor,
+        )?;
+    }
+    let collaboration_status = match status {
+        "delivered" => "已完成",
+        "issue" => "物流异常",
+        _ => "已发货",
+    };
+    update_text_field(
+        conn,
+        "kol_profiles",
+        &request.id,
+        "collaboration_status",
+        Some(collaboration_status.to_string()),
+        reason,
+        actor,
+    )?;
+    let target = match status {
+        "delivered" => Some("completed"),
+        "shipped" => Some("shipped"),
+        _ => None,
+    };
+    if let Some(target) = target {
+        if stage_rank(&stage) < stage_rank(target) {
+            update_text_field(
+                conn,
+                "kol_profiles",
+                &request.id,
+                "pipeline_stage",
+                Some(target.to_string()),
+                reason,
+                actor,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Send an email to a KOL by reusing the linked lead for recipient/subject/thread
+/// and the saved IMAP account (→ SMTP) for transport. Shared by Step 3 一键回复,
+/// Step 5 合同邮件, and Step 6 发货通知.
+fn send_kol_email(
+    conn: &Connection,
+    kol_id: &str,
+    kol_name: &str,
+    kol_email: &str,
+    to_override: Option<&str>,
+    subject_override: Option<&str>,
+    body: &str,
+    default_subject: &str,
+) -> Result<(), String> {
+    let lead = latest_lead_for_kol(conn, kol_id)?;
+    let to = to_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| lead.as_ref().map(|item| item.0.clone()))
+        .unwrap_or_else(|| kol_email.to_string());
+    let subject = subject_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            ensure_reply_subject(
+                lead.as_ref()
+                    .map(|item| item.1.as_str())
+                    .unwrap_or(default_subject),
+            )
+        });
+    let in_reply_to = lead.as_ref().and_then(|item| item.2.clone());
+    let account = match lead.as_ref().map(|item| item.3.clone()) {
+        Some(id) => load_marketing_account_config(conn, &id)?,
+        None => first_marketing_account_config(conn)?,
+    };
+    let password = marketing_email_password(&account)?;
+    send_marketing_email_reply(
+        &account,
+        &password,
+        &to,
+        Some(kol_name),
+        &subject,
+        body,
+        in_reply_to.as_deref(),
+    )
+}
+
+/// Returns (from_email, subject, message_id, account_id) of the most recent
+/// email lead linked to a KOL, so a reply can target the original thread.
+fn latest_lead_for_kol(
+    conn: &Connection,
+    kol_id: &str,
+) -> Result<Option<(String, String, Option<String>, String)>, String> {
+    conn.query_row(
+        "SELECT from_email, subject, message_id, account_id FROM marketing_email_leads WHERE kol_id = ?1 ORDER BY COALESCE(received_at, updated_at) DESC LIMIT 1",
+        params![kol_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(|e| format!("Failed to read linked lead: {e}"))
+}
+
+fn ensure_reply_subject(subject: &str) -> String {
+    let trimmed = subject.trim();
+    if trimmed.is_empty() {
+        "Re: Partnership with ZERO BREEZE".to_string()
+    } else if trimmed.to_ascii_lowercase().starts_with("re:") {
+        trimmed.to_string()
+    } else {
+        format!("Re: {trimmed}")
+    }
+}
+
+fn load_marketing_account_config(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<MarketingEmailAccountConfig, String> {
+    conn.query_row(
+        "SELECT id, label, host, port, tls, username, mailbox, scan_limit, sync_interval_minutes, enabled FROM marketing_email_accounts WHERE id = ?1",
+        params![account_id],
+        |row| {
+            Ok(MarketingEmailAccountConfig {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                host: row.get(2)?,
+                port: row.get::<_, i64>(3)? as u16,
+                tls: int_to_bool(row.get(4)?),
+                username: row.get(5)?,
+                mailbox: row.get(6)?,
+                scan_limit: row.get::<_, i64>(7)? as u32,
+                sync_interval_minutes: row.get::<_, i64>(8)? as u32,
+                enabled: int_to_bool(row.get(9)?),
+                password: None,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| format!("Failed to load email account: {e}"))?
+    .ok_or_else(|| "找不到对应的发件邮箱账号，请先在邮件营销设置里配置。".to_string())
+}
+
+fn first_marketing_account_config(
+    conn: &Connection,
+) -> Result<MarketingEmailAccountConfig, String> {
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM marketing_email_accounts ORDER BY enabled DESC, updated_at DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read email account: {e}"))?;
+    match id {
+        Some(id) => load_marketing_account_config(conn, &id),
+        None => Err("还没有配置发件邮箱，请先在邮件营销设置里添加账号。".to_string()),
+    }
+}
+
+/// Gmail-style SMTP host derivation: imap.gmail.com -> smtp.gmail.com.
+fn smtp_host_for(host: &str) -> String {
+    let host = host.trim();
+    match host.strip_prefix("imap.") {
+        Some(rest) => format!("smtp.{rest}"),
+        None => host.to_string(),
+    }
+}
+
+fn send_marketing_email_reply(
+    account: &MarketingEmailAccountConfig,
+    password: &str,
+    to_addr: &str,
+    to_name: Option<&str>,
+    subject: &str,
+    body: &str,
+    in_reply_to: Option<&str>,
+) -> Result<(), String> {
+    use lettre::message::{header::ContentType, Mailbox, Message};
+    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::{Address, SmtpTransport, Transport};
+
+    let from_address: Address = account
+        .username
+        .parse()
+        .map_err(|_| format!("发件邮箱地址无效：{}", account.username))?;
+    let from = Mailbox::new(Some(account.label.clone()), from_address);
+    let to_address: Address = to_addr
+        .parse()
+        .map_err(|_| format!("收件邮箱地址无效：{to_addr}"))?;
+    let to = Mailbox::new(
+        to_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        to_address,
+    );
+    let mut builder = Message::builder()
+        .from(from)
+        .to(to)
+        .subject(subject)
+        .header(ContentType::TEXT_PLAIN);
+    if let Some(id) = in_reply_to.map(str::trim).filter(|value| !value.is_empty()) {
+        let normalized = id.trim_start_matches('<').trim_end_matches('>').to_string();
+        builder = builder
+            .in_reply_to(normalized.clone())
+            .references(normalized);
+    }
+    let email = builder
+        .body(body.to_string())
+        .map_err(|e| format!("构建邮件失败：{e}"))?;
+
+    let smtp_host = smtp_host_for(&account.host);
+    let credentials = Credentials::new(account.username.clone(), password.to_string());
+    let mailer = SmtpTransport::relay(&smtp_host)
+        .map_err(|e| format!("无法连接 SMTP 服务器 {smtp_host}：{e}"))?
+        .credentials(credentials)
+        .build();
+    mailer
+        .send(&email)
+        .map_err(|e| format!("发送邮件失败：{e}"))?;
+    Ok(())
 }
 
 fn is_allowed_kol_text_field(field: &str) -> bool {
@@ -3385,6 +4980,7 @@ fn is_allowed_kol_text_field(field: &str) -> bool {
             | "risk_note"
             | "agent_notes"
             | "human_notes"
+            | "pipeline_stage"
     )
 }
 
@@ -3456,8 +5052,9 @@ fn db_text_value(
     field: &str,
 ) -> Result<Option<String>, String> {
     let sql = format!("SELECT CAST({field} AS TEXT) FROM {table} WHERE id = ?1");
-    conn.query_row(&sql, params![id], |row| row.get(0))
+    conn.query_row(&sql, params![id], |row| row.get::<_, Option<String>>(0))
         .optional()
+        .map(|value| value.flatten())
         .map_err(|e| format!("Failed to read {table}.{field}: {e}"))
 }
 
@@ -5827,6 +7424,15 @@ pub fn run() {
             marketing_email_test_connection,
             marketing_email_sync_readonly,
             marketing_agent_apply_update,
+            marketing_lead_classify,
+            marketing_kol_evaluate,
+            marketing_kol_outreach,
+            marketing_kol_reply,
+            marketing_kol_intake,
+            marketing_kol_collaborate,
+            marketing_kol_ship,
+            marketing_settings_set,
+            translate_text,
             codex_chat_start,
             codex_chat_stop,
             list_open_apps,

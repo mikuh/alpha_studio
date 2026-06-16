@@ -29,6 +29,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   ChevronsDownUp,
   ChevronsUpDown,
   Clock3,
@@ -58,9 +59,12 @@ import {
   HardDrive,
   History,
   Image as ImageIcon,
+  Inbox,
   Info,
   Keyboard,
+  Languages,
   Layers,
+  Link2,
   ListChecks,
   Loader2,
   Lock,
@@ -88,7 +92,9 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
+  Send,
   Settings,
   ShieldCheck,
   ShieldQuestion,
@@ -101,6 +107,7 @@ import {
   Target,
   Terminal,
   Trash2,
+  Truck,
   Undo2,
   Upload,
   UserCircle,
@@ -134,6 +141,14 @@ import {
   marketingAgentApplyUpdate,
   marketingDbQuery,
   marketingDbUpdateKol,
+  marketingKolEvaluate,
+  marketingKolOutreach,
+  marketingKolReply,
+  marketingKolIntake,
+  marketingKolCollaborate,
+  marketingKolShip,
+  marketingLeadClassify,
+  marketingSettingsSet,
   marketingEmailSecretSave,
   marketingEmailSyncReadonly,
   marketingEmailTestConnection,
@@ -142,6 +157,7 @@ import {
   subscribeTerminalEvents,
   terminalResize,
   terminalStart,
+  translateText,
   terminalStop,
   terminalWrite,
 } from './codexBridge';
@@ -176,6 +192,11 @@ import {
 import type {
   ChatMessage,
   Conversation,
+  EmailCategory,
+  EvalCriterion,
+  EvalCriterionKey,
+  EvalCriterionStatus,
+  EvalVerdict,
   GhAuthStatus,
   GitBranch as GitBranchInfo,
   GitCommit,
@@ -183,8 +204,13 @@ import type {
   GitFileChange,
   GitRemote,
   GitStatus,
+  KolCollab,
+  KolEvaluation,
+  KolIntake,
+  KolOutreach,
   KolProfile,
   KolProfilePatch,
+  KolShipment,
   MarketingDbSnapshot,
   MarketingEmailAccountConfig,
   MarketingEmailLead,
@@ -2958,6 +2984,2891 @@ function FeatureTabContent({
   }
 }
 
+// ===== 合作推广营销：网红营销工作流 =====
+
+type MarketingView = 'classify' | 'evaluate' | 'process' | 'intake' | 'collab' | 'ship' | 'kol' | 'other' | 'scripts' | 'logs';
+
+interface WorkflowStepDef {
+  id: number;
+  key: MarketingView | null;
+  short: string;
+  title: string;
+  desc: string;
+}
+
+const MARKETING_WORKFLOW_STEPS: WorkflowStepDef[] = [
+  { id: 1, key: 'classify', short: 'Step 1', title: '初步分类', desc: 'AI 预分类达人 / 联盟 / 其他，人工一键确认；广告自动隐藏' },
+  { id: 2, key: 'evaluate', short: 'Step 2', title: '网红评估', desc: '按硬性 + 软性指标评估达人，AI 出结论，人工确认' },
+  { id: 3, key: 'process', short: 'Step 3', title: '评估后处理', desc: '通过发提案、不通过发拒绝话术，记录外联动作' },
+  { id: 4, key: 'intake', short: 'Step 4', title: '录入系统', desc: '待回复意向后完善 KOL 档案、联系方式与账号数据' },
+  { id: 5, key: 'collab', short: 'Step 5', title: '合作推进', desc: '发送合同、处理异议，推进到签约' },
+  { id: 6, key: 'ship', short: 'Step 6', title: '发货流程', desc: '已签约后安排发货、回传物流并跟进内容' },
+];
+
+interface EvalCriterionMeta {
+  key: EvalCriterionKey;
+  label: string;
+  kind: 'hard' | 'soft';
+  hint: string;
+}
+
+const EVAL_CRITERIA_CATALOG: EvalCriterionMeta[] = [
+  { key: 'vertical', label: '应用场景与 ZERO BREEZE 垂直', kind: 'hard', hint: '露营 / 房车 / 户外 / 极热环境等场景' },
+  { key: 'language', label: '国家 / 语言合适（非西 / 德语）', kind: 'hard', hint: '暂不考虑西班牙语、德语受众' },
+  { key: 'followers', label: '粉丝量 ≥ 10k', kind: 'soft', hint: '全网或主平台粉丝量' },
+  { key: 'views', label: '播放量 ≥ 粉丝数 30%', kind: 'soft', hint: '平均播放量 / 粉丝数' },
+  { key: 'engagement', label: '平均点赞 / 评论 ≥ 100', kind: 'soft', hint: '平均互动量' },
+  { key: 'recency', label: '近 30 天持续更新', kind: 'soft', hint: '更新频率' },
+];
+
+const EVAL_STATUS_OPTIONS: Array<{ value: EvalCriterionStatus; label: string }> = [
+  { value: 'pass', label: '通过' },
+  { value: 'fail', label: '不符' },
+  { value: 'unknown', label: '未知' },
+];
+
+function defaultEvalCriteria(existing?: EvalCriterion[]): EvalCriterion[] {
+  return EVAL_CRITERIA_CATALOG.map((meta) => {
+    const prior = existing?.find((item) => item.key === meta.key);
+    return {
+      key: meta.key,
+      label: meta.label,
+      kind: meta.kind,
+      status: prior?.status ?? 'unknown',
+      detail: prior?.detail ?? '',
+    };
+  });
+}
+
+function parseKolEvaluation(raw?: string | null): KolEvaluation | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as KolEvaluation;
+    if (!parsed || !Array.isArray(parsed.criteria)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function computeVerdict(criteria: EvalCriterion[]): EvalVerdict {
+  if (criteria.length === 0) return 'pending';
+  const hard = criteria.filter((item) => item.kind === 'hard');
+  const soft = criteria.filter((item) => item.kind === 'soft');
+  // Hard requirements gate everything: any fail rejects; any unknown is undecidable.
+  if (hard.some((item) => item.status === 'fail')) return 'fail';
+  if (hard.some((item) => item.status === 'unknown')) return 'pending';
+  // All hard criteria pass; need at least two soft passes.
+  const softPass = soft.filter((item) => item.status === 'pass').length;
+  const softUnknown = soft.filter((item) => item.status === 'unknown').length;
+  if (softPass >= 2) return 'pass';
+  if (softPass + softUnknown >= 2) return 'pending';
+  return 'fail';
+}
+
+function verdictLabel(verdict: EvalVerdict): string {
+  if (verdict === 'pass') return '评估通过';
+  if (verdict === 'fail') return '评估不通过';
+  return '待补充指标';
+}
+
+function verdictShort(verdict: EvalVerdict): string {
+  if (verdict === 'pass') return '通过';
+  if (verdict === 'fail') return '未通过';
+  return '待定';
+}
+
+type EvalBucket = 'todo' | 'pass' | 'fail';
+
+// Classify a KOL by its current evaluation outcome so the Step 2 list can be
+// filtered by verdict. "todo" covers both un-evaluated and undecided (pending).
+function kolEvalBucket(kol: KolProfile): EvalBucket {
+  const evaluation = parseKolEvaluation(kol.evaluation);
+  if (!evaluation || evaluation.status === 'pending') return 'todo';
+  return evaluation.status === 'pass' ? 'pass' : 'fail';
+}
+
+function parseKolOutreach(raw?: string | null): KolOutreach | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as KolOutreach;
+    if (!parsed || typeof parsed.status !== 'string') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+type ProcessBucket = 'todo' | 'done' | 'none';
+
+// Step 3 评估后处理 worklist membership. A KOL becomes a "todo" once its
+// evaluation is confirmed (pipeline_stage qualified/rejected) and no outreach
+// has been recorded; recording an outreach (or advancing to onboarding) marks
+// it "done". KOLs still in classify/evaluate are "none" (not ready for Step 3).
+function kolProcessBucket(kol: KolProfile): ProcessBucket {
+  const hasOutreach = !!parseKolOutreach(kol.outreach);
+  const stage = kol.pipelineStage;
+  if (stage === 'qualified' || stage === 'rejected') {
+    return hasOutreach ? 'done' : 'todo';
+  }
+  if (stage === 'onboarding') return 'done';
+  return hasOutreach ? 'done' : 'none';
+}
+
+function outreachKindLabel(kind: string): string {
+  switch (kind) {
+    case 'proposal':
+      return '已发提案';
+    case 'reject':
+      return '已发拒绝';
+    case 'koc':
+      return 'KOC 婉拒';
+    case 'paid':
+      return '付费置换';
+    case 'skip':
+      return '暂不联系';
+    default:
+      return kind || '已处理';
+  }
+}
+
+function pipelineStageLabel(stage: string): string {
+  switch (stage) {
+    case 'classify':
+      return '待分类';
+    case 'evaluate':
+      return '待评估';
+    case 'qualified':
+      return '评估通过';
+    case 'rejected':
+      return '评估不通过';
+    case 'onboarding':
+      return '待录入';
+    case 'intake':
+      return '推进合作';
+    case 'signed':
+      return '已签约';
+    case 'shipped':
+      return '已发货';
+    case 'completed':
+      return '已完成';
+    default:
+      return stage || '待评估';
+  }
+}
+
+// Linear position of a KOL in the 6-step funnel. Mirrors the Rust `stage_rank` so
+// the Step 4–6 worklists gate on completed earlier steps and only show ready KOLs.
+const STAGE_RANK: Record<string, number> = {
+  classify: 0,
+  evaluate: 1,
+  qualified: 2,
+  rejected: 2,
+  onboarding: 3,
+  intake: 4,
+  signed: 5,
+  shipped: 6,
+  completed: 7,
+};
+
+function stageRank(stage: string): number {
+  return STAGE_RANK[stage] ?? 1;
+}
+
+// Worklist membership shared by Step 4–6: "none" = earlier step unfinished (not
+// ready), "todo" = this step is the current action, "done" = already handled.
+type StepBucket = 'todo' | 'done' | 'none';
+
+function parseKolIntake(raw?: string | null): KolIntake | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as KolIntake;
+    return parsed && typeof parsed.status === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseKolCollab(raw?: string | null): KolCollab | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as KolCollab;
+    return parsed && typeof parsed.status === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseKolShipment(raw?: string | null): KolShipment | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as KolShipment;
+    return parsed && typeof parsed.status === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Step 4 录入系统: a KOL is ready once a proposal was sent (stage onboarding) and
+// becomes done once the intake form is saved (stage advances to intake+).
+function kolIntakeBucket(kol: KolProfile): StepBucket {
+  const rank = stageRank(kol.pipelineStage);
+  if (rank < 3) return 'none';
+  if (rank >= 4) return 'done';
+  return parseKolIntake(kol.intake)?.status === 'done' ? 'done' : 'todo';
+}
+
+// Step 5 合作推进: ready after intake; done when signed (stage signed+) or 流失.
+function kolCollabBucket(kol: KolProfile): StepBucket {
+  const rank = stageRank(kol.pipelineStage);
+  if (rank < 4) return 'none';
+  if (rank >= 5) return 'done';
+  const collab = parseKolCollab(kol.collaboration);
+  return collab && (collab.status === 'signed' || collab.status === 'declined') ? 'done' : 'todo';
+}
+
+// Step 6 发货流程: ready after signed; done once shipped/delivered (stage shipped+).
+function kolShipBucket(kol: KolProfile): StepBucket {
+  const rank = stageRank(kol.pipelineStage);
+  if (rank < 5) return 'none';
+  if (rank >= 6) return 'done';
+  const ship = parseKolShipment(kol.shipment);
+  return ship && (ship.status === 'shipped' || ship.status === 'delivered') ? 'done' : 'todo';
+}
+
+function collabStatusLabel(status: string): string {
+  switch (status) {
+    case 'signed':
+      return '已签约';
+    case 'declined':
+      return '已流失';
+    case 'sent':
+      return '已发合同';
+    default:
+      return status || '推进中';
+  }
+}
+
+function shipmentStatusLabel(status: string): string {
+  switch (status) {
+    case 'delivered':
+      return '已完成';
+    case 'issue':
+      return '物流异常';
+    case 'shipped':
+      return '已发货';
+    default:
+      return status || '待发货';
+  }
+}
+
+// <input type="date"> works in local YYYY-MM-DD; convert to/from epoch millis.
+function msToDateInput(ms?: number | null): string {
+  if (!ms) return '';
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function dateInputToMs(value: string): number | null {
+  if (!value.trim()) return null;
+  const ms = new Date(`${value}T00:00:00`).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Email snippets arrive with raw whitespace, tracking junk, and long URLs.
+// Collapse whitespace and shorten bare URLs so the preview is readable.
+function cleanEmailText(raw: string): string {
+  return raw
+    .replace(/\s+/g, ' ')
+    .replace(/(https?:\/\/[^\s]{40})[^\s]+/g, '$1…')
+    .trim();
+}
+
+// --- Editable script library persistence (localStorage) ---
+const SCRIPT_OVERRIDES_KEY = 'alpha.marketing.scriptOverrides';
+const SCRIPT_CUSTOM_KEY = 'alpha.marketing.scriptCustom';
+type ScriptOverride = Pick<ScriptTemplate, 'title' | 'channel' | 'body'>;
+
+function loadScriptOverrides(): Record<string, ScriptOverride> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SCRIPT_OVERRIDES_KEY) ?? '{}');
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, ScriptOverride>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function loadCustomScripts(): ScriptTemplate[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SCRIPT_CUSTOM_KEY) ?? '[]');
+    return Array.isArray(parsed) ? (parsed as ScriptTemplate[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+// --- Reusable script variables (协议链接 / 联系方式 / 署名) ---
+// Scripts reference these via {{key}} placeholders so links and contact details
+// are edited once in the 话术库 config card instead of inside every template.
+const SCRIPT_VARS_KEY = 'alpha.marketing.scriptVars';
+
+interface ScriptVarDef {
+  key: string;
+  label: string;
+  hint?: string;
+  defaultValue: string;
+}
+
+const SCRIPT_VAR_DEFS: ScriptVarDef[] = [
+  { key: 'signature', label: '落款 / 署名', hint: '话术结尾的发件人署名', defaultValue: 'Oliver' },
+  { key: 'proposalUrl', label: '合作提案 / 协议链接', defaultValue: 'https://docs.google.com/document/d/1ttZpiAPcopBann_KbYHiRaoL0PVkyHM1_Z-91Wo8eGM/edit?tab=t.0' },
+  { key: 'contentGuideUrl', label: '内容指南链接', defaultValue: 'https://drive.google.com/file/d/10c7YZlpfPGPny-Dyr92rA1FTZCkkY6Gz/view?usp=sharing' },
+  { key: 'whatsapp', label: 'WhatsApp / 电话', defaultValue: '+1 (213) 801-2228' },
+  { key: 'email', label: '联系邮箱', defaultValue: 'marketing@zerobreeze.com' },
+  { key: 'website', label: '官网', defaultValue: 'https://www.zerobreeze.com/' },
+  { key: 'instagram', label: 'Instagram', defaultValue: 'https://www.instagram.com/zerobreezeofficial/' },
+];
+
+function defaultScriptVars(): Record<string, string> {
+  return Object.fromEntries(SCRIPT_VAR_DEFS.map((def) => [def.key, def.defaultValue]));
+}
+
+function loadScriptVars(): Record<string, string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SCRIPT_VARS_KEY) ?? '{}');
+    const stored = parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
+    return { ...defaultScriptVars(), ...stored };
+  } catch {
+    return defaultScriptVars();
+  }
+}
+
+// Substitute {{key}} placeholders; unknown/empty values keep the literal token.
+function renderScript(body: string, vars: Record<string, string>): string {
+  return body.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {
+    const value = vars[key];
+    return value !== undefined && value !== '' ? value : match;
+  });
+}
+
+interface ScriptTemplate {
+  id: string;
+  group: string;
+  title: string;
+  channel: string;
+  body: string;
+}
+
+const SCRIPT_LIBRARY: ScriptTemplate[] = [
+  {
+    id: 'proposal-inbound',
+    group: '合作前 · 建联',
+    title: '主动联系我们 · 评估通过发提案',
+    channel: '通用',
+    body: `Hi，
+Thank you for reaching out to us! We're thrilled to hear about your interest in collaborating with Zerobreeze. Our team is always excited to partner with passionate influencers like you.
+We're currently seeking product exchange partners. I've attached our Content Guide and included our proposal contract below:
+
+Proposal Contract: {{proposalUrl}}
+
+Content Guide: {{contentGuideUrl}}
+
+If you have any concern regarding the dates and numbers for the videos, kindly note that this contract is a template. You do not need to sign the template. We will send you a new contract once we established our collaboration.
+
+Let me know if you're interested or have any questions after reviewing.
+
+We can continue the conversation here via DM, WhatsApp, or email. My contact info:
+- WhatsApp: {{whatsapp}}
+- Email: {{email}}
+
+Stay cool,
+{{signature}}`,
+  },
+  {
+    id: 'outreach-ig',
+    group: '合作前 · 建联',
+    title: '主动建联 · IG 私信模版',
+    channel: 'IG DM',
+    body: `Hi there！Your setup and content look amazing!
+
+We are ZERO BREEZE. We're currently seeking product exchange partners. I've attached our Content Guide and included our proposal contract below:
+
+Proposal Contract: {{proposalUrl}}
+
+Content Guide: {{contentGuideUrl}}
+
+You do not need to sign the template. We will send you a new contract once we established our collaboration.
+
+We can continue the conversation here via DM, WhatsApp, or email:
+- WhatsApp: {{whatsapp}}
+- Email: {{email}}
+
+Stay cool,
+ZERO BREEZE`,
+  },
+  {
+    id: 'outreach-email',
+    group: '合作前 · 建联',
+    title: '主动建联 · 邮件（一般情况）',
+    channel: 'Email',
+    body: `Subject: Partner with us? Stay cool on your next adventure with Zero Breeze Portable AC
+
+Hi,
+
+We are reaching out from the Zero Breeze Marketing team. We built the world's first battery-powered, portable air conditioner. Unlike evaporative coolers that rely on water or ice, ours uses a real compressor system that keeps a tent or van cabin cold even when it's roasting outside.
+
+How we'd love to work together:
+- The Gear: We'll ship you a Zero Breeze Mark 3 kit to keep.
+- The Goal: In exchange, you'd provide high-quality photo/video content and share a few posts.
+- The Perk: We can set up a unique discount code/affiliate link for your followers.
+
+Proposal Contract: {{proposalUrl}}
+Content Guide: {{contentGuideUrl}}
+
+Note: You do not need to sign the template. We will send a new contract once we establish our collaboration.
+
+- WhatsApp: {{whatsapp}}
+- Email: {{email}}
+
+Best regards,
+Zero Breeze Marketing Team`,
+  },
+  {
+    id: 'reject-discount',
+    group: '合作前 · 评估不通过',
+    title: '评估不通过 · 拒绝 + 大折扣',
+    channel: '通用',
+    body: `Hi,
+
+Thanks so much for reaching out and for sharing your work. We can feel your passion for outdoor adventure through your content. We really appreciate your interest in partnering with ZERO BREEZE.
+
+At the moment, we're currently working with a few outdoor content creators on active campaigns, and sample units are quite limited. We'd love to keep you in mind for future opportunities when new projects or inventory open up.
+
+However, we can offer you a $100 OFF KOL discount (Code: KOL100) for you to purchase a unit OR purchase a Demo Unit for 30% OFF.
+
+Thanks again for thinking of us. Best of luck with your travels and content in the meantime. Let's stay in touch.
+
+Stay cool,
+Zero Breeze Team`,
+  },
+  {
+    id: 'koc',
+    group: '合作前 · 评估不通过',
+    title: 'KOC · 婉拒 + Demo 30% OFF',
+    channel: '通用',
+    body: `Thank you so much for reaching out and for taking the time to share your work. We truly appreciate your interest in ZERO BREEZE.
+
+At the moment, we're supporting a number of ongoing creator partnerships, so our available sample/demo units are quite limited for the time being.
+
+That said, we're still very open to flexible collaboration. While we're not able to provide complimentary sample units at this time, we'd be happy to offer you a personal creator discount for a purchase unit. In some cases, we may also provide demo-unit pricing starting from 30% OFF based on the proposed collaboration scope.
+
+Feel free to share any ideas you have in mind — we'd love to explore working together in the future.
+
+Stay cool,`,
+  },
+  {
+    id: 'paid',
+    group: '合作中 · 异议',
+    title: '付费合作 · 仅接受置换',
+    channel: '通用',
+    body: `Hey there,
+We currently only accept exchange partnerships. I have attached a proposal contract with deliverable details and a content guide file.
+
+Proposal contract: {{proposalUrl}}
+Content Guide: {{contentGuideUrl}}
+
+This contract is a template — you do not need to sign it. We will send you a new contract once we establish our collaboration.
+
+- WhatsApp: {{whatsapp}}
+- Email: {{email}}
+
+Stay cool,
+{{signature}}`,
+  },
+  {
+    id: 'send-contract',
+    group: '合作中 · 合同',
+    title: '直接同意签约 · 发送合同（Mark 3）',
+    channel: '通用',
+    body: `Hi,
+
+We're thrilled to move forward with our collaboration. We're ready to proceed and would like to get the contract in place.
+
+As we move forward, a quick note on getting the best performance from Mark 3: many vehicles have large interiors that may exceed the MK3's total cooling capacity. We recommend using it as a 'spot cooler' rather than a whole-vehicle AC — e.g. partition curtains in the sleeping area help concentrate cooling. Please also ensure the exhaust hoses are connected to the window for maximum efficiency.
+
+I've attached the contract for your review (插入做好的网红合同链接).
+
+Quick notes:
+- Name: Please fill in your name in the highlighted red sections.
+- Posting Date: The date is a placeholder; the schedule is calculated from the effective date of the contract.
+- Autonomous Creativity: Video descriptions are for reference only — feel free to tweak to your style.
+- Terms & Usage: Term is one year; we're open to discussing likeness/portrait usage.
+- Signature: Please e-sign the final page, or send a signed PDF.
+
+Once signed, please send it back via email and we'll arrange shipping ASAP.
+
+Stay cool,
+{{signature}}`,
+  },
+  {
+    id: 'objection-video-count',
+    group: '合作中 · 异议',
+    title: '视频数量异议',
+    channel: '通用',
+    body: `Hi,
+
+We understand every creator has a different workflow and schedule, so we're happy to align on a content scope that works best for you. How would you feel about a mix of [] short-form and [] long-form video(s)? We can also reduce the photos to a minimum of 5. We're open to adjusting these numbers based on what's most comfortable for your workflow.
+
+If this sounds good, I'd love to hear your thoughts and what type of content you'd feel most comfortable creating.
+
+- Phone / WhatsApp: {{whatsapp}}
+- Email: {{email}}
+
+Best,
+{{signature}}`,
+  },
+  {
+    id: 'objection-portrait',
+    group: '合作中 · 异议',
+    title: '肖像权异议',
+    channel: '通用',
+    body: `Hi,
+
+Thank you for sharing your thoughts on the image rights section. For this collaboration, we'd mainly like to repost your content on our own channels (website, social media, community pages) with proper credit.
+
+If we ever want to use your content for paid advertising or broader commercial purposes, we would absolutely discuss and agree on that with you separately.
+
+Our goal is to make this a fair and mutually beneficial collaboration. Let me know if you have any preferences regarding usage — happy to align!
+
+Best,
+Zero Breeze Team`,
+  },
+  {
+    id: 'objection-term',
+    group: '合作中 · 异议',
+    title: '合同期限异议',
+    channel: '通用',
+    body: `Hi,
+
+Great question — totally understand your concern. For this collaboration, the agreement term mainly covers the initial content delivery and basic usage period.
+
+That said, we're very flexible and happy to adjust the duration to something that works comfortably for you. We're not looking to restrict your future collaborations — our goal is simply a smooth and fair partnership for this campaign.
+
+Let me know what timeframe you'd feel most comfortable with, and we can align accordingly.
+
+Best,
+Zero Breeze Team`,
+  },
+  {
+    id: 'objection-two-batteries',
+    group: '合作中 · 异议',
+    title: '想要两个电池',
+    channel: '通用',
+    body: `Hi,
+
+Our standard collaboration package currently includes one AC unit and one battery, designed to provide a complete initial experience. We'd love to start with this setup.
+
+That said, we see this as a long-term partnership. If everything goes smoothly, we'll be more than happy to arrange shipping for extra batteries and accessories as we move into the next phase.
+
+Looking forward to your thoughts!`,
+  },
+  {
+    id: 'reject-contract',
+    group: '合作中 · 异议',
+    title: '拒绝签合同',
+    channel: '通用',
+    body: `Hi,
+
+Thank you for your message and for taking the time to share your thoughts. We truly appreciate your interest in working with ZERO BREEZE.
+
+We fully understand your concerns regarding the contract. However, due to strict internal compliance, legal, and risk management policies, all brand collaborations must be governed by a formally executed written agreement without exception. This ensures:
+- Clear definition of deliverables and expectations
+- Legal protection for both parties
+- Compliance with international partnership regulations
+- Transparent handling of usage rights, payment terms, and liability
+
+As such, we are unable to proceed unless a signed contract is in place prior to any work or delivery of assets.
+
+Should you decide in the future to proceed under these standard terms, we'd be very happy to revisit working together.
+
+Best regards,
+ZERO BREEZE Team`,
+  },
+  {
+    id: 'follow-up-precontract',
+    group: '跟进 · 未回复',
+    title: '未回复（签合同前）',
+    channel: '通用',
+    body: `Hi there, just following up to see if you've had a chance to look over the contract link. Any questions so far? Looking forward to hearing from you.`,
+  },
+  {
+    id: 'follow-up-postcontract',
+    group: '跟进 · 未回复',
+    title: '未回复（已签合同）',
+    channel: '通用',
+    body: `Hi,
+
+I wanted to touch base and see if you had any questions regarding the posting schedule in the contract.
+
+We're excited to move forward with you! Please let us know if there's anything we can clarify or assist with to get the timeline finalized.`,
+  },
+  {
+    id: 'shipping',
+    group: '合作中 · 发货',
+    title: '发货通知',
+    channel: '通用',
+    body: `Hi,
+I'm excited to let you know that we've processed your order, and your Mark 3 is now ready to be shipped as part of our collaboration.
+Tracking details: (地址 / 物流信息)
+If you have any questions regarding the shipment or anything needs adjusting, please don't hesitate to reach out. Looking forward to seeing how our product fits into your content!
+Stay cool,
+{{signature}}`,
+  },
+  {
+    id: 'festival-email',
+    group: '品牌 / 音乐节联名',
+    title: '音乐节联名 · 邮件版',
+    channel: 'Email',
+    body: `Subject: Potential Festival Collaboration with ZERO BREEZE
+
+Hi there!
+
+We've been following your festival and absolutely love the atmosphere, community, and outdoor experience you've created.
+
+We are ZERO BREEZE — the world's first genuine battery-powered portable air conditioner designed for off-grid life, outdoor events, camping, RV setups, and extreme heat. We believe our products could be a great fit for backstage areas, VIP lounges, camping zones, artist spaces, and attendee comfort.
+
+We'd love to explore a partnership, whether that's festival product integration, on-site cooling support, or giveaway/activation opportunities.
+
+- Official Website: {{website}}
+- Instagram: {{instagram}}
+- WhatsApp / Phone: {{whatsapp}}
+- Email: {{email}}
+
+Stay cool,
+{{signature}} — ZERO BREEZE Team`,
+  },
+  {
+    id: 'brand-collab',
+    group: '品牌 / 音乐节联名',
+    title: '品牌联名',
+    channel: '通用',
+    body: `Hi there!
+
+We've come across your content and really love the way you share your outdoor lifestyle and connect with your community.
+
+We're ZERO BREEZE — a brand specializing in battery-powered portable air conditioners designed for camping, road trips, festivals, and off-grid adventures. We'd love to explore a collaboration or partnership for upcoming projects or content.
+
+We're very open and flexible with collaboration ideas. Feel free to reach out anytime:
+- Email: {{email}}
+- WhatsApp: {{whatsapp}}
+
+Looking forward to connecting!
+— ZERO BREEZE`,
+  },
+  {
+    id: 'product-fault-apology',
+    group: '合作异常',
+    title: '产品故障 · 道歉',
+    channel: '通用',
+    body: `Hi,
+
+I'm really sorry to hear that you've encountered an issue with your (产品名). We understand how disappointing it can be when things don't work as expected, and we appreciate your patience.
+
+If possible, please share any photos or videos of the problem. These will help us quickly diagnose and properly handle the situation.
+
+Again, we sincerely apologize for any inconvenience, and we're here to make sure this gets sorted out as quickly as possible.
+
+Best regards,
+{{signature}}`,
+  },
+  {
+    id: 'collab-end',
+    group: '合作结束',
+    title: '合作结束致谢',
+    channel: '通用',
+    body: `Hi,
+I hope you're doing well! I just wanted to thank you for the amazing collaboration we've had. It's been a pleasure bringing Zero Breeze's portable air conditioners to your audience.
+
+We'd love to keep the door open for future opportunities. If there's anything you'd like to discuss or any feedback to share, we're all ears!
+
+Thank you again for your time, effort, and enthusiasm. We look forward to staying in touch and possibly working together again.
+
+Best regards,
+{{signature}}`,
+  },
+];
+
+// Step 3 评估后处理: which 话术库 templates to surface per verdict.
+const PROCESS_PROPOSAL_SCRIPT_IDS = ['proposal-inbound', 'outreach-email', 'outreach-ig', 'paid'];
+const PROCESS_REJECT_SCRIPT_IDS = ['reject-discount', 'koc'];
+
+// Resolve the relevant outreach templates for a verdict, applying any user edits
+// saved in the 话术库 (localStorage overrides) so Step 3 mirrors the library.
+function processScriptOptions(verdict: 'pass' | 'fail'): ScriptTemplate[] {
+  const ids = verdict === 'pass' ? PROCESS_PROPOSAL_SCRIPT_IDS : PROCESS_REJECT_SCRIPT_IDS;
+  return resolveScriptOptions(ids);
+}
+
+// Step 5 合作推进: contract / objection-handling templates surfaced in the panel.
+const COLLAB_SCRIPT_IDS = [
+  'send-contract',
+  'objection-video-count',
+  'objection-portrait',
+  'objection-term',
+  'objection-two-batteries',
+  'reject-contract',
+  'follow-up-precontract',
+  'follow-up-postcontract',
+];
+// Step 6 发货流程: shipping / fulfillment templates.
+const SHIP_SCRIPT_IDS = ['shipping', 'product-fault-apology', 'collab-end'];
+
+function collabScriptOptions(): ScriptTemplate[] {
+  return resolveScriptOptions(COLLAB_SCRIPT_IDS);
+}
+
+function shipScriptOptions(): ScriptTemplate[] {
+  return resolveScriptOptions(SHIP_SCRIPT_IDS);
+}
+
+// Resolve template ids to their (user-edited) library entries, preserving order.
+function resolveScriptOptions(ids: string[]): ScriptTemplate[] {
+  const overrides = loadScriptOverrides();
+  return ids
+    .map((id) => SCRIPT_LIBRARY.find((script) => script.id === id))
+    .filter((script): script is ScriptTemplate => Boolean(script))
+    .map((script) => (overrides[script.id] ? { ...script, ...overrides[script.id] } : script));
+}
+
+function WorkflowRail({
+  view,
+  counts,
+  onSelect,
+}: {
+  view: MarketingView;
+  counts: { classify: number; evaluate: number; process: number; intake: number; collab: number; ship: number };
+  onSelect: (view: MarketingView) => void;
+}) {
+  const pendingFor = (key: MarketingView | null): number => {
+    switch (key) {
+      case 'classify':
+        return counts.classify;
+      case 'evaluate':
+        return counts.evaluate;
+      case 'process':
+        return counts.process;
+      case 'intake':
+        return counts.intake;
+      case 'collab':
+        return counts.collab;
+      case 'ship':
+        return counts.ship;
+      default:
+        return 0;
+    }
+  };
+  return (
+    <div className="marketing-rail" role="tablist" aria-label="网红营销流程">
+      {MARKETING_WORKFLOW_STEPS.map((step, index) => {
+        const enabled = step.key !== null;
+        const active = enabled && step.key === view;
+        const pending = pendingFor(step.key);
+        return (
+          <Fragment key={step.id}>
+            {index > 0 && <span className="marketing-rail-link" aria-hidden />}
+            <button
+              type="button"
+              className={`marketing-rail-step ${active ? 'active' : ''} ${enabled ? '' : 'locked'}`}
+              onClick={() => enabled && step.key && onSelect(step.key)}
+              disabled={!enabled}
+              role="tab"
+              aria-selected={active}
+              title={enabled ? step.desc : `${step.title} · 敬请期待`}
+            >
+              <span className="marketing-rail-index">{enabled ? step.id : <Lock size={11} />}</span>
+              <span className="marketing-rail-text">
+                <em>{step.short}</em>
+                <strong>{step.title}</strong>
+              </span>
+              {enabled && pending > 0 && <span className="marketing-rail-badge">{pending}</span>}
+            </button>
+          </Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+function MarketingEmptyState({
+  tone = 'neutral',
+  icon,
+  title,
+  description,
+  children,
+}: {
+  tone?: 'neutral' | 'success';
+  icon: ReactNode;
+  title: string;
+  description?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className={`marketing-empty ${tone}`}>
+      <span className="marketing-empty-icon">{icon}</span>
+      <strong className="marketing-empty-title">{title}</strong>
+      {description && <p className="marketing-empty-desc">{description}</p>}
+      {children && <div className="marketing-empty-actions">{children}</div>}
+    </div>
+  );
+}
+
+function LeadCard({
+  lead,
+  kol,
+  className,
+  chips,
+  openKolLabel,
+  onOpenKol,
+  actions,
+  actionsClassName,
+}: {
+  lead: MarketingEmailLead;
+  kol?: KolProfile | null;
+  className?: string;
+  chips?: ReactNode;
+  openKolLabel?: string;
+  onOpenKol?: (id: string) => void;
+  actions?: ReactNode;
+  actionsClassName?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [showTranslation, setShowTranslation] = useState(false);
+  const [translation, setTranslation] = useState<{ subject: string; body: string } | null>(null);
+  const [translating, setTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState<string | null>(null);
+
+  const body = cleanEmailText(lead.snippet || '');
+  const hasBody = body.length > 0;
+  const displaySubject = showTranslation && translation ? translation.subject : lead.subject;
+  const displayBody = showTranslation && translation ? translation.body || body : body;
+
+  const handleTranslate = async () => {
+    if (translation) {
+      setShowTranslation((value) => !value);
+      return;
+    }
+    setTranslating(true);
+    setTranslateError(null);
+    try {
+      const [subjectRes, bodyRes] = await Promise.all([
+        translateText(lead.subject),
+        hasBody ? translateText(body) : Promise.resolve({ text: '', sourceLang: 'auto', targetLang: 'zh-CN' }),
+      ]);
+      setTranslation({ subject: subjectRes.text || lead.subject, body: bodyRes.text || '' });
+      setShowTranslation(true);
+    } catch (error) {
+      setTranslateError(stringifyError(error));
+    } finally {
+      setTranslating(false);
+    }
+  };
+
+  return (
+    <article className={`marketing-lead-card ${className ?? ''}`}>
+      <div className="marketing-lead-main">
+        <div className="marketing-lead-top">
+          <span className={`marketing-category ${lead.category}`}>{categoryLabel(lead.category)}</span>
+          {chips}
+          {showTranslation && translation && <span className="marketing-translated-tag"><Languages size={10} />译文</span>}
+          <span className="spacer" />
+          <span className="marketing-lead-time">{formatMaybeDate(lead.receivedAt)}</span>
+        </div>
+        <h4 className="marketing-lead-subject">{displaySubject}</h4>
+        <span className="marketing-lead-from">{lead.rawFrom}</span>
+        {hasBody && <p className={`marketing-lead-snippet ${expanded ? '' : 'clamped'}`}>{displayBody}</p>}
+        {translateError && <span className="marketing-lead-translate-error"><AlertCircle size={12} />{translateError}</span>}
+        {lead.agentReviewNote && <span className="marketing-review-note">{lead.agentReviewNote}</span>}
+        <div className="marketing-lead-tools">
+          <button type="button" className="marketing-text-btn" onClick={() => void handleTranslate()} disabled={translating}>
+            {translating ? <Loader2 size={12} className="spin" /> : <Languages size={12} />}
+            {translation ? (showTranslation ? '显示原文' : '显示译文') : translating ? '翻译中…' : '翻译'}
+          </button>
+          {hasBody && body.length > 140 && (
+            <button type="button" className="marketing-text-btn" onClick={() => setExpanded((value) => !value)}>
+              {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}{expanded ? '收起' : '展开全文'}
+            </button>
+          )}
+          {kol && onOpenKol && (
+            <button className="marketing-link-btn inline" type="button" onClick={() => onOpenKol(kol.id)}>
+              <Users size={13} />{openKolLabel ?? `打开 ${kol.name}`}
+            </button>
+          )}
+        </div>
+      </div>
+      {actions && <div className={`marketing-lead-actions ${actionsClassName ?? ''}`}>{actions}</div>}
+    </article>
+  );
+}
+
+function ClassifyWorkbench({
+  leads,
+  kols,
+  busy,
+  evaluatePending = 0,
+  onClassify,
+  onOpenKol,
+  onCopyAgentPrompt,
+  onGoEvaluate,
+  copiedPrompt,
+}: {
+  leads: MarketingEmailLead[];
+  kols: KolProfile[];
+  busy: boolean;
+  evaluatePending?: number;
+  onClassify: (lead: MarketingEmailLead, category: EmailCategory, hidden?: boolean) => void;
+  onOpenKol: (id: string) => void;
+  onCopyAgentPrompt: () => void;
+  onGoEvaluate?: () => void;
+  copiedPrompt: boolean;
+}) {
+  const [filter, setFilter] = useState<'pending' | 'all'>('pending');
+  const kolById = new Map(kols.map((kol) => [kol.id, kol]));
+  const visible = leads.filter((lead) => (filter === 'all' ? true : !lead.humanConfirmed));
+  const pendingCount = leads.filter((lead) => !lead.humanConfirmed).length;
+  return (
+    <div className="marketing-step">
+      <div className="marketing-step-head">
+        <div className="marketing-step-intro">
+          <span className="marketing-step-tag"><ListChecks size={13} />Step 1 · 初步分类</span>
+          <p>AI 已预读每封邮件并给出建议类别。请确认或修正为 <b>达人</b> / <b>联盟</b> / <b>其他</b>；广告点「隐藏」即从收件箱移除。确认后即使再次同步也不会被覆盖。</p>
+        </div>
+        <div className="marketing-step-actions">
+          <div className="marketing-segment">
+            <button type="button" className={filter === 'pending' ? 'active' : ''} onClick={() => setFilter('pending')}>待确认 {pendingCount}</button>
+            <button type="button" className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>全部 {leads.length}</button>
+          </div>
+          <button type="button" className="settings-btn" onClick={onCopyAgentPrompt} title="复制让 Agent 批量分类的指令">
+            {copiedPrompt ? <Check size={13} /> : <Sparkles size={13} />}{copiedPrompt ? '已复制' : '复制 Agent 指令'}
+          </button>
+        </div>
+      </div>
+      {visible.length === 0 ? (
+        leads.length > 0 ? (
+          <MarketingEmptyState
+            tone="success"
+            icon={<CheckCheck size={26} />}
+            title="收件箱已清空"
+            description={`全部 ${leads.length} 条线索均已人工确认，Step 1 初步分类完成，可以进入网红评估。`}
+          >
+            <button type="button" className="settings-btn" onClick={() => setFilter('all')}>查看全部分类</button>
+            {onGoEvaluate && (
+              <button type="button" className="settings-btn primary" onClick={onGoEvaluate}>
+                前往网红评估{evaluatePending > 0 ? ` · ${evaluatePending}` : ''}<ChevronRight size={14} />
+              </button>
+            )}
+          </MarketingEmptyState>
+        ) : (
+          <MarketingEmptyState
+            icon={<Inbox size={26} />}
+            title="暂无邮件线索"
+            description="在设置中配置邮箱并点击右上角「同步邮件」后，AI 会自动预读新邮件并给出分类建议。"
+          >
+            <button type="button" className="settings-btn" onClick={onCopyAgentPrompt} title="复制让 Agent 同步并批量分类的指令">
+              {copiedPrompt ? <Check size={13} /> : <Sparkles size={13} />}{copiedPrompt ? '已复制' : '复制 Agent 指令'}
+            </button>
+          </MarketingEmptyState>
+        )
+      ) : (
+        <div className="marketing-lead-list">
+          {visible.map((lead) => {
+            const kol = lead.kolId ? kolById.get(lead.kolId) : null;
+            return (
+              <LeadCard
+                key={lead.id}
+                lead={lead}
+                kol={kol}
+                className={lead.humanConfirmed ? 'confirmed' : ''}
+                chips={
+                  <>
+                    <span className="marketing-ai-chip"><Sparkles size={11} />AI {Math.round(lead.confidence * 100)}%</span>
+                    {lead.humanConfirmed && <span className="marketing-confirm-chip"><Check size={11} />已确认</span>}
+                  </>
+                }
+                onOpenKol={onOpenKol}
+                openKolLabel={kol ? `打开 ${kol.name} 的评估` : undefined}
+                actionsClassName="classify"
+                actions={
+                  <>
+                    <span className="marketing-action-label">人工确认</span>
+                    <div className="marketing-classify-buttons">
+                      {(['influencer', 'affiliate', 'other'] as EmailCategory[]).map((category) => (
+                        <button
+                          key={category}
+                          type="button"
+                          className={`marketing-pill ${category} ${lead.humanConfirmed && lead.category === category ? 'on' : ''}`}
+                          disabled={busy}
+                          onClick={() => onClassify(lead, category)}
+                        >
+                          {categoryLabel(category)}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        className="marketing-pill hide"
+                        disabled={busy}
+                        onClick={() => onClassify(lead, 'other', true)}
+                        title="广告：归入其他并隐藏"
+                      >
+                        <EyeOff size={12} />隐藏
+                      </button>
+                    </div>
+                  </>
+                }
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EvaluateWorkbench({
+  kols,
+  selectedId,
+  busy,
+  autoConfirm,
+  onToggleAutoConfirm,
+  onSelect,
+  onSave,
+  onOpenKol,
+}: {
+  kols: KolProfile[];
+  selectedId: string | null;
+  busy: boolean;
+  autoConfirm: boolean;
+  onToggleAutoConfirm: (next: boolean) => void;
+  onSelect: (id: string) => void;
+  onSave: (kol: KolProfile, payload: EvaluationSavePayload, confirmed: boolean) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const [filter, setFilter] = useState<'todo' | 'pass' | 'fail' | 'all'>('todo');
+  const [copiedBatch, setCopiedBatch] = useState(false);
+  const buckets = useMemo(() => {
+    const map: Record<EvalBucket, KolProfile[]> = { todo: [], pass: [], fail: [] };
+    for (const kol of kols) map[kolEvalBucket(kol)].push(kol);
+    return map;
+  }, [kols]);
+  const pending = buckets.todo;
+  const list = filter === 'all' ? kols : buckets[filter];
+  const selected = list.find((kol) => kol.id === selectedId) ?? list[0] ?? null;
+
+  const emptyHint =
+    filter === 'pass'
+      ? '还没有评估通过的达人。'
+      : filter === 'fail'
+        ? '没有被判定为不通过的达人。'
+        : filter === 'all'
+          ? '暂无 KOL 档案。'
+          : '没有待评估的达人。先在 Step 1 把达人邮件确认为「达人」。';
+
+  const copyBatchPrompt = async () => {
+    if (pending.length === 0) return;
+    const roster = pending.map((kol, index) => `${index + 1}. id=${kol.id} | ${kol.name} <${kol.email}>`);
+    const confirmFlag = autoConfirm ? ' --confirm true' : '';
+    const tail = autoConfirm
+      ? '已开启「Agent 自动确认」：CLI 默认直接定稿（通过→qualified，不通过→rejected），完成后按通过/不通过/待定分组汇总结论与依据告诉我即可，无需我再确认。'
+      : '默认保存为草稿（pipeline_stage 留在 evaluate）；全部完成后，按「通过 / 不通过 / 待定」分组汇总每位的结论与关键依据，我再人工逐一确认。';
+    const prompt = [
+      `请用 $sidebar-control 技能批量执行 Step 2 网红评估，共 ${pending.length} 位待评估达人：`,
+      ...roster,
+      '',
+      '对每一位：先调研其社媒数据，再按 6 项指标判断——硬性 vertical、language 必须全部通过；软性 followers、views、engagement、recency 至少 2 项通过才算评估通过。',
+      `逐个执行：alpha-sidebar marketing kols evaluate --id <kolId> --criteria '[{"key":"vertical","status":"pass|fail|unknown","detail":"依据"}, ...]' --summary "<结论摘要>"${confirmFlag} --reason "Step 2 批量评估"`,
+      'criteria 的 key 仅限 vertical/language/followers/views/engagement/recency，status 仅限 pass/fail/unknown；CLI 会自动判定 verdict 与流程阶段，无需手动设置 pipeline_stage。',
+      tail,
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopiedBatch(true);
+      window.setTimeout(() => setCopiedBatch(false), 1600);
+    }
+  };
+
+  return (
+    <div className="marketing-step evaluate">
+      <div className="marketing-step-head">
+        <div className="marketing-step-intro">
+          <span className="marketing-step-tag"><ShieldQuestion size={13} />Step 2 · 网红评估</span>
+          <p>硬性指标（红）必须全部通过，软性指标至少满足 2 项才算<b>评估通过</b>。让 Agent 调研填写指标，人工核对后确认结论。</p>
+        </div>
+        <div className="marketing-step-actions">
+          <button
+            type="button"
+            className={`marketing-autoconfirm ${autoConfirm ? 'on' : ''}`}
+            role="switch"
+            aria-checked={autoConfirm}
+            disabled={busy}
+            onClick={() => onToggleAutoConfirm(!autoConfirm)}
+            title={autoConfirm ? 'Agent 评估后直接定稿，无需人工确认。点击关闭。' : '开启后 Agent 评估将自动确认，跳过人工确认。'}
+          >
+            <ShieldCheck size={13} />
+            <span>Agent 自动确认</span>
+            <Toggle checked={autoConfirm} />
+          </button>
+          <button
+            type="button"
+            className="settings-btn ghost"
+            disabled={pending.length === 0}
+            onClick={copyBatchPrompt}
+            title="复制让 Agent 一次性评估全部待评估达人的指令"
+          >
+            {copiedBatch ? <Check size={13} /> : <Sparkles size={13} />}
+            {copiedBatch ? '已复制' : `批量 Agent 评估${pending.length ? ` · ${pending.length}` : ''}`}
+          </button>
+          <div className="marketing-segment verdicts">
+            <button type="button" className={filter === 'todo' ? 'active' : ''} onClick={() => setFilter('todo')}>待评估 {buckets.todo.length}</button>
+            <button type="button" className={`pass ${filter === 'pass' ? 'active' : ''}`} onClick={() => setFilter('pass')}>通过 {buckets.pass.length}</button>
+            <button type="button" className={`fail ${filter === 'fail' ? 'active' : ''}`} onClick={() => setFilter('fail')}>未通过 {buckets.fail.length}</button>
+            <button type="button" className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>全部 {kols.length}</button>
+          </div>
+        </div>
+      </div>
+      <div className="marketing-split">
+        <div className="marketing-eval-list">
+          {list.length === 0 ? (
+            <div className="partner-marketing-placeholder"><Users size={18} /><span>{emptyHint}</span></div>
+          ) : (
+            list.map((kol) => {
+              const evaluation = parseKolEvaluation(kol.evaluation);
+              const verdict = evaluation?.status ?? 'pending';
+              const bucket = kolEvalBucket(kol);
+              const isDraft = !!evaluation && !evaluation.confirmed;
+              return (
+                <button
+                  key={kol.id}
+                  type="button"
+                  className={`marketing-eval-row ${bucket} ${kol.id === selected?.id ? 'selected' : ''}`}
+                  onClick={() => onSelect(kol.id)}
+                >
+                  <span className="marketing-avatar sm">{initials(kol.name)}</span>
+                  <span className="marketing-eval-row-main">
+                    <strong>{kol.name}</strong>
+                    <span>{kol.country || '国家未知'} · {kol.tags || '无标签'}</span>
+                  </span>
+                  <span className="marketing-eval-row-meta">
+                    {isDraft && <em className="marketing-eval-draft" title="评估草稿，待人工确认">草稿</em>}
+                    <span className={`marketing-verdict ${verdict}`}>
+                      {!evaluation ? <ShieldQuestion size={11} /> : verdict === 'pass' ? <ShieldCheck size={11} /> : verdict === 'fail' ? <AlertTriangle size={11} /> : <ShieldQuestion size={11} />}
+                      {evaluation ? verdictShort(verdict) : '未评估'}
+                    </span>
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+        <EvaluationPanel kol={selected} busy={busy} autoConfirm={autoConfirm} onSave={onSave} onOpenKol={onOpenKol} />
+      </div>
+    </div>
+  );
+}
+
+interface EvaluationSavePayload {
+  criteria: EvalCriterion[];
+  summary: string;
+  recommendation: string;
+}
+
+function EvaluationPanel({
+  kol,
+  busy,
+  autoConfirm,
+  onSave,
+  onOpenKol,
+}: {
+  kol: KolProfile | null;
+  busy: boolean;
+  autoConfirm: boolean;
+  onSave: (kol: KolProfile, payload: EvaluationSavePayload, confirmed: boolean) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const [criteria, setCriteria] = useState<EvalCriterion[]>(() => defaultEvalCriteria());
+  const [summary, setSummary] = useState('');
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    const evaluation = parseKolEvaluation(kol?.evaluation);
+    setCriteria(defaultEvalCriteria(evaluation?.criteria));
+    setSummary(evaluation?.summary ?? '');
+    setCopied(false);
+  }, [kol?.id, kol?.evaluation]);
+
+  if (!kol) {
+    return (
+      <aside className="marketing-detail-panel">
+        <div className="partner-marketing-placeholder"><ShieldQuestion size={18} /><span>选择一个达人开始评估。</span></div>
+      </aside>
+    );
+  }
+
+  const evaluation = parseKolEvaluation(kol.evaluation);
+  const verdict = computeVerdict(criteria);
+  const setStatus = (key: EvalCriterionKey, status: EvalCriterionStatus) =>
+    setCriteria((prev) => prev.map((item) => (item.key === key ? { ...item, status } : item)));
+  const setDetail = (key: EvalCriterionKey, detail: string) =>
+    setCriteria((prev) => prev.map((item) => (item.key === key ? { ...item, detail } : item)));
+
+  const recommendation = verdict === 'pass' ? 'proposal' : verdict === 'fail' ? 'reject' : 'hold';
+  const recommendedScript = SCRIPT_LIBRARY.find((item) =>
+    recommendation === 'proposal' ? item.id === 'proposal-inbound' : recommendation === 'reject' ? item.id === 'reject-discount' : false,
+  );
+
+  const copyAgentPrompt = async () => {
+    const confirmFlag = autoConfirm ? ' --confirm true' : '';
+    const tail = autoConfirm
+      ? '已开启「Agent 自动确认」：CLI 直接定稿（通过→qualified，不通过→rejected），完成后把结论与依据告诉我即可，无需我再确认。'
+      : '每项 criteria 形如 {"key":"vertical","status":"pass|fail|unknown","detail":"依据"}。完成后告诉我结论，我会人工确认。';
+    const prompt = [
+      `请用 $sidebar-control 技能对 KOL「${kol.name}」<${kol.email}>（id=${kol.id}）执行 Step 2 网红评估。`,
+      '请先调研其社媒数据，然后按 6 项指标判断（vertical、language 为硬性必须通过；followers、views、engagement、recency 为软性，至少 2 项通过）。',
+      `执行：alpha-sidebar marketing kols evaluate --id ${kol.id} --criteria '<JSON 数组>' --summary "<结论摘要>"${confirmFlag} --reason "Step 2 网红评估"`,
+      tail,
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    }
+  };
+
+  return (
+    <aside className="marketing-detail-panel eval">
+      <header>
+        <span className="marketing-avatar">{initials(kol.name)}</span>
+        <div>
+          <strong>{kol.name}</strong>
+          <span>{kol.email}</span>
+        </div>
+        <span className={`marketing-stage-chip ${kol.pipelineStage}`}>{pipelineStageLabel(kol.pipelineStage)}</span>
+      </header>
+
+      <div className={`marketing-verdict-banner ${verdict}`}>
+        <span className="marketing-verdict-icon">
+          {verdict === 'pass' ? <ShieldCheck size={18} /> : verdict === 'fail' ? <AlertTriangle size={18} /> : <ShieldQuestion size={18} />}
+        </span>
+        <div>
+          <strong>{verdictLabel(verdict)}</strong>
+          <span>硬性 {criteria.filter((c) => c.kind === 'hard' && c.status === 'pass').length}/2 · 软性 {criteria.filter((c) => c.kind === 'soft' && c.status === 'pass').length}/4 通过</span>
+        </div>
+        {evaluation?.confirmed && <span className="marketing-confirm-chip"><Check size={11} />已确认 · {evaluation.by === 'agent' ? 'Agent' : '人工'}</span>}
+      </div>
+
+      <div className="marketing-criteria">
+        {(['hard', 'soft'] as const).map((kind) => (
+          <div key={kind} className="marketing-criteria-group">
+            <h4>{kind === 'hard' ? '硬性指标（必须全部通过）' : '软性指标（至少 2 项）'}</h4>
+            {criteria.filter((item) => item.kind === kind).map((item) => {
+              const meta = EVAL_CRITERIA_CATALOG.find((m) => m.key === item.key);
+              return (
+                <div key={item.key} className={`marketing-criterion ${item.kind} ${item.status}`}>
+                  <div className="marketing-criterion-head">
+                    <span className="marketing-criterion-label">{item.label}</span>
+                    <div className="marketing-segment tri">
+                      {EVAL_STATUS_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`${option.value} ${item.status === option.value ? 'active' : ''}`}
+                          onClick={() => setStatus(item.key, option.value)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <input
+                    className="settings-input"
+                    value={item.detail}
+                    onChange={(event) => setDetail(item.key, event.target.value)}
+                    placeholder={meta?.hint || '填写依据，如 IG 45k / 平均播放 28k'}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      <label className="marketing-eval-summary">评估结论 / 推荐理由
+        <textarea className="settings-textarea" value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="给下一个处理人的结论：场景适配、流量情况、推荐理由等" />
+      </label>
+
+      <div className="marketing-eval-buttons">
+        <button type="button" className="settings-btn" disabled={busy} onClick={() => onSave(kol, { criteria, summary, recommendation }, false)}>保存草稿</button>
+        <button type="button" className="settings-btn primary" disabled={busy || verdict === 'pending'} onClick={() => onSave(kol, { criteria, summary, recommendation }, true)} title={verdict === 'pending' ? '请先补全所有指标' : '人工确认结论'}>
+          <Check size={13} />确认结论
+        </button>
+        <button type="button" className="settings-btn ghost" onClick={copyAgentPrompt} title="复制让 Agent 评估的指令">
+          {copied ? <Check size={13} /> : <Sparkles size={13} />}{copied ? '已复制' : 'Agent 评估'}
+        </button>
+      </div>
+
+      {recommendedScript && (
+        <RecommendationCard
+          verdict={verdict}
+          script={recommendedScript}
+          onOpenKol={() => onOpenKol(kol.id)}
+        />
+      )}
+    </aside>
+  );
+}
+
+function RecommendationCard({ verdict, script, onOpenKol }: { verdict: EvalVerdict; script: ScriptTemplate; onOpenKol: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const vars = useMemo(() => loadScriptVars(), []);
+  const rendered = useMemo(() => renderScript(script.body, vars), [script.body, vars]);
+  const copy = async () => {
+    if (await copyToClipboard(rendered)) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    }
+  };
+  return (
+    <div className={`marketing-reco ${verdict}`}>
+      <div className="marketing-reco-head">
+        <span>{verdict === 'pass' ? '建议：发送合作提案' : '建议：发送拒绝 + 折扣话术'}</span>
+        <button type="button" className="settings-btn" onClick={copy}>{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? '已复制' : '复制话术'}</button>
+      </div>
+      <p className="marketing-reco-title">{script.title}</p>
+      <pre className="marketing-reco-body">{rendered}</pre>
+      <button type="button" className="marketing-link-btn" onClick={onOpenKol}><UserCircle size={13} />在 KOL 库查看完整档案</button>
+    </div>
+  );
+}
+
+const OUTREACH_CHANNELS = ['Email', 'IG DM', 'WhatsApp', '通用'];
+
+interface OutreachSavePayload {
+  status: 'sent' | 'skipped';
+  kind: string;
+  scriptId?: string;
+  channel?: string;
+  note?: string;
+}
+
+interface ReplySavePayload {
+  body: string;
+  kind: string;
+  scriptId?: string;
+  channel?: string;
+  note?: string;
+}
+
+// The Step 3 action a KOL needs follows its confirmed Step 2 verdict.
+function processVerdict(kol: KolProfile): 'pass' | 'fail' {
+  const evaluation = parseKolEvaluation(kol.evaluation);
+  if (evaluation?.status === 'fail') return 'fail';
+  if (evaluation?.status === 'pass') return 'pass';
+  return kol.pipelineStage === 'rejected' ? 'fail' : 'pass';
+}
+
+function ProcessWorkbench({
+  kols,
+  selectedId,
+  busy,
+  autoReply,
+  onToggleAutoReply,
+  onSelect,
+  onRecord,
+  onReply,
+  onOpenKol,
+}: {
+  kols: KolProfile[];
+  selectedId: string | null;
+  busy: boolean;
+  autoReply: boolean;
+  onToggleAutoReply: (next: boolean) => void;
+  onSelect: (id: string) => void;
+  onRecord: (kol: KolProfile, payload: OutreachSavePayload) => void;
+  onReply: (kol: KolProfile, payload: ReplySavePayload) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const [filter, setFilter] = useState<'todo' | 'done'>('todo');
+  const [copiedBatch, setCopiedBatch] = useState(false);
+  const buckets = useMemo(() => {
+    const map: { todo: KolProfile[]; done: KolProfile[] } = { todo: [], done: [] };
+    for (const kol of kols) {
+      const bucket = kolProcessBucket(kol);
+      if (bucket === 'todo') map.todo.push(kol);
+      else if (bucket === 'done') map.done.push(kol);
+    }
+    return map;
+  }, [kols]);
+  const list = buckets[filter];
+  const selected = list.find((kol) => kol.id === selectedId) ?? list[0] ?? null;
+  const todo = buckets.todo;
+
+  const emptyHint =
+    filter === 'done'
+      ? '还没有已处理的达人。完成发提案 / 拒绝后会出现在这里。'
+      : '没有待处理的达人。先在 Step 2 确认评估结论（通过 / 不通过）。';
+
+  const copyBatchPrompt = async () => {
+    if (todo.length === 0) return;
+    const roster = todo.map((kol, index) => {
+      const verdict = processVerdict(kol);
+      return `${index + 1}. id=${kol.id} | ${kol.name} <${kol.email}> | ${verdict === 'pass' ? '评估通过→发提案' : '评估不通过→发拒绝'}`;
+    });
+    const tail = autoReply
+      ? '已开启「Agent 自主回复」：起草后可直接发送并记录——alpha-sidebar marketing kols reply --id <kolId> --body "<最终正文>" --kind proposal|reject --script-id <模板id> --reason "Step 3 评估后处理"（--send 默认跟随开关=on，即真实通过 SMTP 发出；通过会自动推进到 onboarding 推进合作）。逐位发送后，把每封的收件人与结果汇总告诉我。'
+      : '未开启「Agent 自主回复」：请只把每位的草稿整理好给我审阅，不要发送。我会在面板逐个点「一键回复」发出，或确认后再让你执行 kols reply。';
+    const prompt = [
+      `请用 $sidebar-control 技能批量执行 Step 3 评估后处理，共 ${todo.length} 位待处理达人：`,
+      ...roster,
+      '',
+      '评估通过的：基于话术库「合作提案」（proposal-inbound / outreach-email）结合该达人内容风格，起草一封可直接发送的个性化提案；评估不通过的：基于「拒绝 + 折扣」（reject-discount / koc）起草礼貌婉拒。',
+      '话术中的协议链接、内容指南、联系方式、署名都来自话术库变量，请保留占位或沿用既有配置，不要编造链接。',
+      tail,
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopiedBatch(true);
+      window.setTimeout(() => setCopiedBatch(false), 1600);
+    }
+  };
+
+  return (
+    <div className="marketing-step process">
+      <div className="marketing-step-head">
+        <div className="marketing-step-intro">
+          <span className="marketing-step-tag"><Mail size={13} />Step 3 · 评估后处理</span>
+          <p>评估通过的达人<b>发送合作提案</b>，不通过的<b>发送拒绝 + 折扣话术</b>。选好话术、确认正文后<b>一键回复</b>即可经 SMTP 发出并自动推进；开启「Agent 自主回复」可让 Agent 起草后直接发送。</p>
+        </div>
+        <div className="marketing-step-actions">
+          <button
+            type="button"
+            className={`marketing-autoconfirm ${autoReply ? 'on' : ''}`}
+            role="switch"
+            aria-checked={autoReply}
+            disabled={busy}
+            onClick={() => onToggleAutoReply(!autoReply)}
+            title={autoReply ? 'Agent 起草后可直接通过 SMTP 发送并记录，无需人工确认。点击关闭改为需人工确认。' : '开启后 Agent 可自主发送回复；关闭时仅起草草稿，由人工在面板点「一键回复」确认发送。'}
+          >
+            <Send size={13} />
+            <span>Agent 自主回复</span>
+            <Toggle checked={autoReply} />
+          </button>
+          <button
+            type="button"
+            className="settings-btn ghost"
+            disabled={todo.length === 0}
+            onClick={copyBatchPrompt}
+            title="复制让 Agent 为全部待处理达人起草个性化外联话术的指令"
+          >
+            {copiedBatch ? <Check size={13} /> : <Sparkles size={13} />}
+            {copiedBatch ? '已复制' : `批量 Agent 起草${todo.length ? ` · ${todo.length}` : ''}`}
+          </button>
+          <div className="marketing-segment verdicts">
+            <button type="button" className={filter === 'todo' ? 'active' : ''} onClick={() => setFilter('todo')}>待处理 {buckets.todo.length}</button>
+            <button type="button" className={filter === 'done' ? 'active' : ''} onClick={() => setFilter('done')}>已处理 {buckets.done.length}</button>
+          </div>
+        </div>
+      </div>
+      <div className="marketing-split">
+        <div className="marketing-eval-list">
+          {list.length === 0 ? (
+            <div className="partner-marketing-placeholder"><Mail size={18} /><span>{emptyHint}</span></div>
+          ) : (
+            list.map((kol) => {
+              const verdict = processVerdict(kol);
+              const outreach = parseKolOutreach(kol.outreach);
+              return (
+                <button
+                  key={kol.id}
+                  type="button"
+                  className={`marketing-eval-row ${verdict} ${kol.id === selected?.id ? 'selected' : ''}`}
+                  onClick={() => onSelect(kol.id)}
+                >
+                  <span className="marketing-avatar sm">{initials(kol.name)}</span>
+                  <span className="marketing-eval-row-main">
+                    <strong>{kol.name}</strong>
+                    <span>{kol.country || '国家未知'} · {kol.tags || '无标签'}</span>
+                  </span>
+                  <span className="marketing-eval-row-meta">
+                    {outreach ? (
+                      <span className={`marketing-verdict ${outreach.status === 'skipped' ? 'pending' : verdict}`}>
+                        {outreach.status === 'skipped' ? <ShieldQuestion size={11} /> : <Check size={11} />}
+                        {outreachKindLabel(outreach.kind)}
+                      </span>
+                    ) : (
+                      <span className={`marketing-verdict ${verdict}`}>
+                        {verdict === 'pass' ? <ShieldCheck size={11} /> : <AlertTriangle size={11} />}
+                        {verdict === 'pass' ? '待发提案' : '待发拒绝'}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+        <ProcessPanel kol={selected} busy={busy} autoReply={autoReply} onRecord={onRecord} onReply={onReply} onOpenKol={onOpenKol} />
+      </div>
+    </div>
+  );
+}
+
+function ProcessPanel({
+  kol,
+  busy,
+  autoReply,
+  onRecord,
+  onReply,
+  onOpenKol,
+}: {
+  kol: KolProfile | null;
+  busy: boolean;
+  autoReply: boolean;
+  onRecord: (kol: KolProfile, payload: OutreachSavePayload) => void;
+  onReply: (kol: KolProfile, payload: ReplySavePayload) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const verdict = kol ? processVerdict(kol) : 'pass';
+  const options = useMemo(() => (kol ? processScriptOptions(verdict) : []), [kol?.id, verdict]);
+  const vars = useMemo(() => loadScriptVars(), []);
+  const existing = parseKolOutreach(kol?.outreach);
+
+  const [scriptId, setScriptId] = useState<string>('');
+  const [channel, setChannel] = useState<string>('通用');
+  const [note, setNote] = useState<string>('');
+  const [body, setBody] = useState<string>('');
+  const [copied, setCopied] = useState(false);
+  const [copiedAgent, setCopiedAgent] = useState(false);
+
+  useEffect(() => {
+    const opts = kol ? processScriptOptions(verdict) : [];
+    const prior = parseKolOutreach(kol?.outreach);
+    const initialScript = prior?.scriptId && opts.some((s) => s.id === prior.scriptId)
+      ? prior.scriptId
+      : opts[0]?.id ?? '';
+    setScriptId(initialScript);
+    const inferred = prior?.channel ?? opts.find((s) => s.id === initialScript)?.channel ?? 'Email';
+    setChannel(OUTREACH_CHANNELS.includes(inferred) ? inferred : 'Email');
+    setNote(prior?.note ?? '');
+    const initialScriptObj = opts.find((s) => s.id === initialScript) ?? null;
+    setBody(initialScriptObj ? renderScript(initialScriptObj.body, vars) : '');
+    setCopied(false);
+    setCopiedAgent(false);
+  }, [kol?.id, kol?.outreach, verdict, vars]);
+
+  if (!kol) {
+    return (
+      <aside className="marketing-detail-panel">
+        <div className="partner-marketing-placeholder"><Mail size={18} /><span>选择一个达人开始处理。</span></div>
+      </aside>
+    );
+  }
+
+  const script = options.find((s) => s.id === scriptId) ?? options[0] ?? null;
+  const rendered = script ? renderScript(script.body, vars) : '';
+  const evaluation = parseKolEvaluation(kol.evaluation);
+  const kindFor = (sid: string) =>
+    verdict === 'fail' ? (sid === 'koc' ? 'koc' : 'reject') : sid === 'paid' ? 'paid' : 'proposal';
+
+  const isEmail = channel === 'Email';
+  const copyScript = async () => {
+    if (body.trim() && (await copyToClipboard(body))) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    }
+  };
+  const resetBody = () => setBody(rendered);
+  const sendReply = () => onReply(kol, { body, kind: kindFor(scriptId), scriptId, channel, note });
+  const markSent = () =>
+    onRecord(kol, { status: 'sent', kind: kindFor(scriptId), scriptId, channel, note });
+  const skip = () => onRecord(kol, { status: 'skipped', kind: 'skip', note });
+  const copyAgentPrompt = async () => {
+    const tail = autoReply
+      ? `已开启「Agent 自主回复」，确认正文后可直接发送并记录：alpha-sidebar marketing kols reply --id ${kol.id} --body "<最终正文>" --kind ${kindFor(scriptId)} --script-id ${scriptId} --reason "Step 3 评估后处理"（--send 跟随开关=on，真实经 SMTP 发出）。`
+      : `未开启「Agent 自主回复」：先输出草稿给我审阅，不要发送。我会在面板点「一键回复」发出，或确认后再让你执行：alpha-sidebar marketing kols reply --id ${kol.id} --body "<最终正文>" --send true。`;
+    const prompt = [
+      `请用 $sidebar-control 技能为 KOL「${kol.name}」<${kol.email}>（id=${kol.id}）起草 Step 3 ${verdict === 'pass' ? '合作提案' : '拒绝 + 折扣'}话术。`,
+      `基础模板：话术库「${script?.title ?? ''}」。请结合该达人的内容方向做轻度个性化，保留协议链接 / 内容指南 / 联系方式 / 署名等话术库变量，不要编造链接。`,
+      tail,
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopiedAgent(true);
+      window.setTimeout(() => setCopiedAgent(false), 1600);
+    }
+  };
+
+  return (
+    <aside className="marketing-detail-panel process">
+      <header>
+        <span className="marketing-avatar">{initials(kol.name)}</span>
+        <div>
+          <strong>{kol.name}</strong>
+          <span>{kol.email}</span>
+        </div>
+        <span className={`marketing-stage-chip ${kol.pipelineStage}`}>{pipelineStageLabel(kol.pipelineStage)}</span>
+      </header>
+
+      <div className={`marketing-verdict-banner ${verdict}`}>
+        <span className="marketing-verdict-icon">
+          {verdict === 'pass' ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}
+        </span>
+        <div>
+          <strong>{verdict === 'pass' ? '评估通过 · 建议发送合作提案' : '评估不通过 · 建议发送拒绝 + 折扣'}</strong>
+          <span>{evaluation?.summary || (verdict === 'pass' ? '场景匹配、数据达标，推进合作。' : '不符合硬性 / 软性指标，礼貌婉拒并提供折扣。')}</span>
+        </div>
+        {existing && <span className="marketing-confirm-chip"><Check size={11} />{outreachKindLabel(existing.kind)} · {existing.by === 'agent' ? 'Agent' : '人工'}</span>}
+      </div>
+
+      <div className="marketing-reply-to">
+        <Send size={12} />
+        <span>回复给 <b>{kol.name}</b> &lt;{kol.email}&gt;</span>
+        <span className={`marketing-reply-channel ${isEmail ? 'email' : ''}`}>{isEmail ? '一键回复经 SMTP 发送' : `${channel} · 需在外部发送`}</span>
+      </div>
+
+      <div className="marketing-process-controls">
+        <label className="marketing-process-field">话术模板
+          <select
+            className="settings-input"
+            value={scriptId}
+            onChange={(event) => {
+              const nextId = event.target.value;
+              setScriptId(nextId);
+              const next = options.find((s) => s.id === nextId);
+              const ch = next?.channel ?? 'Email';
+              setChannel(OUTREACH_CHANNELS.includes(ch) ? ch : 'Email');
+              setBody(next ? renderScript(next.body, vars) : '');
+            }}
+          >
+            {options.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+          </select>
+        </label>
+        <label className="marketing-process-field">发送渠道
+          <select className="settings-input" value={channel} onChange={(event) => setChannel(event.target.value)}>
+            {OUTREACH_CHANNELS.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div className={`marketing-reco bare ${verdict}`}>
+        <div className="marketing-reco-head">
+          <span>回复正文（可编辑）</span>
+          <div className="marketing-reco-head-actions">
+            <button type="button" className="settings-btn ghost" onClick={resetBody} disabled={!rendered || body === rendered} title="恢复为话术模板原文">重置</button>
+            <button type="button" className="settings-btn" onClick={copyScript} disabled={!body.trim()}>{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? '已复制' : '复制'}</button>
+          </div>
+        </div>
+        <textarea
+          className="marketing-reply-editor"
+          value={body}
+          onChange={(event) => setBody(event.target.value)}
+          placeholder="选择话术模板后会自动填入，可在此个性化修改后一键发送。"
+          spellCheck={false}
+        />
+      </div>
+
+      <label className="marketing-eval-summary">外联备注（可选）
+        <textarea className="settings-textarea compact" value={note} onChange={(event) => setNote(event.target.value)} placeholder="记录个性化要点或后续跟进备注" />
+      </label>
+
+      <div className="marketing-eval-buttons">
+        <button
+          type="button"
+          className="settings-btn primary"
+          disabled={busy || !body.trim() || !isEmail}
+          onClick={sendReply}
+          title={isEmail ? (verdict === 'pass' ? '通过 SMTP 直接发送提案并推进到「推进合作」' : '通过 SMTP 直接发送拒绝话术') : '仅 Email 渠道支持一键发送，请在外部发送后点「标记已发送」'}
+        >
+          <Send size={13} />一键回复
+        </button>
+        <button type="button" className="settings-btn" disabled={busy || !body.trim()} onClick={markSent} title={isEmail ? '不发送，仅记录为已发送（用于已在外部发出的情况）' : `记录已通过 ${channel} 发送`}>
+          <Check size={13} />{existing ? '更新为已发送' : '仅标记已发送'}
+        </button>
+        <button type="button" className="settings-btn" disabled={busy} onClick={skip}>暂不联系</button>
+        <button type="button" className="settings-btn ghost" onClick={copyAgentPrompt} title="复制让 Agent 起草个性化话术的指令">
+          {copiedAgent ? <Check size={13} /> : <Sparkles size={13} />}{copiedAgent ? '已复制' : 'Agent 起草'}
+        </button>
+        <span className="spacer" />
+        <button type="button" className="marketing-link-btn" onClick={() => onOpenKol(kol.id)}><UserCircle size={13} />KOL 档案</button>
+      </div>
+    </aside>
+  );
+}
+
+interface IntakeSavePayload {
+  status: 'done' | 'draft';
+  username?: string;
+  owner?: string;
+  channel?: string;
+  relationship?: string;
+  phone?: string;
+  platforms?: string;
+  links?: string;
+  contentType?: string;
+  language?: string;
+  metrics?: string;
+  note?: string;
+}
+
+interface CollabSavePayload {
+  status: 'sent' | 'signed' | 'declined';
+  scriptId?: string;
+  contractUrl?: string;
+  videoCount?: number;
+  channel?: string;
+  note?: string;
+  body?: string;
+  send?: boolean;
+}
+
+interface ShipSavePayload {
+  status: 'shipped' | 'delivered' | 'issue';
+  carrier?: string;
+  tracking?: string;
+  trackingUrl?: string;
+  address?: string;
+  units?: string;
+  expectedPostAt?: number | null;
+  channel?: string;
+  note?: string;
+  body?: string;
+  send?: boolean;
+}
+
+const INTAKE_CHANNELS = ['Email', 'SMS', 'DM'];
+const INTAKE_RELATIONSHIPS: Array<{ value: string; label: string }> = [
+  { value: 'inbound', label: '对方主动联系 (Inbound)' },
+  { value: 'outbound', label: '我们主动建联 (Outbound)' },
+];
+
+// ---- Step 4 录入系统 -------------------------------------------------------
+
+function IntakeWorkbench({
+  kols,
+  selectedId,
+  busy,
+  onSelect,
+  onSave,
+  onOpenKol,
+}: {
+  kols: KolProfile[];
+  selectedId: string | null;
+  busy: boolean;
+  onSelect: (id: string) => void;
+  onSave: (kol: KolProfile, payload: IntakeSavePayload) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const [filter, setFilter] = useState<'todo' | 'done'>('todo');
+  const [copiedBatch, setCopiedBatch] = useState(false);
+  const buckets = useMemo(() => {
+    const map: { todo: KolProfile[]; done: KolProfile[] } = { todo: [], done: [] };
+    for (const kol of kols) {
+      const bucket = kolIntakeBucket(kol);
+      if (bucket === 'todo') map.todo.push(kol);
+      else if (bucket === 'done') map.done.push(kol);
+    }
+    return map;
+  }, [kols]);
+  const list = buckets[filter];
+  const selected = list.find((kol) => kol.id === selectedId) ?? list[0] ?? null;
+  const todo = buckets.todo;
+
+  const emptyHint =
+    filter === 'done'
+      ? '还没有完成录入的达人。完成录入后会出现在这里。'
+      : '没有待录入的达人。Step 3 发出提案、对方回复意向后会进入这里。';
+
+  const copyBatchPrompt = async () => {
+    if (todo.length === 0) return;
+    const roster = todo.map((kol, index) => `${index + 1}. id=${kol.id} | ${kol.name} <${kol.email}> | ${kol.country || '国家未知'}`);
+    const prompt = [
+      `请用 $sidebar-control 技能批量执行 Step 4 录入系统，共 ${todo.length} 位待录入达人：`,
+      ...roster,
+      '',
+      '对每位：结合往来邮件 / meta 资料补全档案，然后执行：',
+      'alpha-sidebar marketing kols intake --id <kolId> --username <@handle> --owner <跟进人> --channel Email|SMS|DM --relationship inbound|outbound [--phone ...] [--platforms "IG 45k / YT 12k"] [--links "..."] [--content-type "..."] [--language EN] [--metrics "均播18k 均赞900 周更"] [--note "评估结论/推荐理由/场景适配"] --reason "Step 4 录入系统"。',
+      '录入完成（status 默认 done）会把阶段从 onboarding 推进到 intake。信息务必真实，缺失项可留空但不要编造。完成后汇总每位的关键信息给我。',
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopiedBatch(true);
+      window.setTimeout(() => setCopiedBatch(false), 1600);
+    }
+  };
+
+  return (
+    <div className="marketing-step process">
+      <div className="marketing-step-head">
+        <div className="marketing-step-intro">
+          <span className="marketing-step-tag"><UserCircle size={13} />Step 4 · 录入系统</span>
+          <p>提案发出、达人回复意向后，把<b>用户名、跟进人、沟通渠道、联系方式、账号与内容数据</b>录入档案，方便后续无缝交接。保存后阶段推进到「推进合作」。</p>
+        </div>
+        <div className="marketing-step-actions">
+          <button
+            type="button"
+            className="settings-btn ghost"
+            disabled={todo.length === 0}
+            onClick={copyBatchPrompt}
+            title="复制让 Agent 批量补全并录入达人档案的指令"
+          >
+            {copiedBatch ? <Check size={13} /> : <Sparkles size={13} />}
+            {copiedBatch ? '已复制' : `批量 Agent 录入${todo.length ? ` · ${todo.length}` : ''}`}
+          </button>
+          <div className="marketing-segment verdicts">
+            <button type="button" className={filter === 'todo' ? 'active' : ''} onClick={() => setFilter('todo')}>待录入 {buckets.todo.length}</button>
+            <button type="button" className={filter === 'done' ? 'active' : ''} onClick={() => setFilter('done')}>已录入 {buckets.done.length}</button>
+          </div>
+        </div>
+      </div>
+      <div className="marketing-split">
+        <div className="marketing-eval-list">
+          {list.length === 0 ? (
+            <div className="partner-marketing-placeholder"><UserCircle size={18} /><span>{emptyHint}</span></div>
+          ) : (
+            list.map((kol) => {
+              const intake = parseKolIntake(kol.intake);
+              return (
+                <button
+                  key={kol.id}
+                  type="button"
+                  className={`marketing-eval-row pass ${kol.id === selected?.id ? 'selected' : ''}`}
+                  onClick={() => onSelect(kol.id)}
+                >
+                  <span className="marketing-avatar sm">{initials(kol.name)}</span>
+                  <span className="marketing-eval-row-main">
+                    <strong>{kol.name}</strong>
+                    <span>{kol.country || '国家未知'} · {kol.owner || '未分配跟进人'}</span>
+                  </span>
+                  <span className="marketing-eval-row-meta">
+                    <span className={`marketing-verdict ${intake?.status === 'done' ? 'pass' : 'pending'}`}>
+                      {intake?.status === 'done' ? <Check size={11} /> : <UserCircle size={11} />}
+                      {intake?.status === 'done' ? '已录入' : '待录入'}
+                    </span>
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+        <IntakePanel kol={selected} busy={busy} onSave={onSave} onOpenKol={onOpenKol} />
+      </div>
+    </div>
+  );
+}
+
+function IntakePanel({
+  kol,
+  busy,
+  onSave,
+  onOpenKol,
+}: {
+  kol: KolProfile | null;
+  busy: boolean;
+  onSave: (kol: KolProfile, payload: IntakeSavePayload) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const [form, setForm] = useState<IntakeSavePayload>({ status: 'done' });
+  const [copiedAgent, setCopiedAgent] = useState(false);
+
+  useEffect(() => {
+    const prior = parseKolIntake(kol?.intake);
+    setForm({
+      status: 'done',
+      username: prior?.username ?? '',
+      owner: prior?.owner ?? kol?.owner ?? '',
+      channel: prior?.channel ?? 'Email',
+      relationship: prior?.relationship ?? (kol?.relationship === 'inbound' || kol?.relationship === 'outbound' ? kol.relationship : 'inbound'),
+      phone: prior?.phone ?? '',
+      platforms: prior?.platforms ?? '',
+      links: prior?.links ?? '',
+      contentType: prior?.contentType ?? '',
+      language: prior?.language ?? '',
+      metrics: prior?.metrics ?? '',
+      note: prior?.note ?? kol?.agentNotes ?? '',
+    });
+    setCopiedAgent(false);
+  }, [kol?.id, kol?.intake, kol?.owner, kol?.relationship, kol?.agentNotes]);
+
+  if (!kol) {
+    return (
+      <aside className="marketing-detail-panel">
+        <div className="partner-marketing-placeholder"><UserCircle size={18} /><span>选择一个达人开始录入。</span></div>
+      </aside>
+    );
+  }
+
+  const set = <K extends keyof IntakeSavePayload>(key: K, value: IntakeSavePayload[K]) =>
+    setForm((prev) => ({ ...prev, [key]: value }));
+  const intake = parseKolIntake(kol.intake);
+  const evaluation = parseKolEvaluation(kol.evaluation);
+
+  const save = (status: 'done' | 'draft') => onSave(kol, { ...form, status });
+  const copyAgentPrompt = async () => {
+    const prompt = [
+      `请用 $sidebar-control 技能为 KOL「${kol.name}」<${kol.email}>（id=${kol.id}）完成 Step 4 录入系统。`,
+      '结合往来邮件与公开资料补全：用户名、跟进人、沟通渠道、建联关系、联系方式、全网粉丝、账号链接、内容类型、语言、内容数据、备注（评估结论/推荐理由/场景适配）。',
+      `执行：alpha-sidebar marketing kols intake --id ${kol.id} --username <@handle> --owner <跟进人> --channel Email|SMS|DM --relationship inbound|outbound [--platforms "..."] [--metrics "..."] [--note "..."] --reason "Step 4 录入系统"。信息要真实，不要编造链接。`,
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopiedAgent(true);
+      window.setTimeout(() => setCopiedAgent(false), 1600);
+    }
+  };
+
+  return (
+    <aside className="marketing-detail-panel process">
+      <header>
+        <span className="marketing-avatar">{initials(kol.name)}</span>
+        <div>
+          <strong>{kol.name}</strong>
+          <span>{kol.email}</span>
+        </div>
+        <span className={`marketing-stage-chip ${kol.pipelineStage}`}>{pipelineStageLabel(kol.pipelineStage)}</span>
+      </header>
+
+      {evaluation?.summary && (
+        <div className="marketing-verdict-banner pass">
+          <span className="marketing-verdict-icon"><ShieldCheck size={18} /></span>
+          <div>
+            <strong>评估结论 · {verdictShort(evaluation.status)}（评分 {evaluation.score}/6）</strong>
+            <span>{evaluation.summary}</span>
+          </div>
+          {intake?.status === 'done' && <span className="marketing-confirm-chip"><Check size={11} />已录入 · {intake.by === 'agent' ? 'Agent' : '人工'}</span>}
+        </div>
+      )}
+
+      <div className="marketing-intake-grid">
+        <label className="marketing-process-field">网红用户名
+          <input className="settings-input" value={form.username ?? ''} onChange={(e) => set('username', e.target.value)} placeholder="@handle" />
+        </label>
+        <label className="marketing-process-field">跟进人
+          <input className="settings-input" value={form.owner ?? ''} onChange={(e) => set('owner', e.target.value)} placeholder="DM / 邮箱 → wei；短信 / 电话 → 小A" />
+        </label>
+        <label className="marketing-process-field">沟通渠道
+          <select className="settings-input" value={form.channel ?? 'Email'} onChange={(e) => set('channel', e.target.value)}>
+            {INTAKE_CHANNELS.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+        <label className="marketing-process-field">建联关系
+          <select className="settings-input" value={form.relationship ?? 'inbound'} onChange={(e) => set('relationship', e.target.value)}>
+            {INTAKE_RELATIONSHIPS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </select>
+        </label>
+        <label className="marketing-process-field">电话 / WhatsApp
+          <input className="settings-input" value={form.phone ?? ''} onChange={(e) => set('phone', e.target.value)} placeholder="可选" />
+        </label>
+        <label className="marketing-process-field">语言
+          <input className="settings-input" value={form.language ?? ''} onChange={(e) => set('language', e.target.value)} placeholder="EN / 多语言" />
+        </label>
+        <label className="marketing-process-field">全网粉丝
+          <input className="settings-input" value={form.platforms ?? ''} onChange={(e) => set('platforms', e.target.value)} placeholder="IG 45k / YT 12k / TK 8k" />
+        </label>
+        <label className="marketing-process-field">内容类型
+          <input className="settings-input" value={form.contentType ?? ''} onChange={(e) => set('contentType', e.target.value)} placeholder="露营 / 房车 / 测评" />
+        </label>
+      </div>
+
+      <label className="marketing-eval-summary">账号链接
+        <textarea className="settings-textarea compact" value={form.links ?? ''} onChange={(e) => set('links', e.target.value)} placeholder="各平台主页链接，一行一个" />
+      </label>
+      <label className="marketing-eval-summary">内容数据
+        <textarea className="settings-textarea compact" value={form.metrics ?? ''} onChange={(e) => set('metrics', e.target.value)} placeholder="平均播放 / 点赞 / 评论 / 更新频率" />
+      </label>
+      <label className="marketing-eval-summary">备注（评估结论 / 推荐理由 / 场景适配 / 流量）
+        <textarea className="settings-textarea compact" value={form.note ?? ''} onChange={(e) => set('note', e.target.value)} placeholder="让下一个处理人无需重看 meta 即可直接沟通" />
+      </label>
+
+      <div className="marketing-eval-buttons">
+        <button type="button" className="settings-btn primary" disabled={busy} onClick={() => save('done')} title="保存档案并推进到「推进合作」">
+          <Check size={13} />{intake?.status === 'done' ? '更新录入' : '保存录入并推进'}
+        </button>
+        <button type="button" className="settings-btn" disabled={busy} onClick={() => save('draft')} title="保存为草稿，暂不推进阶段">存草稿</button>
+        <button type="button" className="settings-btn ghost" onClick={copyAgentPrompt} title="复制让 Agent 补全并录入档案的指令">
+          {copiedAgent ? <Check size={13} /> : <Sparkles size={13} />}{copiedAgent ? '已复制' : 'Agent 录入'}
+        </button>
+        <span className="spacer" />
+        <button type="button" className="marketing-link-btn" onClick={() => onOpenKol(kol.id)}><UserCircle size={13} />KOL 档案</button>
+      </div>
+    </aside>
+  );
+}
+
+// ---- Step 5 合作推进 -------------------------------------------------------
+
+function CollabWorkbench({
+  kols,
+  selectedId,
+  busy,
+  autoReply,
+  onSelect,
+  onSave,
+  onOpenKol,
+}: {
+  kols: KolProfile[];
+  selectedId: string | null;
+  busy: boolean;
+  autoReply: boolean;
+  onSelect: (id: string) => void;
+  onSave: (kol: KolProfile, payload: CollabSavePayload) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const [filter, setFilter] = useState<'todo' | 'done'>('todo');
+  const [copiedBatch, setCopiedBatch] = useState(false);
+  const buckets = useMemo(() => {
+    const map: { todo: KolProfile[]; done: KolProfile[] } = { todo: [], done: [] };
+    for (const kol of kols) {
+      const bucket = kolCollabBucket(kol);
+      if (bucket === 'todo') map.todo.push(kol);
+      else if (bucket === 'done') map.done.push(kol);
+    }
+    return map;
+  }, [kols]);
+  const list = buckets[filter];
+  const selected = list.find((kol) => kol.id === selectedId) ?? list[0] ?? null;
+  const todo = buckets.todo;
+
+  const emptyHint =
+    filter === 'done'
+      ? '还没有签约 / 流失的达人。签约后会出现在这里。'
+      : '没有待推进的达人。完成 Step 4 录入后会进入这里。';
+
+  const copyBatchPrompt = async () => {
+    if (todo.length === 0) return;
+    const roster = todo.map((kol, index) => `${index + 1}. id=${kol.id} | ${kol.name} <${kol.email}>`);
+    const tail = autoReply
+      ? '已开启「Agent 自主回复」：可直接发送合同邮件并记录——alpha-sidebar marketing kols collaborate --id <kolId> --status sent --contract-url <已改名合同链接> --send true --body "<合同邮件正文>" --reason "Step 5 合作推进"。对方签字回传后再 --status signed 推进到签约。'
+      : '未开启「Agent 自主回复」：只整理好每位的合同邮件草稿与改名后的合同链接给我审阅，不要发送。我会在面板逐个确认发送。';
+    const prompt = [
+      `请用 $sidebar-control 技能批量执行 Step 5 合作推进，共 ${todo.length} 位待推进达人：`,
+      ...roster,
+      '',
+      '根据对方回复选择话术（直接同意签约→「直接同意签约·发送合同」；有异议→对应异议话术）。先复制合同模板改名（格式：网红用户名-姓名），把链接填进 contract-url 与正文。',
+      tail,
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopiedBatch(true);
+      window.setTimeout(() => setCopiedBatch(false), 1600);
+    }
+  };
+
+  return (
+    <div className="marketing-step process">
+      <div className="marketing-step-head">
+        <div className="marketing-step-intro">
+          <span className="marketing-step-tag"><FileText size={13} />Step 5 · 合作推进</span>
+          <p>按对方回复选话术，<b>发送合同</b>或处理异议。填入改名后的合同链接，<b>一键发送合同邮件</b>；对方签字回传后点<b>标记已签约</b>推进到下一步。</p>
+        </div>
+        <div className="marketing-step-actions">
+          <button
+            type="button"
+            className="settings-btn ghost"
+            disabled={todo.length === 0}
+            onClick={copyBatchPrompt}
+            title="复制让 Agent 批量起草合同 / 异议话术的指令"
+          >
+            {copiedBatch ? <Check size={13} /> : <Sparkles size={13} />}
+            {copiedBatch ? '已复制' : `批量 Agent 推进${todo.length ? ` · ${todo.length}` : ''}`}
+          </button>
+          <div className="marketing-segment verdicts">
+            <button type="button" className={filter === 'todo' ? 'active' : ''} onClick={() => setFilter('todo')}>待推进 {buckets.todo.length}</button>
+            <button type="button" className={filter === 'done' ? 'active' : ''} onClick={() => setFilter('done')}>已签约 {buckets.done.length}</button>
+          </div>
+        </div>
+      </div>
+      <div className="marketing-split">
+        <div className="marketing-eval-list">
+          {list.length === 0 ? (
+            <div className="partner-marketing-placeholder"><FileText size={18} /><span>{emptyHint}</span></div>
+          ) : (
+            list.map((kol) => {
+              const collab = parseKolCollab(kol.collaboration);
+              const tone = collab?.status === 'signed' ? 'pass' : collab?.status === 'declined' ? 'fail' : 'pending';
+              return (
+                <button
+                  key={kol.id}
+                  type="button"
+                  className={`marketing-eval-row ${tone === 'fail' ? 'fail' : 'pass'} ${kol.id === selected?.id ? 'selected' : ''}`}
+                  onClick={() => onSelect(kol.id)}
+                >
+                  <span className="marketing-avatar sm">{initials(kol.name)}</span>
+                  <span className="marketing-eval-row-main">
+                    <strong>{kol.name}</strong>
+                    <span>{kol.country || '国家未知'} · {kol.owner || '未分配'}</span>
+                  </span>
+                  <span className="marketing-eval-row-meta">
+                    <span className={`marketing-verdict ${tone}`}>
+                      {collab?.status === 'signed' ? <Check size={11} /> : collab?.status === 'declined' ? <AlertTriangle size={11} /> : <FileText size={11} />}
+                      {collab ? collabStatusLabel(collab.status) : '待发合同'}
+                    </span>
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+        <CollabPanel kol={selected} busy={busy} onSave={onSave} onOpenKol={onOpenKol} />
+      </div>
+    </div>
+  );
+}
+
+function CollabPanel({
+  kol,
+  busy,
+  onSave,
+  onOpenKol,
+}: {
+  kol: KolProfile | null;
+  busy: boolean;
+  onSave: (kol: KolProfile, payload: CollabSavePayload) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const options = useMemo(() => collabScriptOptions(), []);
+  const vars = useMemo(() => loadScriptVars(), []);
+
+  const [scriptId, setScriptId] = useState<string>('');
+  const [channel, setChannel] = useState<string>('Email');
+  const [contractUrl, setContractUrl] = useState<string>('');
+  const [videoCount, setVideoCount] = useState<string>('');
+  const [note, setNote] = useState<string>('');
+  const [body, setBody] = useState<string>('');
+  const [copied, setCopied] = useState(false);
+  const [copiedAgent, setCopiedAgent] = useState(false);
+
+  useEffect(() => {
+    const prior = parseKolCollab(kol?.collaboration);
+    const opts = collabScriptOptions();
+    const initialScript = prior?.scriptId && opts.some((s) => s.id === prior.scriptId)
+      ? prior.scriptId
+      : opts[0]?.id ?? '';
+    setScriptId(initialScript);
+    const initialObj = opts.find((s) => s.id === initialScript) ?? null;
+    const ch = initialObj?.channel ?? 'Email';
+    setChannel(OUTREACH_CHANNELS.includes(ch) ? ch : 'Email');
+    setContractUrl(prior?.contractUrl ?? vars.proposalUrl ?? '');
+    setVideoCount(prior?.videoCount != null ? String(prior.videoCount) : '');
+    setNote(prior?.note ?? '');
+    setBody(initialObj ? renderScript(initialObj.body, vars) : '');
+    setCopied(false);
+    setCopiedAgent(false);
+  }, [kol?.id, kol?.collaboration, vars]);
+
+  if (!kol) {
+    return (
+      <aside className="marketing-detail-panel">
+        <div className="partner-marketing-placeholder"><FileText size={18} /><span>选择一个达人开始推进。</span></div>
+      </aside>
+    );
+  }
+
+  const existing = parseKolCollab(kol.collaboration);
+  const isEmail = channel === 'Email';
+  const copyScript = async () => {
+    if (body.trim() && (await copyToClipboard(body))) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    }
+  };
+  const parsedVideoCount = videoCount.trim() ? Number(videoCount) : undefined;
+  const basePayload = (): CollabSavePayload => ({
+    status: 'sent',
+    scriptId,
+    contractUrl: contractUrl.trim() || undefined,
+    videoCount: parsedVideoCount != null && !Number.isNaN(parsedVideoCount) ? parsedVideoCount : undefined,
+    channel,
+    note,
+    body,
+  });
+  const sendContract = () => onSave(kol, { ...basePayload(), status: 'sent', send: true });
+  const recordSent = () => onSave(kol, { ...basePayload(), status: 'sent', send: false });
+  const markSigned = () => onSave(kol, { ...basePayload(), status: 'signed', send: false });
+  const markDeclined = () => onSave(kol, { ...basePayload(), status: 'declined', send: false });
+  const copyAgentPrompt = async () => {
+    const script = options.find((s) => s.id === scriptId) ?? null;
+    const prompt = [
+      `请用 $sidebar-control 技能为 KOL「${kol.name}」<${kol.email}>（id=${kol.id}）起草 Step 5 合作推进话术。`,
+      `基础模板：话术库「${script?.title ?? ''}」。先复制合同模板改名（格式：网红用户名-姓名），把链接放入正文与 --contract-url，保留话术库变量，不要编造链接。`,
+      `如需发送：alpha-sidebar marketing kols collaborate --id ${kol.id} --status sent --contract-url <链接> --send true --body "<正文>" --reason "Step 5 合作推进"；签字回传后 --status signed。`,
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopiedAgent(true);
+      window.setTimeout(() => setCopiedAgent(false), 1600);
+    }
+  };
+
+  return (
+    <aside className="marketing-detail-panel process">
+      <header>
+        <span className="marketing-avatar">{initials(kol.name)}</span>
+        <div>
+          <strong>{kol.name}</strong>
+          <span>{kol.email}</span>
+        </div>
+        <span className={`marketing-stage-chip ${kol.pipelineStage}`}>{pipelineStageLabel(kol.pipelineStage)}</span>
+      </header>
+
+      <div className="marketing-reply-to">
+        <FileText size={12} />
+        <span>发送给 <b>{kol.name}</b> &lt;{kol.email}&gt;</span>
+        <span className={`marketing-reply-channel ${isEmail ? 'email' : ''}`}>{isEmail ? '一键发送经 SMTP' : `${channel} · 需在外部发送`}</span>
+        {existing && <span className="marketing-confirm-chip"><Check size={11} />{collabStatusLabel(existing.status)} · {existing.by === 'agent' ? 'Agent' : '人工'}</span>}
+      </div>
+
+      <div className="marketing-process-controls">
+        <label className="marketing-process-field">话术模板
+          <select
+            className="settings-input"
+            value={scriptId}
+            onChange={(event) => {
+              const nextId = event.target.value;
+              setScriptId(nextId);
+              const next = options.find((s) => s.id === nextId);
+              const ch = next?.channel ?? 'Email';
+              setChannel(OUTREACH_CHANNELS.includes(ch) ? ch : 'Email');
+              setBody(next ? renderScript(next.body, vars) : '');
+            }}
+          >
+            {options.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+          </select>
+        </label>
+        <label className="marketing-process-field">发送渠道
+          <select className="settings-input" value={channel} onChange={(event) => setChannel(event.target.value)}>
+            {OUTREACH_CHANNELS.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+      </div>
+      <div className="marketing-process-controls">
+        <label className="marketing-process-field">合同链接（改名后）
+          <input className="settings-input" value={contractUrl} onChange={(e) => setContractUrl(e.target.value)} placeholder="https://drive.google.com/...（网红用户名-姓名）" />
+        </label>
+        <label className="marketing-process-field">视频数量
+          <input className="settings-input" type="number" min={0} value={videoCount} onChange={(e) => setVideoCount(e.target.value)} placeholder="如 2" />
+        </label>
+      </div>
+
+      <div className="marketing-reco bare pass">
+        <div className="marketing-reco-head">
+          <span>合同 / 推进正文（可编辑）</span>
+          <div className="marketing-reco-head-actions">
+            <button type="button" className="settings-btn" onClick={copyScript} disabled={!body.trim()}>{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? '已复制' : '复制'}</button>
+          </div>
+        </div>
+        <textarea
+          className="marketing-reply-editor"
+          value={body}
+          onChange={(event) => setBody(event.target.value)}
+          placeholder="选择话术模板后会自动填入，记得把合同链接插入正文。"
+          spellCheck={false}
+        />
+      </div>
+
+      <label className="marketing-eval-summary">推进备注（可选）
+        <textarea className="settings-textarea compact" value={note} onChange={(event) => setNote(event.target.value)} placeholder="记录异议处理、最新沟通情况" />
+      </label>
+
+      <div className="marketing-eval-buttons">
+        <button type="button" className="settings-btn primary" disabled={busy || !body.trim() || !isEmail} onClick={sendContract} title={isEmail ? '通过 SMTP 直接发送合同邮件并记录' : '仅 Email 渠道支持一键发送'}>
+          <Send size={13} />发送合同邮件
+        </button>
+        <button type="button" className="settings-btn" disabled={busy} onClick={recordSent} title="不发送，仅记录已发合同（外部已发出时）">
+          <Check size={13} />记录已发合同
+        </button>
+        <button type="button" className="settings-btn success" disabled={busy} onClick={markSigned} title="对方已签字回传，推进到「已签约」">
+          <ShieldCheck size={13} />标记已签约
+        </button>
+        <button type="button" className="settings-btn" disabled={busy} onClick={markDeclined} title="对方拒绝 / 流失">流失</button>
+        <button type="button" className="settings-btn ghost" onClick={copyAgentPrompt} title="复制让 Agent 起草合同 / 异议话术的指令">
+          {copiedAgent ? <Check size={13} /> : <Sparkles size={13} />}{copiedAgent ? '已复制' : 'Agent 起草'}
+        </button>
+        <span className="spacer" />
+        <button type="button" className="marketing-link-btn" onClick={() => onOpenKol(kol.id)}><UserCircle size={13} />KOL 档案</button>
+      </div>
+    </aside>
+  );
+}
+
+// ---- Step 6 发货流程 -------------------------------------------------------
+
+function ShipWorkbench({
+  kols,
+  selectedId,
+  busy,
+  onSelect,
+  onSave,
+  onOpenKol,
+}: {
+  kols: KolProfile[];
+  selectedId: string | null;
+  busy: boolean;
+  onSelect: (id: string) => void;
+  onSave: (kol: KolProfile, payload: ShipSavePayload) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const [filter, setFilter] = useState<'todo' | 'done'>('todo');
+  const [copiedBatch, setCopiedBatch] = useState(false);
+  const buckets = useMemo(() => {
+    const map: { todo: KolProfile[]; done: KolProfile[] } = { todo: [], done: [] };
+    for (const kol of kols) {
+      const bucket = kolShipBucket(kol);
+      if (bucket === 'todo') map.todo.push(kol);
+      else if (bucket === 'done') map.done.push(kol);
+    }
+    return map;
+  }, [kols]);
+  const list = buckets[filter];
+  const selected = list.find((kol) => kol.id === selectedId) ?? list[0] ?? null;
+  const todo = buckets.todo;
+
+  const emptyHint =
+    filter === 'done'
+      ? '还没有已发货的达人。安排发货后会出现在这里。'
+      : '没有待发货的达人。完成 Step 5 签约后会进入这里。';
+
+  const copyBatchPrompt = async () => {
+    if (todo.length === 0) return;
+    const roster = todo.map((kol, index) => `${index + 1}. id=${kol.id} | ${kol.name} <${kol.email}>`);
+    const prompt = [
+      `请用 $sidebar-control 技能批量执行 Step 6 发货流程，共 ${todo.length} 位待发货达人：`,
+      ...roster,
+      '',
+      '安排发货后回传物流信息并发送发货通知：alpha-sidebar marketing kols ship --id <kolId> --status shipped --carrier <承运商> --tracking <运单号> --tracking-url https://parcelsapp.com/en/tracking/<单号> [--units "1x MK3"] [--expected-post-at <ms>] [--send true --body "<发货通知正文>"] --reason "Step 6 发货流程"。',
+      '发货前先核对合同（最晚发布日期、视频数量、单元/配件数量、电子签名、附加条款）。内容发布后 --status delivered 标记完成。完成后汇总每位的物流单号给我。',
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopiedBatch(true);
+      window.setTimeout(() => setCopiedBatch(false), 1600);
+    }
+  };
+
+  return (
+    <div className="marketing-step process">
+      <div className="marketing-step-head">
+        <div className="marketing-step-intro">
+          <span className="marketing-step-tag"><Truck size={13} />Step 6 · 发货流程</span>
+          <p>签约后<b>核对合同→安排发货→回传物流</b>，一键发送发货通知，并跟进内容发布。内容上线后标记<b>已完成</b>。</p>
+        </div>
+        <div className="marketing-step-actions">
+          <button
+            type="button"
+            className="settings-btn ghost"
+            disabled={todo.length === 0}
+            onClick={copyBatchPrompt}
+            title="复制让 Agent 批量安排发货并起草发货通知的指令"
+          >
+            {copiedBatch ? <Check size={13} /> : <Sparkles size={13} />}
+            {copiedBatch ? '已复制' : `批量 Agent 发货${todo.length ? ` · ${todo.length}` : ''}`}
+          </button>
+          <div className="marketing-segment verdicts">
+            <button type="button" className={filter === 'todo' ? 'active' : ''} onClick={() => setFilter('todo')}>待发货 {buckets.todo.length}</button>
+            <button type="button" className={filter === 'done' ? 'active' : ''} onClick={() => setFilter('done')}>已发货 {buckets.done.length}</button>
+          </div>
+        </div>
+      </div>
+      <div className="marketing-split">
+        <div className="marketing-eval-list">
+          {list.length === 0 ? (
+            <div className="partner-marketing-placeholder"><Truck size={18} /><span>{emptyHint}</span></div>
+          ) : (
+            list.map((kol) => {
+              const ship = parseKolShipment(kol.shipment);
+              const tone = ship?.status === 'issue' ? 'fail' : 'pass';
+              return (
+                <button
+                  key={kol.id}
+                  type="button"
+                  className={`marketing-eval-row ${tone} ${kol.id === selected?.id ? 'selected' : ''}`}
+                  onClick={() => onSelect(kol.id)}
+                >
+                  <span className="marketing-avatar sm">{initials(kol.name)}</span>
+                  <span className="marketing-eval-row-main">
+                    <strong>{kol.name}</strong>
+                    <span>{ship?.tracking ? `单号 ${ship.tracking}` : kol.country || '国家未知'}</span>
+                  </span>
+                  <span className="marketing-eval-row-meta">
+                    <span className={`marketing-verdict ${ship?.status === 'issue' ? 'fail' : ship ? 'pass' : 'pending'}`}>
+                      {ship?.status === 'issue' ? <AlertTriangle size={11} /> : ship ? <Check size={11} /> : <Truck size={11} />}
+                      {ship ? shipmentStatusLabel(ship.status) : '待发货'}
+                    </span>
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+        <ShipPanel kol={selected} busy={busy} onSave={onSave} onOpenKol={onOpenKol} />
+      </div>
+    </div>
+  );
+}
+
+function ShipPanel({
+  kol,
+  busy,
+  onSave,
+  onOpenKol,
+}: {
+  kol: KolProfile | null;
+  busy: boolean;
+  onSave: (kol: KolProfile, payload: ShipSavePayload) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const options = useMemo(() => shipScriptOptions(), []);
+  const vars = useMemo(() => loadScriptVars(), []);
+
+  const [scriptId, setScriptId] = useState<string>('');
+  const [channel, setChannel] = useState<string>('Email');
+  const [carrier, setCarrier] = useState<string>('');
+  const [tracking, setTracking] = useState<string>('');
+  const [trackingUrl, setTrackingUrl] = useState<string>('');
+  const [address, setAddress] = useState<string>('');
+  const [units, setUnits] = useState<string>('');
+  const [expectedPost, setExpectedPost] = useState<string>('');
+  const [note, setNote] = useState<string>('');
+  const [body, setBody] = useState<string>('');
+  const [copied, setCopied] = useState(false);
+  const [copiedAgent, setCopiedAgent] = useState(false);
+
+  useEffect(() => {
+    const prior = parseKolShipment(kol?.shipment);
+    const opts = shipScriptOptions();
+    const initialScript = opts[0]?.id ?? '';
+    setScriptId(initialScript);
+    const initialObj = opts.find((s) => s.id === initialScript) ?? null;
+    const ch = initialObj?.channel ?? 'Email';
+    setChannel(OUTREACH_CHANNELS.includes(ch) ? ch : 'Email');
+    setCarrier(prior?.carrier ?? '');
+    setTracking(prior?.tracking ?? '');
+    setTrackingUrl(prior?.trackingUrl ?? 'https://parcelsapp.com/en/tracking/');
+    setAddress(prior?.address ?? '');
+    setUnits(prior?.units ?? '');
+    setExpectedPost(msToDateInput(prior?.expectedPostAt));
+    setNote(prior?.note ?? '');
+    setBody(initialObj ? renderScript(initialObj.body, vars) : '');
+    setCopied(false);
+    setCopiedAgent(false);
+  }, [kol?.id, kol?.shipment, vars]);
+
+  if (!kol) {
+    return (
+      <aside className="marketing-detail-panel">
+        <div className="partner-marketing-placeholder"><Truck size={18} /><span>选择一个达人开始发货。</span></div>
+      </aside>
+    );
+  }
+
+  const existing = parseKolShipment(kol.shipment);
+  const isEmail = channel === 'Email';
+  const copyScript = async () => {
+    if (body.trim() && (await copyToClipboard(body))) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    }
+  };
+  const basePayload = (): ShipSavePayload => ({
+    status: 'shipped',
+    carrier: carrier.trim() || undefined,
+    tracking: tracking.trim() || undefined,
+    trackingUrl: trackingUrl.trim() || undefined,
+    address: address.trim() || undefined,
+    units: units.trim() || undefined,
+    expectedPostAt: dateInputToMs(expectedPost),
+    channel,
+    note,
+    body,
+  });
+  const sendNotice = () => onSave(kol, { ...basePayload(), status: 'shipped', send: true });
+  const markShipped = () => onSave(kol, { ...basePayload(), status: 'shipped', send: false });
+  const markDelivered = () => onSave(kol, { ...basePayload(), status: 'delivered', send: false });
+  const markIssue = () => onSave(kol, { ...basePayload(), status: 'issue', send: false });
+  const copyAgentPrompt = async () => {
+    const script = options.find((s) => s.id === scriptId) ?? null;
+    const prompt = [
+      `请用 $sidebar-control 技能为 KOL「${kol.name}」<${kol.email}>（id=${kol.id}）执行 Step 6 发货流程。`,
+      `基础模板：话术库「${script?.title ?? ''}」。安排发货后填入承运商、运单号、物流查询链接。`,
+      `执行：alpha-sidebar marketing kols ship --id ${kol.id} --status shipped --carrier <承运商> --tracking <单号> --tracking-url <链接> [--send true --body "<发货通知正文>"] --reason "Step 6 发货流程"；内容发布后 --status delivered。`,
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopiedAgent(true);
+      window.setTimeout(() => setCopiedAgent(false), 1600);
+    }
+  };
+
+  return (
+    <aside className="marketing-detail-panel process">
+      <header>
+        <span className="marketing-avatar">{initials(kol.name)}</span>
+        <div>
+          <strong>{kol.name}</strong>
+          <span>{kol.email}</span>
+        </div>
+        <span className={`marketing-stage-chip ${kol.pipelineStage}`}>{pipelineStageLabel(kol.pipelineStage)}</span>
+      </header>
+
+      <div className="marketing-reply-to">
+        <Truck size={12} />
+        <span>发货通知给 <b>{kol.name}</b> &lt;{kol.email}&gt;</span>
+        <span className={`marketing-reply-channel ${isEmail ? 'email' : ''}`}>{isEmail ? '一键发送经 SMTP' : `${channel} · 需在外部发送`}</span>
+        {existing && <span className="marketing-confirm-chip"><Check size={11} />{shipmentStatusLabel(existing.status)} · {existing.by === 'agent' ? 'Agent' : '人工'}</span>}
+      </div>
+
+      <div className="marketing-process-controls">
+        <label className="marketing-process-field">承运商
+          <input className="settings-input" value={carrier} onChange={(e) => setCarrier(e.target.value)} placeholder="UPS / FedEx / DHL" />
+        </label>
+        <label className="marketing-process-field">运单号
+          <input className="settings-input" value={tracking} onChange={(e) => setTracking(e.target.value)} placeholder="Tracking #" />
+        </label>
+      </div>
+      <div className="marketing-process-controls">
+        <label className="marketing-process-field">物流查询链接
+          <input className="settings-input" value={trackingUrl} onChange={(e) => setTrackingUrl(e.target.value)} placeholder="https://parcelsapp.com/en/tracking/..." />
+        </label>
+        <label className="marketing-process-field">单元 / 配件
+          <input className="settings-input" value={units} onChange={(e) => setUnits(e.target.value)} placeholder="1x Mark 3 + 1 电池" />
+        </label>
+      </div>
+      <div className="marketing-process-controls">
+        <label className="marketing-process-field">收货地址
+          <input className="settings-input" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="发货地址" />
+        </label>
+        <label className="marketing-process-field">预计发布日期
+          <input className="settings-input" type="date" value={expectedPost} onChange={(e) => setExpectedPost(e.target.value)} />
+        </label>
+      </div>
+
+      <div className="marketing-reco bare pass">
+        <div className="marketing-reco-head">
+          <span>发货通知正文（可编辑）</span>
+          <div className="marketing-reco-head-actions">
+            <button type="button" className="settings-btn" onClick={copyScript} disabled={!body.trim()}>{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? '已复制' : '复制'}</button>
+          </div>
+        </div>
+        <textarea
+          className="marketing-reply-editor"
+          value={body}
+          onChange={(event) => setBody(event.target.value)}
+          placeholder="选择话术模板后会自动填入，记得补充物流信息。"
+          spellCheck={false}
+        />
+      </div>
+
+      <label className="marketing-eval-summary">发货备注（可选）
+        <textarea className="settings-textarea compact" value={note} onChange={(event) => setNote(event.target.value)} placeholder="合同核对、异常处理、内容跟进" />
+      </label>
+
+      <div className="marketing-eval-buttons">
+        <button type="button" className="settings-btn primary" disabled={busy || !body.trim() || !isEmail} onClick={sendNotice} title={isEmail ? '通过 SMTP 直接发送发货通知并记录' : '仅 Email 渠道支持一键发送'}>
+          <Send size={13} />发送发货通知
+        </button>
+        <button type="button" className="settings-btn" disabled={busy} onClick={markShipped} title="不发送，仅记录已发货">
+          <Truck size={13} />标记已发货
+        </button>
+        <button type="button" className="settings-btn success" disabled={busy} onClick={markDelivered} title="内容已发布 / 合作完成">
+          <Check size={13} />标记已完成
+        </button>
+        <button type="button" className="settings-btn" disabled={busy} onClick={markIssue} title="物流 / 产品异常，待处理">物流异常</button>
+        <button type="button" className="settings-btn ghost" onClick={copyAgentPrompt} title="复制让 Agent 安排发货并起草通知的指令">
+          {copiedAgent ? <Check size={13} /> : <Sparkles size={13} />}{copiedAgent ? '已复制' : 'Agent 发货'}
+        </button>
+        <span className="spacer" />
+        <button type="button" className="marketing-link-btn" onClick={() => onOpenKol(kol.id)}><UserCircle size={13} />KOL 档案</button>
+      </div>
+    </aside>
+  );
+}
+
+interface ScriptCardModel {
+  script: ScriptTemplate;
+  isCustom: boolean;
+  isEdited: boolean;
+}
+
+function ScriptCard({
+  model,
+  vars,
+  onSave,
+  onReset,
+  onDelete,
+}: {
+  model: ScriptCardModel;
+  vars: Record<string, string>;
+  onSave: (id: string, patch: ScriptOverride) => void;
+  onReset: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const { script, isCustom, isEdited } = model;
+  const emptyBody = script.body.trim().length === 0;
+  const [open, setOpen] = useState(emptyBody);
+  const [editing, setEditing] = useState(emptyBody);
+  const [draft, setDraft] = useState<ScriptOverride>({ title: script.title, channel: script.channel, body: script.body });
+  const [copied, setCopied] = useState(false);
+  const rendered = renderScript(script.body, vars);
+
+  useEffect(() => {
+    if (!editing) {
+      setDraft({ title: script.title, channel: script.channel, body: script.body });
+    }
+  }, [script.title, script.channel, script.body, editing]);
+
+  const startEdit = () => {
+    setDraft({ title: script.title, channel: script.channel, body: script.body });
+    setOpen(true);
+    setEditing(true);
+  };
+  const save = () => {
+    onSave(script.id, {
+      title: draft.title.trim() || script.title,
+      channel: draft.channel.trim() || '通用',
+      body: draft.body,
+    });
+    setEditing(false);
+  };
+  const cancel = () => {
+    setDraft({ title: script.title, channel: script.channel, body: script.body });
+    setEditing(false);
+  };
+  const copy = async () => {
+    if (await copyToClipboard(rendered)) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    }
+  };
+
+  return (
+    <div className={`marketing-script-card ${open ? 'open' : ''}`}>
+      <div className="marketing-script-summary">
+        <button type="button" className="marketing-script-toggle" onClick={() => setOpen((value) => !value)}>
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <span className="marketing-script-title">{script.title}</span>
+        </button>
+        <span className="marketing-script-channel">{script.channel}</span>
+        {isCustom ? (
+          <span className="marketing-script-flag custom">自定义</span>
+        ) : isEdited ? (
+          <span className="marketing-script-flag">已修改</span>
+        ) : null}
+        <button type="button" className="marketing-icon-btn" title="复制话术" onClick={() => void copy()} disabled={!script.body.trim()}>
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+        </button>
+        <button type="button" className="marketing-icon-btn" title="编辑话术" onClick={startEdit}>
+          <Pencil size={14} />
+        </button>
+      </div>
+      {open && (
+        editing ? (
+          <div className="marketing-script-edit">
+            <div className="marketing-script-edit-row">
+              <label>标题
+                <input className="settings-input" value={draft.title} onChange={(event) => setDraft((d) => ({ ...d, title: event.target.value }))} placeholder="话术标题" />
+              </label>
+              <label>渠道
+                <input className="settings-input" value={draft.channel} onChange={(event) => setDraft((d) => ({ ...d, channel: event.target.value }))} placeholder="如 Email / IG DM / 通用" />
+              </label>
+            </div>
+            <label>正文
+              <textarea className="settings-textarea" value={draft.body} onChange={(event) => setDraft((d) => ({ ...d, body: event.target.value }))} placeholder="在此编辑话术内容…" />
+            </label>
+            <p className="marketing-script-hint">
+              可使用变量占位：{SCRIPT_VAR_DEFS.map((def, index) => (
+                <span key={def.key}>{index > 0 ? '、' : ''}<code>{`{{${def.key}}}`}</code></span>
+              ))}，复制时自动替换为「协议链接与联系方式」里的配置。
+            </p>
+            <div className="marketing-script-edit-actions">
+              <button type="button" className="settings-btn primary" onClick={save}><Check size={13} />保存</button>
+              <button type="button" className="settings-btn" onClick={cancel}>取消</button>
+              <span className="spacer" />
+              {isCustom ? (
+                <button type="button" className="settings-btn danger" onClick={() => onDelete(script.id)}><Trash2 size={13} />删除</button>
+              ) : isEdited ? (
+                <button type="button" className="settings-btn" onClick={() => { onReset(script.id); setEditing(false); }}><RotateCcw size={13} />恢复默认</button>
+              ) : null}
+            </div>
+          </div>
+        ) : (
+          <pre className="marketing-script-body">{rendered || '（空白话术，点击编辑填写内容）'}</pre>
+        )
+      )}
+    </div>
+  );
+}
+
+function ScriptVarsCard({
+  vars,
+  onSave,
+}: {
+  vars: Record<string, string>;
+  onSave: (next: Record<string, string>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<Record<string, string>>(vars);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    setDraft(vars);
+  }, [vars]);
+
+  const dirty = SCRIPT_VAR_DEFS.some((def) => (draft[def.key] ?? '') !== (vars[def.key] ?? ''));
+
+  const save = () => {
+    onSave({ ...vars, ...draft });
+    setSaved(true);
+    window.setTimeout(() => setSaved(false), 1600);
+  };
+  const reset = () => {
+    const defaults = defaultScriptVars();
+    setDraft(defaults);
+    onSave(defaults);
+  };
+
+  return (
+    <div className={`marketing-vars-card ${open ? 'open' : ''}`}>
+      <button type="button" className="marketing-vars-summary" onClick={() => setOpen((value) => !value)}>
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <Link2 size={14} />
+        <span className="marketing-vars-title">协议链接与联系方式</span>
+        <span className="marketing-vars-sub">统一配置，所有话术自动读取</span>
+      </button>
+      {open && (
+        <div className="marketing-vars-body">
+          <div className="marketing-vars-grid">
+            {SCRIPT_VAR_DEFS.map((def) => (
+              <label key={def.key} className="marketing-vars-field">
+                <span className="marketing-vars-label">
+                  {def.label}
+                  <code>{`{{${def.key}}}`}</code>
+                </span>
+                <input
+                  className="settings-input"
+                  value={draft[def.key] ?? ''}
+                  onChange={(event) => setDraft((current) => ({ ...current, [def.key]: event.target.value }))}
+                  placeholder={def.defaultValue}
+                />
+                {def.hint ? <span className="marketing-vars-hint">{def.hint}</span> : null}
+              </label>
+            ))}
+          </div>
+          <div className="marketing-vars-actions">
+            <button type="button" className="settings-btn primary" onClick={save} disabled={!dirty}>
+              {saved ? <Check size={13} /> : <Save size={13} />}{saved ? '已保存' : '保存'}
+            </button>
+            <button type="button" className="settings-btn" onClick={reset}><RotateCcw size={13} />恢复默认</button>
+            <span className="marketing-vars-note">话术正文里用 <code>{'{{key}}'}</code> 占位，复制时会自动替换为上面的值。</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScriptLibrary({ query }: { query: string }) {
+  const [overrides, setOverrides] = useState<Record<string, ScriptOverride>>(() => loadScriptOverrides());
+  const [custom, setCustom] = useState<ScriptTemplate[]>(() => loadCustomScripts());
+  const [vars, setVars] = useState<Record<string, string>>(() => loadScriptVars());
+
+  const persistVars = (next: Record<string, string>) => {
+    setVars(next);
+    try { localStorage.setItem(SCRIPT_VARS_KEY, JSON.stringify(next)); } catch { /* best-effort */ }
+  };
+
+  const persistOverrides = (next: Record<string, ScriptOverride>) => {
+    setOverrides(next);
+    try { localStorage.setItem(SCRIPT_OVERRIDES_KEY, JSON.stringify(next)); } catch { /* best-effort */ }
+  };
+  const persistCustom = (next: ScriptTemplate[]) => {
+    setCustom(next);
+    try { localStorage.setItem(SCRIPT_CUSTOM_KEY, JSON.stringify(next)); } catch { /* best-effort */ }
+  };
+
+  const models: ScriptCardModel[] = [
+    ...SCRIPT_LIBRARY.map((script) => {
+      const override = overrides[script.id];
+      return { script: override ? { ...script, ...override } : script, isCustom: false, isEdited: Boolean(override) };
+    }),
+    ...custom.map((script) => ({ script, isCustom: true, isEdited: false })),
+  ];
+
+  const normalized = query.trim().toLowerCase();
+  const filtered = models.filter(({ script }) =>
+    !normalized || [script.title, script.group, script.channel, script.body, renderScript(script.body, vars)].some((value) => value.toLowerCase().includes(normalized)),
+  );
+  const groups = Array.from(new Set(filtered.map(({ script }) => script.group)));
+
+  const handleSave = (id: string, patch: ScriptOverride) => {
+    if (custom.some((item) => item.id === id)) {
+      persistCustom(custom.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+    } else {
+      persistOverrides({ ...overrides, [id]: patch });
+    }
+  };
+  const handleReset = (id: string) => {
+    const next = { ...overrides };
+    delete next[id];
+    persistOverrides(next);
+  };
+  const handleDelete = (id: string) => {
+    persistCustom(custom.filter((item) => item.id !== id));
+  };
+  const handleAdd = () => {
+    const id = `custom-${Date.now()}`;
+    persistCustom([...custom, { id, group: '自定义话术', title: '新话术', channel: '通用', body: '' }]);
+  };
+
+  return (
+    <div className="marketing-step">
+      <div className="marketing-step-head">
+        <div className="marketing-step-intro">
+          <span className="marketing-step-tag"><FileText size={13} />话术库</span>
+          <p>所有话术均可人工编辑并保存（自动记忆），随时一键复制粘贴。内置话术修改后可「恢复默认」，也可「新建话术」收录团队自己的模板。</p>
+        </div>
+        <div className="marketing-step-actions">
+          <button type="button" className="settings-btn primary" onClick={handleAdd}><Plus size={13} />新建话术</button>
+        </div>
+      </div>
+      <ScriptVarsCard vars={vars} onSave={persistVars} />
+      {filtered.length === 0 ? (
+        <MarketingEmptyState
+          icon={<FileText size={26} />}
+          title="没有匹配的话术"
+          description="换个关键词，或点击右上角「新建话术」收录你自己的模板。"
+        />
+      ) : (
+        <div className="marketing-scripts">
+          {groups.map((group) => {
+            const items = filtered.filter(({ script }) => script.group === group);
+            return (
+              <section key={group} className="marketing-script-group">
+                <h4>{group}<em>{items.length}</em></h4>
+                {items.map((model) => (
+                  <ScriptCard
+                    key={model.script.id}
+                    model={model}
+                    vars={vars}
+                    onSave={handleSave}
+                    onReset={handleReset}
+                    onDelete={handleDelete}
+                  />
+                ))}
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PartnerMarketingTab({
   title,
   domain,
@@ -2972,13 +5883,14 @@ function PartnerMarketingTab({
   const conversation = useCurrentConversation();
   const codexStatus = useChatStore((state) => state.codexStatus);
   const [snapshot, setSnapshot] = useState<MarketingDbSnapshot | null>(null);
-  const [view, setView] = useState<'inbox' | 'kol' | 'hidden' | 'logs'>('inbox');
+  const [view, setView] = useState<MarketingView>('classify');
   const [query, setQuery] = useState('');
   const [selectedKolId, setSelectedKolId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -3027,7 +5939,7 @@ function PartnerMarketingTab({
     if (announce) setMessage('正在只读同步邮箱...');
     try {
       const result = await marketingEmailSyncReadonly(account);
-      setMessage(`同步完成：${result.synced} 封，新增 ${result.inserted}，隐藏广告 ${result.hidden}，新增 KOL ${result.kolCreated}`);
+      setMessage(`同步完成：${result.synced} 封，新增 ${result.inserted}，其他 ${result.other}，新增 KOL ${result.kolCreated}`);
       setSnapshot(await marketingDbQuery(true));
     } catch (err) {
       setError(stringifyError(err));
@@ -3036,7 +5948,28 @@ function PartnerMarketingTab({
     }
   };
 
-  const applyLeadUpdate = async (lead: MarketingEmailLead, hidden: boolean) => {
+  const moveLeadToOther = async (lead: MarketingEmailLead) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await marketingAgentApplyUpdate({
+        targetTable: 'marketing_email_leads',
+        targetId: lead.id,
+        field: 'category',
+        oldValue: lead.category,
+        newValue: 'other',
+        reason: '手动归入其他邮件',
+      });
+      setSnapshot(next);
+      setMessage('已归入其他邮件。');
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restoreLead = async (lead: MarketingEmailLead) => {
     setBusy(true);
     setError(null);
     try {
@@ -3045,11 +5978,250 @@ function PartnerMarketingTab({
         targetId: lead.id,
         field: 'hidden',
         oldValue: lead.hidden ? '1' : '0',
-        newValue: hidden ? '1' : '0',
-        reason: hidden ? '手动隐藏邮件线索' : '从隐藏广告恢复邮件线索',
+        newValue: '0',
+        reason: '从其他邮件恢复到收件箱',
       });
       setSnapshot(next);
-      setMessage(hidden ? '已隐藏邮件线索。' : '已恢复邮件线索。');
+      setMessage('已恢复到 Step 1 收件箱。');
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const classifyLead = async (lead: MarketingEmailLead, category: EmailCategory, hidden?: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await marketingLeadClassify({
+        id: lead.id,
+        category,
+        hidden,
+        confirmed: true,
+        actor: 'user',
+        reason: hidden ? 'Step 1：标记为广告并隐藏' : `Step 1：人工确认为${categoryLabel(category)}`,
+      });
+      setSnapshot(next);
+      setMessage(hidden ? '已隐藏该广告邮件。' : `已确认为「${categoryLabel(category)}」。`);
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveEvaluation = async (kol: KolProfile, payload: EvaluationSavePayload, confirmed: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await marketingKolEvaluate({
+        id: kol.id,
+        criteria: payload.criteria,
+        summary: payload.summary,
+        recommendation: payload.recommendation,
+        confirmed,
+        actor: 'user',
+        reason: confirmed ? 'Step 2：人工确认评估结论' : 'Step 2：保存评估草稿',
+      });
+      setSnapshot(next);
+      setMessage(confirmed ? '评估结论已确认。' : '评估草稿已保存。');
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recordOutreach = async (kol: KolProfile, payload: OutreachSavePayload) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await marketingKolOutreach({
+        id: kol.id,
+        kind: payload.kind,
+        scriptId: payload.scriptId,
+        channel: payload.channel,
+        note: payload.note,
+        status: payload.status,
+        actor: 'user',
+        reason: payload.status === 'skipped' ? 'Step 3：标记暂不联系' : 'Step 3：记录已发送外联',
+      });
+      setSnapshot(next);
+      setMessage(
+        payload.status === 'skipped'
+          ? '已记录「暂不联系」。'
+          : kol.pipelineStage === 'qualified'
+            ? '已记录发送提案，已推进到「推进合作」。'
+            : '已记录发送外联话术。',
+      );
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const replyToKol = async (kol: KolProfile, payload: ReplySavePayload) => {
+    if (!payload.body.trim()) {
+      setError('回复内容为空，请先填写话术。');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await marketingKolReply({
+        id: kol.id,
+        body: payload.body,
+        kind: payload.kind,
+        scriptId: payload.scriptId,
+        channel: payload.channel,
+        note: payload.note,
+        send: true,
+        actor: 'user',
+        reason: 'Step 3：一键回复（SMTP 发送）',
+      });
+      setSnapshot(next);
+      setMessage(
+        kol.pipelineStage === 'qualified'
+          ? `已向 ${kol.name} 发送提案邮件，已推进到「推进合作」。`
+          : `已向 ${kol.name} 发送回复邮件。`,
+      );
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recordIntake = async (kol: KolProfile, payload: IntakeSavePayload) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await marketingKolIntake({
+        id: kol.id,
+        username: payload.username,
+        owner: payload.owner,
+        channel: payload.channel,
+        relationship: payload.relationship,
+        phone: payload.phone,
+        platforms: payload.platforms,
+        links: payload.links,
+        contentType: payload.contentType,
+        language: payload.language,
+        metrics: payload.metrics,
+        note: payload.note,
+        status: payload.status,
+        actor: 'user',
+        reason: payload.status === 'draft' ? 'Step 4：保存录入草稿' : 'Step 4：录入系统并推进',
+      });
+      setSnapshot(next);
+      setMessage(payload.status === 'draft' ? '已保存录入草稿。' : '已录入档案，已推进到「推进合作」。');
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recordCollab = async (kol: KolProfile, payload: CollabSavePayload) => {
+    if (payload.send && !payload.body?.trim()) {
+      setError('合同邮件正文为空，请先填写。');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await marketingKolCollaborate({
+        id: kol.id,
+        status: payload.status,
+        scriptId: payload.scriptId,
+        contractUrl: payload.contractUrl,
+        videoCount: payload.videoCount,
+        note: payload.note,
+        body: payload.body,
+        send: payload.send,
+        actor: 'user',
+        reason: payload.send ? 'Step 5：发送合同（SMTP）' : `Step 5：记录${collabStatusLabel(payload.status)}`,
+      });
+      setSnapshot(next);
+      setMessage(
+        payload.status === 'signed'
+          ? `已记录 ${kol.name} 签约，已推进到「发货流程」。`
+          : payload.status === 'declined'
+            ? `已记录 ${kol.name} 流失。`
+            : payload.send
+              ? `已向 ${kol.name} 发送合同邮件。`
+              : '已记录发出合同。',
+      );
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recordShip = async (kol: KolProfile, payload: ShipSavePayload) => {
+    if (payload.send && !payload.body?.trim()) {
+      setError('发货通知正文为空，请先填写。');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await marketingKolShip({
+        id: kol.id,
+        status: payload.status,
+        carrier: payload.carrier,
+        tracking: payload.tracking,
+        trackingUrl: payload.trackingUrl,
+        address: payload.address,
+        units: payload.units,
+        expectedPostAt: payload.expectedPostAt,
+        note: payload.note,
+        body: payload.body,
+        send: payload.send,
+        actor: 'user',
+        reason: payload.send ? 'Step 6：发送发货通知（SMTP）' : `Step 6：记录${shipmentStatusLabel(payload.status)}`,
+      });
+      setSnapshot(next);
+      setMessage(
+        payload.status === 'delivered'
+          ? `已标记 ${kol.name} 合作完成。`
+          : payload.status === 'issue'
+            ? `已记录 ${kol.name} 物流异常。`
+            : payload.send
+              ? `已向 ${kol.name} 发送发货通知。`
+              : '已记录发货。',
+      );
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setAutoConfirm = async (next: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const snap = await marketingSettingsSet({ agentAutoConfirm: next });
+      setSnapshot(snap);
+      setMessage(next ? '已开启 Agent 自动确认：评估将直接定稿，无需人工确认。' : '已关闭 Agent 自动确认：评估保存为草稿，需人工确认。');
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setAutoReply = async (next: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const snap = await marketingSettingsSet({ agentAutoReply: next });
+      setSnapshot(snap);
+      setMessage(next ? '已开启 Agent 自主回复：Agent 可直接发送回复邮件，无需人工确认。' : '已关闭 Agent 自主回复：Agent 仅起草草稿，由人工确认后发送。');
     } catch (err) {
       setError(stringifyError(err));
     } finally {
@@ -3071,26 +6243,67 @@ function PartnerMarketingTab({
     }
   };
 
-  const normalizedQuery = query.trim().toLowerCase();
-  const leads = (snapshot?.leads ?? []).filter((lead) => {
-    if (view === 'hidden') {
-      if (!lead.hidden) return false;
-    } else if (lead.hidden) {
-      return false;
+  const copyClassifyPrompt = async () => {
+    const prompt = [
+      '请用 $sidebar-control 技能完成右侧合作推广营销 Step 1 初步分类。',
+      '步骤：先 alpha-sidebar marketing leads list --hidden false 查看未隐藏线索，逐条判断类别（达人 influencer / 联盟 affiliate / 其他 other）。',
+      '对每条执行：alpha-sidebar marketing leads classify --id <leadId> --category <influencer|affiliate|other> [--hide true] --reason "Step 1 初步分类"。广告类邮件加 --hide true 隐藏。',
+      '只有内容明确支持达人身份时才归为 influencer（会自动创建/关联 KOL 档案）。完成后给我分类汇总。',
+    ].join('\n');
+    if (await copyToClipboard(prompt)) {
+      setCopiedPrompt(true);
+      window.setTimeout(() => setCopiedPrompt(false), 1600);
     }
-    if (view === 'inbox' && lead.category === 'ad') return false;
-    if (!normalizedQuery) return true;
-    return [lead.subject, lead.rawFrom, lead.fromEmail, lead.snippet, categoryLabel(lead.category)]
-      .some((value) => value.toLowerCase().includes(normalizedQuery));
-  });
-  const kols = (snapshot?.kolProfiles ?? []).filter((kol) => {
-    if (!normalizedQuery) return true;
-    return [kol.name, kol.email, kol.country ?? '', kol.owner ?? '', kol.tags, kol.collaborationStatus, kol.stage]
-      .some((value) => value.toLowerCase().includes(normalizedQuery));
-  });
-  const selectedKol = selectedKolId ? snapshot?.kolProfiles.find((kol) => kol.id === selectedKolId) ?? null : null;
-  const activeLeads = snapshot?.leads.filter((lead) => !lead.hidden && lead.category !== 'ad').length ?? 0;
-  const hiddenAds = snapshot?.leads.filter((lead) => lead.hidden).length ?? 0;
+  };
+
+  const openKolInEvaluate = (id: string) => {
+    setSelectedKolId(id);
+    setView('evaluate');
+  };
+  const openKolInProcess = (id: string) => {
+    setSelectedKolId(id);
+    setView('process');
+  };
+  const openKolInDatabase = (id: string) => {
+    setSelectedKolId(id);
+    setView('kol');
+  };
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const matchLead = (lead: MarketingEmailLead) =>
+    !normalizedQuery ||
+    [lead.subject, lead.rawFrom, lead.fromEmail, lead.snippet, categoryLabel(lead.category)].some((value) =>
+      value.toLowerCase().includes(normalizedQuery),
+    );
+  const matchKol = (kol: KolProfile) =>
+    !normalizedQuery ||
+    [kol.name, kol.email, kol.country ?? '', kol.owner ?? '', kol.tags, kol.collaborationStatus, kol.stage].some((value) =>
+      value.toLowerCase().includes(normalizedQuery),
+    );
+
+  const allLeads = snapshot?.leads ?? [];
+  const allKols = snapshot?.kolProfiles ?? [];
+  const classifyLeads = allLeads.filter((lead) => !lead.hidden && matchLead(lead));
+  const otherLeads = allLeads.filter((lead) => (lead.hidden || !isPrimaryEmailCategory(lead.category)) && matchLead(lead));
+  const kols = allKols.filter(matchKol);
+  const evaluateKols = allKols.filter((kol) => !kol.archived && matchKol(kol));
+  const processKols = allKols.filter((kol) => !kol.archived && matchKol(kol) && kolProcessBucket(kol) !== 'none');
+  const intakeKols = allKols.filter((kol) => !kol.archived && matchKol(kol) && kolIntakeBucket(kol) !== 'none');
+  const collabKols = allKols.filter((kol) => !kol.archived && matchKol(kol) && kolCollabBucket(kol) !== 'none');
+  const shipKols = allKols.filter((kol) => !kol.archived && matchKol(kol) && kolShipBucket(kol) !== 'none');
+  const selectedKol = selectedKolId ? allKols.find((kol) => kol.id === selectedKolId) ?? null : null;
+
+  const classifyPending = allLeads.filter((lead) => !lead.hidden && !lead.humanConfirmed).length;
+  const evaluatePending = allKols.filter((kol) => !kol.archived && kol.pipelineStage === 'evaluate').length;
+  const processPending = allKols.filter((kol) => !kol.archived && kolProcessBucket(kol) === 'todo').length;
+  const intakePending = allKols.filter((kol) => !kol.archived && kolIntakeBucket(kol) === 'todo').length;
+  const collabPending = allKols.filter((kol) => !kol.archived && kolCollabBucket(kol) === 'todo').length;
+  const shipPending = allKols.filter((kol) => !kol.archived && kolShipBucket(kol) === 'todo').length;
+  const autoConfirm = snapshot?.settings?.agentAutoConfirm ?? false;
+  const autoReply = snapshot?.settings?.agentAutoReply ?? false;
+  const activeLeads = allLeads.filter((lead) => !lead.hidden && isPrimaryEmailCategory(lead.category)).length;
+  const otherEmails = allLeads.filter((lead) => lead.hidden || !isPrimaryEmailCategory(lead.category)).length;
+
   const previewRuntime = !isTauriRuntime();
   const codexReady = previewRuntime || Boolean(codexStatus?.installed && codexStatus.loggedIn);
   const agentContext = useMemo(
@@ -3101,11 +6314,18 @@ function PartnerMarketingTab({
       query,
       accountLabel: account?.label,
       activeLeads,
-      hiddenAds,
-      kolCount: snapshot?.kolProfiles.length ?? 0,
+      otherEmails,
+      classifyPending,
+      evaluatePending,
+      processPending,
+      intakePending,
+      collabPending,
+      shipPending,
+      autoReply,
+      kolCount: allKols.length,
       selectedKol,
     }),
-    [account?.label, activeLeads, hiddenAds, query, selectedKol, snapshot?.kolProfiles.length, snapshot?.path, title, view],
+    [account?.label, activeLeads, otherEmails, classifyPending, evaluatePending, processPending, intakePending, collabPending, shipPending, autoReply, query, selectedKol, allKols.length, snapshot?.path, title, view],
   );
   useEffect(() => {
     onAgentContextChange({
@@ -3117,28 +6337,32 @@ function PartnerMarketingTab({
     return () => onAgentContextChange(null);
   }, [agentContext, onAgentContextChange, title]);
 
+  const auxTabs: Array<[MarketingView, string, number]> = [
+    ['kol', 'KOL 库', allKols.length],
+    ['other', '其他邮件', otherEmails],
+    ['scripts', '话术库', SCRIPT_LIBRARY.length],
+    ['logs', '自动化日志', snapshot?.auditLogs.length ?? 0],
+  ];
+
   return (
     <section className={`feature-tab-content partner-marketing-panel ${fullscreen ? 'with-agent-dock' : ''}`} role="tabpanel" aria-label={title}>
       <div className="partner-marketing-content">
         <div className="partner-marketing-head">
-          <span className="partner-marketing-icon"><Users size={22} /></span>
+          <span className="partner-marketing-icon"><Target size={20} /></span>
           <div>
             <h2>{title}</h2>
-            <p>{account ? `${account.label} · ${account.mailbox} · ${formatMaybeDate(account.lastSyncedAt)}` : '本地 KOL Database · 邮件只读同步'}</p>
+            <p>{account ? `${account.label} · ${account.mailbox} · ${formatMaybeDate(account.lastSyncedAt)}` : '本地 KOL Database · 邮件只读同步 · AI + 人工确认'}</p>
           </div>
           <span className="spacer" />
           <button className="settings-btn" type="button" onClick={() => void refresh()} disabled={loading || busy}><RefreshCw size={13} />刷新</button>
           <button className="settings-btn primary" type="button" onClick={() => void syncEmails()} disabled={busy || !account}><Mail size={13} />同步邮件</button>
         </div>
 
+        <WorkflowRail view={view} counts={{ classify: classifyPending, evaluate: evaluatePending, process: processPending, intake: intakePending, collab: collabPending, ship: shipPending }} onSelect={setView} />
+
         <div className="marketing-toolbar">
           <div className="marketing-tabs" role="tablist">
-            {([
-              ['inbox', '邮件线索', activeLeads],
-              ['kol', 'KOL Database', snapshot?.kolProfiles.length ?? 0],
-              ['hidden', '隐藏广告', hiddenAds],
-              ['logs', '自动化日志', snapshot?.auditLogs.length ?? 0],
-            ] as const).map(([id, label, count]) => (
+            {auxTabs.map(([id, label, count]) => (
               <button key={id} type="button" className={view === id ? 'active' : ''} onClick={() => setView(id)}>
                 <span>{label}</span><em>{count}</em>
               </button>
@@ -3146,7 +6370,7 @@ function PartnerMarketingTab({
           </div>
           <label className="marketing-search">
             <Search size={14} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮件、KOL、状态或标签" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索邮件、KOL、话术、状态或标签" />
           </label>
         </div>
 
@@ -3159,6 +6383,69 @@ function PartnerMarketingTab({
 
         {loading ? (
           <div className="partner-marketing-placeholder"><Loader2 size={18} className="spin" /><span>正在读取本地营销库...</span></div>
+        ) : view === 'classify' ? (
+          <ClassifyWorkbench
+            leads={classifyLeads}
+            kols={allKols}
+            busy={busy}
+            evaluatePending={evaluatePending}
+            onClassify={(lead, category, hidden) => void classifyLead(lead, category, hidden)}
+            onOpenKol={openKolInEvaluate}
+            onCopyAgentPrompt={() => void copyClassifyPrompt()}
+            onGoEvaluate={() => setView('evaluate')}
+            copiedPrompt={copiedPrompt}
+          />
+        ) : view === 'evaluate' ? (
+          <EvaluateWorkbench
+            kols={evaluateKols}
+            selectedId={selectedKolId}
+            busy={busy}
+            autoConfirm={autoConfirm}
+            onToggleAutoConfirm={(next) => void setAutoConfirm(next)}
+            onSelect={setSelectedKolId}
+            onSave={(kol, payload, confirmed) => void saveEvaluation(kol, payload, confirmed)}
+            onOpenKol={openKolInDatabase}
+          />
+        ) : view === 'process' ? (
+          <ProcessWorkbench
+            kols={processKols}
+            selectedId={selectedKolId}
+            busy={busy}
+            autoReply={autoReply}
+            onToggleAutoReply={(next) => void setAutoReply(next)}
+            onSelect={setSelectedKolId}
+            onRecord={(kol, payload) => void recordOutreach(kol, payload)}
+            onReply={(kol, payload) => void replyToKol(kol, payload)}
+            onOpenKol={openKolInDatabase}
+          />
+        ) : view === 'intake' ? (
+          <IntakeWorkbench
+            kols={intakeKols}
+            selectedId={selectedKolId}
+            busy={busy}
+            onSelect={setSelectedKolId}
+            onSave={(kol, payload) => void recordIntake(kol, payload)}
+            onOpenKol={openKolInDatabase}
+          />
+        ) : view === 'collab' ? (
+          <CollabWorkbench
+            kols={collabKols}
+            selectedId={selectedKolId}
+            busy={busy}
+            autoReply={autoReply}
+            onSelect={setSelectedKolId}
+            onSave={(kol, payload) => void recordCollab(kol, payload)}
+            onOpenKol={openKolInDatabase}
+          />
+        ) : view === 'ship' ? (
+          <ShipWorkbench
+            kols={shipKols}
+            selectedId={selectedKolId}
+            busy={busy}
+            onSelect={setSelectedKolId}
+            onSave={(kol, payload) => void recordShip(kol, payload)}
+            onOpenKol={openKolInDatabase}
+          />
         ) : view === 'kol' ? (
           <div className="marketing-split">
             <div className="marketing-table-wrap">
@@ -3166,20 +6453,18 @@ function PartnerMarketingTab({
             </div>
             <KolDetailPanel kol={selectedKol ?? kols[0] ?? null} busy={busy} onSave={updateKol} />
           </div>
+        ) : view === 'scripts' ? (
+          <ScriptLibrary query={query} />
         ) : view === 'logs' ? (
           <AutomationLogList logs={snapshot?.auditLogs ?? []} />
         ) : (
-          <EmailLeadList
-            leads={leads}
-            kols={snapshot?.kolProfiles ?? []}
-            hiddenView={view === 'hidden'}
+          <OtherMailView
+            leads={otherLeads}
+            kols={allKols}
             busy={busy}
-            onRestore={(lead) => void applyLeadUpdate(lead, false)}
-            onHide={(lead) => void applyLeadUpdate(lead, true)}
-            onOpenKol={(id) => {
-              setSelectedKolId(id);
-              setView('kol');
-            }}
+            onMoveToOther={(lead) => void moveLeadToOther(lead)}
+            onRestore={(lead) => void restoreLead(lead)}
+            onOpenKol={openKolInEvaluate}
           />
         )}
       </div>
@@ -3224,7 +6509,7 @@ function FeatureAgentDock({
         className="feature-agent-composer"
         agentContext={agentContext}
         agentContextResolver={agentContextResolver}
-        placeholder="让 agent 分析邮件线索、整理 KOL、隐藏广告或更新合作状态"
+        placeholder="让 agent 分析邮件线索、整理 KOL、归类其他邮件或更新合作状态"
       />
     </div>
   );
@@ -3284,7 +6569,7 @@ function buildFeatureHubAgentContext(): string {
   return [
     '你正在响应 Alpha Studio 右侧功能栏相关请求。',
     '必须使用 $sidebar-control 技能规则处理右侧栏请求。技能路径：~/.codex/skills/sidebar-control/SKILL.md；正式 CLI：/Users/geb/codes/alpha_studio/src-tauri/target/debug/alpha-sidebar；缺失时用 cargo run --manifest-path /Users/geb/codes/alpha_studio/src-tauri/Cargo.toml --quiet --bin alpha-sidebar -- <args>。',
-    '当前还停留在功能入口列表；如果用户要求合作推广营销、邮件线索、KOL Database、隐藏广告或自动化日志相关操作，请把它视为「合作推广营销」功能页任务。',
+    '当前还停留在功能入口列表；如果用户要求合作推广营销、邮件线索、KOL Database、其他邮件或自动化日志相关操作，请把它视为「合作推广营销」功能页任务。',
     '语义路由：在带入侧栏上下文开启时，用户说“线索”“多少线索”“客户线索”默认指右侧「合作推广营销」里的 marketing_email_leads 邮件线索，不是当前品牌目录中的文件。',
     '除非用户明确要求检查品牌目录、代码或本地文件，否则不要用 find/grep/rg 去 cwd 里搜索“线索”。',
     '优先帮助用户完成操作，而不是只解释界面。需要数据库操作时，使用本地营销 SQLite 数据库；如果路径未在当前上下文出现，可先从应用源码或默认数据目录定位 ~/.alpha-studio/marketing.sqlite。',
@@ -3300,58 +6585,102 @@ function buildPartnerMarketingAgentContext({
   query,
   accountLabel,
   activeLeads,
-  hiddenAds,
+  otherEmails,
+  classifyPending,
+  evaluatePending,
+  processPending,
+  intakePending,
+  collabPending,
+  shipPending,
+  autoReply,
   kolCount,
   selectedKol,
 }: {
   title: string;
   dbPath?: string;
-  view: 'inbox' | 'kol' | 'hidden' | 'logs';
+  view: MarketingView;
   query: string;
   accountLabel?: string;
   activeLeads: number;
-  hiddenAds: number;
+  otherEmails: number;
+  classifyPending: number;
+  evaluatePending: number;
+  processPending: number;
+  intakePending: number;
+  collabPending: number;
+  shipPending: number;
+  autoReply: boolean;
   kolCount: number;
   selectedKol: KolProfile | null;
 }): string {
   const selectedKolLine = selectedKol
-    ? `当前选中的 KOL：${selectedKol.name} <${selectedKol.email}>，id=${selectedKol.id}，关系=${selectedKol.relationship}，状态=${selectedKol.collaborationStatus}，阶段=${selectedKol.stage}，负责人=${selectedKol.owner || '未分配'}，优先级=${selectedKol.priority}，标签=${selectedKol.tags || '无'}。`
+    ? `当前选中的 KOL：${selectedKol.name} <${selectedKol.email}>，id=${selectedKol.id}，关系=${selectedKol.relationship}，状态=${selectedKol.collaborationStatus}，阶段=${selectedKol.stage}，流程阶段=${selectedKol.pipelineStage}，负责人=${selectedKol.owner || '未分配'}，优先级=${selectedKol.priority}，标签=${selectedKol.tags || '无'}。`
     : '当前未显式选中 KOL；如果用户提到某个达人，请先在数据库中查找匹配记录。';
   return [
     '你正在响应 Alpha Studio 右侧「合作推广营销」功能页相关请求。',
     '必须使用 $sidebar-control 技能规则处理本请求。技能路径：~/.codex/skills/sidebar-control/SKILL.md；正式 CLI：/Users/geb/codes/alpha_studio/src-tauri/target/debug/alpha-sidebar；缺失时用 cargo run --manifest-path /Users/geb/codes/alpha_studio/src-tauri/Cargo.toml --quiet --bin alpha-sidebar -- <args>。',
     '用户希望通过这次对话完成当前面板里的营销操作，而不仅是解释页面。',
-    '语义路由：用户说“线索”“多少线索”“现在有多少线索”“客户线索”时，默认指当前侧栏的邮件线索数量，也就是 marketing_email_leads 中非隐藏且非广告的记录数。',
+    '',
+    '面板工作流（与界面 6 步一致，Step 1-6 均已开放）：',
+    '- Step 1 初步分类：把每封未隐藏邮件确认为 达人 influencer / 联盟 affiliate / 其他 other；广告类邮件隐藏（hidden=1）。确认达人后会自动创建/关联 KOL 档案，并把其流程阶段(pipeline_stage)置为 evaluate。',
+    '- Step 2 网红评估：对 pipeline_stage=evaluate 的达人按 6 项指标评估。硬性指标 vertical、language 必须全部通过；软性指标 followers、views、engagement、recency 至少 2 项通过才算评估通过。通过→qualified，不通过→rejected。',
+    '- Step 3 评估后处理：对已确认评估的达人（pipeline_stage=qualified/rejected 且尚无 outreach 记录）执行外联——通过的基于话术库「合作提案」起草并发送提案，不通过的基于「拒绝 + 折扣」婉拒。话术中的链接/联系方式来自话术库变量，不要编造。',
+    `- Step 3 发送方式：「一键回复」会经 SMTP 真实发出邮件并记录（kols reply）。当前「Agent 自主回复」开关：${autoReply ? '已开启——你可以在确认正文后直接用 kols reply 发送' : '已关闭——你只起草草稿给人工审阅，不要发送；由人工在面板点「一键回复」或显式批准后再发'}。仅记录（不发送、或在其它渠道已发）用 kols outreach。通过→onboarding 推进合作，不通过保持 rejected。`,
+    '- Step 4 录入系统：对已发提案（pipeline_stage=onboarding）的达人，待其回复意向后补全档案（用户名、跟进人、沟通渠道、建联关系、联系方式、全网粉丝、账号链接、内容类型、语言、内容数据、备注），用 kols intake 录入。完成（status=done）→ pipeline_stage=intake。',
+    '- Step 5 合作推进：对 pipeline_stage=intake 的达人，按对方回复选话术（同意签约→发合同；异议→对应异议话术），先复制合同模板改名（网红用户名-姓名）再填链接。用 kols collaborate 记录；--send true 可经 SMTP 真实发合同邮件（受「Agent 自主回复」开关约束，同 reply）。对方签字回传后 --status signed → pipeline_stage=signed；流失用 --status declined。',
+    '- Step 6 发货流程：对 pipeline_stage=signed 的达人，先核对合同（最晚发布日期、视频数量、单元/配件、电子签名、附加条款），安排发货后回传物流，用 kols ship 记录；--send true 可经 SMTP 真实发发货通知。--status shipped → pipeline_stage=shipped；内容发布/合作完成后 --status delivered → completed。',
+    `- Step 4-6 的真实发信同样受「Agent 自主回复」开关约束（当前：${autoReply ? '开启，可直接发送' : '关闭，仅起草草稿，勿发送'}）；只记录不发送时用 --send false（默认）。`,
+    '',
+    '语义路由：用户说“线索”“多少线索”“现在有多少线索”“客户线索”时，默认指当前侧栏的邮件线索数量，也就是 marketing_email_leads 中非隐藏且分类为达人或联盟的记录数。',
+    '语义路由：用户说“分类/标签/初步分类/这封是达人还是联盟/隐藏广告”时，指 Step 1，用 leads classify。',
+    '语义路由：用户说“评估/评估一下这个网红/能不能合作/达标吗”时，指 Step 2，用 kols evaluate。',
+    '语义路由：用户说“发提案/发拒绝/起草外联/给通过的网红发邮件/一键回复/处理评估结果”时，指 Step 3：要真实发邮件用 kols reply（经 SMTP，受「Agent 自主回复」开关约束），仅记录已在外部发送用 kols outreach；话术取自话术库。',
+    '语义路由：用户说“录入/完善档案/填资料/录入系统/补全联系方式”时，指 Step 4，用 kols intake。',
+    '语义路由：用户说“发合同/签约/推进合作/处理异议/视频数量异议”时，指 Step 5，用 kols collaborate。',
+    '语义路由：用户说“发货/物流/运单号/发货通知/已签收/内容发布”时，指 Step 6，用 kols ship。',
     '语义路由：用户说“Google 改为已合作”“把某人状态改成…”时，默认指 kol_profiles 里的 KOL 档案字段更新，不是项目文件修改。',
     '除非用户明确要求检查品牌目录、代码或本地文件，否则不要用 find/grep/rg 去 cwd 里搜索“线索”、KOL 名称或合作状态；应直接使用下方实时快照，或通过 alpha-sidebar CLI 查询/更新 SQLite 营销库。',
     '',
     `当前功能页：${title}`,
     `当前视图：${view}；搜索词：${query.trim() || '无'}；邮箱账号：${accountLabel || '未配置或未载入'}`,
-    `当前统计：邮件线索 ${activeLeads}，KOL ${kolCount}，隐藏广告 ${hiddenAds}。`,
+    `当前统计：邮件线索 ${activeLeads}，KOL ${kolCount}，其他邮件 ${otherEmails}；待分类(未人工确认) ${classifyPending}，待评估 ${evaluatePending}，待处理(评估后外联) ${processPending}，待录入 ${intakePending}，待推进 ${collabPending}，待发货 ${shipPending}。`,
     selectedKolLine,
     '',
     '本地营销数据库：',
     `- SQLite 路径：${dbPath || '~/.alpha-studio/marketing.sqlite'}`,
     '- 主要表：marketing_email_leads、kol_profiles、kol_platform_accounts、kol_collaborations、kol_posts、automation_audit_logs。',
+    '- marketing_email_leads 新增字段 human_confirmed（0/1，是否人工/确认分类）；kol_profiles 新增 pipeline_stage（classify/evaluate/qualified/rejected/onboarding/intake/signed/shipped/completed）、evaluation（评估 JSON）、outreach（Step 3 外联 JSON）、intake（Step 4 录入 JSON）、collaboration（Step 5 合作 JSON：status sent/signed/declined、scriptId、contractUrl、videoCount、note）、shipment（Step 6 发货 JSON：status shipped/delivered/issue、carrier、tracking、trackingUrl、address、units、expectedPostAt、note）。',
     '',
     '侧栏开放接口和等价操作：',
-    '- 推荐给 agent 的确定性入口：alpha-sidebar marketing snapshot；accounts list|get；email test|sync；leads count|get|list|update；kols get|list|find|update；logs list。',
+    '- 推荐给 agent 的确定性入口：alpha-sidebar marketing snapshot；accounts list|get；email test|sync；leads count|get|list|classify|confirm|update；kols get|list|find|evaluate|update；logs list。',
+    '- Step 1 分类：alpha-sidebar marketing leads classify --id <leadId> --category <influencer|affiliate|other> [--hide true|false] [--confirm true|false] --reason "..."。广告邮件加 --hide true。仅确认现有分类用 leads confirm --id <leadId>。',
+    '- Step 2 评估：alpha-sidebar marketing kols evaluate --id <kolId> --criteria \'[{"key":"vertical","status":"pass","detail":"露营场景"},...]\' --summary "结论" [--recommendation proposal|reject|hold] [--confirm true|false] --reason "..."。criteria 的 key 仅限 vertical/language/followers/views/engagement/recency，status 仅限 pass/fail/unknown。CLI 会按硬性+软性规则自动判定 verdict 与流程阶段。',
+    '- Step 2 批量评估：先 marketing kols list 取 pipeline_stage=evaluate 的全部 KOL，再对每个逐一 kols evaluate（默认 --confirm false 存草稿），最后按通过/不通过/待定分组汇总，交人工确认。',
+    '- Step 3 真实回复：alpha-sidebar marketing kols reply --id <kolId> --body "<最终正文>" [--subject "..."] [--kind proposal|reject] [--script-id <模板id>] [--channel Email] [--send true|false] --reason "..."。会经 SMTP（复用 Keychain 里的 Gmail 应用专用密码、Re:+In-Reply-To 串到原邮件）真实发出并记录外联。--send 默认跟随 agent_auto_reply 开关；开关关闭时不要发送，先把草稿给人工。',
+    '- Step 3 仅记录：alpha-sidebar marketing kols outreach --id <kolId> [--kind proposal|reject|koc|paid] [--script-id <模板id>] [--channel <Email|IG DM|WhatsApp>] [--note "..."] [--skip] --reason "..."。用于在其它渠道已发送、或人工已手动发出后补记（不发邮件）。通过→onboarding，不通过保持 rejected，--skip 记录暂不联系。',
+    '- Step 3 开关：alpha-sidebar marketing settings set --agent-auto-reply true|false（控制 kols reply / kols collaborate / kols ship 的真实发送默认）。',
+    '- 前端 Step 3：marketingKolReply({ id, body, subject?, kind, scriptId?, channel?, note?, send?, actor, reason }) 真实发送；marketingKolOutreach({ id, kind, scriptId?, channel?, note?, status?, actor, reason }) 仅记录。',
+    '- Step 4 录入：alpha-sidebar marketing kols intake --id <kolId> [--username ...] [--owner ...] [--channel Email|SMS|DM] [--relationship inbound|outbound] [--phone ...] [--platforms ...] [--links ...] [--content-type ...] [--language ...] [--metrics ...] [--note ...] [--status done|draft] --reason "..."。status=done（默认）会把 onboarding 推进到 intake，并把 owner/relationship 同步写入档案列。',
+    '- Step 5 推进：alpha-sidebar marketing kols collaborate --id <kolId> [--status sent|signed|declined] [--script-id ID] [--contract-url URL] [--video-count N] [--note ...] [--send true --body "<合同邮件正文>" [--subject ...] [--to ...]] --reason "..."。--send true 才会经 SMTP 发信（受 agent_auto_reply 约束）；signed→pipeline_stage=signed。',
+    '- Step 6 发货：alpha-sidebar marketing kols ship --id <kolId> [--status shipped|delivered|issue] [--carrier ...] [--tracking ...] [--tracking-url URL] [--address ...] [--units ...] [--expected-post-at MS] [--note ...] [--send true --body "<发货通知正文>"] --reason "..."。shipped→pipeline_stage=shipped，delivered→completed。',
+    '- 前端 Step 4-6：marketingKolIntake / marketingKolCollaborate / marketingKolShip（参数同上，camelCase；collaborate/ship 传 send=true 才真实发信）。',
+    '- 仅调整流程阶段：alpha-sidebar marketing kols update --id <kolId> --field pipeline_stage --value <classify|evaluate|qualified|rejected|onboarding|intake|signed|shipped|completed> --reason "..."。',
     '- 前端读取快照：marketingDbQuery(true) / Tauri command marketing_db_query；agent 等价操作是查询上述 SQLite 表。',
-    '- 前端隐藏/恢复邮件线索：marketingAgentApplyUpdate({ targetTable: "marketing_email_leads", targetId, field: "hidden", newValue: "1|0", reason })。',
-    '- 前端调整邮件分类：marketingAgentApplyUpdate({ targetTable: "marketing_email_leads", targetId, field: "category", newValue: "influencer|affiliate|ad|other", reason })。',
+    '- 前端 Step 1：marketingLeadClassify({ id, category, hidden?, confirmed, actor, reason })。',
+    '- 前端 Step 2：marketingKolEvaluate({ id, criteria, summary, recommendation?, confirmed, actor, reason })。',
     '- 前端保存 KOL 档案：marketingDbUpdateKol(id, patch, reason)；agent 写入时使用同一字段白名单。',
-    '- 前端刷新=重新读取数据库；打开某个 KOL=根据 kol_profiles.id 读取详情；搜索/切换标签页=对快照做过滤，不修改数据。',
     '- 邮件同步=alpha-sidebar marketing email sync [--account-id ID|--all]，内部复用只读 IMAP 同步并从 Keychain 读取密码；agent 不应读取、输出或请求秘密。',
     '',
     '可写字段白名单：',
-    '- marketing_email_leads：hidden、category。',
-    '- kol_profiles：name、email、country、relationship、collaboration_status、stage、owner、priority、tags、archived、brand_fit_score、risk_note、next_follow_up_at、agent_notes、human_notes。',
-    '- 写入时必须先读取当前值，更新目标行 updated_at，并向 automation_audit_logs 写入 actor="agent"、target_table、target_id、field、old_value、new_value、reason、created_at。',
-    '- hidden/archived 使用 0/1；priority 使用 high/normal/low；category 使用 influencer/affiliate/ad/other。',
+    '- marketing_email_leads：hidden、category、human_confirmed。',
+    '- kol_profiles：name、email、country、relationship、collaboration_status、stage、pipeline_stage、owner、priority、tags、archived、brand_fit_score、risk_note、next_follow_up_at、agent_notes、human_notes、evaluation、outreach、intake、collaboration、shipment。',
+    '- 写入时必须先读取当前值，更新目标行 updated_at，并向 automation_audit_logs 写入 actor、target_table、target_id、field、old_value、new_value、reason、created_at。优先使用上面的 classify/evaluate 高层命令，它们会自动写审计与联动字段。',
+    '- hidden/archived/human_confirmed 使用 0/1；priority 使用 high/normal/low；category 使用 influencer/affiliate/other。',
+    '- 只有邮件内容明确支持达人身份或内容合作时，才把邮件设为 influencer 并创建/关联 KOL；相关 KOL 信息必须来自邮件主题、发件人和正文摘要。',
     '',
     '操作原则：',
     '- 需要分析时先查询数据库，再给结论和下一步。',
-    '- 需要修改时，在获得当前授权策略允许后直接执行最小必要更新，并说明改了哪些记录。',
+    '- Step 1/2 属于“AI 出建议、人工确认”：agent 可以直接写入分类/评估结果（actor=agent，confirmed 由人工最终在面板确认），但要在回复里清楚说明改了哪些记录、依据是什么，方便人工核对。',
     '- 不要读取、输出或要求展示邮箱密码、Keychain 密钥或其它秘密。',
     '- 邮箱同步优先通过 CLI 触发；仅当 CLI 返回 secret_unavailable 或 external_error 时，说明需要先在设置中保存密码或处理邮箱连接问题。',
     '- 完成数据库修改后，面板会在回合结束时自动刷新。',
@@ -3360,10 +6689,10 @@ function buildPartnerMarketingAgentContext({
 
 function buildPartnerMarketingLiveSnapshotContext(snapshot: MarketingDbSnapshot): string {
   const visibleLeads = snapshot.leads.filter((lead) => !lead.hidden);
-  const panelLeads = visibleLeads.filter((lead) => lead.category !== 'ad');
+  const panelLeads = visibleLeads.filter((lead) => isPrimaryEmailCategory(lead.category));
   const hiddenLeads = snapshot.leads.filter((lead) => lead.hidden);
-  const visibleAds = visibleLeads.filter((lead) => lead.category === 'ad');
-  const categoryCounts = (['influencer', 'affiliate', 'ad', 'other'] as const)
+  const visibleOther = visibleLeads.filter((lead) => !isPrimaryEmailCategory(lead.category));
+  const categoryCounts = (['influencer', 'affiliate', 'other'] as const)
     .map((category) => {
       const count = visibleLeads.filter((lead) => lead.category === category).length;
       return `${categoryLabel(category)} ${count}`;
@@ -3375,7 +6704,7 @@ function buildPartnerMarketingLiveSnapshotContext(snapshot: MarketingDbSnapshot)
   return [
     '发送瞬间实时侧栏快照：',
     `- 当前侧栏「邮件线索」数量：${panelLeads.length}。这是用户问“现在有多少线索”时应直接回答的数字。`,
-    `- 全部邮件记录：${snapshot.leads.length}；非隐藏记录：${visibleLeads.length}；隐藏记录/隐藏广告：${hiddenLeads.length}；非隐藏广告分类：${visibleAds.length}；KOL Database：${snapshot.kolProfiles.length}。`,
+    `- 全部邮件记录：${snapshot.leads.length}；非隐藏记录：${visibleLeads.length}；隐藏记录：${hiddenLeads.length}；其他邮件：${visibleOther.length}；KOL Database：${snapshot.kolProfiles.length}。`,
     `- 非隐藏分类统计：${categoryCounts}。`,
     `- 数据库路径：${snapshot.path || '~/.alpha-studio/marketing.sqlite'}。`,
     '最近邮件线索样例：',
@@ -3390,8 +6719,9 @@ function buildPartnerMarketingLiveSnapshotContext(snapshot: MarketingDbSnapshot)
 
 function buildPartnerMarketingTrace(snapshot: MarketingDbSnapshot): AgentContextTrace {
   const visibleLeads = snapshot.leads.filter((lead) => !lead.hidden);
-  const panelLeads = visibleLeads.filter((lead) => lead.category !== 'ad');
+  const panelLeads = visibleLeads.filter((lead) => isPrimaryEmailCategory(lead.category));
   const hiddenLeads = snapshot.leads.filter((lead) => lead.hidden);
+  const otherEmails = snapshot.leads.filter((lead) => lead.hidden || !isPrimaryEmailCategory(lead.category)).length;
   const kolCount = snapshot.kolProfiles.length;
   const output = [
     '使用 $sidebar-control 读取右侧「合作推广营销」实时快照。',
@@ -3400,6 +6730,7 @@ function buildPartnerMarketingTrace(snapshot: MarketingDbSnapshot): AgentContext
       emailLeads: panelLeads.length,
       allEmailRecords: snapshot.leads.length,
       hidden: hiddenLeads.length,
+      otherEmails,
       kolProfiles: kolCount,
       dbPath: snapshot.path || '~/.alpha-studio/marketing.sqlite',
     }, null, 2),
@@ -3412,25 +6743,82 @@ function buildPartnerMarketingTrace(snapshot: MarketingDbSnapshot): AgentContext
   };
 }
 
-function EmailLeadList({
+function OtherMailView({
   leads,
   kols,
-  hiddenView,
   busy,
+  onMoveToOther,
   onRestore,
-  onHide,
   onOpenKol,
 }: {
   leads: MarketingEmailLead[];
   kols: KolProfile[];
-  hiddenView: boolean;
   busy: boolean;
+  onMoveToOther: (lead: MarketingEmailLead) => void;
   onRestore: (lead: MarketingEmailLead) => void;
-  onHide: (lead: MarketingEmailLead) => void;
+  onOpenKol: (id: string) => void;
+}) {
+  const [filter, setFilter] = useState<'all' | 'hidden' | 'other'>('all');
+  const hiddenCount = leads.filter((lead) => lead.hidden).length;
+  const otherCount = leads.length - hiddenCount;
+  const visible = leads.filter((lead) =>
+    filter === 'all' ? true : filter === 'hidden' ? lead.hidden : !lead.hidden,
+  );
+  return (
+    <div className="marketing-step">
+      <div className="marketing-step-head">
+        <div className="marketing-step-intro">
+          <span className="marketing-step-tag"><EyeOff size={13} />其他 / 已隐藏邮件</span>
+          <p>广告及非达人/联盟邮件会归到这里。<b>隐藏的广告邮件</b>也可在此查看，并随时「恢复」回 Step 1 收件箱。</p>
+        </div>
+        <div className="marketing-step-actions">
+          <div className="marketing-segment">
+            <button type="button" className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>全部 {leads.length}</button>
+            <button type="button" className={filter === 'hidden' ? 'active' : ''} onClick={() => setFilter('hidden')}>已隐藏广告 {hiddenCount}</button>
+            <button type="button" className={filter === 'other' ? 'active' : ''} onClick={() => setFilter('other')}>其他类别 {otherCount}</button>
+          </div>
+        </div>
+      </div>
+      {visible.length === 0 ? (
+        <MarketingEmptyState
+          icon={<EyeOff size={26} />}
+          title={filter === 'hidden' ? '没有已隐藏的广告邮件' : '暂无其他邮件'}
+          description={filter === 'hidden' ? '被隐藏的广告邮件会出现在这里，可随时恢复。' : '广告或非达人/联盟邮件会归类到这里。'}
+        />
+      ) : (
+        <EmailLeadList
+          leads={visible}
+          kols={kols}
+          otherView
+          busy={busy}
+          onMoveToOther={onMoveToOther}
+          onRestore={onRestore}
+          onOpenKol={onOpenKol}
+        />
+      )}
+    </div>
+  );
+}
+
+function EmailLeadList({
+  leads,
+  kols,
+  otherView,
+  busy,
+  onMoveToOther,
+  onRestore,
+  onOpenKol,
+}: {
+  leads: MarketingEmailLead[];
+  kols: KolProfile[];
+  otherView: boolean;
+  busy: boolean;
+  onMoveToOther: (lead: MarketingEmailLead) => void;
+  onRestore?: (lead: MarketingEmailLead) => void;
   onOpenKol: (id: string) => void;
 }) {
   if (leads.length === 0) {
-    return <div className="partner-marketing-placeholder"><Mail size={18} /><span>{hiddenView ? '暂无隐藏广告邮件。' : '暂无邮件线索，请先在设置中配置邮箱并同步。'}</span></div>;
+    return <div className="partner-marketing-placeholder"><Mail size={18} /><span>{otherView ? '暂无其他邮件。' : '暂无达人或联盟邮件线索，请先在设置中配置邮箱并同步。'}</span></div>;
   }
   const kolById = new Map(kols.map((kol) => [kol.id, kol]));
   return (
@@ -3438,24 +6826,21 @@ function EmailLeadList({
       {leads.map((lead) => {
         const kol = lead.kolId ? kolById.get(lead.kolId) : null;
         return (
-          <article key={lead.id} className={`marketing-lead-card ${lead.hidden ? 'hidden-lead' : ''}`}>
-            <div className="marketing-lead-main">
-              <div className="marketing-lead-top">
-                <span className={`marketing-category ${lead.category}`}>{categoryLabel(lead.category)}</span>
-                <strong>{lead.subject}</strong>
-              </div>
-              <span className="marketing-lead-from">{lead.rawFrom} · {formatMaybeDate(lead.receivedAt)} · 置信度 {Math.round(lead.confidence * 100)}%</span>
-              <p>{lead.snippet || '无正文预览'}</p>
-              {kol && <button className="marketing-link-btn" type="button" onClick={() => onOpenKol(kol.id)}><Users size={13} />打开 {kol.name}</button>}
-            </div>
-            <div className="marketing-lead-actions">
-              {hiddenView ? (
-                <button className="settings-btn" type="button" onClick={() => onRestore(lead)} disabled={busy}>恢复</button>
+          <LeadCard
+            key={lead.id}
+            lead={lead}
+            kol={kol}
+            className={lead.hidden ? 'hidden-lead' : ''}
+            chips={lead.hidden ? <span className="marketing-hidden-chip"><EyeOff size={11} />已隐藏</span> : undefined}
+            onOpenKol={onOpenKol}
+            actions={
+              otherView ? (
+                onRestore && <button className="settings-btn" type="button" onClick={() => onRestore(lead)} disabled={busy}><Undo2 size={13} />恢复</button>
               ) : (
-                <button className="settings-btn" type="button" onClick={() => onHide(lead)} disabled={busy}>隐藏</button>
-              )}
-            </div>
-          </article>
+                <button className="settings-btn" type="button" onClick={() => onMoveToOther(lead)} disabled={busy}>归到其他</button>
+              )
+            }
+          />
         );
       })}
     </div>
@@ -6783,7 +10168,7 @@ function MarketingEmailSettings() {
       await marketingEmailSecretSave(draft);
       const result = await marketingEmailSyncReadonly(draft);
       setDbPath(result.path);
-      setStatus(`同步完成：${result.synced} 封，新增 ${result.inserted}，更新 ${result.updated}，隐藏广告 ${result.hidden}。`);
+      setStatus(`同步完成：${result.synced} 封，新增 ${result.inserted}，更新 ${result.updated}，其他 ${result.other}。`);
       setDraft((current) => ({ ...current, password: '' }));
     } catch (err) {
       setError(stringifyError(err));
@@ -7368,14 +10753,6 @@ async function openInNewWindow(): Promise<void> {
   window.open(target || window.location.href, '_blank', 'noopener,noreferrer');
 }
 
-async function copyToClipboard(text: string): Promise<void> {
-  try {
-    await navigator.clipboard?.writeText(text);
-  } catch {
-    // Clipboard access is best-effort.
-  }
-}
-
 async function openExternal(url: string): Promise<void> {
   if (isTauriRuntime()) {
     try {
@@ -7418,10 +10795,14 @@ async function confirmDanger(message: string, title: string): Promise<boolean> {
   return window.confirm(`${title}\n\n${message}`);
 }
 
-function categoryLabel(category: MarketingEmailLead['category']): string {
+function isPrimaryEmailCategory(category: MarketingEmailLead['category']): boolean {
+  return category === 'influencer' || category === 'affiliate';
+}
+
+function categoryLabel(category: MarketingEmailLead['category'] | 'ad'): string {
   if (category === 'affiliate') return '联盟';
-  if (category === 'ad') return '广告';
   if (category === 'other') return '其他';
+  if (category === 'ad') return '其他';
   return '达人';
 }
 

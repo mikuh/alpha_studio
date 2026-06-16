@@ -247,7 +247,7 @@ export interface TerminalEvent {
   chunk?: string;
 }
 
-export type EmailCategory = 'influencer' | 'affiliate' | 'ad' | 'other';
+export type EmailCategory = 'influencer' | 'affiliate' | 'other';
 
 export interface MarketingEmailAccountConfig {
   id: string;
@@ -287,8 +287,117 @@ export interface MarketingEmailLead {
   kolId?: string | null;
   agentReviewedAt?: number | null;
   agentReviewNote: string;
+  // Step 1 (初步分类): set to true once a human has confirmed / overridden the AI category.
+  humanConfirmed: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+// Step 2 (网红评估) evaluation rubric. Two hard requirements must pass and at
+// least two soft requirements must pass for a KOL to qualify.
+export type EvalCriterionKey =
+  | 'vertical'
+  | 'language'
+  | 'followers'
+  | 'views'
+  | 'engagement'
+  | 'recency';
+
+export type EvalCriterionStatus = 'pass' | 'fail' | 'unknown';
+
+export type EvalCriterionKind = 'hard' | 'soft';
+
+export interface EvalCriterion {
+  key: EvalCriterionKey;
+  label: string;
+  kind: EvalCriterionKind;
+  status: EvalCriterionStatus;
+  detail: string;
+}
+
+export type EvalVerdict = 'pass' | 'fail' | 'pending';
+
+export type EvalRecommendation = 'proposal' | 'reject' | 'hold';
+
+export interface KolEvaluation {
+  status: EvalVerdict;
+  confirmed: boolean;
+  by: string;
+  at: number;
+  score: number;
+  summary: string;
+  recommendation: EvalRecommendation;
+  criteria: EvalCriterion[];
+}
+
+export type OutreachStatus = 'sent' | 'skipped';
+
+// Step 3 评估后处理: records the post-evaluation outreach action taken for a KOL
+// (proposal sent to a qualified KOL, rejection sent to a rejected one, or skipped).
+export interface KolOutreach {
+  status: OutreachStatus;
+  // proposal | reject | koc | paid | custom ...
+  kind: string;
+  // Which 话术库 template was used, if any.
+  scriptId?: string;
+  // Medium the message was sent through (Email / IG DM / WhatsApp / 通用 ...).
+  channel?: string;
+  note?: string;
+  by: string;
+  at: number;
+}
+
+// Step 4 录入系统: structured intake record completing the KOL profile after the
+// creator replies with interest. Marks the data-entry step done.
+export interface KolIntake {
+  status: string; // 'done' | 'draft'
+  username?: string;
+  owner?: string;
+  // Communication channel chosen with the creator (Email / SMS / DM ...).
+  channel?: string;
+  // 'inbound' (创作者主动联系我们) | 'outbound' (我们主动建联).
+  relationship?: string;
+  phone?: string;
+  // Free-text per-platform follower summary, e.g. "IG 45k / YT 12k".
+  platforms?: string;
+  links?: string;
+  contentType?: string;
+  language?: string;
+  // Content data summary: avg views / likes / comments / cadence.
+  metrics?: string;
+  note?: string;
+  by: string;
+  at: number;
+}
+
+export type CollabStatus = 'sent' | 'signed' | 'declined';
+
+// Step 5 合作推进: contract push / signing record.
+export interface KolCollab {
+  status: CollabStatus;
+  scriptId?: string;
+  contractUrl?: string;
+  // Number of agreed video deliverables, if negotiated.
+  videoCount?: number;
+  note?: string;
+  by: string;
+  at: number;
+}
+
+export type ShipmentStatus = 'shipped' | 'delivered' | 'issue';
+
+// Step 6 发货流程: fulfillment + content follow-up record.
+export interface KolShipment {
+  status: ShipmentStatus;
+  carrier?: string;
+  tracking?: string;
+  trackingUrl?: string;
+  address?: string;
+  units?: string;
+  expectedPostAt?: number | null;
+  note?: string;
+  by: string;
+  at: number;
 }
 
 export interface KolProfile {
@@ -310,6 +419,18 @@ export interface KolProfile {
   lastContactedAt?: number | null;
   agentNotes?: string | null;
   humanNotes?: string | null;
+  // Workflow position: classify | evaluate | qualified | rejected | onboarding | intake | signed | shipped | completed
+  pipelineStage: string;
+  // Raw JSON of the latest KolEvaluation (parse with parseKolEvaluation), or null.
+  evaluation?: string | null;
+  // Raw JSON of the latest KolOutreach (parse with parseKolOutreach), or null.
+  outreach?: string | null;
+  // Step 4 录入系统 record (parse with parseKolIntake), or null.
+  intake?: string | null;
+  // Step 5 合作推进 record (parse with parseKolCollab), or null.
+  collaboration?: string | null;
+  // Step 6 发货流程 record (parse with parseKolShipment), or null.
+  shipment?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -377,6 +498,14 @@ export interface AutomationAuditLog {
   createdAt: number;
 }
 
+export interface MarketingSettings {
+  agentAutoConfirm: boolean;
+  // Step 3: when true, the agent may compose AND send replies autonomously
+  // (one-click reply via SMTP). When false, the agent only drafts and a human
+  // confirms by sending from the panel.
+  agentAutoReply: boolean;
+}
+
 export interface MarketingDbSnapshot {
   path: string;
   accounts: MarketingEmailAccount[];
@@ -386,6 +515,7 @@ export interface MarketingDbSnapshot {
   collaborations: KolCollaboration[];
   posts: KolPost[];
   auditLogs: AutomationAuditLog[];
+  settings: MarketingSettings;
 }
 
 export interface KolProfilePatch {
@@ -404,6 +534,7 @@ export interface KolProfilePatch {
   nextFollowUpAt?: number | null;
   agentNotes?: string | null;
   humanNotes?: string | null;
+  pipelineStage?: string;
 }
 
 export interface MarketingEmailSyncResult {
