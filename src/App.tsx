@@ -87,6 +87,7 @@ import {
   ShieldCheck,
   ShieldQuestion,
   SlidersHorizontal,
+  Smartphone,
   Sparkles,
   Square,
   SquarePen,
@@ -203,6 +204,7 @@ type SettingsSection =
 
 const SIDEBAR_WIDTH_KEY = 'alpha:codex-sidebar-width';
 const RIGHT_SIDEBAR_WIDTH_KEY = 'alpha:right-sidebar-width';
+const USAGE_CARD_KEY = 'alpha:usage-card-dismissed';
 const GIT_PANEL_WIDTH_KEY = 'alpha:git-panel-width';
 const REVIEW_PANEL_WIDTH_KEY = 'alpha:review-panel-width';
 const THEME_KEY = 'alpha:codex-theme';
@@ -641,6 +643,23 @@ function Sidebar({
   const [menu, setMenu] = useState<SidebarMenu | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  // Codex's quota widget. Alpha Studio ships no telemetry, so the figures are a
+  // static placeholder; dismissing it is remembered across launches.
+  const [usageCardOpen, setUsageCardOpen] = useState(() => {
+    try {
+      return window.localStorage.getItem(USAGE_CARD_KEY) !== '1';
+    } catch {
+      return true;
+    }
+  });
+  const dismissUsageCard = useCallback(() => {
+    setUsageCardOpen(false);
+    try {
+      window.localStorage.setItem(USAGE_CARD_KEY, '1');
+    } catch {
+      /* ignore storage failures */
+    }
+  }, []);
 
   // Keep the active conversation's project expanded so a chat that just got
   // pointed at a folder (e.g. via the composer directory switcher) is visible
@@ -819,6 +838,18 @@ function Sidebar({
               <span className="nav-label">搜索</span>
               <span className="nav-shortcut">⌘K</span>
             </button>
+            <button className="nav-item" type="button" onClick={() => onOpenSettings('mcp')}>
+              <Plug size={15} />
+              <span className="nav-label">{sidebarCopy.pluginsLabel}</span>
+            </button>
+            <button className="nav-item" type="button" onClick={() => onOpenSettings('hooks')}>
+              <Workflow size={15} />
+              <span className="nav-label">{sidebarCopy.automationLabel}</span>
+            </button>
+            <button className="nav-item" type="button" onClick={() => onOpenSettings('connections')}>
+              <Smartphone size={15} />
+              <span className="nav-label">{sidebarCopy.mobileLabel}</span>
+            </button>
           </div>
 
           {pinnedConversations.length > 0 && (
@@ -929,6 +960,23 @@ function Sidebar({
           )}
         </div>
         <div className="sidebar-footer">
+          {usageCardOpen && (
+            <div className="usage-card">
+              <div className="usage-card-head">
+                <span className="usage-card-title">{sidebarCopy.usageTitle}</span>
+                <button className="usage-card-dismiss" type="button" onClick={dismissUsageCard} aria-label="隐藏使用量" title="隐藏">
+                  <X size={13} />
+                </button>
+              </div>
+              <p className="usage-card-hint">{sidebarCopy.usageHint}</p>
+              <div className="usage-card-bar" role="presentation">
+                <span className="usage-card-bar-fill" style={{ width: '12%' }} />
+              </div>
+              <button className="usage-card-action" type="button" onClick={() => onOpenSettings('usage')}>
+                {sidebarCopy.usageAction}
+              </button>
+            </div>
+          )}
           <button className="nav-item settings-entry" type="button" onClick={() => onOpenSettings('general')}>
             <Settings size={15} />
             <span className="nav-label">{sidebarCopy.settingsLabel}</span>
@@ -2340,10 +2388,10 @@ function FeaturesPanel({
             className="feature-card"
             disabled={feature.requiresCwd && !cwd}
             onClick={() => runFeature(feature)}
+            title={feature.desc}
           >
             <span className="feature-card-icon">{domainFeatureIcon(feature.icon)}</span>
             <span className="feature-card-title">{feature.title}</span>
-            <span className="feature-card-desc">{feature.desc}</span>
             {feature.shortcut && <span className="feature-card-key">{feature.shortcut}</span>}
           </button>
         ))}
@@ -5832,10 +5880,10 @@ function domainSuggestionIcon(suggestion: DomainSuggestion): ReactNode {
 
 function domainFeatureIcon(icon: DomainFeature['icon']): ReactNode {
   const icons: Record<DomainFeature['icon'], ReactNode> = {
-    folder: <FolderOpen size={20} />,
-    browser: <Globe size={20} />,
-    review: <GitPullRequest size={20} />,
-    terminal: <SquareTerminal size={20} />,
+    folder: <FolderOpen size={16} />,
+    browser: <Globe size={16} />,
+    review: <GitPullRequest size={16} />,
+    terminal: <SquareTerminal size={16} />,
   };
   return icons[icon];
 }

@@ -41,12 +41,18 @@ export interface DomainWorkspaceUi {
   sidebar: {
     newConversationLabel: string;
     searchPlaceholder: string;
+    pluginsLabel: string;
+    automationLabel: string;
+    mobileLabel: string;
     projectSectionLabel: string;
     projectEmpty: string;
     projectConversationEmpty: string;
     conversationSectionLabel: string;
     conversationEmpty: string;
     settingsLabel: string;
+    usageTitle: string;
+    usageHint: string;
+    usageAction: string;
   };
   rightPanelTitle: string;
   suggestions: DomainSuggestion[];
@@ -100,12 +106,18 @@ export const coreCodingDomain: DomainConfig = {
     sidebar: {
       newConversationLabel: '新对话',
       searchPlaceholder: '搜索对话、项目或工作目录',
+      pluginsLabel: '插件',
+      automationLabel: '自动化',
+      mobileLabel: 'Codex 移动版',
       projectSectionLabel: '项目',
       projectEmpty: '用项目把对话绑定到本地工作目录',
       projectConversationEmpty: '暂无对话',
       conversationSectionLabel: '对话',
       conversationEmpty: '暂无未归类的对话',
       settingsLabel: '设置',
+      usageTitle: '剩余 12% 使用量',
+      usageHint: 'every 1 weeks 重置一次。下次重置时间为 09:11',
+      usageAction: '添加额度',
     },
     rightPanelTitle: '编码工具',
     suggestions: [
