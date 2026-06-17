@@ -3408,16 +3408,6 @@ details[open] > summary .event-chevron {
   background: var(--control-accent-soft);
 }
 
-.side-context-pill.active {
-  background: var(--control-accent-soft);
-  color: var(--control-accent);
-}
-
-.side-context-pill:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
 /* Approval (permission) picker */
 .approval-picker {
   position: relative;
@@ -4301,11 +4291,6 @@ button.composer-meta-pill.active {
     padding-inline: 7px;
   }
 
-  .side-context-pill {
-    max-width: 92px;
-    padding-inline: 7px;
-  }
-
   .approval-pill {
     max-width: 84px;
     padding-inline: 6px;
@@ -4375,10 +4360,6 @@ button.composer-meta-pill.active {
 
   .model-picker .composer-pill {
     max-width: 70px;
-  }
-
-  .side-context-pill span {
-    display: none;
   }
 
   .composer-meta-pill {

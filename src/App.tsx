@@ -7514,21 +7514,8 @@ function Composer({
           rows={1}
         />
         <div className="composer-toolbar">
-          <ComposerPlusMenu domain={domain} onAttach={addAttachments} disabled={disabled || isStreaming} />
+          <ComposerPlusMenu domain={domain} onAttach={addAttachments} disabled={disabled || isStreaming} contextToggle={contextToggle} />
           <ApprovalPicker />
-          {contextToggle && (
-            <button
-              type="button"
-              className={`composer-pill side-context-pill ${contextToggle.enabled ? 'active accent' : ''}`}
-              onClick={contextToggle.onToggle}
-              disabled={!contextToggle.available || disabled || isStreaming}
-              aria-pressed={contextToggle.enabled}
-              title={contextToggle.title}
-            >
-              <PanelRight size={14} />
-              <span>{contextToggle.enabled ? contextToggle.label : '带入侧栏'}</span>
-            </button>
-          )}
           <span className="spacer" />
           <ModelPicker />
           <button className="composer-icon-btn" type="button" disabled aria-label="语音"><Mic size={15} /></button>
@@ -7751,7 +7738,7 @@ function ImageLightbox() {
 }
 
 // The "+" composer menu: attach files, toggle plan/goal modes, browse plugins.
-function ComposerPlusMenu({ domain, onAttach, disabled }: { domain: DomainConfig; onAttach: (items: MessageAttachment[]) => void; disabled?: boolean }) {
+function ComposerPlusMenu({ domain, onAttach, disabled, contextToggle }: { domain: DomainConfig; onAttach: (items: MessageAttachment[]) => void; disabled?: boolean; contextToggle?: ComposerContextToggle }) {
   const planMode = useChatStore((state) => state.planMode);
   const pursueGoal = useChatStore((state) => state.pursueGoal);
   const setPlanMode = useChatStore((state) => state.setPlanMode);
@@ -7816,6 +7803,22 @@ function ComposerPlusMenu({ domain, onAttach, disabled }: { domain: DomainConfig
               <span>追求目标</span>
               <Toggle checked={pursueGoal} />
             </button>
+            {contextToggle && (
+              <button
+                type="button"
+                className="plus-menu-item toggle-row"
+                role="menuitemcheckbox"
+                aria-checked={contextToggle.enabled}
+                disabled={!contextToggle.available}
+                title={contextToggle.title}
+                onMouseEnter={() => setSubmenu(null)}
+                onClick={() => contextToggle.onToggle()}
+              >
+                <PanelRight size={15} />
+                <span>{contextToggle.enabled ? contextToggle.label : '带入侧栏'}</span>
+                <Toggle checked={contextToggle.enabled} />
+              </button>
+            )}
             <div className="plus-menu-divider" />
             <div className="plus-flyout-row" onMouseEnter={() => setSubmenu('plugins')}>
               <button type="button" className="plus-menu-item submenu-trigger">
