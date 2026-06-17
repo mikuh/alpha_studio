@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Incuboot · AI 原生智能品牌系统 · 开发与融资方案</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet" />
+<style>
+:root{
+  --ink:#070B22; --ink-2:#0E1430; --ink-3:#161e44;
+  --indigo:#4F46E5; --violet:#7C3AED; --fuchsia:#C026D3;
+  --cyan:#06B6D4; --amber:#F59E0B; --coral:#FB7185; --emerald:#10B981;
+  --s900:#0B1220; --s800:#1e293b; --s700:#334155; --s600:#475569;
+  --s500:#64748b; --s400:#94a3b8; --s300:#cbd5e1; --s200:#e2e8f0; --s100:#f1f5f9; --s50:#f8fafc;
+  --paper:#ffffff; --line:rgba(15,23,42,.09);
+  --grad:linear-gradient(135deg,#4F46E5 0%,#7C3AED 48%,#C026D3 100%);
+  --grad-soft:linear-gradient(135deg,rgba(79,70,229,.10),rgba(192,38,211,.08));
+  --shadow:0 30px 70px -30px rgba(10,14,39,.45);
+  --display:'Sora','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  --body:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:#0a0f29;font-family:var(--body);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body{padding:40px 0 120px}
+
+/* ---- scaling stage ---- */
+.stage{display:flex;flex-direction:column;align-items:center;gap:30px}
+.frame{position:relative;margin:0 auto;border-radius:20px;box-shadow:var(--shadow)}
+.slide{
+  position:absolute;top:0;left:0;width:1280px;height:720px;overflow:hidden;
+  transform-origin:top left;border-radius:20px;background:var(--paper);
+  color:var(--s800);display:flex;flex-direction:column;
+}
+
+/* ---- common slide chrome ---- */
+.pad{padding:62px 72px}
+.snum{position:absolute;bottom:30px;right:40px;font-family:var(--display);font-size:13px;color:var(--s400);letter-spacing:.12em;z-index:5}
+.brandmark{position:absolute;bottom:28px;left:46px;display:flex;align-items:center;gap:9px;z-index:5;opacity:.85}
+.brandmark .dot{width:20px;height:20px;border-radius:6px;background:var(--grad);box-shadow:0 6px 16px -4px rgba(124,58,237,.6)}
+.brandmark span{font-family:var(--display);font-weight:700;font-size:14px;letter-spacing:.04em;color:var(--s700)}
+.kicker{display:inline-flex;align-items:center;gap:9px;font-family:var(--display);font-weight:600;font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--indigo)}
+.kicker::before{content:"";width:26px;height:2px;border-radius:2px;background:var(--grad)}
+.title{font-family:var(--display);font-weight:800;font-size:42px;line-height:1.12;color:var(--s900);letter-spacing:-.01em}
+.title em{font-style:normal;background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.lead{font-size:17px;line-height:1.7;color:var(--s600);max-width:62ch}
+.hr{height:1px;background:var(--line);border:0}
+
+/* ---- layout helpers ---- */
+.row{display:flex;gap:28px}
+.col{flex:1;min-width:0}
+.grid{display:grid;gap:18px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+.center{align-items:center}
+.mt-a{margin-top:auto}
+
+/* ---- cards ---- */
+.card{background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:22px 22px;position:relative;transition:.2s}
+.card--soft{background:linear-gradient(180deg,#fff, #fbfcff);box-shadow:0 14px 30px -24px rgba(10,14,39,.35)}
+.card__ic{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;background:var(--grad-soft);color:var(--indigo);margin-bottom:14px}
+.card__ic svg{width:22px;height:22px}
+.card h4{font-size:17px;font-weight:700;color:var(--s900);margin-bottom:6px}
+.card p{font-size:13.5px;line-height:1.62;color:var(--s500)}
+.card__no{position:absolute;top:18px;right:20px;font-family:var(--display);font-weight:800;font-size:26px;color:var(--s200)}
+
+/* ---- chips / tags ---- */
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-size:12.5px;font-weight:500;color:var(--s600);background:var(--s100);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.chip--g{background:var(--grad-soft);border-color:rgba(124,58,237,.18);color:#5b3fd6;font-weight:600}
+
+/* ---- list ---- */
+.list{display:flex;flex-direction:column;gap:13px}
+.li{display:flex;gap:13px;align-items:flex-start}
+.li .tick{flex:none;width:23px;height:23px;border-radius:7px;background:var(--grad-soft);color:var(--violet);display:flex;align-items:center;justify-content:center;margin-top:1px}
+.li .tick svg{width:14px;height:14px}
+.li b{color:var(--s900);font-weight:700}
+.li span{font-size:14px;line-height:1.6;color:var(--s600)}
+
+/* ---- stat ---- */
+.stat{font-family:var(--display);font-weight:800;letter-spacing:-.02em;line-height:1;background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+
+/* ---- placeholder figure ---- */
+.ph{position:relative;border-radius:18px;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;color:#6366f1;
+  background:linear-gradient(135deg,rgba(79,70,229,.07),rgba(192,38,211,.07)),repeating-linear-gradient(45deg,rgba(79,70,229,.045) 0 14px,transparent 14px 28px);
+  border:1.6px dashed rgba(99,102,241,.4)}
+.ph__icon{width:48px;height:48px;opacity:.65}
+.ph__label{font-weight:700;font-size:14.5px;letter-spacing:.03em;color:#5b51e0}
+.ph__sub{font-size:12px;color:var(--s400);max-width:80%;text-align:center;line-height:1.5}
+.ph__ratio{position:absolute;top:13px;right:14px;font-family:var(--display);font-size:11px;color:#7c6df0;background:rgba(99,102,241,.12);padding:4px 9px;border-radius:999px}
+
+/* ====== COVER ====== */
+.cover{background:radial-gradient(1200px 700px at 78% -8%,rgba(124,58,237,.42),transparent 60%),radial-gradient(900px 600px at 8% 108%,rgba(6,182,212,.28),transparent 55%),linear-gradient(155deg,#070B22 0%,#0E1430 60%,#10173a 100%);color:#fff}
+.cover .grain{position:absolute;inset:0;opacity:.5;background:radial-gradient(circle at 1px 1px,rgba(255,255,255,.10) 1px,transparent 0);background-size:26px 26px;mask-image:linear-gradient(180deg,#000,transparent 80%)}
+.cover .orb{position:absolute;border-radius:50%;filter:blur(8px);opacity:.9}
+.dark{color:#fff}
+.dark .title{color:#fff}
+.dark .lead{color:rgba(255,255,255,.72)}
+.dark .kicker{color:#a5b4fc}
+.dark .snum{color:rgba(255,255,255,.4)}
+.dark .brandmark span{color:rgba(255,255,255,.8)}
+
+/* ---- timeline ---- */
+.tl{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-top:8px}
+.tl::before{content:"";position:absolute;top:46px;left:6%;right:6%;height:3px;background:linear-gradient(90deg,var(--indigo),var(--violet),var(--fuchsia),var(--coral));border-radius:3px}
+.tlcol{position:relative;padding:0 12px}
+.tlnode{width:18px;height:18px;border-radius:50%;background:#fff;border:4px solid var(--violet);margin:38px auto 0;position:relative;z-index:2;box-shadow:0 0 0 6px rgba(124,58,237,.12)}
+.tlph{font-family:var(--display);font-weight:700;font-size:13px;color:var(--indigo);text-align:center;margin-top:14px}
+.tlmo{text-align:center;font-size:11.5px;color:var(--s400);margin-bottom:8px}
+.tlcard{background:#fff;border:1px solid var(--line);border-radius:13px;padding:14px 15px;box-shadow:0 12px 26px -22px rgba(10,14,39,.4)}
+.tlcard h5{font-size:14.5px;font-weight:700;color:var(--s900);margin-bottom:8px}
+.tlcard ul{list-style:none;display:flex;flex-direction:column;gap:6px}
+.tlcard li{font-size:12px;line-height:1.45;color:var(--s500);padding-left:14px;position:relative}
+.tlcard li::before{content:"";position:absolute;left:0;top:7px;width:5px;height:5px;border-radius:50%;background:var(--violet)}
+
+/* ---- process steps ---- */
+.flow{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;align-items:stretch}
+.step{position:relative;background:#fff;border:1px solid var(--line);border-radius:15px;padding:20px 16px;display:flex;flex-direction:column;gap:10px}
+.step .n{font-family:var(--display);font-weight:800;font-size:15px;width:34px;height:34px;border-radius:10px;background:var(--grad);color:#fff;display:flex;align-items:center;justify-content:center}
+.step h5{font-size:14.5px;font-weight:700;color:var(--s900)}
+.step p{font-size:11.5px;line-height:1.5;color:var(--s500)}
+.step:not(:last-child)::after{content:"";position:absolute;right:-11px;top:38px;width:14px;height:14px;border-top:2px solid var(--s300);border-right:2px solid var(--s300);transform:rotate(45deg);z-index:3}
+
+/* ---- layer stack ---- */
+.layer{display:flex;align-items:center;gap:18px;border-radius:14px;padding:15px 20px;color:#fff;position:relative;overflow:hidden}
+.layer .lic{width:40px;height:40px;border-radius:11px;background:rgba(255,255,255,.16);display:flex;align-items:center;justify-content:center;flex:none}
+.layer .lic svg{width:21px;height:21px}
+.layer h5{font-size:16px;font-weight:700}
+.layer p{font-size:12.5px;opacity:.85;margin-top:2px}
+.layer .ltag{margin-left:auto;font-family:var(--display);font-size:11px;font-weight:600;background:rgba(255,255,255,.18);padding:5px 11px;border-radius:999px;flex:none}
+
+/* ---- donut ---- */
+.donut{width:268px;height:268px;border-radius:50%;position:relative;flex:none}
+.donut::after{content:"";position:absolute;inset:64px;border-radius:50%;background:#fff;box-shadow:inset 0 2px 8px rgba(10,14,39,.08)}
+.donut .ctr{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:2}
+.legend{display:flex;flex-direction:column;gap:14px}
+.lg{display:flex;align-items:center;gap:13px}
+.lg .sw{width:14px;height:14px;border-radius:5px;flex:none}
+.lg .pct{font-family:var(--display);font-weight:800;font-size:18px;color:var(--s900);width:54px}
+.lg .lb{font-size:13.5px;color:var(--s600)}
+.lg .lb b{color:var(--s900);display:block;font-size:14.5px;margin-bottom:1px;font-weight:700}
+
+/* ---- mini stat row ---- */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.kpi{background:linear-gradient(180deg,#fff,#fbfcff);border:1px solid var(--line);border-radius:14px;padding:18px;text-align:left}
+.kpi .v{font-family:var(--display);font-weight:800;font-size:30px;color:var(--s900);line-height:1}
+.kpi .l{font-size:12.5px;color:var(--s500);margin-top:8px;line-height:1.4}
+
+/* ---- risk ---- */
+.risk{display:flex;gap:16px;background:#fff;border:1px solid var(--line);border-left:3px solid var(--coral);border-radius:12px;padding:16px 18px}
+.risk .rn{font-family:var(--display);font-weight:800;font-size:13px;color:var(--coral);flex:none;width:30px}
+.risk h5{font-size:14.5px;font-weight:700;color:var(--s900);margin-bottom:4px}
+.risk p{font-size:12.5px;line-height:1.55;color:var(--s500)}
+.risk p b{color:var(--emerald);font-weight:700}
+
+/* ---- milestone ---- */
+.ms{display:flex;flex-direction:column;gap:11px}
+.msrow{display:flex;align-items:center;gap:16px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px 18px}
+.msrow .m{font-family:var(--display);font-weight:800;font-size:15px;color:#fff;background:var(--grad);width:46px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:none}
+.msrow span{font-size:14px;color:var(--s700)}
+
+/* ---- nav UI ---- */
+.toolbar{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:100;display:flex;align-items:center;gap:6px;background:rgba(10,14,39,.82);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.12);padding:8px 10px;border-radius:999px;box-shadow:0 20px 50px -20px rgba(0,0,0,.6)}
+.tb-btn{width:36px;height:36px;border-radius:50%;border:0;background:rgba(255,255,255,.08);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s}
+.tb-btn:hover{background:var(--indigo)}
+.tb-btn svg{width:18px;height:18px}
+.tb-count{font-family:var(--display);color:#fff;font-size:13px;padding:0 10px;min-width:62px;text-align:center;letter-spacing:.05em}
+.tb-count b{color:#a5b4fc}
+.tb-sep{width:1px;height:22px;background:rgba(255,255,255,.14);margin:0 4px}
+.tb-print{width:auto;padding:0 16px;gap:7px;font-family:var(--body);font-size:13px;font-weight:500}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);z-index:120;width:0;transition:width .15s}
+
+@media print{
+  @page{size:1280px 720px;margin:0}
+  body{padding:0;background:#fff}
+  .stage{gap:0}
+  .frame{box-shadow:none!important;border-radius:0!important;width:1280px!important;height:720px!important;margin:0!important;page-break-after:always;break-after:page}
+  .slide{transform:none!important;border-radius:0!important}
+  .toolbar,.progress{display:none!important}
+}
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="stage" id="stage">
+
+<!-- ============ 01 · COVER ============ -->
+<div class="frame"><section class="slide cover dark">
+  <div class="grain"></div>
+  <div class="orb" style="width:340px;height:340px;top:-90px;right:60px;background:radial-gradient(circle,rgba(124,58,237,.9),transparent 70%)"></div>
+  <div class="orb" style="width:260px;height:260px;bottom:-60px;left:-40px;background:radial-gradient(circle,rgba(6,182,212,.65),transparent 70%)"></div>
+  <div class="pad" style="display:flex;flex-direction:column;height:100%;position:relative;z-index:2">
+    <div style="display:flex;align-items:center;gap:13px">
+      <div style="width:44px;height:44px;border-radius:13px;background:var(--grad);box-shadow:0 12px 30px -8px rgba(124,58,237,.7);display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 5.4L20 8l-4 4 1 6-5-2.8L7 18l1-6-4-4 5.6-.6z"/></svg>
+      </div>
+      <div style="font-family:var(--display);font-weight:800;font-size:24px;letter-spacing:.02em">Incuboot</div>
+    </div>
+
+    <div style="margin-top:auto">
+      <div class="kicker" style="margin-bottom:22px">AI-Native Brand Operating System</div>
+      <h1 class="title" style="font-size:62px;line-height:1.08">AI 原生<em>智能品牌系统</em><br/>开发与融资方案</h1>
+      <p class="lead" style="margin-top:24px;font-size:19px;max-width:58ch">把品牌资料、内容、合作推广与经营复盘组织进同一个工作台，让 AI Agent 从"帮忙生成内容"升级为"参与品牌日常运营"。</p>
+    </div>
+
+    <div style="margin-top:42px;display:flex;align-items:center;gap:28px;flex-wrap:wrap">
+      <div class="chip chip--g" style="background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.18);color:#fff">首期目标 ¥100–200 万 · 6–9 个月</div>
+      <div style="display:flex;gap:28px;font-size:13.5px;color:rgba(255,255,255,.62)">
+        <span>版本 2026-06-17</span>
+        <span>用途 · 投资人沟通 / 天使轮启动资金</span>
+      </div>
+    </div>
+  </div>
+  <div class="snum">01</div>
+</section></div>
+
+<!-- ============ 02 · ONE-LINER ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">What is Incuboot · 项目一句话</div>
+    <div class="row" style="margin-top:30px;flex:1">
+      <div class="col" style="flex:1.1;display:flex;flex-direction:column;justify-content:center">
+        <h2 class="title" style="font-size:38px">面向品牌团队的<br/><em>AI 原生智能品牌系统</em></h2>
+        <p class="lead" style="margin-top:20px">Incuboot 面向新消费品牌、跨境品牌与品牌服务团队，把品牌资料、素材、内容、合作推广、营销执行与经营复盘组织在同一个品牌工作台里。</p>
+        <div class="list" style="margin-top:26px">
+          <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span><b>现在：</b>正在产品化「合作推广营销」模块 —— 把已人工跑通的达人合作流程，沉淀为可操作、可审计、可迭代的软件系统。</span></div>
+          <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span><b>未来：</b>扩展为覆盖品牌知识库、策略、内容生产、渠道增长、资产管理、数据分析与多 Agent 协同的完整系统。</span></div>
+        </div>
+      </div>
+      <div class="col" style="flex:1;display:flex">
+        <div class="ph" style="flex:1;aspect-ratio:auto">
+          <div class="ph__ratio">4 : 3 · 产品截图</div>
+          <svg class="ph__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M6 8h6M6 12h9"/></svg>
+          <div class="ph__label">品牌工作台主界面</div>
+          <div class="ph__sub">插图占位：品牌目录 + KOL 数据库 + Agent 工作流的产品主视图，后续替换为真实截图</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">02</div>
+</section></div>
+
+<!-- ============ 03 · FUNDING SUMMARY ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Investment Thesis · 融资沟通摘要</div>
+    <h2 class="title" style="margin-top:18px;font-size:36px">不是单点 AI 文案工具，<br/>而是面向品牌经营流程的 <em>AI 原生操作系统</em></h2>
+    <p class="lead" style="margin-top:14px">品牌团队的工作今天散落在 Notion、网盘、邮箱、表格、社媒后台与人工经验里；AI 工具虽多，却大多停留在"问答"和"生成"，很少真正接住从定位到复盘的连续工作流。</p>
+
+    <div class="grid g4" style="margin-top:30px">
+      <div class="card card--soft"><div class="card__no">1</div><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg></div><h4>从已跑通切入</h4><p>从 ROI 明确、流程标准化的合作推广营销切入。</p></div>
+      <div class="card card--soft"><div class="card__no">2</div><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div><h4>把 SOP 产品化</h4><p>本地品牌目录 + 本地数据库 + 可审计 Agent 工作流。</p></div>
+      <div class="card card--soft"><div class="card__no">3</div><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20" /></svg></div><h4>逐层扩展</h4><p>知识层 → 策略层 → 内容层 → 增长层 → 协同层。</p></div>
+      <div class="card card--soft"><div class="card__no">4</div><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.2-8.6"/><path d="M22 4L12 14.01l-3-3"/></svg></div><h4>持续进化</h4><p>围绕品牌长期记忆与执行流程不断演进的系统。</p></div>
+    </div>
+
+    <div class="row" style="margin-top:auto;gap:18px">
+      <div class="card" style="flex:1.4;display:flex;align-items:center;gap:22px;background:linear-gradient(135deg,#0E1430,#161e44);border:0;color:#fff">
+        <div><div style="font-size:13px;color:#a5b4fc;font-weight:600;letter-spacing:.08em">首期融资目标</div><div class="stat" style="font-size:40px;margin-top:4px">¥100–200<span style="font-size:20px"> 万</span></div></div>
+        <div style="width:1px;height:54px;background:rgba(255,255,255,.16)"></div>
+        <p style="font-size:13.5px;line-height:1.6;color:rgba(255,255,255,.78);flex:1">覆盖 6–9 个月核心产品开发、试点客户交付与早期商业验证。</p>
+      </div>
+      <div class="card" style="flex:1;display:flex;align-items:center;gap:18px">
+        <div><div style="font-size:13px;color:var(--s500);font-weight:600">小票试水</div><div class="stat" style="font-size:34px;margin-top:4px">¥50–80<span style="font-size:18px"> 万</span></div></div>
+        <p style="font-size:12.5px;line-height:1.55;color:var(--s500);flex:1">完成稳定 MVP、3–5 个试点品牌、演示案例与首批付费验证。</p>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">03</div>
+</section></div>
+
+<!-- ============ 04 · MARKET ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Market Opportunity · 市场机会</div>
+    <h2 class="title" style="margin-top:18px;font-size:36px">品牌经营正在发生<em>三件结构性变化</em></h2>
+
+    <div class="row" style="margin-top:28px;flex:1">
+      <div class="col" style="flex:1.25;display:flex;flex-direction:column;gap:16px">
+        <div class="card" style="display:flex;gap:16px;align-items:flex-start;padding:18px 20px">
+          <div class="card__ic" style="margin:0;flex:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a7 7 0 0 1 7 7c0 3-2 4-2 7H7c0-3-2-4-2-7a7 7 0 0 1 7-7z"/><path d="M9 21h6"/></svg></div>
+          <div><h4 style="font-size:16px;color:var(--s900);font-weight:700">AI 进入营销与销售流程</h4><p style="font-size:13px;color:var(--s500);line-height:1.6;margin-top:4px">McKinsey 多次指出，营销与销售是生成式 AI 价值释放最直接的领域之一 —— 内容生成、个性化触达、销售支持与运营效率。</p></div>
+        </div>
+        <div class="card" style="display:flex;gap:16px;align-items:flex-start;padding:18px 20px">
+          <div class="card__ic" style="margin:0;flex:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13A4 4 0 0 1 16 11"/></svg></div>
+          <div><h4 style="font-size:16px;color:var(--s900);font-weight:700">创作者经济成为常规增长渠道</h4><p style="font-size:13px;color:var(--s500);line-height:1.6;margin-top:4px">品牌预算持续向内容型、达人型、社区型渠道迁移，达人营销已是品牌增长的标配。</p></div>
+        </div>
+        <div class="card" style="display:flex;gap:16px;align-items:flex-start;padding:18px 20px">
+          <div class="card__ic" style="margin:0;flex:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/></svg></div>
+          <div><h4 style="font-size:16px;color:var(--s900);font-weight:700">中小品牌缺的是"系统"而非工具</h4><p style="font-size:13px;color:var(--s500);line-height:1.6;margin-top:4px">有内容、有达人、有渠道、有素材，却缺统一的品牌记忆、流程管理、自动化执行与复盘闭环。</p></div>
+        </div>
+      </div>
+      <div class="col" style="flex:1;display:flex;flex-direction:column;gap:16px">
+        <div class="card" style="flex:1;background:linear-gradient(150deg,#0E1430,#1a1147);border:0;color:#fff;display:flex;flex-direction:column;justify-content:center">
+          <div style="font-size:13px;color:#a5b4fc;font-weight:600">创作者经济规模（Goldman Sachs Research 预测）</div>
+          <div class="stat" style="font-size:58px;margin-top:10px">≈$480B</div>
+          <div style="font-size:14px;color:rgba(255,255,255,.7);margin-top:6px">预计到 <b style="color:#fff">2027 年</b> 接近 4800 亿美元</div>
+        </div>
+        <div class="card" style="background:var(--grad-soft);border-color:rgba(124,58,237,.2)">
+          <p style="font-size:14px;line-height:1.65;color:var(--s700)">Incuboot 的位置：不替代所有 SaaS，而是成为品牌团队的 <b style="color:#5b3fd6">AI 原生工作中枢</b>，把分散工具中的资料和动作串成可执行、可沉淀、可复盘的系统。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">04</div>
+</section></div>
+
+<!-- ============ 05 · TARGET USERS ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Target Users · 目标用户与痛点</div>
+    <h2 class="title" style="margin-top:18px;font-size:34px">为<em>工作链路长、人手有限</em>的品牌团队而造</h2>
+
+    <div class="grid g4" style="margin-top:26px">
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"/></svg></div><h4>跨境 DTC 品牌</h4><p>海外达人合作、邮件线索、内容投放、样品发货与多渠道运营。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21l8.84-8.84a5.5 5.5 0 0 0 0-7.78z"/></svg></div><h4>新消费品牌</h4><p>持续做内容、种草、达人合作与品牌资产积累。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></div><h4>品牌服务商 / 代理商</h4><p>同时服务多品牌，需要标准化 SOP 并提升人效。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v1a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v3"/></svg></div><h4>小型品牌团队</h4><p>人少但链路长，需要 AI Agent 作为运营副手。</p></div>
+    </div>
+
+    <div class="card" style="margin-top:auto;background:#fbfafe;border-color:rgba(124,58,237,.16)">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span style="font-family:var(--display);font-weight:700;font-size:14px;color:var(--coral);letter-spacing:.06em">典型痛点</span><div style="flex:1;height:1px;background:var(--line)"></div></div>
+      <div class="grid g3" style="gap:14px 28px">
+        <div class="li"><span class="tick" style="background:rgba(251,113,133,.12);color:var(--coral)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span><span>品牌资料散落，AI 每次都要重新理解上下文</span></div>
+        <div class="li"><span class="tick" style="background:rgba(251,113,133,.12);color:var(--coral)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span><span>达人合作靠人工看邮件、手动筛选，易漏、慢、难复盘</span></div>
+        <div class="li"><span class="tick" style="background:rgba(251,113,133,.12);color:var(--coral)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span><span>内容生成与品牌策略割裂，输出不稳定、不沉淀</span></div>
+        <div class="li"><span class="tick" style="background:rgba(251,113,133,.12);color:var(--coral)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span><span>数据在表格与后台中断裂，难形成"下一步"判断</span></div>
+        <div class="li"><span class="tick" style="background:rgba(251,113,133,.12);color:var(--coral)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span><span>新人难接手，历史经验无法系统化沉淀</span></div>
+        <div class="li"><span class="tick" style="background:rgba(16,185,129,.12);color:var(--emerald)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span><b style="color:var(--emerald)">Incuboot 把这些痛点逐一收敛为系统能力</b></span></div>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">05</div>
+</section></div>
+
+<!-- ============ 06 · POSITIONING ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Product Positioning · 产品定位</div>
+    <div class="row center" style="margin-top:18px">
+      <h2 class="title" style="font-size:36px;flex:1">产品定位：<em>AI 原生智能品牌系统</em></h2>
+      <div class="chip chip--g">本地优先 · 云端可扩展</div>
+    </div>
+    <p class="lead" style="margin-top:12px">不是临时问答，而是围绕品牌长期记忆与执行流程，从单点生成能力升级为品牌策略、内容、增长与运营的连续闭环。</p>
+
+    <div class="grid g3" style="margin-top:28px;gap:18px">
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/></svg></div><h4>一个品牌一个目录</h4><p>品牌资料、素材、文档、策略与历史对话，都围绕品牌组织。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4 4 4 0 0 0-2 7 4 4 0 0 0 4 7 4 4 0 0 0 8 0 4 4 0 0 0 4-7 4 4 0 0 0-2-7 4 4 0 0 0-4-4 4 4 0 0 0-4 0z"/></svg></div><h4>一个品牌一个长期记忆</h4><p>持续理解品牌定位、语气、资产、受众与历史动作。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div><h4>一个流程一个 Agent 工作台</h4><p>人工 SOP 固化为 Agent 可执行、人工可确认、过程可审计。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/></svg></div><h4>本地优先 · 云端可扩展</h4><p>早期品牌资料安全可控，未来支持团队协作与云端同步。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg></div><h4>从工具到系统</h4><p>从单点生成，升级为策略、内容、增长与运营的连续闭环。</p></div>
+      <div class="card" style="background:linear-gradient(135deg,#0E1430,#161e44);border:0;color:#fff;display:flex;flex-direction:column;justify-content:center">
+        <div style="font-size:13px;color:#a5b4fc;font-weight:600;letter-spacing:.06em">一句话</div>
+        <p style="font-size:15px;line-height:1.6;margin-top:8px;color:rgba(255,255,255,.9)">让 AI 不止"回答问题"，而是<b style="color:#fff">理解品牌、推进流程、记录依据、协助执行</b>。</p>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">06</div>
+</section></div>
+
+<!-- ============ 07 · CURRENT MODULE ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Current Build · 当前开发模块</div>
+    <div class="row" style="margin-top:18px;flex:1;gap:30px">
+      <div class="col" style="flex:1.05;display:flex;flex-direction:column">
+        <h2 class="title" style="font-size:34px">第一个产品化切口：<br/><em>合作推广营销</em></h2>
+        <p class="lead" style="margin-top:14px;font-size:16px">把品牌团队处理达人/联盟合作邮件的人工流程，变成<b style="color:var(--s900)">可搜索、可确认、可推进、可审计</b>的智能工作台。</p>
+        <div class="grid g3" style="margin-top:24px;gap:14px">
+          <div class="card" style="padding:16px;text-align:center"><div class="card__ic" style="margin:0 auto 10px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg></div><h4 style="font-size:14px">流程已跑通</h4><p style="font-size:11.5px">人工 SOP 验证可行</p></div>
+          <div class="card" style="padding:16px;text-align:center"><div class="card__ic" style="margin:0 auto 10px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><h4 style="font-size:14px">价值易验证</h4><p style="font-size:11.5px">ROI 明确可量化</p></div>
+          <div class="card" style="padding:16px;text-align:center"><div class="card__ic" style="margin:0 auto 10px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v4H4zM4 12h16v8H4z"/></svg></div><h4 style="font-size:14px">数据入口明确</h4><p style="font-size:11.5px">邮箱即天然入口</p></div>
+        </div>
+        <div class="card" style="margin-top:auto;background:var(--grad-soft);border-color:rgba(124,58,237,.18)">
+          <p style="font-size:13.5px;line-height:1.6;color:var(--s700)">它将成为 Incuboot 增长层的核心能力之一，并为整个智能品牌系统提供<b style="color:#5b3fd6">第一批真实流程数据与商业验证</b>。</p>
+        </div>
+      </div>
+      <div class="col" style="flex:1;display:flex">
+        <div class="ph" style="flex:1">
+          <div class="ph__ratio">16 : 10 · 模块截图</div>
+          <svg class="ph__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 9v11"/><path d="M12 13h5M12 16h5"/></svg>
+          <div class="ph__label">合作推广营销工作台</div>
+          <div class="ph__sub">插图占位：邮件线索列表 + KOL 档案 + 六步状态流转 + 自动化日志面板</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">07</div>
+</section></div>
+
+<!-- ============ 08 · CORE CAPABILITIES ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Core Capabilities · 已设计 / 正在开发的核心能力</div>
+    <h2 class="title" style="margin-top:16px;font-size:32px">从邮件到合作完成的<em>全链路能力</em></h2>
+
+    <div class="grid g3" style="margin-top:24px;gap:14px 18px">
+      <div class="card" style="padding:16px 18px"><div style="display:flex;align-items:center;gap:11px;margin-bottom:7px"><span class="card__ic" style="width:34px;height:34px;margin:0;border-radius:9px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 4h16v16H4z"/><path d="M4 8l8 5 8-5"/></svg></span><h4 style="font-size:14.5px">邮箱只读同步</h4></div><p style="font-size:12.5px">IMAP 同步合作邮件，告别人工逐封查找。</p></div>
+      <div class="card" style="padding:16px 18px"><div style="display:flex;align-items:center;gap:11px;margin-bottom:7px"><span class="card__ic" style="width:34px;height:34px;margin:0;border-radius:9px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M9 11l3 3L22 4"/></svg></span><h4 style="font-size:14.5px">邮件线索分类</h4></div><p style="font-size:12.5px">AI 识别达人/联盟/广告，人工可确认修正。</p></div>
+      <div class="card" style="padding:16px 18px"><div style="display:flex;align-items:center;gap:11px;margin-bottom:7px"><span class="card__ic" style="width:34px;height:34px;margin:0;border-radius:9px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></svg></span><h4 style="font-size:14.5px">KOL Database</h4></div><p style="font-size:12.5px">自动建档：国家、关系、状态、负责人、适配分。</p></div>
+      <div class="card" style="padding:16px 18px"><div style="display:flex;align-items:center;gap:11px;margin-bottom:7px"><span class="card__ic" style="width:34px;height:34px;margin:0;border-radius:9px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg></span><h4 style="font-size:14.5px">网红评估</h4></div><p style="font-size:12.5px">按 vertical、language、粉丝、播放、互动结构化判断。</p></div>
+      <div class="card" style="padding:16px 18px"><div style="display:flex;align-items:center;gap:11px;margin-bottom:7px"><span class="card__ic" style="width:34px;height:34px;margin:0;border-radius:9px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13l2 2 4-4"/></svg></span><h4 style="font-size:14.5px">评估后处理</h4></div><p style="font-size:12.5px">通过者起草提案，未通过者起草婉拒/折扣回复。</p></div>
+      <div class="card" style="padding:16px 18px"><div style="display:flex;align-items:center;gap:11px;margin-bottom:7px"><span class="card__ic" style="width:34px;height:34px;margin:0;border-radius:9px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span><h4 style="font-size:14.5px">录入系统</h4></div><p style="font-size:12.5px">补齐账号、渠道、联系方式、平台数据与内容类型。</p></div>
+      <div class="card" style="padding:16px 18px"><div style="display:flex;align-items:center;gap:11px;margin-bottom:7px"><span class="card__ic" style="width:34px;height:34px;margin:0;border-radius:9px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M9 15l2 2 4-4"/></svg></span><h4 style="font-size:14.5px">合同推进</h4></div><p style="font-size:12.5px">记录发送、签署、异议、视频数量与合作状态。</p></div>
+      <div class="card" style="padding:16px 18px"><div style="display:flex;align-items:center;gap:11px;margin-bottom:7px"><span class="card__ic" style="width:34px;height:34px;margin:0;border-radius:9px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 3v5h-7M5.5 21a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM18.5 21a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg></span><h4 style="font-size:14.5px">发货流程</h4></div><p style="font-size:12.5px">物流、发货通知、预计发布、签收与合作完成。</p></div>
+      <div class="card" style="padding:16px 18px;background:var(--grad-soft);border-color:rgba(124,58,237,.18)"><div style="display:flex;align-items:center;gap:11px;margin-bottom:7px"><span class="card__ic" style="width:34px;height:34px;margin:0;border-radius:9px;background:var(--grad);color:#fff"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M12 3a9 9 0 1 0 9 9"/><path d="M16 3h5v5"/></svg></span><h4 style="font-size:14.5px;color:#5b3fd6">话术库 + 自动化日志 + 人工确认</h4></div><p style="font-size:12.5px;color:var(--s700)">模板沉淀、全程审计记录、关键节点保留人工确认，避免 AI 越权发送。</p></div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">08</div>
+</section></div>
+
+<!-- ============ 09 · SIX-STEP WORKFLOW ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Workflow · 六步产品流程</div>
+    <div class="row center" style="margin-top:16px">
+      <h2 class="title" style="font-size:34px;flex:1">从一封邮件到一次完成的合作，<em>六步闭环</em></h2>
+    </div>
+    <p class="lead" style="margin-top:12px">每一步都"AI 起草 / 人工确认 / 系统留痕"，让流程既高效又可控、可复盘。</p>
+
+    <div class="flow" style="margin-top:auto;margin-bottom:auto">
+      <div class="step"><div class="n">1</div><h5>初步分类</h5><p>识别达人、联盟、广告与其他邮件。</p></div>
+      <div class="step"><div class="n">2</div><h5>网红评估</h5><p>品牌适配、语言、粉丝、播放、互动、频率结构化评分。</p></div>
+      <div class="step"><div class="n">3</div><h5>评估后处理</h5><p>生成并记录合作提案、拒绝回复或暂缓动作。</p></div>
+      <div class="step"><div class="n">4</div><h5>录入系统</h5><p>把有效达人资料补齐到 KOL Database。</p></div>
+      <div class="step"><div class="n">5</div><h5>合作推进</h5><p>推动合同、签约、视频数量与异议处理。</p></div>
+      <div class="step"><div class="n">6</div><h5>发货流程</h5><p>样品、物流、签收、发布时间与合作完成。</p></div>
+    </div>
+
+    <div style="display:flex;gap:14px">
+      <div class="chip"><b style="color:var(--indigo)">输入</b> · 合作邮件 / 达人主动联系</div>
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--s400)" stroke-width="2" style="align-self:center"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      <div class="chip chip--g">产出 · 结构化 KOL 档案 + 完整合作记录 + ROI 数据</div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">09</div>
+</section></div>
+
+<!-- ============ 10 · FULL BLUEPRINT ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Product Blueprint · 完整产品蓝图</div>
+    <div class="row center" style="margin-top:16px">
+      <h2 class="title" style="font-size:32px;flex:1">覆盖品牌从"理解自己"到"对外增长"的<em>六层系统</em></h2>
+      <div class="chip">合作推广营销 = 第一层落地</div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:11px;margin-top:22px">
+      <div class="layer" style="background:linear-gradient(100deg,#4338ca,#4F46E5)"><div class="lic"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div><div><h5>品牌知识层</h5><p>品牌目录 · 资料解析 · 品牌记忆 · 素材索引 · 证据追踪</p></div><span class="ltag">让 AI 长期懂品牌</span></div>
+      <div class="layer" style="background:linear-gradient(100deg,#5b46d6,#6d3fd9)"><div class="lic"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></div><div><h5>品牌策略层</h5><p>品牌体检 · 竞品分析 · 用户画像 · 策略文档 · 版本管理</p></div><span class="ltag">资料变可执行判断</span></div>
+      <div class="layer" style="background:linear-gradient(100deg,#7c3aed,#8b3ce0)"><div class="lic"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></div><div><h5>内容与创意生产层</h5><p>多场景文案 · 内容日历 · 多语言本地化 · 脚本/brief · 一致性检查</p></div><span class="ltag">系统化内容生产</span></div>
+      <div class="layer" style="background:linear-gradient(100deg,#9333ea,#a832d6)"><div class="lic"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg></div><div><h5>合作推广与增长层 <span style="font-size:11px;opacity:.9">· 当前正在开发</span></h5><p>KOL/联盟/媒体统一管理 · 外联跟进 · 合同发货复盘 · 线索到 ROI 闭环</p></div><span class="ltag" style="background:rgba(255,255,255,.32)">MVP 起点</span></div>
+      <div class="layer" style="background:linear-gradient(100deg,#a82dd1,#bf28c9)"><div class="lic"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="8"/><rect x="12" y="6" width="3" height="12"/><rect x="17" y="13" width="3" height="5"/></svg></div><div><h5>数据分析与复盘层</h5><p>内容效果面板 · KOL 表现 · 转化归因 · 复盘报告 · 周报月报生成</p></div><span class="ltag">知道下一步做什么</span></div>
+      <div class="layer" style="background:linear-gradient(100deg,#c026d3,#06b6d4)"><div class="lic"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4M8 16h.01M16 16h.01"/></svg></div><div><h5>Agent 协同层</h5><p>策略 / 内容 / 合作 / 运营 / 审核 / 数据 多 Agent 分工协同</p></div><span class="ltag">AI 成为团队成员</span></div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">10</div>
+</section></div>
+
+<!-- ============ 11 · AGENT LAYER ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Agent Collaboration · Agent 协同层</div>
+    <div class="row center" style="margin-top:16px">
+      <h2 class="title" style="font-size:34px;flex:1">把 AI 从聊天助手，变成<em>品牌团队成员</em></h2>
+    </div>
+    <p class="lead" style="margin-top:12px">每个 Agent 各司其职、共享同一份品牌记忆与流程数据，由人工在关键节点确认。</p>
+
+    <div class="grid g3" style="margin-top:26px;gap:18px">
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></div><h4>品牌策略 Agent</h4><p>负责定位、受众、竞品分析与策略文档。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></div><h4>内容 Agent</h4><p>负责选题、文案、脚本、翻译与品牌语气。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg></div><h4>合作推广 Agent</h4><p>负责线索分类、达人评估、外联与跟进。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01"/></svg></div><h4>运营 Agent</h4><p>负责日历、任务、复盘、提醒与流程推进。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></div><h4>审核 Agent</h4><p>负责事实核对、合规检查与品牌一致性检查。</p></div>
+      <div class="card card--soft"><div class="card__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/></svg></div><h4>数据 Agent</h4><p>负责数据抓取、分析、报表与下一步建议。</p></div>
+    </div>
+
+    <div class="card" style="margin-top:auto;background:linear-gradient(135deg,#0E1430,#1a1147);border:0;color:#fff;display:flex;align-items:center;gap:18px">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#a5b4fc" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
+      <p style="font-size:14px;line-height:1.6;color:rgba(255,255,255,.85)">所有 Agent 行为均写入审计日志，记录 <b style="color:#fff">actor、字段、旧值、新值与原因</b> —— 既能自动化，又保留可控性与责任边界。</p>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">11</div>
+</section></div>
+
+<!-- ============ 12 · TECHNOLOGY ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Technology · 技术方案</div>
+    <div class="row center" style="margin-top:16px"><h2 class="title" style="font-size:32px;flex:1">桌面工作台架构：<em>本地优先、可审计、可扩展</em></h2></div>
+
+    <div class="row" style="margin-top:24px;flex:1;gap:26px">
+      <div class="col" style="flex:1.05;display:flex;flex-direction:column;gap:11px">
+        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--s400);letter-spacing:.08em">技术架构方向</div>
+        <div class="layer" style="background:linear-gradient(100deg,#4F46E5,#6d3fd9);padding:13px 18px"><div class="lic" style="width:34px;height:34px"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div><div><h5 style="font-size:14.5px">前端 · React + Tauri 桌面应用</h5></div></div>
+        <div class="layer" style="background:linear-gradient(100deg,#6d3fd9,#8b3ce0);padding:13px 18px"><div class="lic" style="width:34px;height:34px"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/></svg></div><div><h5 style="font-size:14.5px">本地数据 · SQLite</h5><p>线索、KOL 档案、审计日志、设置</p></div></div>
+        <div class="layer" style="background:linear-gradient(100deg,#8b3ce0,#a832d6);padding:13px 18px"><div class="lic" style="width:34px;height:34px"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9-4 9 4-9 4-9-4zM3 7v10l9 4 9-4V7"/></svg></div><div><h5 style="font-size:14.5px">Agent 执行 · 可插拔模型配置</h5><p>本地智能引擎 + 分层权限授权</p></div></div>
+        <div class="layer" style="background:linear-gradient(100deg,#a832d6,#06b6d4);padding:13px 18px"><div class="lic" style="width:34px;height:34px"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-6 0v4M5 9h14l1 12H4L5 9z"/></svg></div><div><h5 style="font-size:14.5px">审计 + 云端协作</h5><p>关键操作全留痕 · 后续按需团队同步/企业部署</p></div></div>
+      </div>
+      <div class="col" style="flex:1;display:flex;flex-direction:column;gap:13px">
+        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--coral);letter-spacing:.08em">技术护城河</div>
+        <div class="card" style="padding:14px 16px;border-left:3px solid var(--violet)"><h4 style="font-size:14px">品牌长期上下文</h4><p style="font-size:12px">越用越懂品牌，而非一次性对话。</p></div>
+        <div class="card" style="padding:14px 16px;border-left:3px solid var(--violet)"><h4 style="font-size:14px">流程数据沉淀</h4><p style="font-size:12px">把 SOP、判断依据与执行结果变成结构化数据。</p></div>
+        <div class="card" style="padding:14px 16px;border-left:3px solid var(--violet)"><h4 style="font-size:14px">本地优先</h4><p style="font-size:12px">对品牌资料、邮箱与合同类数据更友好。</p></div>
+        <div class="card" style="padding:14px 16px;border-left:3px solid var(--violet)"><h4 style="font-size:14px">Agent + 审计 · 垂直深度</h4><p style="font-size:12px">从真实合作推广业务切入，而非泛用聊天壳。</p></div>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">12</div>
+</section></div>
+
+<!-- ============ 13 · ROADMAP ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Roadmap · 开发路线图</div>
+    <h2 class="title" style="margin-top:16px;font-size:32px">15 个月，从 <em>MVP</em> 到品牌运营闭环</h2>
+
+    <div class="tl" style="margin-top:auto;margin-bottom:auto">
+      <div class="tlcol">
+        <div class="tlmo">0–2 个月</div><div class="tlnode" style="border-color:var(--indigo)"></div>
+        <div class="tlph">阶段 1 · 合作推广 MVP</div>
+        <div class="tlcard"><h5>可演示 / 可试点 / 可收费</h5><ul><li>邮箱同步 + 本地营销库稳定</li><li>线索分类 + KOL 自动建档</li><li>六步工作流核心状态流转</li><li>话术库 + 可控发信 + 审计日志</li><li>1–2 个真实品牌案例 demo</li></ul></div>
+      </div>
+      <div class="tlcol">
+        <div class="tlmo">2–5 个月</div><div class="tlnode" style="border-color:var(--violet)"></div>
+        <div class="tlph">阶段 2 · 品牌知识与策略</div>
+        <div class="tlcard"><h5>扩展到品牌系统核心</h5><ul><li>品牌目录扫描与资料索引</li><li>定位/语气/受众/卖点整理</li><li>品牌体检报告</li><li>竞品分析 + 一致性检查</li><li>策略文档生成与版本沉淀</li></ul></div>
+      </div>
+      <div class="tlcol">
+        <div class="tlmo">5–9 个月</div><div class="tlnode" style="border-color:var(--fuchsia)"></div>
+        <div class="tlph">阶段 3 · 内容生产与活动</div>
+        <div class="tlcard"><h5>从"懂品牌"到"持续生产"</h5><ul><li>内容日历</li><li>官网/社媒/邮件/达人 brief 生成</li><li>多语言本地化 + 素材复用</li><li>活动方案生成</li><li>发布前审核与一致性检查</li></ul></div>
+      </div>
+      <div class="tlcol">
+        <div class="tlmo">9–15 个月</div><div class="tlnode" style="border-color:var(--coral)"></div>
+        <div class="tlph">阶段 4 · 数据复盘与协作</div>
+        <div class="tlcard"><h5>形成闭环与商业化</h5><ul><li>KOL 结果记录与 ROI 分析</li><li>内容/渠道表现面板</li><li>周报/月报/复盘自动生成</li><li>多成员协作 + 权限 + 云同步</li><li>付费订阅与企业部署</li></ul></div>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">13</div>
+</section></div>
+
+<!-- ============ 14 · BUSINESS MODEL ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Business Model · 商业模式</div>
+    <h2 class="title" style="margin-top:16px;font-size:32px">产品订阅 + 试点服务 + 企业部署的<em>组合收入</em></h2>
+
+    <div style="margin-top:24px">
+      <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--indigo);letter-spacing:.08em;margin-bottom:12px">SaaS / 桌面订阅</div>
+      <div class="grid g4" style="gap:16px">
+        <div class="card card--soft"><div style="font-family:var(--display);font-weight:800;font-size:15px;color:var(--s900)">个人 / 小团队版</div><p style="font-size:12.5px;color:var(--s500);margin-top:8px">单品牌、创始人、独立运营者。</p></div>
+        <div class="card card--soft"><div style="font-family:var(--display);font-weight:800;font-size:15px;color:var(--s900)">专业版</div><p style="font-size:12.5px;color:var(--s500);margin-top:8px">跨境品牌与新消费团队。</p></div>
+        <div class="card card--soft"><div style="font-family:var(--display);font-weight:800;font-size:15px;color:var(--s900)">代理商版</div><p style="font-size:12.5px;color:var(--s500);margin-top:8px">多品牌、多客户、多项目。</p></div>
+        <div class="card" style="background:linear-gradient(135deg,#0E1430,#161e44);border:0;color:#fff"><div style="font-family:var(--display);font-weight:800;font-size:15px;color:#fff">企业版</div><p style="font-size:12.5px;color:rgba(255,255,255,.72);margin-top:8px">私有化部署、权限、审计与定制集成。</p></div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:24px;gap:18px">
+      <div class="col">
+        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--violet);letter-spacing:.08em;margin-bottom:12px">服务收入</div>
+        <div class="card" style="padding:18px 20px"><div class="chips">
+          <span class="chip">品牌资料整理与系统初始化</span>
+          <span class="chip">合作推广流程搭建</span>
+          <span class="chip">KOL 数据清洗与迁移</span>
+          <span class="chip">品牌策略工作坊</span>
+          <span class="chip">行业模板定制</span>
+        </div></div>
+      </div>
+      <div class="col">
+        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--fuchsia);letter-spacing:.08em;margin-bottom:12px">长期收入</div>
+        <div class="card" style="padding:18px 20px"><div class="chips">
+          <span class="chip chip--g">行业品牌包</span>
+          <span class="chip chip--g">Agent 工作流插件</span>
+          <span class="chip chip--g">数据连接器</span>
+          <span class="chip chip--g">高级分析</span>
+          <span class="chip chip--g">企业私有化部署</span>
+        </div></div>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">14</div>
+</section></div>
+
+<!-- ============ 15 · USE OF FUNDS ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Use of Funds · 融资用途</div>
+    <div class="row center" style="margin-top:16px"><h2 class="title" style="font-size:32px;flex:1">首期 <em>¥100–200 万</em>，覆盖 6–9 个月 MVP 与早期验证</h2></div>
+
+    <div class="row center" style="margin-top:26px;flex:1;gap:48px">
+      <div style="display:flex;align-items:center;gap:34px;flex:none">
+        <div class="donut" style="background:conic-gradient(#4F46E5 0 45%,#7C3AED 0 65%,#C026D3 0 80%,#06B6D4 0 90%,#F59E0B 0 100%)">
+          <div class="ctr"><div style="font-family:var(--display);font-weight:800;font-size:30px;color:var(--s900)">100%</div><div style="font-size:11px;color:var(--s400);letter-spacing:.08em">资金分配</div></div>
+        </div>
+        <div class="legend">
+          <div class="lg"><span class="sw" style="background:#4F46E5"></span><span class="pct">45%</span><span class="lb"><b>产品研发</b>前端 · 桌面端 · 本地数据 · Agent 工作流 · 稳定性</span></div>
+          <div class="lg"><span class="sw" style="background:#7C3AED"></span><span class="pct">20%</span><span class="lb"><b>数据与集成</b>邮箱 · 社媒 · 电商 · 云盘 · 内容与分析接口</span></div>
+          <div class="lg"><span class="sw" style="background:#C026D3"></span><span class="pct">15%</span><span class="lb"><b>设计与客户成功</b>产品体验 · 试点导入 · SOP 打磨</span></div>
+          <div class="lg"><span class="sw" style="background:#06B6D4"></span><span class="pct">10%</span><span class="lb"><b>模型与算力</b>多模型测试 · 推理成本 · 自动化任务</span></div>
+          <div class="lg"><span class="sw" style="background:#F59E0B"></span><span class="pct">10%</span><span class="lb"><b>法务合规与运营</b>合同模板 · 隐私 · 发信合规 · 行政</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:auto;background:var(--grad-soft);border-color:rgba(124,58,237,.18)">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><span style="font-family:var(--display);font-weight:700;font-size:13px;color:#5b3fd6;letter-spacing:.06em">资金对应阶段目标</span><div style="flex:1;height:1px;background:var(--line)"></div></div>
+      <div class="grid g4" style="gap:12px">
+        <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span style="font-size:12.5px">合作推广营销模块稳定 MVP</span></div>
+        <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span style="font-size:12.5px">跑通 3–5 个试点品牌</span></div>
+        <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span style="font-size:12.5px">可复用品牌导入方法 + 首批付费意向</span></div>
+        <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span style="font-size:12.5px">下一轮融资的 demo、案例与商业指标</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">15</div>
+</section></div>
+
+<!-- ============ 16 · MILESTONES & KPIs ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Milestones & Metrics · 早期里程碑与指标</div>
+    <h2 class="title" style="margin-top:16px;font-size:32px">向投资人承诺的<em>里程碑与可跟踪指标</em></h2>
+
+    <div class="row" style="margin-top:24px;flex:1;gap:30px">
+      <div class="col" style="flex:1">
+        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--indigo);letter-spacing:.08em;margin-bottom:14px">里程碑 M1 → M6</div>
+        <div class="ms">
+          <div class="msrow"><div class="m">M1</div><span>完成合作推广营销闭环 demo</span></div>
+          <div class="msrow"><div class="m">M2</div><span>导入 1 个真实品牌历史邮件与 KOL 流程</span></div>
+          <div class="msrow"><div class="m">M3</div><span>完成 3 个试点品牌</span></div>
+          <div class="msrow"><div class="m">M4</div><span>实现首批付费或签署试点合作协议</span></div>
+          <div class="msrow"><div class="m">M5</div><span>上线品牌知识库与品牌体检能力</span></div>
+          <div class="msrow"><div class="m">M6</div><span>形成内容生产与合作推广联动 demo</span></div>
+        </div>
+      </div>
+      <div class="col" style="flex:1">
+        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--fuchsia);letter-spacing:.08em;margin-bottom:14px">关键业务指标</div>
+        <div class="grid g2" style="gap:12px">
+          <div class="kpi"><div class="v">500–1k</div><div class="l">可处理历史邮件量</div></div>
+          <div class="kpi"><div class="v">↑准确率</div><div class="l">自动分类准确率</div></div>
+          <div class="kpi"><div class="v">⏱省时</div><div class="l">人工节省时间</div></div>
+          <div class="kpi"><div class="v">20–50</div><div class="l">有效 KOL 入库数</div></div>
+          <div class="kpi"><div class="v">↑转化</div><div class="l">合作推进转化率</div></div>
+          <div class="kpi"><div class="v">3–5</div><div class="l">试点品牌留存 / 付费意向</div></div>
+        </div>
+        <p style="font-size:12px;color:var(--s400);margin-top:14px;line-height:1.6">同时跟踪：线索到发出提案的平均时间、签约到发货的流程完整率。</p>
+      </div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">16</div>
+</section></div>
+
+<!-- ============ 17 · RISKS ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">Risks & Mitigations · 风险与应对</div>
+    <h2 class="title" style="margin-top:16px;font-size:32px">已识别的风险，<em>都有对应的产品化应对</em></h2>
+
+    <div class="grid g2" style="margin-top:24px;gap:14px 18px">
+      <div class="risk"><div class="rn">R1</div><div><h5>AI 判断不稳定</h5><p>关键节点保留人工确认；判断结构化记录依据；<b>先建议草稿，再逐步开放自动操作</b>。</p></div></div>
+      <div class="risk"><div class="rn">R2</div><div><h5>邮箱与平台集成复杂</h5><p>先从 IMAP/SMTP 与本地数据库切入；外部平台作为后续连接器；<b>核心流程不依赖单一平台</b>。</p></div></div>
+      <div class="risk"><div class="rn">R3</div><div><h5>被当成普通 AI 聊天工具</h5><p>界面以工作流、品牌目录、数据库与任务状态为核心，<b>而非只做聊天框</b>。</p></div></div>
+      <div class="risk"><div class="rn">R4</div><div><h5>早期功能范围过大</h5><p>先聚焦合作推广营销，证明"人工 SOP → AI 工作流"可行，<b>再扩展知识与内容能力</b>。</p></div></div>
+      <div class="risk" style="grid-column:span 2"><div class="rn">R5</div><div><h5>数据隐私与越权操作</h5><p><b>本地优先 · 权限分层 · 发信确认 · 审计日志 · 敏感信息不暴露</b> —— 把可控性写进产品架构，而不是依赖事后约束。</p></div></div>
+    </div>
+  </div>
+  <div class="brandmark"><span class="dot"></span><span>Incuboot</span></div>
+  <div class="snum">17</div>
+</section></div>
+
+<!-- ============ 18 · THESIS / VISION ============ -->
+<div class="frame"><section class="slide cover dark">
+  <div class="grain"></div>
+  <div class="orb" style="width:300px;height:300px;top:-80px;left:-40px;background:radial-gradient(circle,rgba(124,58,237,.7),transparent 70%)"></div>
+  <div class="orb" style="width:260px;height:260px;bottom:-70px;right:40px;background:radial-gradient(circle,rgba(6,182,212,.55),transparent 70%)"></div>
+  <div class="pad" style="display:flex;flex-direction:column;height:100%;position:relative;z-index:2">
+    <div class="kicker">The Core Thesis · 投资人应看到的核心判断</div>
+    <h2 class="title" style="margin-top:22px;font-size:38px;max-width:24ch">机会不在于"AI 能不能生成文案"，<br/>而在于<em>品牌团队的日常工作能否被 AI 系统化接管一部分</em>。</h2>
+
+    <div class="row" style="margin-top:34px;gap:20px">
+      <div class="card" style="background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);flex:1"><div class="card__ic" style="background:rgba(165,180,252,.16);color:#a5b4fc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg></div><h4 style="color:#fff">足够具体的切口</h4><p style="color:rgba(255,255,255,.7)">合作推广营销：真实业务价值、可验证流程、明确数据入口、可量化结果。</p></div>
+      <div class="card" style="background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);flex:1"><div class="card__ic" style="background:rgba(165,180,252,.16);color:#a5b4fc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg></div><h4 style="color:#fff">可自然延伸</h4><p style="color:rgba(255,255,255,.7)">向品牌知识、内容生产与增长复盘扩展，长出完整系统。</p></div>
+      <div class="card" style="background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);flex:1"><div class="card__ic" style="background:rgba(165,180,252,.16);color:#a5b4fc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4 4 4 0 0 0-2 7 4 4 0 0 0 4 7 4 4 0 0 0 8 0 4 4 0 0 0 4-7 4 4 0 0 0-2-7 4 4 0 0 0-4-4z"/></svg></div><h4 style="color:#fff">验证更大命题</h4><p style="color:rgba(255,255,255,.7)">AI 原生品牌系统可把人工经验沉淀为可复用的智能工作流。</p></div>
+    </div>
+
+    <div style="margin-top:auto;padding-top:26px;border-top:1px solid rgba(255,255,255,.12)">
+      <p style="font-size:17px;line-height:1.65;color:rgba(255,255,255,.85)">资料在文件夹里，沟通在邮箱里，策略在 Notion 里，复盘在人的脑子里。<b style="color:#fff">Incuboot 把这些重新组织成一个品牌团队每天打开的 AI 原生经营系统。</b></p>
+    </div>
+  </div>
+  <div class="snum">18</div>
+</section></div>
+
+<!-- ============ 19 · CLOSING / NEXT STEPS ============ -->
+<div class="frame"><section class="slide">
+  <div class="pad" style="display:flex;flex-direction:column;height:100%">
+    <div class="kicker">The Ask & Next Steps · 资金请求与下一步</div>
+    <div class="row" style="margin-top:18px;flex:1;gap:30px">
+      <div class="col" style="flex:1.05;display:flex;flex-direction:column">
+        <h2 class="title" style="font-size:32px">这一轮，我们要一笔<br/><em>完成 MVP 与试点验证</em>的启动资金</h2>
+        <div class="card" style="margin-top:20px;background:linear-gradient(135deg,#0E1430,#1a1147);border:0;color:#fff">
+          <div style="display:flex;align-items:baseline;gap:14px"><div class="stat" style="font-size:40px">¥100–200<span style="font-size:18px"> 万</span></div><span style="color:rgba(255,255,255,.6);font-size:14px">覆盖 6–9 个月</span></div>
+          <div style="font-size:13px;color:rgba(255,255,255,.72);margin-top:6px">小额试水可先以 <b style="color:#fff">¥50–80 万</b> 启动</div>
+        </div>
+        <div class="list" style="margin-top:20px">
+          <div class="li"><span class="tick" style="background:var(--grad);color:#fff">1</span><span>把合作推广营销模块<b>从已跑通流程变成稳定产品</b></span></div>
+          <div class="li"><span class="tick" style="background:var(--grad);color:#fff">2</span><span>找 <b>3–5 个真实品牌试点</b>，验证省时、提转化、沉淀流程</span></div>
+          <div class="li"><span class="tick" style="background:var(--grad);color:#fff">3</span><span>扩展品牌知识库与内容生产，证明它是<b>完整智能品牌系统的雏形</b></span></div>
+        </div>
+      </div>
+      <div class="col" style="flex:1;display:flex;flex-direction:column">
+        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--violet);letter-spacing:.08em;margin-bottom:12px">下一步补齐的材料</div>
+        <div class="grid g2" style="gap:10px;flex:1">
+          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">人工 SOP 截图 / 文字版</div>
+          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">模块 demo 截图</div>
+          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">真实品牌案例数据</div>
+          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">1 页产品架构图</div>
+          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">融资用途与里程碑表</div>
+          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">创始团队介绍</div>
+          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">商业模式与定价假设</div>
+          <div class="chip chip--g" style="justify-content:center;text-align:center;padding:12px 10px">3 分钟演示脚本</div>
+        </div>
+        <div class="card" style="margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:14px">
+          <div style="display:flex;align-items:center;gap:11px"><span class="dot" style="width:22px;height:22px;border-radius:7px;background:var(--grad)"></span><div><div style="font-family:var(--display);font-weight:800;font-size:16px;color:var(--s900)">Incuboot</div><div style="font-size:11px;color:var(--s400)">AI 原生智能品牌系统</div></div></div>
+          <div style="text-align:right;font-size:12px;color:var(--s400);line-height:1.6">联系方式占位<br/>email · 微信 · 官网</div>
+        </div>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:18px"><span style="font-family:var(--display);font-weight:700;font-size:18px;background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent">谢谢 · 期待与您共建 AI 时代的智能品牌系统</span></div>
+  </div>
+  <div class="snum">19</div>
+</section></div>
+
+</div><!-- /stage -->
+
+<div class="toolbar">
+  <button class="tb-btn" id="prev" title="上一页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+  <div class="tb-count"><b id="cur">1</b> / <span id="tot">1</span></div>
+  <button class="tb-btn" id="next" title="下一页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></button>
+  <div class="tb-sep"></div>
+  <button class="tb-btn tb-print" id="print" title="打印 / 导出 PDF"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>导出 PDF</button>
+</div>
+
+<script>
+(function(){
+  var BASE_W=1280, BASE_H=720, GAP_X=80;
+  var slides=[].slice.call(document.querySelectorAll('.frame'));
+  document.getElementById('tot').textContent=slides.length;
+  function fit(){
+    var avail=window.innerWidth-GAP_X;
+    var scale=Math.min(1, avail/BASE_W);
+    slides.forEach(function(f){
+      f.style.width=(BASE_W*scale)+'px';
+      f.style.height=(BASE_H*scale)+'px';
+      var s=f.querySelector('.slide');
+      if(s) s.style.transform='scale('+scale+')';
+    });
+  }
+  window.addEventListener('resize',fit); fit();
+
+  var cur=0;
+  function go(i){ cur=Math.max(0,Math.min(slides.length-1,i)); slides[cur].scrollIntoView({behavior:'smooth',block:'center'}); }
+  document.getElementById('next').onclick=function(){go(cur+1)};
+  document.getElementById('prev').onclick=function(){go(cur-1)};
+  document.getElementById('print').onclick=function(){window.print()};
+  document.addEventListener('keydown',function(e){
+    if(e.key==='ArrowRight'||e.key==='ArrowDown'||e.key===' '){e.preventDefault();go(cur+1)}
+    if(e.key==='ArrowLeft'||e.key==='ArrowUp'){e.preventDefault();go(cur-1)}
+  });
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(en){ if(en.isIntersecting){ cur=slides.indexOf(en.target); document.getElementById('cur').textContent=cur+1;
+      document.getElementById('progress').style.width=((cur+1)/slides.length*100)+'%'; } });
+  },{threshold:.55});
+  slides.forEach(function(s){io.observe(s)});
+})();
+</script>
+</body>
+</html>
