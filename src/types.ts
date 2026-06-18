@@ -49,6 +49,12 @@ export interface MessageAttachment {
   previewUrl?: string;
 }
 
+export interface SkillSelection {
+  id: string;
+  title: string;
+  description?: string;
+}
+
 // What a review turn was asked to inspect, mirroring Codex's /review presets.
 export type ReviewTargetKind = 'uncommitted' | 'base' | 'commit' | 'custom';
 

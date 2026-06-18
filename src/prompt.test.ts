@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { activeDomain } from './domain';
-import { buildCodingPrompt } from './prompt';
+import { buildCodingInstructions, buildCodingPrompt } from './prompt';
 
 describe('core coding domain', () => {
   it('uses the source-available coding domain by default', () => {
@@ -28,5 +28,26 @@ describe('core coding domain', () => {
     for (const word of forbiddenDomainWords) {
       expect(prompt).not.toContain(word);
     }
+  });
+
+  it('emphasizes the selected skill in coding prompts', () => {
+    const prompt = buildCodingPrompt(
+      'Open the page and debug the issue.',
+      { selectedSkill: { id: 'chrome', title: 'Chrome' } },
+    );
+
+    expect(prompt).toContain('当前指定 Skill：Chrome (chrome)');
+    expect(prompt).toContain('必须优先使用这个 Skill');
+  });
+
+  it('keeps Alpha Studio instructions separate from the user task for app-server turns', () => {
+    const instructions = buildCodingInstructions(
+      { selectedSkill: { id: 'chrome', title: 'Chrome' } },
+    );
+
+    expect(instructions).toContain('本地编码工作台助手');
+    expect(instructions).toContain('当前指定 Skill：Chrome (chrome)');
+    expect(instructions).not.toContain('用户任务');
+    expect(instructions).not.toContain('Open the page and debug the issue.');
   });
 });

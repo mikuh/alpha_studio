@@ -32,6 +32,7 @@ export interface CodexChatStartRequest {
   providerThinkingEnabled?: boolean;
   reasoningEffort?: string;
   sandboxMode?: SandboxMode;
+  developerInstructions?: string;
 }
 
 export interface CodexChatStartResult {

@@ -1,13 +1,13 @@
 import { activeDomain, type DomainConfig } from './domain';
-import type { ReviewRequest } from './types';
+import type { ReviewRequest, SkillSelection } from './types';
 
 export interface PromptOptions {
   planMode?: boolean;
   pursueGoal?: boolean;
+  selectedSkill?: SkillSelection | null;
 }
 
-export function buildCodingPrompt(
-  userPrompt: string,
+export function buildCodingInstructions(
   options: PromptOptions = {},
   domain: DomainConfig = activeDomain(),
 ): string {
@@ -22,6 +22,12 @@ export function buildCodingPrompt(
       '当前开启「追求目标」：持续自主推进，直到任务目标达成或确实被外部因素阻塞；每完成一步说明进展、验证结果与下一步。',
     );
   }
+  if (options.selectedSkill) {
+    const skill = options.selectedSkill;
+    modeLines.push(
+      `当前指定 Skill：${skill.title} (${skill.id})。必须优先使用这个 Skill 的能力、说明和工具路线来完成任务；如果任务明显不适合该 Skill，先简短说明原因，再用最合适的方式继续。`,
+    );
+  }
 
   return [
     ...domain.prompt.systemLines,
@@ -29,6 +35,16 @@ export function buildCodingPrompt(
     '',
     '回答要求：',
     ...domain.prompt.responseGuidance.map((line) => `- ${line}`),
+  ].join('\n');
+}
+
+export function buildCodingPrompt(
+  userPrompt: string,
+  options: PromptOptions = {},
+  domain: DomainConfig = activeDomain(),
+): string {
+  return [
+    buildCodingInstructions(options, domain),
     '',
     '用户任务：',
     userPrompt,

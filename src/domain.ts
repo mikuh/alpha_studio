@@ -190,7 +190,7 @@ export const coreCodingDomain: DomainConfig = {
     ],
     integrations: [
       { id: 'snapshots', label: '应用快照' },
-      { id: 'mcp', label: 'MCP 服务器' },
+      { id: 'mcp', label: '插件' },
       { id: 'browser', label: '浏览器' },
       { id: 'computer', label: '电脑操控' },
     ],

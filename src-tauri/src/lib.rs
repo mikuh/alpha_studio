@@ -11,7 +11,9 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex};
@@ -58,6 +60,7 @@ pub struct CodexCheckResult {
 pub struct CodexChatRequest {
     conversation_id: String,
     prompt: String,
+    developer_instructions: Option<String>,
     codex_thread_id: Option<String>,
     cwd: Option<String>,
     model: Option<String>,
@@ -444,6 +447,7 @@ async fn codex_chat_start(
 
     let run_id = generate_run_id();
     let cwd = resolve_cwd(request.cwd.as_deref())?;
+    let codex_home = prepare_alpha_studio_codex_home()?;
     let sandbox_mode = sanitize_sandbox_mode(request.sandbox_mode.as_deref());
     let mut provider_config = sanitize_model_provider(&request)?;
     let adapter_shutdown = if let Some(provider) = provider_config.as_mut() {
@@ -485,6 +489,7 @@ async fn codex_chat_start(
     command.current_dir(&cwd);
     command.env("TERM", "xterm-256color");
     command.env("NO_COLOR", "1");
+    command.env("CODEX_HOME", &codex_home);
     command.kill_on_drop(true);
 
     let mut child = command
@@ -565,6 +570,12 @@ async fn codex_chat_start(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
+        developer_instructions: request
+            .developer_instructions
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         reasoning_effort: sanitize_reasoning_effort(request.reasoning_effort.as_deref()),
         prompt: request.prompt.clone(),
         stderr_buffer,
@@ -588,6 +599,7 @@ struct CodexDriver {
     cwd: String,
     sandbox_mode: String,
     model: Option<String>,
+    developer_instructions: Option<String>,
     reasoning_effort: Option<String>,
     prompt: String,
     stderr_buffer: Arc<Mutex<String>>,
@@ -702,7 +714,7 @@ impl CodexDriver {
             }),
         )
         .await?;
-        await_response(reader, 1).await?;
+        await_response(stdin, reader, 1).await?;
         send_jsonrpc(
             stdin,
             &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
@@ -717,6 +729,9 @@ impl CodexDriver {
         if let Some(model) = &self.model {
             thread_params.insert("model".to_string(), json!(model));
         }
+        if let Some(instructions) = &self.developer_instructions {
+            thread_params.insert("developerInstructions".to_string(), json!(instructions));
+        }
         let method = if let Some(thread_id) = &self.thread_id {
             thread_params.insert("threadId".to_string(), json!(thread_id));
             "thread/resume"
@@ -728,7 +743,7 @@ impl CodexDriver {
             &json!({ "jsonrpc": "2.0", "id": 2, "method": method, "params": Value::Object(thread_params) }),
         )
         .await?;
-        let thread_response = await_response(reader, 2).await?;
+        let thread_response = await_response(stdin, reader, 2).await?;
         let thread_id = self
             .thread_id
             .clone()
@@ -801,20 +816,7 @@ impl CodexDriver {
                 // the sandbox/approval policy up front) and acknowledge anything
                 // else, so the turn can always make progress.
                 if let Some(request_id) = message.get("id").filter(|id| !id.is_null()) {
-                    let lowered = method.to_ascii_lowercase();
-                    let approval = lowered.contains("approv")
-                        || lowered.contains("permission")
-                        || lowered.contains("elicit");
-                    let result = if approval {
-                        json!({ "decision": "approved", "approved": true, "allow": true })
-                    } else {
-                        json!({})
-                    };
-                    let _ = send_jsonrpc(
-                        stdin,
-                        &json!({ "jsonrpc": "2.0", "id": request_id.clone(), "result": result }),
-                    )
-                    .await;
+                    let _ = answer_app_server_request(stdin, request_id, method).await;
                     continue;
                 }
 
@@ -845,10 +847,10 @@ impl CodexDriver {
     }
 }
 
-async fn send_jsonrpc(
-    stdin: &mut tokio::process::ChildStdin,
-    message: &Value,
-) -> Result<(), String> {
+async fn send_jsonrpc<W>(stdin: &mut W, message: &Value) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+{
     let mut bytes =
         serde_json::to_vec(message).map_err(|e| format!("Failed to encode request: {e}"))?;
     bytes.push(b'\n');
@@ -863,10 +865,15 @@ async fn send_jsonrpc(
     Ok(())
 }
 
-async fn await_response(
-    reader: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+async fn await_response<W, R>(
+    stdin: &mut W,
+    reader: &mut tokio::io::Lines<R>,
     id: i64,
-) -> Result<Value, String> {
+) -> Result<Value, String>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncBufRead + Unpin,
+{
     loop {
         match reader.next_line().await {
             Ok(Some(line)) => {
@@ -877,6 +884,14 @@ async fn await_response(
                 let Ok(message) = serde_json::from_str::<Value>(trimmed) else {
                     continue;
                 };
+                if let Some(method) = message.get("method").and_then(Value::as_str) {
+                    if let Some(request_id) =
+                        message.get("id").filter(|request_id| !request_id.is_null())
+                    {
+                        answer_app_server_request(stdin, request_id, method).await?;
+                        continue;
+                    }
+                }
                 if message.get("id").and_then(Value::as_i64) == Some(id) {
                     if let Some(error) = message.get("error") {
                         return Err(jsonrpc_error_message(error));
@@ -887,6 +902,34 @@ async fn await_response(
             Ok(None) => return Err("Codex app-server closed before responding".to_string()),
             Err(e) => return Err(format!("Failed to read from Codex app-server: {e}")),
         }
+    }
+}
+
+async fn answer_app_server_request<W>(
+    stdin: &mut W,
+    request_id: &Value,
+    method: &str,
+) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+{
+    send_jsonrpc(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": request_id.clone(),
+            "result": app_server_request_result(method),
+        }),
+    )
+    .await
+}
+
+fn app_server_request_result(method: &str) -> Value {
+    let lowered = method.to_ascii_lowercase();
+    if lowered.contains("approv") || lowered.contains("permission") || lowered.contains("elicit") {
+        json!({ "decision": "approved", "approved": true, "allow": true })
+    } else {
+        json!({})
     }
 }
 
@@ -914,6 +957,7 @@ fn map_app_server_notification(
             if delta.is_empty() {
                 return Vec::new();
             }
+            streamed.insert("message:*".to_string());
             if let Some(item_id) = params.get("itemId").and_then(Value::as_str) {
                 streamed.insert(format!("message:{item_id}"));
             }
@@ -936,6 +980,7 @@ fn map_app_server_notification(
             if delta.is_empty() {
                 return Vec::new();
             }
+            streamed.insert("reasoning:*".to_string());
             if let Some(item_id) = params.get("itemId").and_then(Value::as_str) {
                 streamed.insert(format!("reasoning:{item_id}"));
             }
@@ -998,10 +1043,11 @@ fn map_app_server_notification(
                 item_type.as_str(),
                 "agentmessage" | "assistantmessage" | "message"
             ) {
-                let already = item_id
-                    .as_ref()
-                    .map(|id| streamed.contains(&format!("message:{id}")))
-                    .unwrap_or(false);
+                let already = streamed.contains("message:*")
+                    || item_id
+                        .as_ref()
+                        .map(|id| streamed.contains(&format!("message:{id}")))
+                        .unwrap_or(false);
                 if already {
                     return Vec::new();
                 }
@@ -1023,10 +1069,11 @@ fn map_app_server_notification(
             }
 
             if matches!(item_type.as_str(), "reasoning" | "thought" | "analysis") {
-                let already = item_id
-                    .as_ref()
-                    .map(|id| streamed.contains(&format!("reasoning:{id}")))
-                    .unwrap_or(false);
+                let already = streamed.contains("reasoning:*")
+                    || item_id
+                        .as_ref()
+                        .map(|id| streamed.contains(&format!("reasoning:{id}")))
+                        .unwrap_or(false);
                 if already {
                     return Vec::new();
                 }
@@ -3042,6 +3089,95 @@ fn home_dir() -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+fn prepare_alpha_studio_codex_home() -> Result<String, String> {
+    let home = home_dir().ok_or_else(|| "Failed to resolve HOME for Codex config.".to_string())?;
+    let source = PathBuf::from(&home).join(".codex");
+    let target = PathBuf::from(home).join(".alpha-studio").join("codex-home");
+    prepare_alpha_studio_codex_home_from(&source, &target)?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+fn prepare_alpha_studio_codex_home_from(source: &Path, target: &Path) -> Result<(), String> {
+    fs::create_dir_all(target)
+        .map_err(|e| format!("Failed to create Alpha Studio Codex home: {e}"))?;
+
+    for file_name in ["auth.json", "config.toml", "AGENTS.md", "installation_id"] {
+        let source_path = source.join(file_name);
+        if source_path.is_file() {
+            copy_codex_home_file(&source_path, &target.join(file_name))?;
+        }
+    }
+
+    for dir_name in ["skills", "plugins", "vendor_imports", "cache", "rules"] {
+        let source_path = source.join(dir_name);
+        if source_path.is_dir() {
+            link_codex_home_directory(&source_path, &target.join(dir_name))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn copy_codex_home_file(source: &Path, target: &Path) -> Result<(), String> {
+    remove_existing_path(target)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create Codex config directory: {e}"))?;
+    }
+    fs::copy(source, target)
+        .map(|_| ())
+        .map_err(|e| format!("Failed to copy Codex config file {}: {e}", source.display()))
+}
+
+fn link_codex_home_directory(source: &Path, target: &Path) -> Result<(), String> {
+    remove_existing_path(target)?;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, target)
+            .map_err(|e| format!("Failed to link Codex directory {}: {e}", source.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        copy_codex_home_directory(source, target)
+    }
+}
+
+#[cfg(not(unix))]
+fn copy_codex_home_directory(source: &Path, target: &Path) -> Result<(), String> {
+    fs::create_dir_all(target)
+        .map_err(|e| format!("Failed to create Codex directory {}: {e}", target.display()))?;
+    for entry in fs::read_dir(source)
+        .map_err(|e| format!("Failed to read Codex directory {}: {e}", source.display()))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read Codex directory entry: {e}"))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_codex_home_directory(&source_path, &target_path)?;
+        } else if source_path.is_file() {
+            copy_codex_home_file(&source_path, &target_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_existing_path(path: &Path) -> Result<(), String> {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(path).map_err(|e| {
+            format!(
+                "Failed to remove existing directory {}: {e}",
+                path.display()
+            )
+        })
+    } else {
+        fs::remove_file(path)
+            .map_err(|e| format!("Failed to remove existing file {}: {e}", path.display()))
+    }
+}
+
 fn resolve_cwd(value: Option<&str>) -> Result<String, String> {
     if let Some(cwd) = value.map(str::trim).filter(|value| !value.is_empty()) {
         return Ok(cwd.to_string());
@@ -4267,6 +4403,29 @@ mod tests {
     }
 
     #[test]
+    fn app_server_suppresses_completed_message_after_any_delta_when_id_is_missing() {
+        let mut streamed = HashSet::new();
+        let delta = map_app_server_notification(
+            "item/agentMessage/delta",
+            &serde_json::json!({ "threadId": "t", "turnId": "u", "itemId": "item_0", "delta": "你好。" }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(delta.len(), 1);
+
+        let completed = map_app_server_notification(
+            "item/completed",
+            &serde_json::json!({ "item": { "type": "agentMessage", "text": "你好。我在。" } }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+
+        assert!(completed.is_empty());
+    }
+
+    #[test]
     fn app_server_falls_back_to_completed_message_without_deltas() {
         let mut streamed = HashSet::new();
         let completed = map_app_server_notification(
@@ -4376,6 +4535,32 @@ mod tests {
         assert_eq!(nested[0].message.as_deref(), Some("Reconnecting... 2/5"));
     }
 
+    #[tokio::test]
+    async fn await_response_answers_server_requests_before_target_response() {
+        let input = [
+            r#"{"jsonrpc":"2.0","id":"approval-1","method":"elicitation/create","params":{"message":"Continue?"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#,
+        ]
+        .join("\n")
+            + "\n";
+        let mut reader =
+            tokio::io::BufReader::new(std::io::Cursor::new(input.into_bytes())).lines();
+        let (mut writer, mut written) = tokio::io::duplex(1024);
+
+        let response = await_response(&mut writer, &mut reader, 1).await.unwrap();
+        drop(writer);
+
+        let mut replies = String::new();
+        written.read_to_string(&mut replies).await.unwrap();
+
+        assert_eq!(
+            response.get("result").and_then(|value| value.get("ok")),
+            Some(&Value::Bool(true)),
+        );
+        assert!(replies.contains(r#""id":"approval-1""#));
+        assert!(replies.contains(r#""approved":true"#));
+    }
+
     #[test]
     fn app_server_args_include_custom_provider_config() {
         let provider = ModelProviderConfig {
@@ -4412,6 +4597,29 @@ mod tests {
     #[test]
     fn app_server_args_fall_back_to_openai_without_provider_config() {
         assert_eq!(codex_app_server_args(None), vec!["app-server".to_string()]);
+    }
+
+    #[test]
+    fn prepares_private_codex_home_without_copying_user_history() {
+        let root = std::env::temp_dir().join(format!(
+            "alpha-studio-codex-home-test-{}",
+            generate_run_id()
+        ));
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir_all(source.join("sessions")).unwrap();
+        fs::write(source.join("auth.json"), "{}").unwrap();
+        fs::write(source.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+        fs::write(source.join("session_index.jsonl"), "{}\n").unwrap();
+
+        prepare_alpha_studio_codex_home_from(&source, &target).unwrap();
+
+        assert!(target.join("auth.json").exists());
+        assert!(target.join("config.toml").exists());
+        assert!(!target.join("session_index.jsonl").exists());
+        assert!(!target.join("sessions").exists());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -4822,6 +5030,7 @@ mod tests {
             provider_thinking_enabled: Some(provider_wire_api == Some("chat")),
             reasoning_effort: None,
             sandbox_mode: None,
+            developer_instructions: None,
         }
     }
 

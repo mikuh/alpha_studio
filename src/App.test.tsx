@@ -1,7 +1,7 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles } from './models';
 import { useChatStore } from './store';
@@ -95,6 +95,64 @@ describe('right feature panel', () => {
     expect(container.querySelector('.terminal-dock-panel')).not.toBeInTheDocument();
     expect(screen.getByLabelText('收起下方终端')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByLabelText('收起下方终端').querySelector('svg')).toHaveClass('lucide-panel-bottom-close');
+  });
+
+  it('opens a Codex-style skills page from the sidebar plugin menu', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '插件' }));
+
+    const skillsPage = container.querySelector('.skills-page') as HTMLElement;
+    expect(skillsPage).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: '设置' })).not.toBeInTheDocument();
+    expect(within(skillsPage).getByRole('heading', { name: '技能' })).toBeInTheDocument();
+    expect(within(skillsPage).getByPlaceholderText('搜索插件和技能')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('个人')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('系统')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('Browser')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('Skill Installer')).toBeInTheDocument();
+  });
+
+  it('returns from the skills page to chat when starting a new conversation', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      conversations: [conversation({ messages: [] })],
+      currentConversationId: 'conv-right-panel',
+    });
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '插件' }));
+    expect(container.querySelector('.skills-page')).toBeInTheDocument();
+
+    await user.click(within(container.querySelector('.nav-menu') as HTMLElement).getByRole('button', { name: '新对话' }));
+
+    expect(container.querySelector('.skills-page')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('要求 Codex 执行任务')).toBeInTheDocument();
+  });
+
+  it('selects a skill from the composer plugin flyout and sends it with the message', async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ sendMessage });
+    render(<App />);
+
+    await user.click(screen.getByLabelText('添加内容'));
+    const plusMenu = document.querySelector('.plus-menu') as HTMLElement;
+    fireEvent.click(within(plusMenu).getByRole('button', { name: /插件/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Chrome' }));
+
+    const composer = document.querySelector('.composer-card') as HTMLElement;
+    expect(within(composer).getByText('Chrome')).toBeInTheDocument();
+
+    await user.type(within(composer).getByRole('textbox'), '检查页面控制台');
+    await user.click(within(composer).getByLabelText('发送'));
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      '检查页面控制台',
+      [],
+      expect.objectContaining({ id: 'chrome', title: 'Chrome' }),
+    );
   });
 
   it('keeps bottom terminal tabs mounted and numbered sequentially while collapsed', async () => {

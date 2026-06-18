@@ -181,10 +181,12 @@ import type {
   ReviewFinding,
   ReviewReport,
   ReviewRequest,
+  SkillSelection,
 } from './types';
 
 type RightPanel = 'none' | 'git' | 'features' | 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
 type RightDockKind = 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
+type MainView = 'chat' | 'skills';
 interface RightDockTab {
   id: string;
   kind: RightDockKind;
@@ -239,6 +241,128 @@ const RIGHT_DOCK_META: Record<RightDockKind, { label: string; shortcut?: string 
   'side-chat': { label: '侧边聊天', shortcut: '⌥⌘S' },
 };
 const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['browser', 'terminal', 'files', 'side-chat'];
+
+interface SkillCatalogItem extends SkillSelection {
+  category: 'personal' | 'system' | 'recommended';
+  source: string;
+  installed: boolean;
+  icon: 'browser' | 'chrome' | 'computer' | 'pdf' | 'image' | 'docs' | 'plugin' | 'skill' | 'playwright';
+}
+
+const SKILL_CATALOG: readonly SkillCatalogItem[] = [
+  {
+    id: 'browser',
+    title: 'Browser',
+    description: 'Browser lets Codex open and control the in-app browser, mainly for local development pages and web QA.',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'browser',
+  },
+  {
+    id: 'chrome',
+    title: 'Chrome',
+    description: 'Control the user Chrome browser when a task needs an existing signed-in browser session.',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'chrome',
+  },
+  {
+    id: 'computer-use',
+    title: '电脑',
+    description: 'Operate local macOS GUI apps through the installed computer-use runtime.',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'computer',
+  },
+  {
+    id: 'pdf',
+    title: 'PDF',
+    description: 'Read, create, inspect, render, and verify PDF files.',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'pdf',
+  },
+  {
+    id: 'imagegen',
+    title: 'Image Gen',
+    description: 'Generate or edit images for websites, games, and more.',
+    category: 'system',
+    source: '系统',
+    installed: true,
+    icon: 'image',
+  },
+  {
+    id: 'openai-docs',
+    title: 'OpenAI Docs',
+    description: 'Reference OpenAI docs, Codex self-knowledge, and model migration guidance.',
+    category: 'system',
+    source: '系统',
+    installed: true,
+    icon: 'docs',
+  },
+  {
+    id: 'plugin-creator',
+    title: 'Plugin Creator',
+    description: 'Scaffold plugins and marketplace entries.',
+    category: 'system',
+    source: '系统',
+    installed: true,
+    icon: 'plugin',
+  },
+  {
+    id: 'skill-creator',
+    title: 'Skill Creator',
+    description: 'Create or update a skill.',
+    category: 'system',
+    source: '系统',
+    installed: true,
+    icon: 'skill',
+  },
+  {
+    id: 'skill-installer',
+    title: 'Skill Installer',
+    description: 'Install curated skills from openai/skills or other repos.',
+    category: 'system',
+    source: '系统',
+    installed: true,
+    icon: 'skill',
+  },
+  {
+    id: 'playwright',
+    title: 'Playwright',
+    description: 'Automate real browsers from the terminal.',
+    category: 'recommended',
+    source: '推荐',
+    installed: false,
+    icon: 'playwright',
+  },
+] as const;
+
+const CODEX_SKILLS_CAPABILITY: SkillSelection = {
+  id: 'skills',
+  title: 'Codex CLI Skills',
+  description: '读取本地 SKILL.md，并在任务匹配时按需加载技能说明。',
+};
+
+const PLUGIN_CAPABILITIES = [
+  {
+    id: 'mcp',
+    title: 'MCP 服务器',
+    description: '连接外部工具、资源和应用上下文。',
+    tag: '工具',
+  },
+  { ...CODEX_SKILLS_CAPABILITY, tag: '已启用' },
+  {
+    id: 'skill-installer',
+    title: 'Skill Installer',
+    description: '安装 curated skills 或自定义技能到 CODEX_HOME/skills。',
+    tag: '系统',
+  },
+] as const;
 
 function useCloseOnOutsidePointer<T extends HTMLElement>(
   open: boolean,
@@ -304,6 +428,7 @@ export function App() {
   const nextRightDockTabRef = useRef(0);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalMounted, setTerminalMounted] = useState(false);
+  const [mainView, setMainView] = useState<MainView>('chat');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [quickGitOpen, setQuickGitOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
@@ -392,9 +517,18 @@ export function App() {
     }
   }, [domain, settingsSection]);
 
+  useEffect(() => {
+    setMainView('chat');
+  }, [currentConversationId]);
+
   const openSettings = (section: SettingsSection = 'general') => {
     setSettingsSection(section);
     setSettingsOpen(true);
+  };
+
+  const openSkills = () => {
+    setSettingsOpen(false);
+    setMainView('skills');
   };
 
   const toggleBottomTerminal = useCallback(() => {
@@ -514,7 +648,10 @@ export function App() {
       <Sidebar
         domain={domain}
         collapsed={sidebarCollapsed}
+        activeView={mainView}
         onCollapse={() => setSidebarCollapsed(true)}
+        onOpenChat={() => setMainView('chat')}
+        onOpenSkills={openSkills}
         onOpenSettings={openSettings}
       />
       {!sidebarCollapsed && (
@@ -541,7 +678,7 @@ export function App() {
               onOpenSideChat={() => addRightDockTab('side-chat')}
               onOpenSettings={() => openSettings('config')}
             />
-            <ChatArea domain={domain} />
+            {mainView === 'skills' ? <SkillsPage /> : <ChatArea domain={domain} />}
           </main>
           {rightPanelResizer && (
             <RightPanelResizer
@@ -723,12 +860,18 @@ function RightPanelResizer({
 function Sidebar({
   domain,
   collapsed,
+  activeView,
   onCollapse,
+  onOpenChat,
+  onOpenSkills,
   onOpenSettings,
 }: {
   domain: DomainConfig;
   collapsed: boolean;
+  activeView: MainView;
   onCollapse: () => void;
+  onOpenChat: () => void;
+  onOpenSkills: () => void;
   onOpenSettings: (section?: SettingsSection) => void;
 }) {
   const conversations = useChatStore((state) => state.conversations);
@@ -860,6 +1003,7 @@ function Sidebar({
     const id = createProject({ name: basename(dir), cwd: dir });
     setExpanded((prev) => ({ ...prev, [id]: true }));
     createConversation(id);
+    onOpenChat();
   };
 
   const openProjectMenu = (project: Project, anchor: MenuAnchor) => {
@@ -883,6 +1027,7 @@ function Sidebar({
           onSelect: () => {
             setExpanded((prev) => ({ ...prev, [project.id]: true }));
             createConversation(project.id);
+            onOpenChat();
           },
         },
         { kind: 'separator' },
@@ -956,7 +1101,7 @@ function Sidebar({
         </div>
         <div className="sidebar-scroll">
           <div className="sidebar-menu-panel nav-menu">
-            <button className="nav-item primary" type="button" onClick={() => createConversationInContext()}>
+            <button className="nav-item primary" type="button" onClick={() => { createConversationInContext(); onOpenChat(); }}>
               <SquarePen size={15} />
               <span className="nav-label">{sidebarCopy.newConversationLabel}</span>
             </button>
@@ -965,7 +1110,7 @@ function Sidebar({
               <span className="nav-label">搜索</span>
               <span className="nav-shortcut">⌘K</span>
             </button>
-            <button className="nav-item" type="button" onClick={() => onOpenSettings('mcp')}>
+            <button className={`nav-item ${activeView === 'skills' ? 'active' : ''}`} type="button" onClick={onOpenSkills}>
               <Plug size={15} />
               <span className="nav-label">{sidebarCopy.pluginsLabel}</span>
             </button>
@@ -990,7 +1135,7 @@ function Sidebar({
                     active={conversation.id === currentConversationId}
                     editing={editingConversationId === conversation.id}
                     menuOpen={menu?.owner === conversation.id}
-                    onSelect={() => setCurrentConversation(conversation.id)}
+                    onSelect={() => { setCurrentConversation(conversation.id); onOpenChat(); }}
                     onOpenMenu={(anchor) => openConversationMenu(conversation, anchor)}
                     onCommitRename={(name) => {
                       renameConversation(conversation.id, name);
@@ -1031,8 +1176,9 @@ function Sidebar({
                   onNewConversation={() => {
                     setExpanded((prev) => ({ ...prev, [project.id]: true }));
                     createConversation(project.id);
+                    onOpenChat();
                   }}
-                  onSelectConversation={setCurrentConversation}
+                  onSelectConversation={(id) => { setCurrentConversation(id); onOpenChat(); }}
                   onOpenConversationMenu={openConversationMenu}
                   onCommitConversationRename={(id, name) => {
                     renameConversation(id, name);
@@ -1057,7 +1203,7 @@ function Sidebar({
             <button className="group-action" type="button" onClick={openConversationSectionMenu} aria-label="对话排序与整理">
               <MoreHorizontal size={15} />
             </button>
-            <button className="group-action" type="button" onClick={() => createConversation()} aria-label="新建对话">
+            <button className="group-action" type="button" onClick={() => { createConversation(); onOpenChat(); }} aria-label="新建对话">
               <SquarePen size={15} />
             </button>
           </SidebarHead>
@@ -1073,7 +1219,7 @@ function Sidebar({
                     active={conversation.id === currentConversationId}
                     editing={editingConversationId === conversation.id}
                     menuOpen={menu?.owner === conversation.id}
-                    onSelect={() => setCurrentConversation(conversation.id)}
+                    onSelect={() => { setCurrentConversation(conversation.id); onOpenChat(); }}
                     onOpenMenu={(anchor) => openConversationMenu(conversation, anchor)}
                     onCommitRename={(name) => {
                       renameConversation(conversation.id, name);
@@ -1119,17 +1265,20 @@ function Sidebar({
         onClose={() => setSearchOpen(false)}
         onSelectConversation={(id) => {
           setCurrentConversation(id);
+          onOpenChat();
           setSearchOpen(false);
         }}
         onOpenProject={(id) => {
           const latest = liveConversations.filter((conversation) => conversation.projectId === id).sort((a, b) => b.updatedAt - a.updatedAt)[0];
           if (latest) setCurrentConversation(latest.id);
           else createConversation(id);
+          onOpenChat();
           setExpanded((prev) => ({ ...prev, [id]: true }));
           setSearchOpen(false);
         }}
         onNewConversation={() => {
           createConversation();
+          onOpenChat();
           setSearchOpen(false);
         }}
         copy={sidebarCopy}
@@ -2965,6 +3114,108 @@ function SideChatPanel({ domain }: { domain: DomainConfig }) {
   );
 }
 
+function SkillsPage() {
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleSkills = SKILL_CATALOG.filter((skill) => {
+    if (!normalizedQuery) return true;
+    return `${skill.title} ${skill.description} ${skill.source}`.toLowerCase().includes(normalizedQuery);
+  });
+  const grouped = {
+    personal: visibleSkills.filter((skill) => skill.category === 'personal'),
+    system: visibleSkills.filter((skill) => skill.category === 'system'),
+    recommended: visibleSkills.filter((skill) => skill.category === 'recommended'),
+  };
+
+  return (
+    <section className="skills-page" aria-label="技能">
+      <div className="skills-page-shell">
+        <div className="skills-tabs" role="tablist" aria-label="插件与技能">
+          <button type="button" role="tab" aria-selected="false">插件</button>
+          <button type="button" role="tab" aria-selected="true" className="active">技能</button>
+        </div>
+        <header className="skills-page-head">
+          <div>
+            <h1>技能</h1>
+            <p>通过任务专用技能扩展 Codex 的能力</p>
+          </div>
+          <div className="skills-search-row">
+            <label className="skills-search">
+              <Search size={15} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索插件和技能" />
+            </label>
+            <button type="button" className="skills-filter-btn" aria-label="筛选技能" title="筛选">
+              <SlidersHorizontal size={16} />
+            </button>
+          </div>
+        </header>
+        <div className="skills-section-list">
+          <SkillSection title="个人" skills={grouped.personal} empty="没有匹配的个人技能。" />
+          <SkillSection title="系统" skills={grouped.system} empty="没有匹配的系统技能。" />
+          <SkillSection title="推荐" skills={grouped.recommended} empty="没有匹配的推荐技能。" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SkillSection({ title, skills, empty }: { title: string; skills: SkillCatalogItem[]; empty: string }) {
+  if (skills.length === 0) {
+    return (
+      <section className="skills-section" aria-label={title}>
+        <h2>{title}</h2>
+        <div className="skills-empty-row">{empty}</div>
+      </section>
+    );
+  }
+  return (
+    <section className="skills-section" aria-label={title}>
+      <h2>{title}</h2>
+      <div className="skill-list">
+        {skills.map((skill) => (
+          <div key={skill.id} className="skill-row">
+            <span className={`skill-row-icon skill-icon-${skill.icon}`}>{skillIcon(skill, 20)}</span>
+            <span className="skill-row-main">
+              <strong>{skill.title}</strong>
+              <span>{skill.description}</span>
+            </span>
+            {skill.installed ? (
+              <Check size={16} className="skill-row-check" aria-label="已启用" />
+            ) : (
+              <button type="button" className="skill-add-btn">添加技能</button>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function skillIcon(skill: SkillCatalogItem | SkillSelection, size = 16): ReactNode {
+  const icon = 'icon' in skill ? skill.icon : undefined;
+  switch (icon) {
+    case 'chrome':
+      return <Globe size={size} />;
+    case 'computer':
+      return <Monitor size={size} />;
+    case 'pdf':
+      return <FileText size={size} />;
+    case 'image':
+      return <ImageIcon size={size} />;
+    case 'docs':
+      return <FileText size={size} />;
+    case 'plugin':
+      return <Plug size={size} />;
+    case 'skill':
+      return <Pencil size={size} />;
+    case 'playwright':
+      return <Wrench size={size} />;
+    case 'browser':
+    default:
+      return <Globe size={size} />;
+  }
+}
+
 function ChatArea({ domain }: { domain: DomainConfig }) {
   const conversation = useCurrentConversation();
   const codexStatus = useChatStore((state) => state.codexStatus);
@@ -3379,6 +3630,7 @@ function isReconnectStatusBlock(block: MessageBlock): boolean {
 function Composer({ domain, conversation, disabled, bottom }: { domain: DomainConfig; conversation: Conversation; disabled?: boolean; bottom?: boolean }) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
+  const [selectedSkill, setSelectedSkill] = useState<SkillCatalogItem | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sendMessage = useChatStore((state) => state.sendMessage);
   const stopCurrentConversation = useChatStore((state) => state.stopCurrentConversation);
@@ -3397,13 +3649,27 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
   const submit = () => {
     if (!canSend || isStreaming || disabled) return;
     const outgoing = attachments;
+    const outgoingSkill = selectedSkill;
     setValue('');
     setAttachments([]);
-    void sendMessage(value.trim(), outgoing);
+    setSelectedSkill(null);
+    void sendMessage(value.trim(), outgoing, outgoingSkill);
   };
   return (
     <div className={`composer-wrap ${bottom ? 'bottom' : ''}`}>
       <div className="composer-card">
+        {selectedSkill && (
+          <div className="composer-skill-selection">
+            <span className={`composer-skill-icon skill-icon-${selectedSkill.icon}`}>{skillIcon(selectedSkill, 16)}</span>
+            <span className="composer-skill-copy">
+              <strong>{selectedSkill.title}</strong>
+              <span>将优先使用这个 Skill</span>
+            </span>
+            <button type="button" className="composer-skill-remove" onClick={() => setSelectedSkill(null)} aria-label={`移除 ${selectedSkill.title} Skill`}>
+              <X size={12} />
+            </button>
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="composer-attachments">
             {attachments.map((attachment) => (
@@ -3427,7 +3693,7 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
           rows={1}
         />
         <div className="composer-toolbar">
-          <ComposerPlusMenu domain={domain} onAttach={addAttachments} disabled={disabled || isStreaming} />
+          <ComposerPlusMenu domain={domain} onAttach={addAttachments} onSelectSkill={setSelectedSkill} disabled={disabled || isStreaming} />
           <ApprovalPicker />
           <span className="spacer" />
           <ModelPicker />
@@ -3651,7 +3917,17 @@ function ImageLightbox() {
 }
 
 // The "+" composer menu: attach files, toggle plan/goal modes, browse plugins.
-function ComposerPlusMenu({ domain, onAttach, disabled }: { domain: DomainConfig; onAttach: (items: MessageAttachment[]) => void; disabled?: boolean }) {
+function ComposerPlusMenu({
+  domain,
+  onAttach,
+  onSelectSkill,
+  disabled,
+}: {
+  domain: DomainConfig;
+  onAttach: (items: MessageAttachment[]) => void;
+  onSelectSkill: (skill: SkillCatalogItem) => void;
+  disabled?: boolean;
+}) {
   const planMode = useChatStore((state) => state.planMode);
   const pursueGoal = useChatStore((state) => state.pursueGoal);
   const setPlanMode = useChatStore((state) => state.setPlanMode);
@@ -3668,6 +3944,11 @@ function ComposerPlusMenu({ domain, onAttach, disabled }: { domain: DomainConfig
     const items = await pickAttachments();
     if (items.length) onAttach(items);
   };
+  const chooseSkill = (skill: SkillCatalogItem) => {
+    onSelectSkill(skill);
+    close();
+  };
+  const installedSkills = SKILL_CATALOG.filter((skill) => skill.installed);
 
   return (
     <div className="plus-picker">
@@ -3718,7 +3999,13 @@ function ComposerPlusMenu({ domain, onAttach, disabled }: { domain: DomainConfig
             </button>
             <div className="plus-menu-divider" />
             <div className="plus-flyout-row" onMouseEnter={() => setSubmenu('plugins')}>
-              <button type="button" className="plus-menu-item submenu-trigger">
+              <button
+                type="button"
+                className="plus-menu-item submenu-trigger"
+                aria-haspopup="menu"
+                aria-expanded={submenu === 'plugins'}
+                onClick={() => setSubmenu((current) => (current === 'plugins' ? null : 'plugins'))}
+              >
                 <Plug size={15} />
                 <span>插件</span>
                 <ChevronRight size={14} className="model-menu-chevron" />
@@ -3726,12 +4013,12 @@ function ComposerPlusMenu({ domain, onAttach, disabled }: { domain: DomainConfig
               {submenu === 'plugins' && (
                 <div className="plus-flyout">
                   <div className="model-flyout-panel" role="menu">
-                    <div className="model-menu-label">插件入口</div>
-                    {domain.navigation.integrations.map((item) => (
-                      <div key={item.id} className="plus-plugin-row">
-                        <span>{item.label}</span>
-                        <span className="plus-plugin-tag">可扩展</span>
-                      </div>
+                    <div className="model-menu-label">{installedSkills.length} 个已安装 Skill</div>
+                    {installedSkills.map((skill) => (
+                      <button key={skill.id} type="button" className="plus-plugin-row selectable" role="menuitem" onClick={() => chooseSkill(skill)}>
+                        <span className={`plus-plugin-icon skill-icon-${skill.icon}`}>{skillIcon(skill, 14)}</span>
+                        <span>{skill.title}</span>
+                      </button>
                     ))}
                     <div className="plus-menu-hint">公开源码版保留插件入口，商业垂直包可在此扩展领域能力。</div>
                   </div>
@@ -6016,7 +6303,8 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
       </>
     );
   }
-  if (section === 'hooks' || section === 'connections' || section === 'snapshots' || section === 'mcp' || section === 'browser' || section === 'computer') {
+  if (section === 'mcp') return <PluginSettings />;
+  if (section === 'hooks' || section === 'connections' || section === 'snapshots' || section === 'browser' || section === 'computer') {
     return <PlaceholderSettings domain={domain} section={section} />;
 	  }
 	  return (
@@ -6343,6 +6631,25 @@ function UsageSettings() {
       <SettingsRow title="许可证" description="PolyForm Noncommercial License 1.0.0。"><span className="settings-static">Noncommercial</span></SettingsRow>
       <SettingsRow title="商业授权" description="垂直领域商业包需要单独授权。"><span className="settings-static">未启用</span></SettingsRow>
     </SettingsGroup>
+  );
+}
+
+function PluginSettings() {
+  return (
+    <>
+      <SettingsGroup>
+        {PLUGIN_CAPABILITIES.map((capability) => (
+          <SettingsRow key={capability.id} title={capability.title} description={capability.description}>
+            <span className="settings-static">{capability.tag}</span>
+          </SettingsRow>
+        ))}
+      </SettingsGroup>
+      <SettingsGroup>
+        <SettingsRow title="技能目录" description="Codex CLI 会从本地技能目录加载可用能力。">
+          <span className="settings-static">~/.codex/skills</span>
+        </SettingsRow>
+      </SettingsGroup>
+    </>
   );
 }
 

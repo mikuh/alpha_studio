@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { applyCodexEventToConversation } from './codexEvents';
-import { buildCodingPrompt, buildReviewPrompt } from './prompt';
+import { buildCodingInstructions, buildReviewPrompt } from './prompt';
 import { checkCodex, isTauriRuntime, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
 import {
@@ -38,6 +38,7 @@ import type {
   ProjectSort,
   ReviewRequest,
   SandboxMode,
+  SkillSelection,
 } from './types';
 
 const LEGACY_DEFAULT_CONVERSATION_TITLE = ['\u65b0\u7684', '\u5bf9\u8bdd'].join('\u6295\u7814');
@@ -99,7 +100,7 @@ interface ChatState {
   setPursueGoal: (pursueGoal: boolean) => void;
   resolveAuthorization: (id: string, decision: ApprovalDecision) => void;
   refreshCodexStatus: () => Promise<void>;
-  sendMessage: (message: string, attachments?: MessageAttachment[]) => Promise<void>;
+  sendMessage: (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null) => Promise<void>;
   startReview: (request: ReviewRequest) => Promise<void>;
   editUserMessageAndResend: (conversationId: string, messageId: string, message: string, attachments?: MessageAttachment[]) => Promise<void>;
   stopCurrentConversation: () => Promise<void>;
@@ -589,7 +590,7 @@ export const useChatStore = create<ChatState>()(
         }
       },
 
-      sendMessage: async (message: string, attachments?: MessageAttachment[]) => {
+      sendMessage: async (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null) => {
         const trimmed = message.trim();
         const attachmentList = attachments && attachments.length ? attachments : undefined;
         if (!trimmed && !attachmentList) return;
@@ -644,21 +645,24 @@ export const useChatStore = create<ChatState>()(
           return;
         }
 
-	        try {
-	          const latest = get().conversations.find((item) => item.id === conversationId);
-	          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
-	          const prompt = buildCodingPrompt(promptWithAttachments(trimmed, attachmentList), {
-	            planMode: get().planMode,
-	            pursueGoal: get().pursueGoal,
-	          }, activeDomain(get().workModeId));
-	          const result = await startCodexChat({
-	            conversationId,
-	            prompt,
-	            codexThreadId: latest?.codexThreadId,
-	            cwd: latest?.cwd || undefined,
-	            ...codexModelRequest(modelProfile, get().reasoningEffort),
-	            sandboxMode,
-	          });
+        try {
+          const latest = get().conversations.find((item) => item.id === conversationId);
+          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+          const domain = activeDomain(get().workModeId);
+          const promptOptions = {
+            planMode: get().planMode,
+            pursueGoal: get().pursueGoal,
+            selectedSkill,
+          };
+          const result = await startCodexChat({
+            conversationId,
+            prompt: promptWithAttachments(trimmed, attachmentList),
+            developerInstructions: buildCodingInstructions(promptOptions, domain),
+            codexThreadId: latest?.codexThreadId,
+            cwd: latest?.cwd || undefined,
+            ...codexModelRequest(modelProfile, get().reasoningEffort),
+            sandboxMode,
+          });
           set((state) => ({
             conversations: state.conversations.map((item) =>
               item.id === conversationId ? { ...item, runId: result.runId } : item
@@ -820,24 +824,22 @@ export const useChatStore = create<ChatState>()(
           return;
         }
 
-	        try {
-	          const latest = get().conversations.find((item) => item.id === conversationId);
-	          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
-	          const prompt = buildCodingPrompt(
-	            promptWithAttachments(buildEditedPrompt(trimmed, previousMessages), nextAttachments),
-	            {
-              planMode: get().planMode,
-              pursueGoal: get().pursueGoal,
-            },
-            activeDomain(get().workModeId),
-          );
-	          const result = await startCodexChat({
-	            conversationId,
-	            prompt,
-	            cwd: latest?.cwd || undefined,
-	            ...codexModelRequest(modelProfile, get().reasoningEffort),
-	            sandboxMode,
-	          });
+        try {
+          const latest = get().conversations.find((item) => item.id === conversationId);
+          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+          const domain = activeDomain(get().workModeId);
+          const promptOptions = {
+            planMode: get().planMode,
+            pursueGoal: get().pursueGoal,
+          };
+          const result = await startCodexChat({
+            conversationId,
+            prompt: promptWithAttachments(buildEditedPrompt(trimmed, previousMessages), nextAttachments),
+            developerInstructions: buildCodingInstructions(promptOptions, domain),
+            cwd: latest?.cwd || undefined,
+            ...codexModelRequest(modelProfile, get().reasoningEffort),
+            sandboxMode,
+          });
           set((state) => ({
             conversations: state.conversations.map((item) =>
               item.id === conversationId ? { ...item, runId: result.runId } : item
@@ -887,7 +889,7 @@ export const useChatStore = create<ChatState>()(
     },
     {
       name: 'alpha-studio.chat.v2',
-      version: 5,
+      version: 6,
       partialize: (state) => ({
         conversations: state.conversations,
         projects: state.projects,
@@ -1298,6 +1300,7 @@ export function migratePersistedState(persistedState: unknown): PersistedChatSta
   const conversations = Array.isArray(source.conversations)
     ? (source.conversations as Conversation[]).map((conversation) => ({
         ...conversation,
+        codexThreadId: undefined,
         title: conversation.title === LEGACY_DEFAULT_CONVERSATION_TITLE ? '新对话' : conversation.title,
       }))
     : [createEmptyConversation()];
