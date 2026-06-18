@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Incuboot · AI 原生智能品牌系统 · 开发与融资方案</title>
+<title>Incuboot · AI 原生智能品牌系统 · 产品介绍与开发计划</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet" />
@@ -90,6 +90,12 @@ body{padding:40px 0 120px}
 .ph__label{font-weight:700;font-size:14.5px;letter-spacing:.03em;color:#5b51e0}
 .ph__sub{font-size:12px;color:var(--s400);max-width:80%;text-align:center;line-height:1.5}
 .ph__ratio{position:absolute;top:13px;right:14px;font-family:var(--display);font-size:11px;color:#7c6df0;background:rgba(99,102,241,.12);padding:4px 9px;border-radius:999px}
+.shot{position:relative;flex:1;min-height:0;border-radius:18px;overflow:hidden;background:linear-gradient(135deg,#f8fafc,#f5f3ff 55%,#ecfeff);border:1px solid rgba(15,23,42,.08);box-shadow:0 22px 48px -30px rgba(10,14,39,.5);display:flex;align-items:center;justify-content:center}
+.shot::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 1px 0 rgba(255,255,255,.7);pointer-events:none}
+.shot img{display:block;width:100%;height:100%;object-fit:cover}
+.shot--contain img{object-fit:contain;padding:10px}
+.shot--workspace img{object-fit:contain;padding:0}
+.shot--module img{object-fit:contain;padding:0}
 
 /* ====== COVER ====== */
 .cover{background:radial-gradient(1200px 700px at 78% -8%,rgba(124,58,237,.42),transparent 60%),radial-gradient(900px 600px at 8% 108%,rgba(6,182,212,.28),transparent 55%),linear-gradient(155deg,#070B22 0%,#0E1430 60%,#10173a 100%);color:#fff}
@@ -104,7 +110,7 @@ body{padding:40px 0 120px}
 
 /* ---- timeline ---- */
 .tl{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-top:8px}
-.tl::before{content:"";position:absolute;top:46px;left:6%;right:6%;height:3px;background:linear-gradient(90deg,var(--indigo),var(--violet),var(--fuchsia),var(--coral));border-radius:3px}
+.tl::before{content:"";position:absolute;top:60px;left:6%;right:6%;height:3px;background:linear-gradient(90deg,var(--indigo),var(--violet),var(--fuchsia),var(--coral));border-radius:3px}
 .tlcol{position:relative;padding:0 12px}
 .tlnode{width:18px;height:18px;border-radius:50%;background:#fff;border:4px solid var(--violet);margin:38px auto 0;position:relative;z-index:2;box-shadow:0 0 0 6px rgba(124,58,237,.12)}
 .tlph{font-family:var(--display);font-weight:700;font-size:13px;color:var(--indigo);text-align:center;margin-top:14px}
@@ -201,15 +207,15 @@ body{padding:40px 0 120px}
 
     <div style="margin-top:auto">
       <div class="kicker" style="margin-bottom:22px">AI-Native Brand Operating System</div>
-      <h1 class="title" style="font-size:62px;line-height:1.08">AI 原生<em>智能品牌系统</em><br/>开发与融资方案</h1>
+      <h1 class="title" style="font-size:62px;line-height:1.08">AI 原生<em>智能品牌系统</em><br/>产品介绍与开发计划</h1>
       <p class="lead" style="margin-top:24px;font-size:19px;max-width:58ch">把品牌资料、内容、合作推广与经营复盘组织进同一个工作台，让 AI Agent 从"帮忙生成内容"升级为"参与品牌日常运营"。</p>
     </div>
 
     <div style="margin-top:42px;display:flex;align-items:center;gap:28px;flex-wrap:wrap">
-      <div class="chip chip--g" style="background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.18);color:#fff">首期目标 ¥100–200 万 · 6–9 个月</div>
+      <div class="chip chip--g" style="background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.18);color:#fff">MVP 阶段 · 6–9 个月产品计划</div>
       <div style="display:flex;gap:28px;font-size:13.5px;color:rgba(255,255,255,.62)">
         <span>版本 2026-06-17</span>
-        <span>用途 · 投资人沟通 / 天使轮启动资金</span>
+        <span>用途 · 产品介绍 / 路线图沟通 / 试点对齐</span>
       </div>
     </div>
   </div>
@@ -230,12 +236,9 @@ body{padding:40px 0 120px}
         </div>
       </div>
       <div class="col" style="flex:1;display:flex">
-        <div class="ph" style="flex:1;aspect-ratio:auto">
-          <div class="ph__ratio">4 : 3 · 产品截图</div>
-          <svg class="ph__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M6 8h6M6 12h9"/></svg>
-          <div class="ph__label">品牌工作台主界面</div>
-          <div class="ph__sub">插图占位：品牌目录 + KOL 数据库 + Agent 工作流的产品主视图，后续替换为真实截图</div>
-        </div>
+        <figure class="shot shot--workspace">
+          <img src="assets/incuboot-brand-workspace.svg" alt="Incuboot 品牌工作台主界面：品牌目录、KOL 数据库、Agent 工作流与经营洞察" />
+        </figure>
       </div>
     </div>
   </div>
@@ -243,10 +246,10 @@ body{padding:40px 0 120px}
   <div class="snum">02</div>
 </section></div>
 
-<!-- ============ 03 · FUNDING SUMMARY ============ -->
+<!-- ============ 03 · PRODUCT SUMMARY ============ -->
 <div class="frame"><section class="slide">
   <div class="pad" style="display:flex;flex-direction:column;height:100%">
-    <div class="kicker">Investment Thesis · 融资沟通摘要</div>
+    <div class="kicker">Product Thesis · 产品判断摘要</div>
     <h2 class="title" style="margin-top:18px;font-size:36px">不是单点 AI 文案工具，<br/>而是面向品牌经营流程的 <em>AI 原生操作系统</em></h2>
     <p class="lead" style="margin-top:14px">品牌团队的工作今天散落在 Notion、网盘、邮箱、表格、社媒后台与人工经验里；AI 工具虽多，却大多停留在"问答"和"生成"，很少真正接住从定位到复盘的连续工作流。</p>
 
@@ -259,13 +262,13 @@ body{padding:40px 0 120px}
 
     <div class="row" style="margin-top:auto;gap:18px">
       <div class="card" style="flex:1.4;display:flex;align-items:center;gap:22px;background:linear-gradient(135deg,#0E1430,#161e44);border:0;color:#fff">
-        <div><div style="font-size:13px;color:#a5b4fc;font-weight:600;letter-spacing:.08em">首期融资目标</div><div class="stat" style="font-size:40px;margin-top:4px">¥100–200<span style="font-size:20px"> 万</span></div></div>
+        <div><div style="font-size:13px;color:#a5b4fc;font-weight:600;letter-spacing:.08em">MVP 阶段目标</div><div class="stat" style="font-size:40px;margin-top:4px">6–9<span style="font-size:20px"> 个月</span></div></div>
         <div style="width:1px;height:54px;background:rgba(255,255,255,.16)"></div>
-        <p style="font-size:13.5px;line-height:1.6;color:rgba(255,255,255,.78);flex:1">覆盖 6–9 个月核心产品开发、试点客户交付与早期商业验证。</p>
+        <p style="font-size:13.5px;line-height:1.6;color:rgba(255,255,255,.78);flex:1">完成核心产品开发、试点品牌导入、真实流程验证与可演示产品闭环。</p>
       </div>
       <div class="card" style="flex:1;display:flex;align-items:center;gap:18px">
-        <div><div style="font-size:13px;color:var(--s500);font-weight:600">小票试水</div><div class="stat" style="font-size:34px;margin-top:4px">¥50–80<span style="font-size:18px"> 万</span></div></div>
-        <p style="font-size:12.5px;line-height:1.55;color:var(--s500);flex:1">完成稳定 MVP、3–5 个试点品牌、演示案例与首批付费验证。</p>
+        <div><div style="font-size:13px;color:var(--s500);font-weight:600">小步快跑</div><div class="stat" style="font-size:34px;margin-top:4px">3–5<span style="font-size:18px"> 品牌</span></div></div>
+        <p style="font-size:12.5px;line-height:1.55;color:var(--s500);flex:1">围绕真实品牌流程完成导入、试用、反馈收集与产品迭代。</p>
       </div>
     </div>
   </div>
@@ -379,16 +382,13 @@ body{padding:40px 0 120px}
           <div class="card" style="padding:16px;text-align:center"><div class="card__ic" style="margin:0 auto 10px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v4H4zM4 12h16v8H4z"/></svg></div><h4 style="font-size:14px">数据入口明确</h4><p style="font-size:11.5px">邮箱即天然入口</p></div>
         </div>
         <div class="card" style="margin-top:auto;background:var(--grad-soft);border-color:rgba(124,58,237,.18)">
-          <p style="font-size:13.5px;line-height:1.6;color:var(--s700)">它将成为 Incuboot 增长层的核心能力之一，并为整个智能品牌系统提供<b style="color:#5b3fd6">第一批真实流程数据与商业验证</b>。</p>
+          <p style="font-size:13.5px;line-height:1.6;color:var(--s700)">它将成为 Incuboot 增长层的核心能力之一，并为整个智能品牌系统提供<b style="color:#5b3fd6">第一批真实流程数据与产品验证</b>。</p>
         </div>
       </div>
       <div class="col" style="flex:1;display:flex">
-        <div class="ph" style="flex:1">
-          <div class="ph__ratio">16 : 10 · 模块截图</div>
-          <svg class="ph__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 9v11"/><path d="M12 13h5M12 16h5"/></svg>
-          <div class="ph__label">合作推广营销工作台</div>
-          <div class="ph__sub">插图占位：邮件线索列表 + KOL 档案 + 六步状态流转 + 自动化日志面板</div>
-        </div>
+        <figure class="shot shot--module">
+          <img src="assets/incuboot-collaboration-workspace-panel.svg" alt="合作推广营销对话工作台：会话式 Agent、邮件线索评估、KOL 档案、确认队列与审计日志" />
+        </figure>
       </div>
     </div>
   </div>
@@ -532,7 +532,7 @@ body{padding:40px 0 120px}
       <div class="tlcol">
         <div class="tlmo">0–2 个月</div><div class="tlnode" style="border-color:var(--indigo)"></div>
         <div class="tlph">阶段 1 · 合作推广 MVP</div>
-        <div class="tlcard"><h5>可演示 / 可试点 / 可收费</h5><ul><li>邮箱同步 + 本地营销库稳定</li><li>线索分类 + KOL 自动建档</li><li>六步工作流核心状态流转</li><li>话术库 + 可控发信 + 审计日志</li><li>1–2 个真实品牌案例 demo</li></ul></div>
+        <div class="tlcard"><h5>可演示 / 可试用 / 可验证</h5><ul><li>邮箱同步 + 本地营销库稳定</li><li>线索分类 + KOL 自动建档</li><li>六步工作流核心状态流转</li><li>话术库 + 可控发信 + 审计日志</li><li>1–2 个真实品牌案例 demo</li></ul></div>
       </div>
       <div class="tlcol">
         <div class="tlmo">2–5 个月</div><div class="tlnode" style="border-color:var(--violet)"></div>
@@ -547,7 +547,7 @@ body{padding:40px 0 120px}
       <div class="tlcol">
         <div class="tlmo">9–15 个月</div><div class="tlnode" style="border-color:var(--coral)"></div>
         <div class="tlph">阶段 4 · 数据复盘与协作</div>
-        <div class="tlcard"><h5>形成闭环与商业化</h5><ul><li>KOL 结果记录与 ROI 分析</li><li>内容/渠道表现面板</li><li>周报/月报/复盘自动生成</li><li>多成员协作 + 权限 + 云同步</li><li>付费订阅与企业部署</li></ul></div>
+        <div class="tlcard"><h5>形成闭环与团队协作</h5><ul><li>KOL 结果记录与 ROI 分析</li><li>内容/渠道表现面板</li><li>周报/月报/复盘自动生成</li><li>多成员协作 + 权限 + 云同步</li><li>产品版本化与企业部署</li></ul></div>
       </div>
     </div>
   </div>
@@ -555,14 +555,14 @@ body{padding:40px 0 120px}
   <div class="snum">13</div>
 </section></div>
 
-<!-- ============ 14 · BUSINESS MODEL ============ -->
+<!-- ============ 14 · PRODUCT PACKAGING ============ -->
 <div class="frame"><section class="slide">
   <div class="pad" style="display:flex;flex-direction:column;height:100%">
-    <div class="kicker">Business Model · 商业模式</div>
-    <h2 class="title" style="margin-top:16px;font-size:32px">产品订阅 + 试点服务 + 企业部署的<em>组合收入</em></h2>
+    <div class="kicker">Product Packaging · 产品形态与交付方式</div>
+    <h2 class="title" style="margin-top:16px;font-size:32px">从单品牌工作台，到多品牌协作与企业部署的<em>产品形态</em></h2>
 
     <div style="margin-top:24px">
-      <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--indigo);letter-spacing:.08em;margin-bottom:12px">SaaS / 桌面订阅</div>
+      <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--indigo);letter-spacing:.08em;margin-bottom:12px">产品版本</div>
       <div class="grid g4" style="gap:16px">
         <div class="card card--soft"><div style="font-family:var(--display);font-weight:800;font-size:15px;color:var(--s900)">个人 / 小团队版</div><p style="font-size:12.5px;color:var(--s500);margin-top:8px">单品牌、创始人、独立运营者。</p></div>
         <div class="card card--soft"><div style="font-family:var(--display);font-weight:800;font-size:15px;color:var(--s900)">专业版</div><p style="font-size:12.5px;color:var(--s500);margin-top:8px">跨境品牌与新消费团队。</p></div>
@@ -573,7 +573,7 @@ body{padding:40px 0 120px}
 
     <div class="row" style="margin-top:24px;gap:18px">
       <div class="col">
-        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--violet);letter-spacing:.08em;margin-bottom:12px">服务收入</div>
+        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--violet);letter-spacing:.08em;margin-bottom:12px">导入与初始化</div>
         <div class="card" style="padding:18px 20px"><div class="chips">
           <span class="chip">品牌资料整理与系统初始化</span>
           <span class="chip">合作推广流程搭建</span>
@@ -583,7 +583,7 @@ body{padding:40px 0 120px}
         </div></div>
       </div>
       <div class="col">
-        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--fuchsia);letter-spacing:.08em;margin-bottom:12px">长期收入</div>
+        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--fuchsia);letter-spacing:.08em;margin-bottom:12px">后续扩展模块</div>
         <div class="card" style="padding:18px 20px"><div class="chips">
           <span class="chip chip--g">行业品牌包</span>
           <span class="chip chip--g">Agent 工作流插件</span>
@@ -598,16 +598,16 @@ body{padding:40px 0 120px}
   <div class="snum">14</div>
 </section></div>
 
-<!-- ============ 15 · USE OF FUNDS ============ -->
+<!-- ============ 15 · RESOURCE FOCUS ============ -->
 <div class="frame"><section class="slide">
   <div class="pad" style="display:flex;flex-direction:column;height:100%">
-    <div class="kicker">Use of Funds · 融资用途</div>
-    <div class="row center" style="margin-top:16px"><h2 class="title" style="font-size:32px;flex:1">首期 <em>¥100–200 万</em>，覆盖 6–9 个月 MVP 与早期验证</h2></div>
+    <div class="kicker">Resource Focus · 阶段投入重点</div>
+    <div class="row center" style="margin-top:16px"><h2 class="title" style="font-size:32px;flex:1">6–9 个月，聚焦 <em>MVP 稳定</em> 与早期真实流程验证</h2></div>
 
     <div class="row center" style="margin-top:26px;flex:1;gap:48px">
       <div style="display:flex;align-items:center;gap:34px;flex:none">
         <div class="donut" style="background:conic-gradient(#4F46E5 0 45%,#7C3AED 0 65%,#C026D3 0 80%,#06B6D4 0 90%,#F59E0B 0 100%)">
-          <div class="ctr"><div style="font-family:var(--display);font-weight:800;font-size:30px;color:var(--s900)">100%</div><div style="font-size:11px;color:var(--s400);letter-spacing:.08em">资金分配</div></div>
+          <div class="ctr"><div style="font-family:var(--display);font-weight:800;font-size:30px;color:var(--s900)">100%</div><div style="font-size:11px;color:var(--s400);letter-spacing:.08em">阶段投入</div></div>
         </div>
         <div class="legend">
           <div class="lg"><span class="sw" style="background:#4F46E5"></span><span class="pct">45%</span><span class="lb"><b>产品研发</b>前端 · 桌面端 · 本地数据 · Agent 工作流 · 稳定性</span></div>
@@ -620,12 +620,12 @@ body{padding:40px 0 120px}
     </div>
 
     <div class="card" style="margin-top:auto;background:var(--grad-soft);border-color:rgba(124,58,237,.18)">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><span style="font-family:var(--display);font-weight:700;font-size:13px;color:#5b3fd6;letter-spacing:.06em">资金对应阶段目标</span><div style="flex:1;height:1px;background:var(--line)"></div></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><span style="font-family:var(--display);font-weight:700;font-size:13px;color:#5b3fd6;letter-spacing:.06em">对应阶段目标</span><div style="flex:1;height:1px;background:var(--line)"></div></div>
       <div class="grid g4" style="gap:12px">
         <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span style="font-size:12.5px">合作推广营销模块稳定 MVP</span></div>
         <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span style="font-size:12.5px">跑通 3–5 个试点品牌</span></div>
-        <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span style="font-size:12.5px">可复用品牌导入方法 + 首批付费意向</span></div>
-        <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span style="font-size:12.5px">下一轮融资的 demo、案例与商业指标</span></div>
+        <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span style="font-size:12.5px">可复用品牌导入方法 + 早期留存反馈</span></div>
+        <div class="li"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><span style="font-size:12.5px">下一阶段产品 demo、案例与指标</span></div>
       </div>
     </div>
   </div>
@@ -637,7 +637,7 @@ body{padding:40px 0 120px}
 <div class="frame"><section class="slide">
   <div class="pad" style="display:flex;flex-direction:column;height:100%">
     <div class="kicker">Milestones & Metrics · 早期里程碑与指标</div>
-    <h2 class="title" style="margin-top:16px;font-size:32px">向投资人承诺的<em>里程碑与可跟踪指标</em></h2>
+    <h2 class="title" style="margin-top:16px;font-size:32px">产品早期阶段的<em>里程碑与可跟踪指标</em></h2>
 
     <div class="row" style="margin-top:24px;flex:1;gap:30px">
       <div class="col" style="flex:1">
@@ -646,20 +646,20 @@ body{padding:40px 0 120px}
           <div class="msrow"><div class="m">M1</div><span>完成合作推广营销闭环 demo</span></div>
           <div class="msrow"><div class="m">M2</div><span>导入 1 个真实品牌历史邮件与 KOL 流程</span></div>
           <div class="msrow"><div class="m">M3</div><span>完成 3 个试点品牌</span></div>
-          <div class="msrow"><div class="m">M4</div><span>实现首批付费或签署试点合作协议</span></div>
+          <div class="msrow"><div class="m">M4</div><span>完成试点反馈闭环与下一版需求优先级</span></div>
           <div class="msrow"><div class="m">M5</div><span>上线品牌知识库与品牌体检能力</span></div>
           <div class="msrow"><div class="m">M6</div><span>形成内容生产与合作推广联动 demo</span></div>
         </div>
       </div>
       <div class="col" style="flex:1">
-        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--fuchsia);letter-spacing:.08em;margin-bottom:14px">关键业务指标</div>
+        <div style="font-family:var(--display);font-weight:700;font-size:13px;color:var(--fuchsia);letter-spacing:.08em;margin-bottom:14px">关键产品指标</div>
         <div class="grid g2" style="gap:12px">
           <div class="kpi"><div class="v">500–1k</div><div class="l">可处理历史邮件量</div></div>
           <div class="kpi"><div class="v">↑准确率</div><div class="l">自动分类准确率</div></div>
           <div class="kpi"><div class="v">⏱省时</div><div class="l">人工节省时间</div></div>
           <div class="kpi"><div class="v">20–50</div><div class="l">有效 KOL 入库数</div></div>
           <div class="kpi"><div class="v">↑转化</div><div class="l">合作推进转化率</div></div>
-          <div class="kpi"><div class="v">3–5</div><div class="l">试点品牌留存 / 付费意向</div></div>
+          <div class="kpi"><div class="v">3–5</div><div class="l">试点品牌留存 / 复用意愿</div></div>
         </div>
         <p style="font-size:12px;color:var(--s400);margin-top:14px;line-height:1.6">同时跟踪：线索到发出提案的平均时间、签约到发货的流程完整率。</p>
       </div>
@@ -693,7 +693,7 @@ body{padding:40px 0 120px}
   <div class="orb" style="width:300px;height:300px;top:-80px;left:-40px;background:radial-gradient(circle,rgba(124,58,237,.7),transparent 70%)"></div>
   <div class="orb" style="width:260px;height:260px;bottom:-70px;right:40px;background:radial-gradient(circle,rgba(6,182,212,.55),transparent 70%)"></div>
   <div class="pad" style="display:flex;flex-direction:column;height:100%;position:relative;z-index:2">
-    <div class="kicker">The Core Thesis · 投资人应看到的核心判断</div>
+    <div class="kicker">The Core Thesis · 核心产品判断</div>
     <h2 class="title" style="margin-top:22px;font-size:38px;max-width:24ch">机会不在于"AI 能不能生成文案"，<br/>而在于<em>品牌团队的日常工作能否被 AI 系统化接管一部分</em>。</h2>
 
     <div class="row" style="margin-top:34px;gap:20px">
@@ -712,17 +712,17 @@ body{padding:40px 0 120px}
 <!-- ============ 19 · CLOSING / NEXT STEPS ============ -->
 <div class="frame"><section class="slide">
   <div class="pad" style="display:flex;flex-direction:column;height:100%">
-    <div class="kicker">The Ask & Next Steps · 资金请求与下一步</div>
+    <div class="kicker">Product Next Steps · 产品下一步</div>
     <div class="row" style="margin-top:18px;flex:1;gap:30px">
       <div class="col" style="flex:1.05;display:flex;flex-direction:column">
-        <h2 class="title" style="font-size:32px">这一轮，我们要一笔<br/><em>完成 MVP 与试点验证</em>的启动资金</h2>
+        <h2 class="title" style="font-size:32px">接下来，把 MVP 从可演示<br/><em>推进到可持续使用</em></h2>
         <div class="card" style="margin-top:20px;background:linear-gradient(135deg,#0E1430,#1a1147);border:0;color:#fff">
-          <div style="display:flex;align-items:baseline;gap:14px"><div class="stat" style="font-size:40px">¥100–200<span style="font-size:18px"> 万</span></div><span style="color:rgba(255,255,255,.6);font-size:14px">覆盖 6–9 个月</span></div>
-          <div style="font-size:13px;color:rgba(255,255,255,.72);margin-top:6px">小额试水可先以 <b style="color:#fff">¥50–80 万</b> 启动</div>
+          <div style="display:flex;align-items:baseline;gap:14px"><div class="stat" style="font-size:40px">6–9<span style="font-size:18px"> 个月</span></div><span style="color:rgba(255,255,255,.6);font-size:14px">产品推进窗口</span></div>
+          <div style="font-size:13px;color:rgba(255,255,255,.72);margin-top:6px">重点完成 <b style="color:#fff">稳定 MVP、真实品牌导入、流程数据沉淀</b></div>
         </div>
         <div class="list" style="margin-top:20px">
           <div class="li"><span class="tick" style="background:var(--grad);color:#fff">1</span><span>把合作推广营销模块<b>从已跑通流程变成稳定产品</b></span></div>
-          <div class="li"><span class="tick" style="background:var(--grad);color:#fff">2</span><span>找 <b>3–5 个真实品牌试点</b>，验证省时、提转化、沉淀流程</span></div>
+          <div class="li"><span class="tick" style="background:var(--grad);color:#fff">2</span><span>导入 <b>3–5 个真实品牌流程</b>，验证省时、提转化、沉淀流程</span></div>
           <div class="li"><span class="tick" style="background:var(--grad);color:#fff">3</span><span>扩展品牌知识库与内容生产，证明它是<b>完整智能品牌系统的雏形</b></span></div>
         </div>
       </div>
@@ -733,9 +733,9 @@ body{padding:40px 0 120px}
           <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">模块 demo 截图</div>
           <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">真实品牌案例数据</div>
           <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">1 页产品架构图</div>
-          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">融资用途与里程碑表</div>
+          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">资源投入与里程碑表</div>
           <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">创始团队介绍</div>
-          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">商业模式与定价假设</div>
+          <div class="chip" style="justify-content:center;text-align:center;padding:12px 10px">产品版本与权限方案</div>
           <div class="chip chip--g" style="justify-content:center;text-align:center;padding:12px 10px">3 分钟演示脚本</div>
         </div>
         <div class="card" style="margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:14px">

@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1120" viewBox="0 0 1080 1120" role="img" aria-labelledby="title desc">
+  <title id="title">Incuboot 品牌工作台主界面概念图</title>
+  <desc id="desc">参考 Codex 产品界面语言的 Incuboot 品牌工作台，展示品牌目录、Agent 会话、任务流、KOL 数据库与审计洞察。</desc>
+  <defs>
+    <linearGradient id="outerBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset=".52" stop-color="#f5f3ff"/>
+      <stop offset="1" stop-color="#ecfeff"/>
+    </linearGradient>
+    <linearGradient id="shell" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#080d25"/>
+      <stop offset=".56" stop-color="#10172f"/>
+      <stop offset="1" stop-color="#15113a"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4f46e5"/>
+      <stop offset=".52" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#c026d3"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#06b6d4"/>
+      <stop offset="1" stop-color="#4f46e5"/>
+    </linearGradient>
+    <filter id="windowShadow" x="-18%" y="-18%" width="136%" height="142%">
+      <feDropShadow dx="0" dy="32" stdDeviation="30" flood-color="#0b1220" flood-opacity=".22"/>
+    </filter>
+    <filter id="cardShadow" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#0b1220" flood-opacity=".10"/>
+    </filter>
+    <pattern id="grid" width="46" height="46" patternUnits="userSpaceOnUse">
+      <path d="M46 0H0V46" fill="none" stroke="#cbd5e1" stroke-opacity=".24"/>
+    </pattern>
+    <style>
+      .font{font-family:"Noto Sans SC","PingFang SC","Microsoft YaHei",Arial,sans-serif}
+      .display{font-family:"Sora","Noto Sans SC","PingFang SC",Arial,sans-serif}
+      .ink{fill:#0b1220}
+      .muted{fill:#64748b}
+      .soft{fill:#94a3b8}
+      .white{fill:#fff}
+      .label{font-size:22px;font-weight:800}
+      .small{font-size:15px}
+      .tiny{font-size:12px}
+      .round{stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+
+  <rect width="1080" height="1120" rx="44" fill="url(#outerBg)"/>
+  <rect width="1080" height="1120" fill="url(#grid)" opacity=".48"/>
+  <path d="M84 944 C229 838 345 948 496 843 C632 748 746 793 908 694 C984 648 1017 660 1055 629" fill="none" stroke="#7c3aed" stroke-opacity=".12" stroke-width="52" stroke-linecap="round"/>
+  <path d="M96 222 C250 153 380 194 525 126 C666 60 822 100 1005 72" fill="none" stroke="#06b6d4" stroke-opacity=".10" stroke-width="40" stroke-linecap="round"/>
+
+  <g filter="url(#windowShadow)">
+    <rect x="64" y="70" width="952" height="984" rx="36" fill="url(#shell)"/>
+    <rect x="64" y="70" width="952" height="984" rx="36" fill="none" stroke="#1e293b" stroke-width="1.3"/>
+  </g>
+
+  <rect x="88" y="94" width="904" height="66" rx="24" fill="#0b1028"/>
+  <circle cx="120" cy="127" r="8" fill="#fb7185"/>
+  <circle cx="146" cy="127" r="8" fill="#f59e0b"/>
+  <circle cx="172" cy="127" r="8" fill="#10b981"/>
+  <rect x="214" y="111" width="44" height="32" rx="10" fill="url(#brand)"/>
+  <path d="M236 117l4.3 9.6 10.2 1.1-7.5 7.2 1.8 10.3-8.8-5-8.8 5 1.8-10.3-7.5-7.2 10.2-1.1z" fill="#fff"/>
+  <text x="274" y="135" class="display white" font-size="24" font-weight="800">Incuboot</text>
+  <text x="402" y="135" class="font" font-size="14" fill="#94a3b8">AI 原生智能品牌系统</text>
+  <rect x="770" y="111" width="88" height="32" rx="13" fill="#151d3a"/>
+  <circle cx="790" cy="127" r="6" fill="#10b981"/>
+  <text x="805" y="132" class="font white" font-size="12" font-weight="700">Local</text>
+  <rect x="870" y="111" width="96" height="32" rx="13" fill="#23204a"/>
+  <text x="891" y="132" class="font white" font-size="12" font-weight="700">Agent Live</text>
+
+  <rect x="88" y="178" width="228" height="846" rx="28" fill="#0d142b"/>
+  <text x="118" y="224" class="display white" font-size="19" font-weight="800">品牌空间</text>
+  <text x="118" y="249" class="font" font-size="13" fill="#64748b">Workspaces</text>
+  <g class="font" font-size="14" font-weight="700">
+    <rect x="112" y="280" width="180" height="42" rx="14" fill="#1e1b4b"/>
+    <circle cx="133" cy="301" r="7" fill="#8b5cf6"/>
+    <text x="154" y="306" fill="#fff">Luna Skin</text>
+    <rect x="112" y="336" width="180" height="42" rx="14" fill="#121a35"/>
+    <circle cx="133" cy="357" r="7" fill="#06b6d4"/>
+    <text x="154" y="362" fill="#cbd5e1">Nomad Gear</text>
+    <rect x="112" y="392" width="180" height="42" rx="14" fill="#121a35"/>
+    <circle cx="133" cy="413" r="7" fill="#f59e0b"/>
+    <text x="154" y="418" fill="#cbd5e1">Glow Home</text>
+  </g>
+
+  <text x="118" y="491" class="display" font-size="12" fill="#64748b" font-weight="800" letter-spacing="1.2">MODULES</text>
+  <g class="font" font-size="14" font-weight="700" fill="#cbd5e1">
+    <rect x="112" y="518" width="180" height="38" rx="12" fill="#111b37"/>
+    <text x="137" y="542">品牌知识库</text>
+    <rect x="112" y="566" width="180" height="38" rx="12" fill="#111b37"/>
+    <text x="137" y="590">内容任务</text>
+    <rect x="112" y="614" width="180" height="38" rx="12" fill="#111b37"/>
+    <text x="137" y="638">合作推广</text>
+    <rect x="112" y="662" width="180" height="38" rx="12" fill="#111b37"/>
+    <text x="137" y="686">复盘报告</text>
+  </g>
+
+  <g transform="translate(112 868)">
+    <rect width="180" height="118" rx="20" fill="#111b37"/>
+    <text x="18" y="34" class="display white" font-size="16" font-weight="800">本地优先</text>
+    <text x="18" y="59" class="font" font-size="12" fill="#94a3b8">品牌资料、邮箱与审计</text>
+    <rect x="18" y="78" width="144" height="12" rx="6" fill="#1f2a44"/>
+    <rect x="18" y="78" width="108" height="12" rx="6" fill="url(#cyan)"/>
+  </g>
+
+  <rect x="336" y="178" width="656" height="846" rx="28" fill="#f8fafc"/>
+  <rect x="360" y="204" width="608" height="56" rx="18" fill="#fff" stroke="#e2e8f0"/>
+  <text x="384" y="239" class="font muted" font-size="15">Ask Incuboot anything about this brand...</text>
+  <rect x="848" y="216" width="96" height="32" rx="13" fill="#0b1028"/>
+  <text x="879" y="237" class="font white" font-size="13" font-weight="800">运行</text>
+
+  <g transform="translate(360 292)">
+    <text class="display ink" font-size="31" font-weight="800">品牌经营总览</text>
+    <text y="34" class="font muted" font-size="16">资料、任务、合作推广与 Agent 执行汇聚在同一条工作流</text>
+  </g>
+
+  <g transform="translate(360 358)" filter="url(#cardShadow)">
+    <rect width="278" height="174" rx="22" fill="#fff"/>
+    <rect width="278" height="174" rx="22" fill="none" stroke="#e2e8f0"/>
+    <text x="22" y="38" class="display ink label">品牌记忆</text>
+    <text x="22" y="66" class="font muted small">定位 / 语气 / 受众 / 卖点</text>
+    <rect x="22" y="91" width="62" height="28" rx="10" fill="#eef2ff"/>
+    <text x="35" y="110" class="font" font-size="13" fill="#4f46e5" font-weight="800">Clean</text>
+    <rect x="92" y="91" width="84" height="28" rx="10" fill="#f5f3ff"/>
+    <text x="107" y="110" class="font" font-size="13" fill="#7c3aed" font-weight="800">Premium</text>
+    <rect x="184" y="91" width="58" height="28" rx="10" fill="#ecfeff"/>
+    <text x="202" y="110" class="font" font-size="13" fill="#0891b2" font-weight="800">DTC</text>
+    <rect x="22" y="139" width="234" height="11" rx="6" fill="#e2e8f0"/>
+    <rect x="22" y="139" width="181" height="11" rx="6" fill="url(#brand)"/>
+  </g>
+
+  <g transform="translate(660 358)" filter="url(#cardShadow)">
+    <rect width="284" height="174" rx="22" fill="#fff"/>
+    <rect width="284" height="174" rx="22" fill="none" stroke="#e2e8f0"/>
+    <text x="22" y="38" class="display ink label">经营洞察</text>
+    <text x="22" y="66" class="font muted small">内容与 KOL 转化趋势</text>
+    <g transform="translate(26 92)" fill="none" stroke-width="6" stroke-linecap="round">
+      <path d="M0 48 C30 27 54 39 83 19 S133 10 163 29 209 27 232 6" stroke="#4f46e5"/>
+      <path d="M0 67 C29 56 57 67 88 47 S144 42 174 60 211 55 232 38" stroke="#06b6d4"/>
+    </g>
+    <rect x="189" y="25" width="70" height="32" rx="12" fill="#ecfdf5"/>
+    <text x="205" y="46" class="display" font-size="15" fill="#059669" font-weight="800">+28%</text>
+  </g>
+
+  <g transform="translate(360 560)" filter="url(#cardShadow)">
+    <rect width="278" height="216" rx="22" fill="#fff"/>
+    <rect width="278" height="216" rx="22" fill="none" stroke="#e2e8f0"/>
+    <text x="22" y="38" class="display ink label">Agent 工作流</text>
+    <text x="22" y="66" class="font muted small">建议草稿 · 人工确认</text>
+    <g class="font" font-size="13" font-weight="700">
+      <rect x="22" y="88" width="234" height="35" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+      <circle cx="42" cy="106" r="7" fill="#4f46e5"/>
+      <text x="59" y="111" fill="#334155">解析品牌资料</text>
+      <rect x="22" y="135" width="234" height="35" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+      <circle cx="42" cy="153" r="7" fill="#06b6d4"/>
+      <text x="59" y="158" fill="#334155">生成内容任务</text>
+      <rect x="22" y="182" width="234" height="18" rx="9" fill="#f1f5f9"/>
+      <rect x="22" y="182" width="156" height="18" rx="9" fill="url(#brand)" opacity=".9"/>
+    </g>
+  </g>
+
+  <g transform="translate(660 560)" filter="url(#cardShadow)">
+    <rect width="284" height="216" rx="22" fill="#fff"/>
+    <rect width="284" height="216" rx="22" fill="none" stroke="#e2e8f0"/>
+    <text x="22" y="38" class="display ink label">KOL 数据库</text>
+    <text x="22" y="66" class="font muted small">筛选、关系、适配度</text>
+    <g class="font" font-size="13">
+      <circle cx="43" cy="104" r="19" fill="#eef2ff"/>
+      <text x="76" y="102" fill="#0f172a" font-weight="800">Maya C.</text>
+      <text x="76" y="123" fill="#64748b">Fit 92 · Beauty</text>
+      <circle cx="43" cy="160" r="19" fill="#ecfeff"/>
+      <text x="76" y="158" fill="#0f172a" font-weight="800">Theo M.</text>
+      <text x="76" y="179" fill="#64748b">Fit 84 · DTC</text>
+      <rect x="205" y="91" width="46" height="24" rx="9" fill="#ecfdf5"/>
+      <text x="218" y="108" fill="#059669" font-size="12" font-weight="800">通过</text>
+      <rect x="205" y="147" width="46" height="24" rx="9" fill="#fff7ed"/>
+      <text x="218" y="164" fill="#d97706" font-size="12" font-weight="800">评估</text>
+    </g>
+  </g>
+
+  <g transform="translate(360 804)" filter="url(#cardShadow)">
+    <rect width="584" height="160" rx="22" fill="#fff"/>
+    <rect width="584" height="160" rx="22" fill="none" stroke="#e2e8f0"/>
+    <text x="24" y="38" class="display ink label">从资料到复盘的连续流程</text>
+    <g class="font" font-size="13" font-weight="800" transform="translate(24 76)">
+      <rect width="98" height="34" rx="12" fill="#eef2ff"/>
+      <text x="21" y="23" fill="#4f46e5">资料入库</text>
+      <path d="M112 17h34" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
+      <rect x="160" width="98" height="34" rx="12" fill="#f5f3ff"/>
+      <text x="181" y="23" fill="#7c3aed">策略生成</text>
+      <path d="M272 17h34" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
+      <rect x="320" width="98" height="34" rx="12" fill="#ecfeff"/>
+      <text x="341" y="23" fill="#0891b2">内容执行</text>
+      <path d="M432 17h34" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
+      <rect x="480" width="80" height="34" rx="12" fill="#ecfdf5"/>
+      <text x="497" y="23" fill="#059669">复盘</text>
+    </g>
+    <text x="24" y="136" class="font muted" font-size="14">每次 Agent 动作都记录 actor、依据、旧值、新值与确认人</text>
+  </g>
+</svg>
