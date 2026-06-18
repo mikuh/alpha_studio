@@ -28,3 +28,49 @@ Object.defineProperty(window, 'localStorage', {
   value: memoryStorage,
   configurable: true,
 });
+
+Object.defineProperty(Element.prototype, 'scrollIntoView', {
+  value() {},
+  configurable: true,
+});
+
+Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
+  value() {
+    return null;
+  },
+  configurable: true,
+});
+
+Object.defineProperty(window, 'matchMedia', {
+  value(query: string) {
+    return {
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+      dispatchEvent() {
+        return false;
+      },
+    };
+  },
+  configurable: true,
+});
+
+class ResizeObserverMock implements ResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+Object.defineProperty(window, 'ResizeObserver', {
+  value: ResizeObserverMock,
+  configurable: true,
+});
+
+Object.defineProperty(globalThis, 'ResizeObserver', {
+  value: ResizeObserverMock,
+  configurable: true,
+});

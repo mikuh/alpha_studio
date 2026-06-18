@@ -1220,6 +1220,12 @@ async fn terminal_start(
     cmd.cwd(&cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    cmd.env("SHELL_SESSIONS_DISABLE", "1");
+    cmd.env_remove("TERM_SESSION_ID");
+    cmd.env_remove("SHELL_SESSION_DIR");
+    cmd.env_remove("SHELL_SESSION_FILE");
+    cmd.env_remove("SHELL_SESSION_DID_INIT");
+    cmd.env_remove("SHELL_SESSION_DID_HISTORY_CHECK");
 
     let child = pair
         .slave

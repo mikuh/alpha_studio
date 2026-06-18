@@ -1,11 +1,12 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
-	  ChangeEvent,
-	  CSSProperties,
-	  FormEvent,
-	  KeyboardEvent as ReactKeyboardEvent,
+  ChangeEvent,
+  CSSProperties,
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   ReactNode,
+  RefObject,
 } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -71,9 +72,11 @@ import {
   MoreHorizontal,
   Network,
   PanelBottom,
+  PanelBottomClose,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRight,
+  PanelRightClose,
   Paperclip,
   Pencil,
   Pin,
@@ -132,7 +135,7 @@ import {
   terminalStop,
   terminalWrite,
 } from './codexBridge';
-import { WORK_MODE_OPTIONS, activeDomain, type DomainConfig, type DomainFeature, type DomainSuggestion, type WorkModeId } from './domain';
+import { WORK_MODE_OPTIONS, activeDomain, type DomainConfig, type DomainSuggestion, type WorkModeId } from './domain';
 import {
   APPROVAL_OPTIONS,
   EFFORT_OPTIONS,
@@ -180,7 +183,12 @@ import type {
   ReviewRequest,
 } from './types';
 
-type RightPanel = 'none' | 'git' | 'features' | 'review';
+type RightPanel = 'none' | 'git' | 'features' | 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
+type RightDockKind = 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
+interface RightDockTab {
+  id: string;
+  kind: RightDockKind;
+}
 type Theme = 'light' | 'dark';
 type SettingsSection =
   | 'general'
@@ -212,9 +220,9 @@ const THEME_RESTORE_KEY = 'alpha:codex-theme-restored-main-ui-v2';
 const SIDEBAR_MIN_WIDTH = 244;
 const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 300;
-const RIGHT_SIDEBAR_MIN_WIDTH = 220;
-const RIGHT_SIDEBAR_MAX_WIDTH = 520;
-const RIGHT_SIDEBAR_DEFAULT_WIDTH = 268;
+const RIGHT_SIDEBAR_MIN_WIDTH = 320;
+const RIGHT_SIDEBAR_MAX_WIDTH = 620;
+const RIGHT_SIDEBAR_DEFAULT_WIDTH = 416;
 const GIT_PANEL_MIN_WIDTH = 360;
 const GIT_PANEL_MAX_WIDTH = 760;
 const GIT_PANEL_DEFAULT_WIDTH = 430;
@@ -222,6 +230,33 @@ const REVIEW_PANEL_MIN_WIDTH = 520;
 const REVIEW_PANEL_MAX_WIDTH = 1120;
 const REVIEW_PANEL_DEFAULT_WIDTH = 704;
 const RIGHT_PANEL_MIN_MAIN_WIDTH = 360;
+
+const RIGHT_DOCK_META: Record<RightDockKind, { label: string; shortcut?: string }> = {
+  review: { label: '审查', shortcut: '⌃⇧G' },
+  terminal: { label: '终端' },
+  browser: { label: '浏览器', shortcut: '⌘T' },
+  files: { label: '文件', shortcut: '⌘P' },
+  'side-chat': { label: '侧边聊天', shortcut: '⌥⌘S' },
+};
+const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['browser', 'terminal', 'files', 'side-chat'];
+
+function useCloseOnOutsidePointer<T extends HTMLElement>(
+  open: boolean,
+  ref: RefObject<T | null>,
+  onClose: () => void,
+) {
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (ref.current?.contains(target)) return;
+      onClose();
+    };
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [open, onClose, ref]);
+}
 
 export function App() {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
@@ -261,8 +296,14 @@ export function App() {
       ? saved
       : REVIEW_PANEL_DEFAULT_WIDTH;
   });
-  const [rightPanel, setRightPanel] = useState<RightPanel>('none');
+  const [rightPanel, setRightPanel] = useState<RightPanel>('features');
+  const [rightPanelVisible, setRightPanelVisible] = useState(false);
+  const [rightDockMounted, setRightDockMounted] = useState(false);
+  const [rightDockTabs, setRightDockTabs] = useState<RightDockTab[]>([]);
+  const [activeRightDockTabId, setActiveRightDockTabId] = useState<string | null>(null);
+  const nextRightDockTabRef = useRef(0);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalMounted, setTerminalMounted] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [quickGitOpen, setQuickGitOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
@@ -356,22 +397,99 @@ export function App() {
     setSettingsOpen(true);
   };
 
+  const toggleBottomTerminal = useCallback(() => {
+    setTerminalMounted(true);
+    setTerminalOpen((value) => !value);
+  }, []);
+
+  const activeRightDockTab = useMemo(
+    () => rightDockTabs.find((tab) => tab.id === activeRightDockTabId) ?? null,
+    [rightDockTabs, activeRightDockTabId],
+  );
+  const currentRightPanel: RightPanel = activeRightDockTab?.kind ?? rightPanel;
+
+  const openRightPanel = useCallback((panel: RightPanel = 'features') => {
+    setRightPanel(panel);
+    if (panel === 'features' || panel === 'git') setActiveRightDockTabId(null);
+    setRightDockMounted(true);
+    setRightPanelVisible(true);
+  }, []);
+
+  const addRightDockTab = useCallback((kind: RightDockKind) => {
+    nextRightDockTabRef.current += 1;
+    const tab: RightDockTab = {
+      id: `${kind}-${Date.now()}-${nextRightDockTabRef.current}`,
+      kind,
+    };
+    setRightDockTabs((prev) => [...prev, tab]);
+    setActiveRightDockTabId(tab.id);
+    setRightPanel(kind);
+    setRightDockMounted(true);
+    setRightPanelVisible(true);
+  }, []);
+
+  const selectRightDockTab = useCallback((id: string) => {
+    const tab = rightDockTabs.find((item) => item.id === id);
+    if (!tab) return;
+    setActiveRightDockTabId(id);
+    setRightPanel(tab.kind);
+    setRightDockMounted(true);
+    setRightPanelVisible(true);
+  }, [rightDockTabs]);
+
+  const closeRightDockTab = useCallback((id: string) => {
+    const index = rightDockTabs.findIndex((tab) => tab.id === id);
+    if (index === -1) return;
+    const next = rightDockTabs.filter((tab) => tab.id !== id);
+    setRightDockTabs(next);
+    if (activeRightDockTabId === id || !next.some((tab) => tab.id === activeRightDockTabId)) {
+      const nextActive = next[Math.min(index, next.length - 1)] ?? null;
+      setActiveRightDockTabId(nextActive?.id ?? null);
+      setRightPanel(nextActive?.kind ?? 'features');
+    }
+  }, [activeRightDockTabId, rightDockTabs]);
+
+  const toggleRightPanel = useCallback(() => {
+    setRightDockMounted(true);
+    setRightPanelVisible((visible) => !visible);
+  }, []);
+
+  const compactRightPanel =
+    currentRightPanel === 'features' ||
+    currentRightPanel === 'terminal' ||
+    currentRightPanel === 'browser' ||
+    currentRightPanel === 'files' ||
+    currentRightPanel === 'side-chat';
+
+  useEffect(() => {
+    const handleKeyDown = (event: WindowEventMap['keydown']) => {
+      if ((event.metaKey || event.ctrlKey) && event.altKey && event.code === 'KeyS') {
+        event.preventDefault();
+        addRightDockTab('side-chat');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [addRightDockTab]);
+
   const rightPanelResizer =
-    rightPanel === 'features'
+    !rightPanelVisible
+      ? null
+      : compactRightPanel
       ? {
           min: RIGHT_SIDEBAR_MIN_WIDTH,
           max: RIGHT_SIDEBAR_MAX_WIDTH,
           defaultWidth: RIGHT_SIDEBAR_DEFAULT_WIDTH,
           onCommit: setRightSidebarWidth,
         }
-      : rightPanel === 'git'
+      : currentRightPanel === 'git'
         ? {
             min: GIT_PANEL_MIN_WIDTH,
             max: GIT_PANEL_MAX_WIDTH,
             defaultWidth: GIT_PANEL_DEFAULT_WIDTH,
             onCommit: setGitPanelWidth,
           }
-        : rightPanel === 'review'
+        : currentRightPanel === 'review'
           ? {
               min: REVIEW_PANEL_MIN_WIDTH,
               max: REVIEW_PANEL_MAX_WIDTH,
@@ -382,7 +500,7 @@ export function App() {
 
   return (
     <div
-      className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanel !== 'none' ? 'right-panel-open' : ''} ${rightPanel === 'features' ? 'features-panel-open' : ''} ${rightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'}`}
+      className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'features' ? 'features-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'}`}
       data-work-mode={domain.id}
       style={
         {
@@ -413,15 +531,14 @@ export function App() {
             <TopBar
               domain={domain}
               sidebarCollapsed={sidebarCollapsed}
-              featuresOpen={rightPanel === 'features'}
-              rightPanelOpen={rightPanel !== 'none'}
+              rightPanelOpen={rightPanelVisible}
               terminalOpen={terminalOpen}
               onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-              onToggleFeatures={() => setRightPanel((value) => (value === 'features' ? 'none' : 'features'))}
-              onToggleRightPanel={() => setRightPanel((value) => (value === 'none' ? 'features' : 'none'))}
-              onToggleTerminal={() => setTerminalOpen((value) => !value)}
-              onOpenGit={() => setRightPanel('git')}
+              onToggleRightPanel={toggleRightPanel}
+              onToggleTerminal={toggleBottomTerminal}
+              onOpenGit={() => openRightPanel('git')}
               onOpenQuickGit={() => setQuickGitOpen(true)}
+              onOpenSideChat={() => addRightDockTab('side-chat')}
               onOpenSettings={() => openSettings('config')}
             />
             <ChatArea domain={domain} />
@@ -434,17 +551,27 @@ export function App() {
               onCommit={rightPanelResizer.onCommit}
             />
           )}
-          {rightPanel === 'git' && <GitPanel onClose={() => setRightPanel('none')} />}
-          {rightPanel === 'review' && <ReviewChangesPanel />}
-          {rightPanel === 'features' && (
-            <FeaturesPanel
+          {rightDockMounted && (
+            <RightDockWorkspace
+              visible={rightPanelVisible}
+              mode={currentRightPanel}
+              tabs={rightDockTabs}
+              activeId={activeRightDockTabId}
               domain={domain}
-              onOpenReviewChanges={() => setRightPanel('review')}
-              onOpenTerminal={() => setTerminalOpen(true)}
+              theme={theme}
+              onSelectTab={selectRightDockTab}
+              onCloseTab={closeRightDockTab}
+              onAddTab={addRightDockTab}
+              onOpenReviewChanges={() => addRightDockTab('review')}
+              onOpenTerminal={() => addRightDockTab('terminal')}
+              onOpenBrowser={() => addRightDockTab('browser')}
+              onOpenFiles={() => addRightDockTab('files')}
+              onOpenSideChat={() => addRightDockTab('side-chat')}
+              onCloseGit={() => setRightPanelVisible(false)}
             />
           )}
         </div>
-        {terminalOpen && <TerminalPanel theme={theme} onClose={() => setTerminalOpen(false)} />}
+        {terminalMounted && <TerminalPanel theme={theme} visible={terminalOpen} onClose={() => setTerminalOpen(false)} />}
       </div>
       <SettingsPage
         domain={domain}
@@ -1422,28 +1549,26 @@ function sortSubmenu(value: ProjectSort, onChange: (sort: ProjectSort) => void):
 function TopBar({
   domain,
   sidebarCollapsed,
-  featuresOpen,
   rightPanelOpen,
   terminalOpen,
   onToggleSidebar,
-  onToggleFeatures,
   onToggleRightPanel,
   onToggleTerminal,
   onOpenGit,
   onOpenQuickGit,
+  onOpenSideChat,
   onOpenSettings,
 }: {
   domain: DomainConfig;
   sidebarCollapsed: boolean;
-  featuresOpen: boolean;
   rightPanelOpen: boolean;
   terminalOpen: boolean;
   onToggleSidebar: () => void;
-  onToggleFeatures: () => void;
   onToggleRightPanel: () => void;
   onToggleTerminal: () => void;
   onOpenGit: () => void;
   onOpenQuickGit: () => void;
+  onOpenSideChat: () => void;
   onOpenSettings: () => void;
 }) {
   const conversation = useCurrentConversation();
@@ -1479,7 +1604,7 @@ function TopBar({
   }, [conversation, toggleConversationPin, archiveConversation]);
 
   const openSideChat = () => {
-    if (!featuresOpen) onToggleFeatures();
+    onOpenSideChat();
   };
 
   const openTitleMenu = (event: ReactMouseEvent) => {
@@ -1546,18 +1671,32 @@ function TopBar({
         <div className="top-bar-title" data-tauri-drag-region>{domain.name}</div>
       )}
       <div className="top-bar-actions">
-        <OpenInAppMenu cwd={cwd} />
-        <EnvironmentMenu cwd={cwd} onOpenGit={onOpenGit} onOpenQuickGit={onOpenQuickGit} onOpenSettings={onOpenSettings} />
-        <button className={`icon-btn ${terminalOpen ? 'active' : ''}`} type="button" onClick={onToggleTerminal} aria-label="打开下方终端" title="终端"><PanelBottom size={16} /></button>
-        <button
-          className={`icon-btn ${rightPanelOpen ? 'active' : ''}`}
-          type="button"
-          onClick={onToggleRightPanel}
-          aria-label={rightPanelOpen ? '关闭侧边栏' : '打开侧边栏'}
-          title={rightPanelOpen ? '关闭侧边栏' : '侧边栏'}
-        >
-          <PanelRight size={16} />
-        </button>
+        <div className="top-bar-env-actions">
+          <OpenInAppMenu cwd={cwd} />
+          <EnvironmentMenu cwd={cwd} onOpenGit={onOpenGit} onOpenQuickGit={onOpenQuickGit} onOpenSettings={onOpenSettings} />
+        </div>
+        <div className="top-bar-panel-actions">
+          <button
+            className={`icon-btn ${terminalOpen ? 'active' : ''}`}
+            type="button"
+            onClick={onToggleTerminal}
+            aria-label={terminalOpen ? '收起下方终端' : '打开下方终端'}
+            aria-pressed={terminalOpen}
+            title="终端"
+          >
+            {terminalOpen ? <PanelBottomClose size={16} /> : <PanelBottom size={16} />}
+          </button>
+          <button
+            className={`icon-btn ${rightPanelOpen ? 'active' : ''}`}
+            type="button"
+            onClick={onToggleRightPanel}
+            aria-label={rightPanelOpen ? '关闭侧边栏' : '打开侧边栏'}
+            aria-pressed={rightPanelOpen}
+            title={rightPanelOpen ? '关闭侧边栏' : '侧边栏'}
+          >
+            {rightPanelOpen ? <PanelRightClose size={16} /> : <PanelRight size={16} />}
+          </button>
+        </div>
       </div>
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
     </header>
@@ -1575,9 +1714,12 @@ const OPEN_APP_META: Record<OpenAppId, { label: string; color: string; glyph: st
 const OPEN_APP_ORDER: OpenAppId[] = ['vscode', 'cursor', 'finder', 'terminal', 'pycharm'];
 
 function OpenInAppMenu({ cwd }: { cwd: string }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [apps, setApps] = useState<OpenAppId[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  useCloseOnOutsidePointer(open, rootRef, () => setOpen(false));
 
   useEffect(() => {
     let cancelled = false;
@@ -1603,7 +1745,7 @@ function OpenInAppMenu({ cwd }: { cwd: string }) {
   };
 
   return (
-    <div className="topbar-menu open-in-app">
+    <div ref={rootRef} className="topbar-menu open-in-app">
       <button
         type="button"
         className={`open-app-trigger ${open ? 'active' : ''}`}
@@ -1611,7 +1753,9 @@ function OpenInAppMenu({ cwd }: { cwd: string }) {
         title={cwd ? '用其他软件打开工作目录' : '当前对话未绑定工作目录'}
         aria-label="用其他软件打开"
       >
-        <AppWindow size={15} />
+        <span className="open-app-trigger-icon">
+          <SquareTerminal size={13} />
+        </span>
         <ChevronDown size={12} />
       </button>
       {open && (
@@ -1644,6 +1788,7 @@ function EnvironmentMenu({
   onOpenQuickGit: () => void;
   onOpenSettings: () => void;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const conversation = useCurrentConversation();
   const [open, setOpen] = useState(false);
   const [stat, setStat] = useState<GitDiffStat | null>(null);
@@ -1651,6 +1796,8 @@ function EnvironmentMenu({
   const [gh, setGh] = useState<GhAuthStatus | null>(null);
   const [isRepo, setIsRepo] = useState(false);
   const searchSources = useMemo(() => webSearchSources(conversation), [conversation]);
+
+  useCloseOnOutsidePointer(open, rootRef, () => setOpen(false));
 
   useEffect(() => {
     if (!open || !cwd) {
@@ -1696,7 +1843,7 @@ function EnvironmentMenu({
       : 'GitHub CLI 未通过身份验证';
 
   return (
-    <div className="topbar-menu environment-menu-wrap">
+    <div ref={rootRef} className="topbar-menu environment-menu-wrap">
       <button
         type="button"
         className={`icon-btn ${open ? 'active' : ''}`}
@@ -1709,7 +1856,7 @@ function EnvironmentMenu({
       {open && (
         <>
           <button className="menu-backdrop" type="button" aria-label="关闭菜单" onClick={() => setOpen(false)} />
-          <div className="topbar-dropdown environment-menu" role="menu">
+          <div className="topbar-dropdown environment-menu" role="menu" data-codex-panel="environment">
             <div className="environment-menu-head">
               <span>环境信息</span>
               <button type="button" className="icon-mini" onClick={() => { setOpen(false); onOpenSettings(); }} aria-label="环境设置"><Settings size={14} /></button>
@@ -1726,11 +1873,12 @@ function EnvironmentMenu({
                 <div className="environment-row static">
                   <HardDrive size={15} />
                   <span className="environment-row-label">本地</span>
-                  <span className="environment-row-value">{basename(cwd) || '本地'}</span>
+                  <ChevronDown size={13} className="environment-row-chevron" />
                 </div>
                 <div className="environment-row static">
                   <GitBranch size={15} />
                   <span className="environment-row-label">{branch || 'detached'}</span>
+                  <ChevronDown size={13} className="environment-row-chevron" />
                 </div>
                 <button type="button" className="environment-row" onClick={() => { setOpen(false); onOpenQuickGit(); }}>
                   <GitCommitHorizontal size={15} />
@@ -1746,19 +1894,15 @@ function EnvironmentMenu({
                 {cwd ? `${basename(cwd)} 不是 Git 仓库。` : conversation ? '当前对话未绑定工作目录。' : '请先选择一个对话。'}
               </div>
             )}
-            {searchSources.length > 0 && (
-              <>
-                <div className="environment-menu-divider" />
-                <div className="environment-menu-section">来源</div>
-                {searchSources.map((source) => (
-                  <button key={source.url} type="button" className="environment-row" onClick={() => { setOpen(false); void openExternal(source.url); }}>
-                    <Globe size={15} />
-                    <span className="environment-row-label">{source.title}</span>
-                    <span className="environment-row-value">{source.displayUrl}</span>
-                  </button>
-                ))}
-              </>
-            )}
+            <div className="environment-menu-divider" />
+            <div className="environment-menu-section">来源</div>
+            {searchSources.length > 0 ? searchSources.map((source) => (
+              <button key={source.url} type="button" className="environment-row" onClick={() => { setOpen(false); void openExternal(source.url); }}>
+                <Globe size={15} />
+                <span className="environment-row-label">{source.title}</span>
+                <span className="environment-row-value">{source.displayUrl}</span>
+              </button>
+            )) : <div className="environment-source-empty">暂无来源</div>}
           </div>
         </>
       )}
@@ -1986,6 +2130,28 @@ function quickGitChangeVerb(change: GitFileChange): string {
   }
 }
 
+function gitStatusLabel(status: GitFileChange['status']): string {
+  switch (status) {
+    case 'added':
+    case 'untracked':
+      return '新增';
+    case 'modified':
+      return '修改';
+    case 'deleted':
+      return '删除';
+    case 'renamed':
+      return '重命名';
+    case 'copied':
+      return '复制';
+    case 'conflicted':
+      return '冲突';
+    case 'typechange':
+      return '类型变更';
+    default:
+      return '未知';
+  }
+}
+
 interface WebSearchSource {
   title: string;
   url: string;
@@ -2094,7 +2260,7 @@ function hostFromUrl(url: string): string {
   }
 }
 
-type TerminalTab = { id: string; title: string };
+type TerminalTab = { id: string };
 
 function cssVar(name: string, fallback: string): string {
   if (typeof window === 'undefined') return fallback;
@@ -2248,17 +2414,26 @@ function TerminalInstance({
   return <div className={`terminal-surface ${active ? '' : 'hidden'}`} ref={containerRef} />;
 }
 
-function TerminalPanel({ theme, onClose }: { theme: Theme; onClose: () => void }) {
+function TerminalPanel({
+  theme,
+  onClose,
+  dock = false,
+  visible = true,
+}: {
+  theme: Theme;
+  onClose: () => void;
+  dock?: boolean;
+  visible?: boolean;
+}) {
   const conversation = useCurrentConversation();
   const cwd = conversation?.cwd || '';
   const baseName = basename(cwd) || '终端';
-  const counterRef = useRef(0);
+  const nextTabIdRef = useRef(0);
 
   const createTab = (): TerminalTab => {
-    counterRef.current += 1;
+    nextTabIdRef.current += 1;
     return {
-      id: `term-${Date.now()}-${counterRef.current}`,
-      title: `${baseName} ${counterRef.current}`,
+      id: `term-${Date.now()}-${nextTabIdRef.current}`,
     };
   };
 
@@ -2279,6 +2454,12 @@ function TerminalPanel({ theme, onClose }: { theme: Theme; onClose: () => void }
     if (index === -1) return;
     const next = prev.filter((tab) => tab.id !== id);
     if (next.length === 0) {
+      if (dock) {
+        const tab = createTab();
+        setTabs([tab]);
+        setActiveId(tab.id);
+        return;
+      }
       onClose();
       return;
     }
@@ -2289,57 +2470,240 @@ function TerminalPanel({ theme, onClose }: { theme: Theme; onClose: () => void }
   };
 
   return (
-    <section className="terminal-panel" aria-label="终端">
+    <section
+      className={`terminal-panel ${dock ? 'right-dock-panel terminal-dock-panel' : ''} ${visible ? '' : 'collapsed'}`}
+      aria-label="终端"
+      aria-hidden={!visible}
+    >
       <header className="terminal-panel-head">
         <div className="terminal-tabs">
-          {tabs.map((tab) => (
-            <div
-              key={tab.id}
-              className={`terminal-tab ${tab.id === activeId ? 'active' : ''}`}
-              onClick={() => setActiveId(tab.id)}
-              role="tab"
-              tabIndex={0}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') setActiveId(tab.id);
-              }}
-            >
-              <SquareTerminal size={13} />
-              <span className="terminal-tab-label">{tab.title}</span>
-              <button
-                type="button"
-                className="terminal-tab-close"
-                aria-label="关闭终端"
-                title="关闭"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  closeTab(tab.id);
+          {tabs.map((tab, index) => {
+            const title = `${baseName} ${index + 1}`;
+            return (
+              <div
+                key={tab.id}
+                className={`terminal-tab ${tab.id === activeId ? 'active' : ''}`}
+                onClick={() => setActiveId(tab.id)}
+                role="tab"
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') setActiveId(tab.id);
                 }}
               >
-                <X size={12} />
-              </button>
-            </div>
-          ))}
+                <SquareTerminal size={13} />
+                <span className="terminal-tab-label">{title}</span>
+                <button
+                  type="button"
+                  className="terminal-tab-close"
+                  aria-label="关闭终端"
+                  title="关闭"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closeTab(tab.id);
+                  }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            );
+          })}
           <button type="button" className="terminal-tab-add" onClick={addTab} title="新建终端">
             <Plus size={14} />
           </button>
         </div>
         <span className="spacer" />
-        <button
-          type="button"
-          className="icon-mini"
-          onClick={onClose}
-          aria-label="收起终端面板"
-          title="收起"
-        >
-          <ChevronDown size={16} />
-        </button>
+        {!dock && (
+          <button
+            type="button"
+            className="icon-mini"
+            onClick={onClose}
+            aria-label="收起终端面板"
+            title="收起"
+          >
+            <ChevronDown size={16} />
+          </button>
+        )}
       </header>
       <div className="terminal-panel-bodies">
         {tabs.map((tab) => (
-          <TerminalInstance key={tab.id} cwd={cwd} active={tab.id === activeId} theme={theme} />
+          <TerminalInstance key={tab.id} cwd={cwd} active={visible && tab.id === activeId} theme={theme} />
         ))}
       </div>
     </section>
+  );
+}
+
+function rightDockIcon(kind: RightDockKind, size = 14): ReactNode {
+  switch (kind) {
+    case 'review':
+      return <FileDiff size={size} />;
+    case 'terminal':
+      return <SquareTerminal size={size} />;
+    case 'browser':
+      return <Globe size={size} />;
+    case 'files':
+      return <Folder size={size} />;
+    case 'side-chat':
+      return <MessageSquare size={size} />;
+  }
+}
+
+function RightDockWorkspace({
+  visible,
+  mode,
+  tabs,
+  activeId,
+  domain,
+  theme,
+  onSelectTab,
+  onCloseTab,
+  onAddTab,
+  onOpenReviewChanges,
+  onOpenTerminal,
+  onOpenBrowser,
+  onOpenFiles,
+  onOpenSideChat,
+  onCloseGit,
+}: {
+  visible: boolean;
+  mode: RightPanel;
+  tabs: RightDockTab[];
+  activeId: string | null;
+  domain: DomainConfig;
+  theme: Theme;
+  onSelectTab: (id: string) => void;
+  onCloseTab: (id: string) => void;
+  onAddTab: (kind: RightDockKind) => void;
+  onOpenReviewChanges: () => void;
+  onOpenTerminal: () => void;
+  onOpenBrowser: () => void;
+  onOpenFiles: () => void;
+  onOpenSideChat: () => void;
+  onCloseGit: () => void;
+}) {
+  const activeTab = tabs.find((tab) => tab.id === activeId) ?? null;
+  const showTabs = Boolean(activeTab);
+  const dockMode = activeTab?.kind ?? mode;
+
+  return (
+    <aside className={`right-dock-workspace right-dock-${dockMode} ${visible ? '' : 'collapsed'}`} aria-label="侧边栏">
+      {showTabs ? (
+        <>
+          <RightDockTabBar tabs={tabs} activeId={activeId} onSelectTab={onSelectTab} onCloseTab={onCloseTab} onAddTab={onAddTab} />
+          <div className="right-dock-tab-content">
+            {tabs.map((tab) => (
+              <div key={tab.id} className={`right-dock-pane ${tab.id === activeId ? 'active' : ''}`} aria-hidden={tab.id !== activeId}>
+                {tab.kind === 'review' && <ReviewChangesPanel />}
+                {tab.kind === 'terminal' && <TerminalPanel theme={theme} dock visible={visible && tab.id === activeId} onClose={() => undefined} />}
+                {tab.kind === 'browser' && <BrowserDockPanel />}
+                {tab.kind === 'files' && <FilesDockPanel />}
+                {tab.kind === 'side-chat' && <SideChatPanel domain={domain} />}
+              </div>
+            ))}
+          </div>
+        </>
+      ) : mode === 'git' ? (
+        <GitPanel onClose={onCloseGit} />
+      ) : (
+        <FeaturesPanel
+          domain={domain}
+          onOpenReviewChanges={onOpenReviewChanges}
+          onOpenTerminal={onOpenTerminal}
+          onOpenBrowser={onOpenBrowser}
+          onOpenFiles={onOpenFiles}
+          onOpenSideChat={onOpenSideChat}
+        />
+      )}
+    </aside>
+  );
+}
+
+function RightDockTabBar({
+  tabs,
+  activeId,
+  onSelectTab,
+  onCloseTab,
+  onAddTab,
+}: {
+  tabs: RightDockTab[];
+  activeId: string | null;
+  onSelectTab: (id: string) => void;
+  onCloseTab: (id: string) => void;
+  onAddTab: (kind: RightDockKind) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const add = (kind: RightDockKind) => {
+    setMenuOpen(false);
+    onAddTab(kind);
+  };
+
+  return (
+    <header className="right-dock-tabbar" data-tauri-drag-region>
+      <div className="right-dock-tabs" role="tablist" aria-label="侧边栏标签" data-tauri-drag-region>
+        {tabs.map((tab) => {
+          const meta = RIGHT_DOCK_META[tab.kind];
+          return (
+            <div
+              key={tab.id}
+              role="tab"
+              tabIndex={0}
+              aria-selected={tab.id === activeId}
+              className={`right-dock-tab ${tab.id === activeId ? 'active' : ''}`}
+              onClick={() => onSelectTab(tab.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onSelectTab(tab.id);
+                }
+              }}
+            >
+              {rightDockIcon(tab.kind)}
+              <span className="right-dock-tab-label">{meta.label}</span>
+              <button
+                type="button"
+                className="right-dock-tab-close"
+                aria-label={`关闭${meta.label}标签`}
+                title="关闭标签"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCloseTab(tab.id);
+                }}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          );
+        })}
+        <div className="right-dock-tab-add-wrap">
+          <button
+            type="button"
+            className="right-dock-tab-add"
+            aria-label="添加侧边栏标签"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <Plus size={16} />
+          </button>
+          {menuOpen && (
+            <>
+              <div className="right-dock-tab-menu-backdrop" onClick={() => setMenuOpen(false)} />
+              <div className="right-dock-tab-menu">
+                {RIGHT_DOCK_ADD_MENU_KINDS.map((kind) => {
+                  const meta = RIGHT_DOCK_META[kind];
+                  return (
+                    <button key={kind} type="button" onClick={() => add(kind)}>
+                      {rightDockIcon(kind)}
+                      <span>{meta.label}</span>
+                      {meta.shortcut && <kbd>{meta.shortcut}</kbd>}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </header>
   );
 }
 
@@ -2347,56 +2711,257 @@ function FeaturesPanel({
   domain,
   onOpenReviewChanges,
   onOpenTerminal,
+  onOpenBrowser,
+  onOpenFiles,
+  onOpenSideChat,
 }: {
   domain: DomainConfig;
   onOpenReviewChanges: () => void;
   onOpenTerminal: () => void;
+  onOpenBrowser: () => void;
+  onOpenFiles: () => void;
+  onOpenSideChat: () => void;
 }) {
   const conversation = useCurrentConversation();
   const cwd = conversation?.cwd || '';
+  const featureActions: Array<{
+    id: string;
+    label: string;
+    icon: ReactNode;
+    shortcut?: string;
+    disabled?: boolean;
+    active?: boolean;
+    title?: string;
+    onClick: () => void;
+  }> = [
+    {
+      id: 'review',
+      label: '审查',
+      icon: <FileDiff size={14} />,
+      shortcut: '⌃⇧G',
+      disabled: !cwd,
+      title: cwd ? '查看代码更改' : '当前对话未绑定工作目录',
+      onClick: onOpenReviewChanges,
+    },
+    {
+      id: 'terminal',
+      label: '终端',
+      icon: <SquareTerminal size={14} />,
+      title: '启动交互式 shell',
+      onClick: onOpenTerminal,
+    },
+    {
+      id: 'browser',
+      label: '浏览器',
+      icon: <Globe size={14} />,
+      shortcut: '⌘T',
+      title: '打开内嵌浏览器',
+      onClick: onOpenBrowser,
+    },
+    {
+      id: 'files',
+      label: '文件',
+      icon: <Folder size={14} />,
+      shortcut: '⌘P',
+      disabled: !cwd,
+      title: cwd ? '浏览项目文件入口' : '当前对话未绑定工作目录',
+      onClick: onOpenFiles,
+    },
+    {
+      id: 'side-chat',
+      label: '侧边聊天',
+      icon: <MessageSquare size={14} />,
+      shortcut: '⌥⌘S',
+      title: '打开侧边聊天',
+      onClick: onOpenSideChat,
+    },
+  ];
 
-  const runFeature = (feature: DomainFeature) => {
-    if (feature.requiresCwd && !cwd) return;
-    switch (feature.action) {
-      case 'reveal-cwd':
-        if (cwd) void revealPath(cwd);
-        break;
-      case 'open-url': {
-        const url = window.prompt('输入要打开的网址', 'https://');
-        if (url && url.trim()) void openExternal(url.trim());
-        break;
-      }
-      case 'open-review':
-        onOpenReviewChanges();
-        break;
-      case 'open-terminal':
-        onOpenTerminal();
-        break;
-    }
+  return (
+    <div className="features-panel" aria-label={domain.ui.rightPanelTitle}>
+      <div className="features-panel-body">
+        <div className="features-list">
+          {featureActions.map((feature) => (
+            <button
+              key={feature.id}
+              type="button"
+              className={`feature-card ${feature.active ? 'active' : ''}`}
+              disabled={feature.disabled}
+              onClick={feature.onClick}
+              title={feature.title}
+            >
+              <span className="feature-card-main">
+                <span className="feature-card-icon">{feature.icon}</span>
+                <span className="feature-card-title">{feature.label}</span>
+              </span>
+              {feature.shortcut && <span className="feature-card-key">{feature.shortcut}</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DockPanelHeader({
+  icon,
+  title,
+  onClose,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  onClose: () => void;
+  children?: ReactNode;
+}) {
+  return (
+    <header className="dock-panel-head" data-tauri-drag-region>
+      <div className="dock-panel-title" data-tauri-drag-region>
+        {icon}
+        <span>{title}</span>
+      </div>
+      <span className="spacer" />
+      {children}
+      <button type="button" className="icon-mini" onClick={onClose} aria-label={`关闭${title}`} title="关闭">
+        <X size={15} />
+      </button>
+    </header>
+  );
+}
+
+function BrowserDockPanel() {
+  const localUrl = useMemo(() => {
+    if (typeof window === 'undefined') return 'http://localhost:1421';
+    return window.location.protocol.startsWith('http') ? window.location.origin : 'http://localhost:1421';
+  }, []);
+  const [draft, setDraft] = useState('');
+  const [url, setUrl] = useState('');
+  const [frameKey, setFrameKey] = useState(0);
+
+  const openUrl = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const next = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    setUrl(next);
+    setDraft(next);
+    setFrameKey((key) => key + 1);
   };
 
   return (
-    <aside className="features-panel right-dock-panel">
-      <header className="features-panel-head" data-tauri-drag-region>
-        <span>{domain.ui.rightPanelTitle}</span>
-      </header>
-      <div className="features-list">
-        {domain.ui.features.map((feature) => (
-          <button
-            key={feature.id}
-            type="button"
-            className="feature-card"
-            disabled={feature.requiresCwd && !cwd}
-            onClick={() => runFeature(feature)}
-            title={feature.desc}
-          >
-            <span className="feature-card-icon">{domainFeatureIcon(feature.icon)}</span>
-            <span className="feature-card-title">{feature.title}</span>
-            {feature.shortcut && <span className="feature-card-key">{feature.shortcut}</span>}
+    <section className="browser-dock-panel" aria-label="浏览器">
+      <form className="browser-url-row" onSubmit={(event) => { event.preventDefault(); openUrl(draft); }}>
+        <button type="button" className="icon-mini" disabled aria-label="后退"><ChevronLeft size={14} /></button>
+        <button type="button" className="icon-mini" disabled aria-label="前进"><ChevronRight size={14} /></button>
+        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="输入 URL" spellCheck={false} />
+        <button type="button" className="icon-mini" disabled={!url} onClick={() => setFrameKey((key) => key + 1)} aria-label="刷新浏览器" title="刷新">
+          <RefreshCw size={14} />
+        </button>
+        <button type="submit" className="icon-mini" aria-label="打开 URL" title="打开"><ArrowUp size={14} /></button>
+      </form>
+      {url ? (
+        <iframe key={`${url}-${frameKey}`} className="browser-frame" src={url} title={url} />
+      ) : (
+        <div className="browser-start">
+          <div className="dock-section-label">本地</div>
+          <button type="button" className="browser-local-card" onClick={() => openUrl(localUrl)}>
+            <span className="browser-local-thumb">AS</span>
+            <span>
+              <strong>Alpha Studio</strong>
+              <em>{localUrl.replace(/^https?:\/\//, '')}</em>
+            </span>
+            <span className="browser-local-dot" />
           </button>
-        ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FilesDockPanel() {
+  const conversation = useCurrentConversation();
+  const cwd = conversation?.cwd || '';
+  const [status, setStatus] = useState<GitStatus | null>(null);
+  const [filter, setFilter] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!cwd) {
+      setStatus(null);
+      return;
+    }
+    void gitStatus(cwd)
+      .then((next) => {
+        if (!cancelled) setStatus(next);
+      })
+      .catch(() => {
+        if (!cancelled) setStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cwd]);
+
+  const normalizedFilter = filter.trim().toLowerCase();
+  const changes = (status?.changes ?? []).filter((change) => !normalizedFilter || change.path.toLowerCase().includes(normalizedFilter));
+
+  return (
+    <section className="files-dock-panel" aria-label="文件">
+      <div className="files-path-row" title={cwd}>{cwd ? shortenPath(cwd) : '未指定工作目录'}</div>
+      <label className="files-filter">
+        <Search size={13} />
+        <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选文件..." spellCheck={false} disabled={!cwd} />
+      </label>
+      <div className="files-dock-body">
+        {!cwd ? (
+          <div className="dock-empty">
+            <Folder size={24} />
+            <strong>打开文件</strong>
+            <span>先为当前对话选择一个工作目录。</span>
+          </div>
+        ) : changes.length > 0 ? (
+          <div className="files-change-list">
+            <div className="dock-section-label">更改的文件</div>
+            {changes.map((change) => (
+              <button key={`${change.path}-${change.indexStatus}-${change.workingTreeStatus}`} type="button" className="files-change-row" onClick={() => void revealPath(joinPath(cwd, change.path))}>
+                {fileGlyph(extOf(change.path), 15)}
+                <span>{change.path}</span>
+                <em>{gitStatusLabel(change.status)}</em>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="dock-empty">
+            <FolderOpen size={24} />
+            <strong>{filter ? '没有匹配的文件' : '暂无文件更改'}</strong>
+            <span>{filter ? '换个关键词再试。' : '可以用右上角按钮在访达中打开工作目录。'}</span>
+          </div>
+        )}
       </div>
-    </aside>
+    </section>
+  );
+}
+
+function SideChatPanel({ domain }: { domain: DomainConfig }) {
+  const conversation = useCurrentConversation();
+  const codexStatus = useChatStore((state) => state.codexStatus);
+  const previewRuntime = !isTauriRuntime();
+  const codexReady = previewRuntime || Boolean(codexStatus?.installed && codexStatus.loggedIn);
+
+  return (
+    <section className="side-chat-panel" aria-label="侧边聊天">
+      <div className="side-chat-body" />
+      {conversation ? (
+        <div className="side-chat-composer">
+          <Composer domain={domain} conversation={conversation} disabled={!codexReady} />
+        </div>
+      ) : (
+        <div className="dock-empty">
+          <MessageSquare size={24} />
+          <strong>侧边聊天</strong>
+          <span>请选择一个对话。</span>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -4409,6 +4974,7 @@ function ReviewChangesPanel() {
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<ReviewStatusFilter>('all');
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  const [fileListVisible, setFileListVisible] = useState(true);
   const [commitOpen, setCommitOpen] = useState(false);
   const [viewMode, setViewMode] = useState<ReviewViewMode>(() => {
     if (typeof window === 'undefined') return 'unified';
@@ -4557,8 +5123,7 @@ function ReviewChangesPanel() {
   const branch = status?.branch || '';
   const ahead = status?.ahead ?? 0;
   const behind = status?.behind ?? 0;
-  const statusLabel = statusFilter === 'all' ? '全部' : statusFilter === 'staged' ? '已暂存' : '未暂存';
-  const statusCount = statusFilter === 'all' ? changes.length : statusFilter === 'staged' ? stagedCount : unstagedCount;
+  const statusLabel = statusFilter === 'all' ? '上轮对话' : statusFilter === 'staged' ? '已暂存' : '未暂存';
 
   const toggleViewed = (path: string) => {
     setViewed((prev) => {
@@ -4583,29 +5148,37 @@ function ReviewChangesPanel() {
 
   return (
     <aside className="review-panel right-dock-panel wide">
-      <header className="panel-header" data-tauri-drag-region>
-        <div data-tauri-drag-region>
-          <h2>审查更改</h2>
-          <span>{cwd ? shortenPath(cwd) : '未指定工作目录'}</span>
-        </div>
-      </header>
-
       {status?.isRepository ? (
         <>
           <div className="review-topbar">
             <div className="review-status">
               <button type="button" className="review-status-btn" onClick={() => setStatusMenuOpen((open) => !open)}>
                 <span>{statusLabel}</span>
-                <strong>{statusCount}</strong>
                 <ChevronDown size={13} />
               </button>
               {statusMenuOpen && (
                 <>
                   <div className="review-status-backdrop" onClick={() => setStatusMenuOpen(false)} />
-                  <div className="review-status-menu">
-                    <button type="button" className={statusFilter === 'all' ? 'active' : ''} onClick={() => { setStatusFilter('all'); setStatusMenuOpen(false); }}>全部<span>{changes.length}</span></button>
-                    <button type="button" className={statusFilter === 'staged' ? 'active' : ''} onClick={() => { setStatusFilter('staged'); setStatusMenuOpen(false); }}>已暂存<span>{stagedCount}</span></button>
-                    <button type="button" className={statusFilter === 'unstaged' ? 'active' : ''} onClick={() => { setStatusFilter('unstaged'); setStatusMenuOpen(false); }}>未暂存<span>{unstagedCount}</span></button>
+                  <div className="review-status-menu codex-filter-menu">
+                    <button type="button" className={statusFilter === 'unstaged' ? 'active' : ''} onClick={() => { setStatusFilter('unstaged'); setStatusMenuOpen(false); }}>
+                      <span>未暂存</span>
+                      <span className="review-menu-count">{unstagedCount}</span>
+                    </button>
+                    <button type="button" className={statusFilter === 'staged' ? 'active' : ''} onClick={() => { setStatusFilter('staged'); setStatusMenuOpen(false); }}>
+                      <span>已暂存</span>
+                      <span className="review-menu-count">{stagedCount}</span>
+                    </button>
+                    <button type="button" className="has-submenu" onClick={() => setStatusMenuOpen(false)}>
+                      <span>提交</span>
+                      <ChevronRight size={14} />
+                    </button>
+                    <button type="button" onClick={() => setStatusMenuOpen(false)}>
+                      <span>分支</span>
+                    </button>
+                    <button type="button" className={statusFilter === 'all' ? 'active' : ''} onClick={() => { setStatusFilter('all'); setStatusMenuOpen(false); }}>
+                      <span>上轮对话</span>
+                      {statusFilter === 'all' && <Check size={14} className="review-menu-check" />}
+                    </button>
                   </div>
                 </>
               )}
@@ -4619,6 +5192,15 @@ function ReviewChangesPanel() {
               <button type="button" className={viewMode === 'unified' ? 'active' : ''} onClick={() => setViewMode('unified')} title="单栏视图"><FileDiff size={13} /></button>
               <button type="button" className={viewMode === 'split' ? 'active' : ''} onClick={() => setViewMode('split')} title="分栏视图"><Columns2 size={13} /></button>
             </div>
+            <button
+              type="button"
+              className={`icon-mini review-file-list-toggle ${fileListVisible ? 'active' : ''}`}
+              onClick={() => setFileListVisible((visible) => !visible)}
+              aria-label={fileListVisible ? '隐藏文件' : '显示文件'}
+              title={fileListVisible ? '隐藏文件' : '显示文件'}
+            >
+              <FolderOpen size={14} />
+            </button>
             <button type="button" className="icon-mini" onClick={() => void refresh()} disabled={busy} title="刷新"><RefreshCw size={14} className={busy ? 'spin' : ''} /></button>
             <button type="button" className={`panel-btn ${commitOpen ? 'primary' : ''}`} onClick={() => setCommitOpen((open) => !open)} disabled={changes.length === 0}><GitCommitHorizontal size={13} />提交或推送</button>
             <button type="button" className="panel-btn" onClick={createPullRequest} disabled={busy} title="gh pr create --web"><GitPullRequest size={13} />创建拉取请求</button>
@@ -4626,7 +5208,7 @@ function ReviewChangesPanel() {
 
           {error && <div className="panel-error"><AlertCircle size={14} />{error}</div>}
 
-          <div className="review-split">
+          <div className={`review-split ${fileListVisible ? '' : 'file-list-hidden'}`}>
             <div className="review-pane">
               <div className="review-scroll" ref={scrollRef}>
                 {commitOpen && (
@@ -4723,29 +5305,31 @@ function ReviewChangesPanel() {
               )}
             </div>
 
-            <aside className="review-tree-pane">
-              <div className="review-tree-head">
-                <Search size={12} />
-                <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选文件…" spellCheck={false} />
-                {filter && <button type="button" className="review-search-clear" onClick={() => setFilter('')} aria-label="清除筛选"><X size={12} /></button>}
-              </div>
-              <div className="review-tree-scroll">
-                {visibleChanges.length === 0 ? (
-                  <div className="review-tree-empty">没有文件</div>
-                ) : (
-                  <ReviewTree
-                    entries={tree}
-                    depth={0}
-                    folderCollapsed={folderCollapsed}
-                    selected={selectedFile}
-                    viewed={viewed}
-                    diffs={diffs}
-                    onToggleFolder={(path) => setFolderCollapsed((prev) => ({ ...prev, [path]: !prev[path] }))}
-                    onSelect={selectFile}
-                  />
-                )}
-              </div>
-            </aside>
+            {fileListVisible && (
+              <aside className="review-tree-pane">
+                <div className="review-tree-head">
+                  <Search size={12} />
+                  <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选文件…" spellCheck={false} />
+                  {filter && <button type="button" className="review-search-clear" onClick={() => setFilter('')} aria-label="清除筛选"><X size={12} /></button>}
+                </div>
+                <div className="review-tree-scroll">
+                  {visibleChanges.length === 0 ? (
+                    <div className="review-tree-empty">没有文件</div>
+                  ) : (
+                    <ReviewTree
+                      entries={tree}
+                      depth={0}
+                      folderCollapsed={folderCollapsed}
+                      selected={selectedFile}
+                      viewed={viewed}
+                      diffs={diffs}
+                      onToggleFolder={(path) => setFolderCollapsed((prev) => ({ ...prev, [path]: !prev[path] }))}
+                      onSelect={selectFile}
+                    />
+                  )}
+                </div>
+              </aside>
+            )}
           </div>
         </>
       ) : (
@@ -5876,16 +6460,6 @@ function domainSuggestionIcon(suggestion: DomainSuggestion): ReactNode {
     wrench: <Wrench size={16} className="icon" />,
   };
   return icons[suggestion.icon];
-}
-
-function domainFeatureIcon(icon: DomainFeature['icon']): ReactNode {
-  const icons: Record<DomainFeature['icon'], ReactNode> = {
-    folder: <FolderOpen size={16} />,
-    browser: <Globe size={16} />,
-    review: <GitPullRequest size={16} />,
-    terminal: <SquareTerminal size={16} />,
-  };
-  return icons[icon];
 }
 
 function domainSectionIds(domain: DomainConfig): SettingsSection[] {
