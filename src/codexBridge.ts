@@ -93,6 +93,15 @@ export async function revealPath(path: string): Promise<boolean> {
   }
 }
 
+export async function localImageDataUrl(path: string): Promise<string | null> {
+  if (!path || !isTauriRuntime()) return null;
+  try {
+    return await invoke<string>('local_image_data_url', { request: { path } });
+  } catch {
+    return null;
+  }
+}
+
 export async function subscribeCodexEvents(
   handler: (event: CodexChatEvent) => void,
 ): Promise<UnlistenFn | null> {

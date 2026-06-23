@@ -27,6 +27,11 @@ export function buildCodingInstructions(
     modeLines.push(
       `当前指定 Skill：${skill.title} (${skill.id})。必须优先使用这个 Skill 的能力、说明和工具路线来完成任务；如果任务明显不适合该 Skill，先简短说明原因，再用最合适的方式继续。`,
     );
+    if (skill.id === 'imagegen') {
+      modeLines.push(
+        '图片生成展示要求：在对话中简短说明正在生成或处理的关键步骤；最终必须把每张生成图片用可渲染的 Markdown 图片语法 `![说明](绝对路径或URL)` 或明确的本地绝对路径/URL 展示出来，并说明保存位置。不要只回复“已生成”；如果没有实际得到图片文件、URL 或可展示结果，必须说明未完成和原因。',
+      );
+    }
   }
 
   return [

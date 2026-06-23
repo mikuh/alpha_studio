@@ -1,8 +1,9 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   CSSProperties,
   FormEvent,
+  ImgHTMLAttributes,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   ReactNode,
@@ -10,6 +11,7 @@ import type {
 } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import {
@@ -127,6 +129,7 @@ import {
   gitUnstage,
   isTauriRuntime,
   listOpenApps,
+  localImageDataUrl,
   openInApp,
   revealPath,
   subscribeTerminalEvents,
@@ -173,6 +176,8 @@ import type {
   GitFileChange,
   GitRemote,
   GitStatus,
+  GeneratedFile,
+  GeneratedImage,
   MessageAttachment,
   MessageBlock,
   OpenAppId,
@@ -242,12 +247,44 @@ const RIGHT_DOCK_META: Record<RightDockKind, { label: string; shortcut?: string 
 };
 const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['browser', 'terminal', 'files', 'side-chat'];
 
+type SkillCategory = 'personal' | 'system' | 'recommended';
+type SkillCategoryFilter = SkillCategory | 'all';
+type SkillIcon =
+  | 'browser'
+  | 'chrome'
+  | 'computer'
+  | 'pdf'
+  | 'image'
+  | 'docs'
+  | 'plugin'
+  | 'skill'
+  | 'playwright'
+  | 'ios'
+  | 'github'
+  | 'calendar'
+  | 'drive'
+  | 'slack'
+  | 'database'
+  | 'cloud'
+  | 'chart';
+
+interface SkillDetailSection {
+  title?: string;
+  paragraphs: string[];
+}
+
 interface SkillCatalogItem extends SkillSelection {
-  category: 'personal' | 'system' | 'recommended';
+  category: SkillCategory;
   source: string;
   installed: boolean;
-  icon: 'browser' | 'chrome' | 'computer' | 'pdf' | 'image' | 'docs' | 'plugin' | 'skill' | 'playwright';
+  icon: SkillIcon;
+  detail: SkillDetailSection[];
 }
+
+const detail = (overview: string, workflow?: string): SkillDetailSection[] => [
+  { paragraphs: [overview] },
+  ...(workflow ? [{ title: 'Workflow Configuration', paragraphs: [workflow] }] : []),
+];
 
 const SKILL_CATALOG: readonly SkillCatalogItem[] = [
   {
@@ -258,6 +295,80 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '个人',
     installed: true,
     icon: 'browser',
+    detail: detail(
+      'Open and control the in-app browser for local development pages, web QA, screenshots, DOM snapshots, and interaction checks.',
+      'Use this when a task needs a rendered web surface inside Alpha Studio instead of an external browser session.',
+    ),
+  },
+  {
+    id: 'ios-app-intents',
+    title: 'iOS App Intents',
+    description: 'Build and debug iOS App Intents integrations',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'ios',
+    detail: detail('Design App Intents, app entities, and App Shortcuts for iOS features that need system-level integration.'),
+  },
+  {
+    id: 'ios-debugger-agent',
+    title: 'iOS Debugger Agent',
+    description: 'Debug iOS apps on Simulator',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'ios',
+    detail: detail('Build, run, and debug iOS apps on Simulator with XcodeBuildMCP-backed tooling.'),
+  },
+  {
+    id: 'ios-ettrace-performance',
+    title: 'iOS ETTrace Performance',
+    description: 'Profile symbolicated iOS simulator flows with ETTrace',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'ios',
+    detail: detail('Capture and interpret ETTrace profiles for iOS Simulator performance investigations.'),
+  },
+  {
+    id: 'ios-memgraph-leaks',
+    title: 'iOS Memgraph Leaks',
+    description: 'Capture and prove iOS simulator memory leaks',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'ios',
+    detail: detail('Capture and inspect iOS memgraphs when you need leak evidence instead of a guess.'),
+  },
+  {
+    id: 'ios-simulator-browser',
+    title: 'iOS Simulator Browser',
+    description: 'Mirror an iOS Simulator into the in-app browser',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'ios',
+    detail: detail('Stream an iOS Simulator view into Alpha Studio for visual checks and app walkthroughs.'),
+  },
+  {
+    id: 'swiftui-liquid-glass',
+    title: 'SwiftUI Liquid Glass',
+    description: 'Implement and review iOS 26+ SwiftUI Liquid Glass UI',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'ios',
+    detail: detail('Apply SwiftUI Liquid Glass patterns with platform-appropriate spacing, materials, and controls.'),
+  },
+  {
+    id: 'swiftui-performance-audit',
+    title: 'SwiftUI Performance Audit',
+    description: 'Audit SwiftUI runtime performance from code first',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'ios',
+    detail: detail('Review SwiftUI view composition and state usage before profiling deeper runtime behavior.'),
   },
   {
     id: 'chrome',
@@ -267,6 +378,10 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '个人',
     installed: true,
     icon: 'chrome',
+    detail: detail(
+      'Control the user Chrome browser when a task needs an existing signed-in browser session, account state, extensions, or real-world tabs.',
+      'Prefer the in-app Browser for local app QA. Use Chrome when the task explicitly depends on the user browser.',
+    ),
   },
   {
     id: 'computer-use',
@@ -276,6 +391,7 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '个人',
     installed: true,
     icon: 'computer',
+    detail: detail('Operate local macOS GUI apps through the installed computer-use runtime. Use it for native app workflows that cannot be reached through code or browser automation.'),
   },
   {
     id: 'pdf',
@@ -285,6 +401,7 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '个人',
     installed: true,
     icon: 'pdf',
+    detail: detail('Read, create, inspect, render, and verify PDF files. This skill is useful for document conversion, page inspection, and PDF output QA.'),
   },
   {
     id: 'imagegen',
@@ -294,6 +411,7 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '系统',
     installed: true,
     icon: 'image',
+    detail: detail('Generate or edit raster images when a task benefits from custom visual assets, reference scenes, or image transformations.'),
   },
   {
     id: 'openai-docs',
@@ -303,6 +421,22 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '系统',
     installed: true,
     icon: 'docs',
+    detail: [
+      {
+        paragraphs: [
+          'Provide authoritative, current guidance from OpenAI developer docs using the developers.openai.com MCP server. "Docs MCP" means `mcp__openaiDeveloperDocs__search_openai_docs` and `mcp__openaiDeveloperDocs__fetch_openai_doc`; for API reference, schema, parameter, or required-field questions, also use `mcp__openaiDeveloperDocs__get_openapi_spec` when available. Official-domain web search is fallback after those tools are unavailable or unhelpful.',
+          'Broad Codex questions use the manual helper before Docs MCP. This skill also owns model selection, API model migration, and prompt-upgrade guidance.',
+        ],
+      },
+      {
+        title: 'API Key Setup',
+        paragraphs: [
+          'For requests to build, run, configure, debug, or implement an API-backed app, script, CLI, generator, or tool, use `openai-platform-api-key` first when available. After that credential gate is resolved, return here for current docs as needed.',
+          'Use this skill directly for docs-only questions, citations, model/API guidance, conceptual explanations, and examples that do not require building or running an API-backed artifact.',
+        ],
+      },
+      { title: 'Workflow Configuration', paragraphs: ['Load this skill before answering OpenAI product or API documentation questions.'] },
+    ],
   },
   {
     id: 'plugin-creator',
@@ -312,6 +446,7 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '系统',
     installed: true,
     icon: 'plugin',
+    detail: detail('Scaffold Codex plugins, marketplace metadata, and plugin directories using the local plugin authoring conventions.'),
   },
   {
     id: 'skill-creator',
@@ -321,6 +456,7 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '系统',
     installed: true,
     icon: 'skill',
+    detail: detail('Create or update a skill with a focused trigger, clear workflow, and scoped reference files.'),
   },
   {
     id: 'skill-installer',
@@ -330,6 +466,27 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '系统',
     installed: true,
     icon: 'skill',
+    detail: detail('Install curated skills from openai/skills or other repositories into `CODEX_HOME/skills`.'),
+  },
+  {
+    id: 'documents',
+    title: 'Documents',
+    description: 'Create, edit, redline, and comment on .docx files.',
+    category: 'system',
+    source: '系统',
+    installed: true,
+    icon: 'docs',
+    detail: detail('Work with Word documents and local document assets while preserving formatting and review intent.'),
+  },
+  {
+    id: 'spreadsheets',
+    title: 'Spreadsheets',
+    description: 'Create, modify, inspect, and verify spreadsheet files.',
+    category: 'system',
+    source: '系统',
+    installed: true,
+    icon: 'chart',
+    detail: detail('Use bundled spreadsheet tooling for CSV, XLSX, and analytical workbook workflows.'),
   },
   {
     id: 'playwright',
@@ -339,8 +496,141 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '推荐',
     installed: false,
     icon: 'playwright',
+    detail: detail('Automate real browsers from the terminal for rendered frontend verification, screenshots, and regression checks.'),
+  },
+  {
+    id: 'github',
+    title: 'GitHub',
+    description: 'Access repositories, issues, pull requests, and CI context.',
+    category: 'recommended',
+    source: '推荐',
+    installed: false,
+    icon: 'github',
+    detail: detail('Use GitHub context for PR review, CI fixes, issue triage, and repository coordination.'),
+  },
+  {
+    id: 'google-calendar',
+    title: 'Google Calendar',
+    description: 'Search events, check availability, and manage meetings.',
+    category: 'recommended',
+    source: '推荐',
+    installed: false,
+    icon: 'calendar',
+    detail: detail('Use connected Google Calendar data for scheduling, meeting prep, and daily calendar briefs.'),
+  },
+  {
+    id: 'google-drive',
+    title: 'Google Drive',
+    description: 'Search and work with files from Drive, Docs, Sheets, and Slides.',
+    category: 'recommended',
+    source: '推荐',
+    installed: false,
+    icon: 'drive',
+    detail: detail('Use Drive as a source for documents, spreadsheets, slide decks, comments, and file search.'),
+  },
+  {
+    id: 'slack',
+    title: 'Slack',
+    description: 'Read Slack context and draft channel or thread replies.',
+    category: 'recommended',
+    source: '推荐',
+    installed: false,
+    icon: 'slack',
+    detail: detail('Use Slack context for notification triage, summaries, reply drafting, and outgoing messages.'),
+  },
+  {
+    id: 'supabase',
+    title: 'Supabase',
+    description: 'Manage and query Supabase databases.',
+    category: 'recommended',
+    source: '推荐',
+    installed: false,
+    icon: 'database',
+    detail: detail('Inspect Supabase projects, manage Postgres data, and apply database best practices.'),
+  },
+  {
+    id: 'vercel',
+    title: 'Vercel',
+    description: 'Manage deployments, projects, logs, domains, and Vercel docs.',
+    category: 'recommended',
+    source: '推荐',
+    installed: false,
+    icon: 'cloud',
+    detail: detail('Use Vercel tooling for deployments, project inspection, share URLs, logs, and hosting diagnostics.'),
+  },
+  {
+    id: 'data-analytics',
+    title: 'Data Analytics',
+    description: 'Build dashboards, reports, KPI updates, and diagnostic analysis.',
+    category: 'recommended',
+    source: '推荐',
+    installed: false,
+    icon: 'chart',
+    detail: detail('Create source-backed reports and dashboards with validated analytical artifacts.'),
   },
 ] as const;
+
+const SKILL_CATEGORY_OPTIONS: Array<{ id: SkillCategoryFilter; label: string }> = [
+  { id: 'all', label: '全部' },
+  { id: 'personal', label: '个人' },
+  { id: 'system', label: '系统' },
+  { id: 'recommended', label: '推荐' },
+];
+const SKILL_STATUS_KEY = 'alpha:skill-status-v1';
+
+interface SkillStatus {
+  installed: boolean;
+  enabled: boolean;
+}
+
+type SkillStatusMap = Record<string, SkillStatus>;
+
+interface SkillRuntimeContextValue {
+  status: SkillStatusMap;
+  queuedSkill: SkillCatalogItem | null;
+  setSkillInstalled: (id: string, installed: boolean) => void;
+  setSkillEnabled: (id: string, enabled: boolean) => void;
+  resetSkillStatus: (id: string) => void;
+  queueSkillForComposer: (skill: SkillCatalogItem) => void;
+  consumeQueuedSkill: () => void;
+}
+
+const SkillRuntimeContext = createContext<SkillRuntimeContextValue | null>(null);
+
+function defaultSkillStatus(): SkillStatusMap {
+  return Object.fromEntries(
+    SKILL_CATALOG.map((skill) => [skill.id, { installed: skill.installed, enabled: skill.installed }]),
+  );
+}
+
+function readSkillStatus(): SkillStatusMap {
+  const defaults = defaultSkillStatus();
+  if (typeof window === 'undefined') return defaults;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(SKILL_STATUS_KEY) || '{}') as Partial<SkillStatusMap>;
+    return Object.fromEntries(
+      SKILL_CATALOG.map((skill) => {
+        const saved = parsed[skill.id];
+        const fallback = defaults[skill.id];
+        return [
+          skill.id,
+          {
+            installed: typeof saved?.installed === 'boolean' ? saved.installed : fallback.installed,
+            enabled: typeof saved?.enabled === 'boolean' ? saved.enabled : fallback.enabled,
+          },
+        ];
+      }),
+    );
+  } catch {
+    return defaults;
+  }
+}
+
+function useSkillRuntime() {
+  const value = useContext(SkillRuntimeContext);
+  if (!value) throw new Error('Skill runtime context is missing');
+  return value;
+}
 
 const CODEX_SKILLS_CAPABILITY: SkillSelection = {
   id: 'skills',
@@ -442,6 +732,8 @@ export function App() {
     return saved === 'dark' || saved === 'light' ? saved : 'dark';
   });
   const [windowFocused, setWindowFocused] = useState(true);
+  const [skillStatus, setSkillStatus] = useState<SkillStatusMap>(() => readSkillStatus());
+  const [queuedSkill, setQueuedSkill] = useState<SkillCatalogItem | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -470,18 +762,24 @@ export function App() {
   }, [reviewPanelWidth]);
 
   useEffect(() => {
+    window.localStorage.setItem(SKILL_STATUS_KEY, JSON.stringify(skillStatus));
+  }, [skillStatus]);
+
+  useEffect(() => {
     let disposed = false;
     let cleanup: (() => void) | null = null;
     if (isTauriRuntime()) {
-      void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
-        if (disposed) return;
-        void getCurrentWindow()
-          .onFocusChanged(({ payload }) => setWindowFocused(payload))
-          .then((unlisten) => {
-            if (disposed) unlisten();
-            else cleanup = unlisten;
-          });
-      });
+      void import('@tauri-apps/api/window')
+        .then(({ getCurrentWindow }) => {
+          if (disposed) return;
+          return getCurrentWindow()
+            .onFocusChanged(({ payload }) => setWindowFocused(payload))
+            .then((unlisten) => {
+              if (disposed) unlisten();
+              else cleanup = unlisten;
+            });
+        })
+        .catch(() => undefined);
     } else {
       const onFocus = () => setWindowFocused(true);
       const onBlur = () => setWindowFocused(false);
@@ -530,6 +828,45 @@ export function App() {
     setSettingsOpen(false);
     setMainView('skills');
   };
+
+  const setSkillInstalled = useCallback((id: string, installed: boolean) => {
+    setSkillStatus((prev) => ({
+      ...prev,
+      [id]: { installed, enabled: installed },
+    }));
+  }, []);
+
+  const setSkillEnabled = useCallback((id: string, enabled: boolean) => {
+    setSkillStatus((prev) => {
+      const fallback = defaultSkillStatus()[id] ?? { installed: false, enabled: false };
+      const current = prev[id] ?? fallback;
+      return {
+        ...prev,
+        [id]: {
+          installed: current.installed || enabled,
+          enabled,
+        },
+      };
+    });
+  }, []);
+
+  const resetSkillStatus = useCallback((id: string) => {
+    const fallback = defaultSkillStatus()[id];
+    if (!fallback) return;
+    setSkillStatus((prev) => ({ ...prev, [id]: fallback }));
+  }, []);
+
+  const queueSkillForComposer = useCallback((skill: SkillCatalogItem) => {
+    setSkillStatus((prev) => ({
+      ...prev,
+      [skill.id]: { installed: true, enabled: true },
+    }));
+    setQueuedSkill(skill);
+    setSettingsOpen(false);
+    setMainView('chat');
+  }, []);
+
+  const consumeQueuedSkill = useCallback(() => setQueuedSkill(null), []);
 
   const toggleBottomTerminal = useCallback(() => {
     setTerminalMounted(true);
@@ -632,97 +969,117 @@ export function App() {
             }
           : null;
 
+  const skillRuntime = useMemo<SkillRuntimeContextValue>(() => ({
+    status: skillStatus,
+    queuedSkill,
+    setSkillInstalled,
+    setSkillEnabled,
+    resetSkillStatus,
+    queueSkillForComposer,
+    consumeQueuedSkill,
+  }), [
+    skillStatus,
+    queuedSkill,
+    setSkillInstalled,
+    setSkillEnabled,
+    resetSkillStatus,
+    queueSkillForComposer,
+    consumeQueuedSkill,
+  ]);
+
   return (
-    <div
-      className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'features' ? 'features-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'}`}
-      data-work-mode={domain.id}
-      style={
-        {
-          ['--sidebar-width']: `${sidebarWidth}px`,
-          ['--right-sidebar-width']: `${rightSidebarWidth}px`,
-          ['--git-panel-width']: `${gitPanelWidth}px`,
-          ['--review-panel-width']: `${reviewPanelWidth}px`,
-        } as CSSProperties
-      }
-    >
-      <Sidebar
-        domain={domain}
-        collapsed={sidebarCollapsed}
-        activeView={mainView}
-        onCollapse={() => setSidebarCollapsed(true)}
-        onOpenChat={() => setMainView('chat')}
-        onOpenSkills={openSkills}
-        onOpenSettings={openSettings}
-      />
-      {!sidebarCollapsed && (
-        <SidebarResizer
-          min={SIDEBAR_MIN_WIDTH}
-          max={SIDEBAR_MAX_WIDTH}
-          defaultWidth={SIDEBAR_DEFAULT_WIDTH}
-          onCommit={setSidebarWidth}
+    <SkillRuntimeContext.Provider value={skillRuntime}>
+      <div
+        className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'features' ? 'features-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'}`}
+        data-work-mode={domain.id}
+        style={
+          {
+            ['--sidebar-width']: `${sidebarWidth}px`,
+            ['--right-sidebar-width']: `${rightSidebarWidth}px`,
+            ['--git-panel-width']: `${gitPanelWidth}px`,
+            ['--review-panel-width']: `${reviewPanelWidth}px`,
+          } as CSSProperties
+        }
+      >
+        <Sidebar
+          domain={domain}
+          collapsed={sidebarCollapsed}
+          activeView={mainView}
+          onCollapse={() => setSidebarCollapsed(true)}
+          onOpenChat={() => setMainView('chat')}
+          onOpenSkills={openSkills}
+          onOpenSettings={openSettings}
         />
-      )}
-      <div className="workspace">
-        <div className="workspace-row">
-          <main className="main-stage">
-            <TopBar
-              domain={domain}
-              sidebarCollapsed={sidebarCollapsed}
-              rightPanelOpen={rightPanelVisible}
-              terminalOpen={terminalOpen}
-              onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-              onToggleRightPanel={toggleRightPanel}
-              onToggleTerminal={toggleBottomTerminal}
-              onOpenGit={() => openRightPanel('git')}
-              onOpenQuickGit={() => setQuickGitOpen(true)}
-              onOpenSideChat={() => addRightDockTab('side-chat')}
-              onOpenSettings={() => openSettings('config')}
-            />
-            {mainView === 'skills' ? <SkillsPage /> : <ChatArea domain={domain} />}
-          </main>
-          {rightPanelResizer && (
-            <RightPanelResizer
-              min={rightPanelResizer.min}
-              max={rightPanelResizer.max}
-              defaultWidth={rightPanelResizer.defaultWidth}
-              onCommit={rightPanelResizer.onCommit}
-            />
-          )}
-          {rightDockMounted && (
-            <RightDockWorkspace
-              visible={rightPanelVisible}
-              mode={currentRightPanel}
-              tabs={rightDockTabs}
-              activeId={activeRightDockTabId}
-              domain={domain}
-              theme={theme}
-              onSelectTab={selectRightDockTab}
-              onCloseTab={closeRightDockTab}
-              onAddTab={addRightDockTab}
-              onOpenReviewChanges={() => addRightDockTab('review')}
-              onOpenTerminal={() => addRightDockTab('terminal')}
-              onOpenBrowser={() => addRightDockTab('browser')}
-              onOpenFiles={() => addRightDockTab('files')}
-              onOpenSideChat={() => addRightDockTab('side-chat')}
-              onCloseGit={() => setRightPanelVisible(false)}
-            />
-          )}
+        {!sidebarCollapsed && (
+          <SidebarResizer
+            min={SIDEBAR_MIN_WIDTH}
+            max={SIDEBAR_MAX_WIDTH}
+            defaultWidth={SIDEBAR_DEFAULT_WIDTH}
+            onCommit={setSidebarWidth}
+          />
+        )}
+        <div className="workspace">
+          <div className="workspace-row">
+            <main className="main-stage">
+              <TopBar
+                domain={domain}
+                sidebarCollapsed={sidebarCollapsed}
+                rightPanelOpen={rightPanelVisible}
+                terminalOpen={terminalOpen}
+                onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+                onToggleRightPanel={toggleRightPanel}
+                onToggleTerminal={toggleBottomTerminal}
+                onOpenGit={() => openRightPanel('git')}
+                onOpenQuickGit={() => setQuickGitOpen(true)}
+                onOpenSideChat={() => addRightDockTab('side-chat')}
+                onOpenSettings={() => openSettings('config')}
+              />
+              {mainView === 'skills' ? <SkillsPage /> : <ChatArea domain={domain} />}
+            </main>
+            {rightPanelResizer && (
+              <RightPanelResizer
+                min={rightPanelResizer.min}
+                max={rightPanelResizer.max}
+                defaultWidth={rightPanelResizer.defaultWidth}
+                onCommit={rightPanelResizer.onCommit}
+              />
+            )}
+            {rightDockMounted && (
+              <RightDockWorkspace
+                visible={rightPanelVisible}
+                mode={currentRightPanel}
+                tabs={rightDockTabs}
+                activeId={activeRightDockTabId}
+                domain={domain}
+                theme={theme}
+                onSelectTab={selectRightDockTab}
+                onCloseTab={closeRightDockTab}
+                onAddTab={addRightDockTab}
+                onOpenReviewChanges={() => addRightDockTab('review')}
+                onOpenTerminal={() => addRightDockTab('terminal')}
+                onOpenBrowser={() => addRightDockTab('browser')}
+                onOpenFiles={() => addRightDockTab('files')}
+                onOpenSideChat={() => addRightDockTab('side-chat')}
+                onCloseGit={() => setRightPanelVisible(false)}
+              />
+            )}
+          </div>
+          {terminalMounted && <TerminalPanel theme={theme} visible={terminalOpen} onClose={() => setTerminalOpen(false)} />}
         </div>
-        {terminalMounted && <TerminalPanel theme={theme} visible={terminalOpen} onClose={() => setTerminalOpen(false)} />}
+        <SettingsPage
+          domain={domain}
+          open={settingsOpen}
+          section={settingsSection}
+          onSectionChange={setSettingsSection}
+          onClose={() => setSettingsOpen(false)}
+          theme={theme}
+          onThemeChange={setTheme}
+        />
+        <QuickGitDialog open={quickGitOpen} onClose={() => setQuickGitOpen(false)} />
+        <AuthorizationDialog />
+        <ImageLightbox />
       </div>
-      <SettingsPage
-        domain={domain}
-        open={settingsOpen}
-        section={settingsSection}
-        onSectionChange={setSettingsSection}
-        onClose={() => setSettingsOpen(false)}
-        theme={theme}
-        onThemeChange={setTheme}
-      />
-      <QuickGitDialog open={quickGitOpen} onClose={() => setQuickGitOpen(false)} />
-      <AuthorizationDialog />
-      <ImageLightbox />
-    </div>
+    </SkillRuntimeContext.Provider>
   );
 }
 
@@ -3116,16 +3473,28 @@ function SideChatPanel({ domain }: { domain: DomainConfig }) {
 
 function SkillsPage() {
   const [query, setQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState<SkillCategoryFilter>('all');
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [expanded, setExpanded] = useState<Partial<Record<SkillCategory, boolean>>>({});
+  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+  const filterRef = useRef<HTMLDivElement>(null);
+  const closeFilter = useCallback(() => setFilterOpen(false), []);
+  const { status, setSkillInstalled, setSkillEnabled, resetSkillStatus, queueSkillForComposer } = useSkillRuntime();
+  useCloseOnOutsidePointer(filterOpen, filterRef, closeFilter);
+
   const normalizedQuery = query.trim().toLowerCase();
   const visibleSkills = SKILL_CATALOG.filter((skill) => {
+    if (categoryFilter !== 'all' && skill.category !== categoryFilter) return false;
     if (!normalizedQuery) return true;
     return `${skill.title} ${skill.description} ${skill.source}`.toLowerCase().includes(normalizedQuery);
   });
-  const grouped = {
+  const grouped: Record<SkillCategory, SkillCatalogItem[]> = {
     personal: visibleSkills.filter((skill) => skill.category === 'personal'),
     system: visibleSkills.filter((skill) => skill.category === 'system'),
     recommended: visibleSkills.filter((skill) => skill.category === 'recommended'),
   };
+  const selectedSkill = SKILL_CATALOG.find((skill) => skill.id === selectedSkillId) ?? null;
+  const sectionOrder: SkillCategory[] = categoryFilter === 'all' ? ['personal', 'system', 'recommended'] : [categoryFilter];
 
   return (
     <section className="skills-page" aria-label="技能">
@@ -3144,22 +3513,100 @@ function SkillsPage() {
               <Search size={15} />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索插件和技能" />
             </label>
-            <button type="button" className="skills-filter-btn" aria-label="筛选技能" title="筛选">
-              <SlidersHorizontal size={16} />
-            </button>
+            <div className="skills-filter-wrap" ref={filterRef}>
+              <button
+                type="button"
+                className={`skills-filter-btn ${filterOpen || categoryFilter !== 'all' ? 'active' : ''}`}
+                aria-label="筛选技能"
+                aria-haspopup="menu"
+                aria-expanded={filterOpen}
+                title="筛选"
+                onClick={() => setFilterOpen((open) => !open)}
+              >
+                <SlidersHorizontal size={16} />
+              </button>
+              {filterOpen && (
+                <div className="skills-filter-menu" role="menu" aria-label="技能分类">
+                  {SKILL_CATEGORY_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={categoryFilter === option.id}
+                      className={categoryFilter === option.id ? 'active' : ''}
+                      onClick={() => {
+                        setCategoryFilter(option.id);
+                        setFilterOpen(false);
+                      }}
+                    >
+                      <span>{option.label}</span>
+                      {categoryFilter === option.id && <Check size={14} />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </header>
         <div className="skills-section-list">
-          <SkillSection title="个人" skills={grouped.personal} empty="没有匹配的个人技能。" />
-          <SkillSection title="系统" skills={grouped.system} empty="没有匹配的系统技能。" />
-          <SkillSection title="推荐" skills={grouped.recommended} empty="没有匹配的推荐技能。" />
+          {sectionOrder.map((category) => (
+            <SkillSection
+              key={category}
+              category={category}
+              title={skillCategoryLabel(category)}
+              skills={grouped[category]}
+              empty={`没有匹配的${skillCategoryLabel(category)}技能。`}
+              status={status}
+              collapsible={category === 'personal' && categoryFilter === 'all' && !normalizedQuery}
+              expanded={Boolean(expanded[category])}
+              onToggleExpanded={() => setExpanded((prev) => ({ ...prev, [category]: !prev[category] }))}
+              onOpenSkill={(skill) => setSelectedSkillId(skill.id)}
+              onInstallSkill={(skill) => setSkillInstalled(skill.id, true)}
+            />
+          ))}
         </div>
       </div>
+      {selectedSkill && (
+        <SkillDetailDialog
+          skill={selectedSkill}
+          status={status[selectedSkill.id] ?? { installed: selectedSkill.installed, enabled: selectedSkill.installed }}
+          onClose={() => setSelectedSkillId(null)}
+          onInstall={(installed) => setSkillInstalled(selectedSkill.id, installed)}
+          onToggleEnabled={(enabled) => setSkillEnabled(selectedSkill.id, enabled)}
+          onReset={() => resetSkillStatus(selectedSkill.id)}
+          onTry={() => {
+            queueSkillForComposer(selectedSkill);
+            setSelectedSkillId(null);
+          }}
+        />
+      )}
     </section>
   );
 }
 
-function SkillSection({ title, skills, empty }: { title: string; skills: SkillCatalogItem[]; empty: string }) {
+function SkillSection({
+  category,
+  title,
+  skills,
+  empty,
+  status,
+  collapsible,
+  expanded,
+  onToggleExpanded,
+  onOpenSkill,
+  onInstallSkill,
+}: {
+  category: SkillCategory;
+  title: string;
+  skills: SkillCatalogItem[];
+  empty: string;
+  status: SkillStatusMap;
+  collapsible: boolean;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+  onOpenSkill: (skill: SkillCatalogItem) => void;
+  onInstallSkill: (skill: SkillCatalogItem) => void;
+}) {
   if (skills.length === 0) {
     return (
       <section className="skills-section" aria-label={title}>
@@ -3168,32 +3615,210 @@ function SkillSection({ title, skills, empty }: { title: string; skills: SkillCa
       </section>
     );
   }
+  const limit = collapsible && !expanded ? 5 : skills.length;
+  const visibleSkills = skills.slice(0, limit);
+  const hiddenSkills = skills.slice(limit);
+  const hiddenLabel = hiddenSkills.slice(0, 2).map((skill) => skill.title).join('、');
   return (
     <section className="skills-section" aria-label={title}>
       <h2>{title}</h2>
       <div className="skill-list">
-        {skills.map((skill) => (
-          <div key={skill.id} className="skill-row">
-            <span className={`skill-row-icon skill-icon-${skill.icon}`}>{skillIcon(skill, 20)}</span>
-            <span className="skill-row-main">
-              <strong>{skill.title}</strong>
-              <span>{skill.description}</span>
-            </span>
-            {skill.installed ? (
-              <Check size={16} className="skill-row-check" aria-label="已启用" />
-            ) : (
-              <button type="button" className="skill-add-btn">添加技能</button>
-            )}
-          </div>
-        ))}
+        {visibleSkills.map((skill) => {
+          const current = status[skill.id] ?? { installed: skill.installed, enabled: skill.installed };
+          return (
+            <div
+              key={skill.id}
+              className={`skill-row ${current.installed ? 'installed' : ''} ${current.enabled ? 'enabled' : ''}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpenSkill(skill)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onOpenSkill(skill);
+                }
+              }}
+            >
+              <span className={`skill-row-icon skill-icon-${skill.icon}`}>{skillIcon(skill, 20)}</span>
+              <span className="skill-row-main">
+                <strong>{skill.title}</strong>
+                <span>{skill.description}</span>
+              </span>
+              {current.installed ? (
+                current.enabled ? (
+                  <Check size={16} className="skill-row-check" aria-label={`${skill.title} 已启用`} />
+                ) : (
+                  <span className="skill-row-muted">已停用</span>
+                )
+              ) : (
+                <button
+                  type="button"
+                  className="skill-add-btn"
+                  aria-label={`添加 ${skill.title}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onInstallSkill(skill);
+                  }}
+                >
+                  添加技能
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {hiddenSkills.length > 0 && (
+          <button type="button" className="skill-more-row" onClick={onToggleExpanded}>
+            查看 {hiddenLabel} 等另外 {hiddenSkills.length} 项
+          </button>
+        )}
+        {expanded && collapsible && hiddenSkills.length === 0 && (
+          <button type="button" className="skill-more-row" onClick={onToggleExpanded}>
+            收起{skillCategoryLabel(category)}技能
+          </button>
+        )}
       </div>
     </section>
   );
 }
 
+function SkillDetailDialog({
+  skill,
+  status,
+  onClose,
+  onInstall,
+  onToggleEnabled,
+  onReset,
+  onTry,
+}: {
+  skill: SkillCatalogItem;
+  status: SkillStatus;
+  onClose: () => void;
+  onInstall: (installed: boolean) => void;
+  onToggleEnabled: (enabled: boolean) => void;
+  onReset: () => void;
+  onTry: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [notice, setNotice] = useState('');
+  const installed = status.installed;
+  const enabled = installed && status.enabled;
+  useEffect(() => {
+    const handleKeyDown = (event: WindowEventMap['keydown']) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const copySkillId = async () => {
+    try {
+      await navigator.clipboard?.writeText(skill.id);
+      setNotice('已复制 Skill ID');
+    } catch {
+      setNotice(`Skill ID: ${skill.id}`);
+    }
+    setMenuOpen(false);
+  };
+
+  return (
+    <div className="skill-detail-layer" role="presentation">
+      <button className="skill-detail-backdrop" type="button" aria-label="关闭技能详情" onClick={onClose} />
+      <div className="skill-detail-dialog" role="dialog" aria-modal="true" aria-label={`${skill.title} Skill`}>
+        <button type="button" className="skill-detail-close" aria-label="关闭技能详情" onClick={onClose}>
+          <X size={16} />
+        </button>
+        <div className="skill-detail-head">
+          <span className={`skill-detail-icon skill-icon-${skill.icon}`}>{skillIcon(skill, 24)}</span>
+          <div className="skill-detail-title-row">
+            <div>
+              <h2>{skill.title} <span>Skill</span></h2>
+              <p>{skill.description}</p>
+            </div>
+            <div className="skill-detail-actions">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={enabled}
+                aria-label={`${enabled ? '禁用' : '启用'} ${skill.title}`}
+                className={`skill-switch ${enabled ? 'checked' : ''}`}
+                onClick={() => {
+                  if (!installed) onInstall(true);
+                  else onToggleEnabled(!enabled);
+                }}
+              >
+                <span />
+              </button>
+              <div className="skill-detail-more-wrap">
+                <button type="button" className="icon-mini" aria-label={`${skill.title} 更多操作`} onClick={() => setMenuOpen((open) => !open)}>
+                  <MoreHorizontal size={15} />
+                </button>
+                {menuOpen && (
+                  <>
+                    <button className="menu-backdrop" type="button" aria-label="关闭技能操作菜单" onClick={() => setMenuOpen(false)} />
+                    <div className="skill-detail-menu" role="menu">
+                      <button type="button" role="menuitem" onClick={() => void copySkillId()}>复制 Skill ID</button>
+                      <button type="button" role="menuitem" onClick={() => { onReset(); setMenuOpen(false); setNotice('已恢复默认状态'); }}>恢复默认状态</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="skill-detail-body">
+          {skill.detail.map((section, index) => (
+            <section key={`${skill.id}-${section.title || index}`}>
+              {section.title && <h3>{section.title}</h3>}
+              {section.paragraphs.map((paragraph) => (
+                <p key={paragraph}>{renderInlineCode(paragraph)}</p>
+              ))}
+            </section>
+          ))}
+        </div>
+        <div className="skill-detail-footer">
+          <div className="skill-detail-footer-left">
+            {installed ? (
+              <button type="button" className="skill-danger-btn" onClick={() => onInstall(false)}>卸载</button>
+            ) : (
+              <button type="button" className="skill-add-btn" onClick={() => onInstall(true)}>添加技能</button>
+            )}
+            {notice && <span className="skill-detail-notice">{notice}</span>}
+          </div>
+          <button type="button" className="skill-try-btn" onClick={onTry} disabled={!installed || !enabled}>
+            <MessageCircle size={14} />
+            <span>{installed && enabled ? '在对话中试用' : '启用后试用'}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function renderInlineCode(text: string): ReactNode[] {
+  return text.split(/(`[^`]+`)/g).map((part, index) => {
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return <code key={`${part}-${index}`}>{part.slice(1, -1)}</code>;
+    }
+    return <Fragment key={`${part}-${index}`}>{part}</Fragment>;
+  });
+}
+
+function skillCategoryLabel(category: SkillCategory): string {
+  switch (category) {
+    case 'personal':
+      return '个人';
+    case 'system':
+      return '系统';
+    case 'recommended':
+      return '推荐';
+  }
+}
+
 function skillIcon(skill: SkillCatalogItem | SkillSelection, size = 16): ReactNode {
   const icon = 'icon' in skill ? skill.icon : undefined;
   switch (icon) {
+    case 'ios':
+      return <Box size={size} />;
     case 'chrome':
       return <Globe size={size} />;
     case 'computer':
@@ -3210,6 +3835,20 @@ function skillIcon(skill: SkillCatalogItem | SkillSelection, size = 16): ReactNo
       return <Pencil size={size} />;
     case 'playwright':
       return <Wrench size={size} />;
+    case 'github':
+      return <Github size={size} />;
+    case 'calendar':
+      return <CalendarDays size={size} />;
+    case 'drive':
+      return <FolderOpen size={size} />;
+    case 'slack':
+      return <MessageSquare size={size} />;
+    case 'database':
+      return <HardDrive size={size} />;
+    case 'cloud':
+      return <Network size={size} />;
+    case 'chart':
+      return <FileSpreadsheet size={size} />;
     case 'browser':
     default:
       return <Globe size={size} />;
@@ -3355,10 +3994,15 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
           {message.role === 'user' && message.attachments?.length ? (
             <MessageAttachments attachments={message.attachments} />
           ) : null}
-          {(message.role !== 'user' || message.blocks.length > 0) && (
+          {(message.role !== 'user' || message.blocks.length > 0 || message.selectedSkill) && (
             <div className="bubble">
               {message.role === 'user'
-                ? message.blocks.map((block, index) => block.type === 'text' ? <span key={index}>{block.content}</span> : <BlockRenderer key={index} block={block} />)
+                ? (
+                    <>
+                      {message.selectedSkill && <MessageSkillLabel skill={message.selectedSkill} />}
+                      {message.blocks.map((block, index) => block.type === 'text' ? <span key={index}>{block.content}</span> : <BlockRenderer key={index} block={block} />)}
+                    </>
+                  )
                 : message.review
                   ? <ReviewBody message={message} cwd={conversation.cwd} />
                   : buildRenderUnits(message.blocks).map((unit) =>
@@ -3381,6 +4025,15 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
         </div>
       )}
     </article>
+  );
+}
+
+function MessageSkillLabel({ skill }: { skill: SkillSelection }) {
+  const name = skill.title.trim() || skill.id;
+  return (
+    <span className="message-skill-label" title={`指定 Skill：${name}`}>
+      {`$${name}`}
+    </span>
   );
 }
 
@@ -3473,7 +4126,7 @@ function EventDetails({
 
 function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: boolean }) {
   if (block.type === 'text') {
-    return <div className={`markdown-content ${streaming ? 'streaming' : ''}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown></div>;
+    return <div className={`markdown-content ${streaming ? 'streaming' : ''}`}><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: MarkdownImage }}>{block.content}</ReactMarkdown></div>;
   }
   if (block.type === 'thinking') {
     return (
@@ -3496,6 +4149,12 @@ function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: 
   if (block.type === 'tool') {
     return <ToolBlockView block={block} />;
   }
+  if (block.type === 'image_result') {
+    return <GeneratedImageResultView block={block} />;
+  }
+  if (block.type === 'file_result') {
+    return <GeneratedFileResultView block={block} />;
+  }
   return <div className="error-block"><AlertCircle size={16} /><span>{block.content}</span></div>;
 }
 
@@ -3512,6 +4171,7 @@ function ToolBlockView({ block }: { block: Extract<MessageBlock, { type: 'tool' 
     <EventDetails
       className={`tool-block event-block ${block.status} kind-${tool.kind}`}
       forceOpen={running}
+      defaultOpen={tool.kind === 'image'}
       summary={(
         <>
           <span className="event-icon">{tool.icon}</span>
@@ -3632,6 +4292,7 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<SkillCatalogItem | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { queuedSkill, consumeQueuedSkill } = useSkillRuntime();
   const sendMessage = useChatStore((state) => state.sendMessage);
   const stopCurrentConversation = useChatStore((state) => state.stopCurrentConversation);
   const isStreaming = conversation.status === 'streaming';
@@ -3641,6 +4302,12 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
     el.style.height = '0px';
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [value]);
+  useEffect(() => {
+    if (!queuedSkill) return;
+    setSelectedSkill(queuedSkill);
+    consumeQueuedSkill();
+    textareaRef.current?.focus();
+  }, [queuedSkill, consumeQueuedSkill]);
   const addAttachments = (items: MessageAttachment[]) => {
     setAttachments((prev) => mergeAttachments(prev, items));
   };
@@ -3893,6 +4560,164 @@ function MessageImageAttachment({ attachment }: { attachment: MessageAttachment 
   );
 }
 
+function GeneratedImageResultView({ block }: { block: Extract<MessageBlock, { type: 'image_result' }> }) {
+  if (block.images.length === 0) return null;
+  return (
+    <section className="generated-image-result" aria-label={block.title}>
+      <div className="generated-image-header">
+        <span className="generated-image-icon"><ImageIcon size={14} /></span>
+        <strong>{block.title}</strong>
+        {block.images.length > 1 && <span>{block.images.length} 张</span>}
+      </div>
+      <div className={`generated-image-grid ${block.images.length > 1 ? 'multi' : ''}`}>
+        {block.images.map((image) => <GeneratedImagePreview key={image.id} image={image} />)}
+      </div>
+    </section>
+  );
+}
+
+function MarkdownImage({ src, alt, title }: ImgHTMLAttributes<HTMLImageElement>) {
+  const imageSrc = typeof src === 'string' ? src : '';
+  if (!imageSrc) return null;
+  const name = imageNameFromSrc(imageSrc);
+  return (
+    <GeneratedImagePreview
+      image={{
+        id: `markdown-${imageSrc}`,
+        src: imageSrc,
+        alt: alt || title || name,
+        name,
+      }}
+      markdown
+    />
+  );
+}
+
+const GENERATED_IMAGE_PREVIEW_RETRIES = 3;
+
+function GeneratedImagePreview({ image, markdown }: { image: GeneratedImage; markdown?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const [fallbackSrc, setFallbackSrc] = useState<string | null>(null);
+  const retryTimer = useRef<number | null>(null);
+  const fallbackLoading = useRef(false);
+  const openViewer = useImageViewer((state) => state.open);
+  const originalSrc = renderableImageSrc(image.src);
+  const src = fallbackSrc || originalSrc;
+  const label = image.alt || image.name || imageNameFromSrc(image.src);
+  const source = imageSourceLabel(image);
+  const localPath = localFilePath(image.src);
+  useEffect(() => {
+    setFailed(false);
+    setRetry(0);
+    setFallbackSrc(null);
+    fallbackLoading.current = false;
+    if (retryTimer.current) window.clearTimeout(retryTimer.current);
+    retryTimer.current = null;
+    return () => {
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+    };
+  }, [originalSrc]);
+  const handleImageError = () => {
+    if (localPath && !fallbackSrc && !fallbackLoading.current) {
+      fallbackLoading.current = true;
+      void localImageDataUrl(localPath).then((dataUrl) => {
+        fallbackLoading.current = false;
+        if (dataUrl) {
+          setFailed(false);
+          setFallbackSrc(dataUrl);
+          return;
+        }
+        if (retry < GENERATED_IMAGE_PREVIEW_RETRIES) {
+          setRetry((value) => value + 1);
+        } else {
+          setFailed(true);
+        }
+      });
+      return;
+    }
+    if (localPath && !fallbackSrc && retry < GENERATED_IMAGE_PREVIEW_RETRIES) {
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      retryTimer.current = window.setTimeout(() => {
+        retryTimer.current = null;
+        setRetry((value) => value + 1);
+      }, 450 + retry * 350);
+      return;
+    }
+    setFailed(true);
+  };
+  return (
+    <button
+      type="button"
+      className={`generated-image-card ${markdown ? 'from-markdown' : ''} ${failed ? 'failed' : ''}`}
+      onClick={() => openViewer(src, label)}
+      aria-label={`查看生成图片 ${label}`}
+      title={`查看原图 · ${label}`}
+    >
+      {!failed ? (
+        <img key={`${src}-${retry}`} src={src} alt={label} onError={handleImageError} />
+      ) : (
+        <span className="generated-image-fallback">
+          <ImageIcon size={18} />
+          <span>图片预览不可用</span>
+        </span>
+      )}
+      <span className="generated-image-meta">
+        <strong>{image.name || label}</strong>
+        <span>{source}</span>
+      </span>
+    </button>
+  );
+}
+
+function GeneratedFileResultView({ block }: { block: Extract<MessageBlock, { type: 'file_result' }> }) {
+  if (block.files.length === 0) return null;
+  return (
+    <section className="generated-file-result" aria-label={block.title}>
+      <div className="generated-file-list">
+        {block.files.map((file) => <GeneratedFileCard key={file.id} file={file} />)}
+      </div>
+    </section>
+  );
+}
+
+function GeneratedFileCard({ file }: { file: GeneratedFile }) {
+  return (
+    <div className="generated-file-card" role="group" aria-label={file.name}>
+      <span className={`generated-file-icon tone-${fileTone(file.ext)}`}>
+        {file.kind === 'image' ? <ImageIcon size={18} /> : fileGlyph(file.ext, 18)}
+      </span>
+      <span className="generated-file-main">
+        <strong>{file.name}</strong>
+        <span>{generatedFileTypeLabel(file)}</span>
+      </span>
+      <button
+        type="button"
+        className="generated-file-open"
+        onClick={() => void openGeneratedFile(file)}
+        title="在 Finder 中显示"
+      >
+        <span>打开方式</span>
+        <ChevronDown size={13} />
+      </button>
+    </div>
+  );
+}
+
+function generatedFileTypeLabel(file: GeneratedFile): string {
+  const type = fileTypeLabel(file.ext);
+  return file.kind === 'image' ? `图像 · ${type}` : type;
+}
+
+async function openGeneratedFile(file: GeneratedFile): Promise<void> {
+  if (/^https?:\/\//i.test(file.path)) {
+    await openExternal(file.path);
+    return;
+  }
+  const path = localFilePath(file.path) || file.path;
+  await revealPath(path);
+}
+
 // Full-size image preview overlay opened by clicking a thumbnail.
 function ImageLightbox() {
   const src = useImageViewer((state) => state.src);
@@ -3932,6 +4757,7 @@ function ComposerPlusMenu({
   const pursueGoal = useChatStore((state) => state.pursueGoal);
   const setPlanMode = useChatStore((state) => state.setPlanMode);
   const setPursueGoal = useChatStore((state) => state.setPursueGoal);
+  const { status } = useSkillRuntime();
   const [open, setOpen] = useState(false);
   const [submenu, setSubmenu] = useState<'plugins' | null>(null);
   const close = () => {
@@ -3948,7 +4774,10 @@ function ComposerPlusMenu({
     onSelectSkill(skill);
     close();
   };
-  const installedSkills = SKILL_CATALOG.filter((skill) => skill.installed);
+  const installedSkills = SKILL_CATALOG.filter((skill) => {
+    const current = status[skill.id] ?? { installed: skill.installed, enabled: skill.installed };
+    return current.installed && current.enabled;
+  });
 
   return (
     <div className="plus-picker">
@@ -6799,12 +7628,15 @@ function sortConversations(conversations: Conversation[], sort: ProjectSort): Co
   });
 }
 
-type ToolKind = 'command' | 'file-read' | 'file-edit' | 'search' | 'web' | 'log' | 'generic';
+type ToolKind = 'command' | 'file-read' | 'file-edit' | 'search' | 'web' | 'log' | 'image' | 'generic';
 
 function toolPresentation(title: string): { kind: ToolKind; icon: ReactNode; running: string; done: string; failed: string } {
   const normalized = title.trim().toLowerCase();
   const has = (...keys: string[]) => keys.some((key) => normalized.includes(key));
   if (has('stderr')) return { kind: 'log', icon: <FileText size={14} />, running: 'Codex 日志', done: 'Codex 日志', failed: 'Codex 日志' };
+  if (/image[\s._-]*gen|generate[\s._-]*image|image[\s._-]*generation|text[\s._-]*to[\s._-]*image/.test(normalized)) {
+    return { kind: 'image', icon: <ImageIcon size={14} />, running: '正在生成图片', done: '已生成图片', failed: '图片生成失败' };
+  }
   if (has('exec', 'shell', 'command', 'bash', 'execute', 'terminal')) return { kind: 'command', icon: <Terminal size={14} />, running: '正在运行', done: '已运行', failed: '运行失败' };
   if (has('web_search', 'websearch', 'web.run', 'web.search', 'browse_search')) return { kind: 'web', icon: <Globe size={14} />, running: '正在搜索网页', done: '已搜索网页', failed: '网页搜索失败' };
   if (has('search', 'grep', 'glob', 'ripgrep', 'find', 'query')) return { kind: 'search', icon: <Search size={14} />, running: '正在搜索', done: '已搜索', failed: '搜索失败' };
@@ -6827,6 +7659,8 @@ function messageToPlainText(message: ChatMessage): string {
   return message.blocks.filter((block) => !(hideReconnectStatus && isReconnectStatusBlock(block))).map((block) => {
     if (block.type === 'text' || block.type === 'thinking' || block.type === 'error') return block.content;
     if (block.type === 'tool') return [block.title, block.input, block.output].filter(Boolean).join('\n');
+    if (block.type === 'image_result') return [block.title, ...block.images.map((image) => image.src)].filter(Boolean).join('\n');
+    if (block.type === 'file_result') return [block.title, ...block.files.map((file) => file.path)].filter(Boolean).join('\n');
     return '';
   }).filter(Boolean).join('\n\n').trim();
 }
@@ -6912,9 +7746,10 @@ async function confirmDanger(message: string, title: string): Promise<boolean> {
 function formatRelative(value: number): string {
   const diff = Date.now() - value;
   if (diff < 60_000) return '刚刚';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}小时`;
-  if (diff < 86_400_000 * 7) return `${Math.floor(diff / 86_400_000)}天`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时`;
+  if (diff < 86_400_000 * 7) return `${Math.floor(diff / 86_400_000)} 天`;
+  if (diff < 86_400_000 * 30) return `${Math.floor(diff / (86_400_000 * 7))} 周`;
   return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(value);
 }
 
@@ -6933,6 +7768,50 @@ function shortenPath(value: string): string {
 function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || path;
+}
+
+function imageNameFromSrc(src: string): string {
+  if (/^data:image\//i.test(src)) return '生成图片';
+  try {
+    const url = new URL(src);
+    return decodeURIComponent(basename(url.pathname) || '生成图片');
+  } catch {
+    return decodeURIComponent(basename(src.split(/[?#]/)[0]) || '生成图片');
+  }
+}
+
+function imageSourceLabel(image: GeneratedImage): string {
+  if (/^data:image\//i.test(image.src)) return '内联图片';
+  if (/^https?:\/\//i.test(image.src)) {
+    try {
+      const url = new URL(image.src);
+      return `${url.hostname}/${image.name || imageNameFromSrc(image.src)}`;
+    } catch {
+      return image.src;
+    }
+  }
+  return shortenPath(image.src);
+}
+
+function renderableImageSrc(src: string): string {
+  if (!isTauriRuntime()) return src;
+  const localPath = localFilePath(src);
+  if (!localPath) return src;
+  try {
+    return convertFileSrc(localPath);
+  } catch {
+    return src;
+  }
+}
+
+function localFilePath(src: string): string | null {
+  if (src.startsWith('/')) return src;
+  if (!src.startsWith('file://')) return null;
+  try {
+    return decodeURIComponent(new URL(src).pathname);
+  } catch {
+    return null;
+  }
 }
 
 // eslint-disable-next-line no-control-regex

@@ -131,6 +131,106 @@ describe('applyCodexEventToConversation', () => {
     });
   });
 
+  it('surfaces generated image paths from completed imagegen tools', () => {
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'img-1',
+      title: 'imagegen.imagegen',
+      text: 'Generated image: /Users/geb/.codex/generated_images/cat.png',
+    });
+
+    expect(completed.messages[0].blocks).toEqual([
+      {
+        type: 'tool',
+        id: 'img-1',
+        title: 'imagegen.imagegen',
+        status: 'completed',
+        output: 'Generated image: /Users/geb/.codex/generated_images/cat.png',
+      },
+      {
+        type: 'image_result',
+        id: 'img-1-result',
+        title: '生成结果',
+        images: [
+          {
+            id: 'img-1-result-0',
+            src: '/Users/geb/.codex/generated_images/cat.png',
+            alt: 'cat.png',
+            name: 'cat.png',
+          },
+        ],
+      },
+      {
+        type: 'file_result',
+        id: 'img-1-files',
+        title: '生成文件',
+        files: [
+          {
+            id: 'img-1-files-0',
+            path: '/Users/geb/.codex/generated_images/cat.png',
+            name: 'cat.png',
+            ext: 'png',
+            kind: 'image',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('surfaces generated file paths from completed tool output', () => {
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'report-1',
+      title: 'command_execution',
+      text: 'Generated file: /Users/geb/reports/cat-brief.pdf',
+    });
+
+    expect(completed.messages[0].blocks).toContainEqual({
+      type: 'file_result',
+      id: 'report-1-files',
+      title: '生成文件',
+      files: [
+        {
+          id: 'report-1-files-0',
+          path: '/Users/geb/reports/cat-brief.pdf',
+          name: 'cat-brief.pdf',
+          ext: 'pdf',
+          kind: 'file',
+        },
+      ],
+    });
+  });
+
+  it('does not surface existing files from read-only tool metadata', () => {
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'skill-read',
+      title: 'command_execution',
+      text: 'Read skill instructions.',
+      raw: {
+        type: 'exec_command',
+        path: '/Users/geb/.codex/skills/.system/imagegen/SKILL.md',
+        command: "sed -n '1,240p' /Users/geb/.codex/skills/.system/imagegen/SKILL.md",
+      },
+    });
+
+    expect(completed.messages[0].blocks).toEqual([
+      {
+        type: 'tool',
+        id: 'skill-read',
+        title: 'command_execution',
+        status: 'completed',
+        output: 'Read skill instructions.',
+      },
+    ]);
+  });
+
   it('marks failed tools without losing their output', () => {
     const started = applyCodexEventToConversation(baseConversation(), {
       type: 'tool_started',

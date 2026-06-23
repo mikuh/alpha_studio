@@ -609,6 +609,7 @@ export const useChatStore = create<ChatState>()(
           timestamp: Date.now(),
           blocks: trimmed ? [{ type: 'text', content: trimmed }] : [],
           attachments: attachmentList,
+          selectedSkill: selectedSkill ? normalizeSelectedSkill(selectedSkill) : undefined,
         };
         const assistantMessage: ChatMessage = {
           id: createId('assistant'),
@@ -652,7 +653,7 @@ export const useChatStore = create<ChatState>()(
           const promptOptions = {
             planMode: get().planMode,
             pursueGoal: get().pursueGoal,
-            selectedSkill,
+            selectedSkill: userMessage.selectedSkill,
           };
           const result = await startCodexChat({
             conversationId,
@@ -831,6 +832,7 @@ export const useChatStore = create<ChatState>()(
           const promptOptions = {
             planMode: get().planMode,
             pursueGoal: get().pursueGoal,
+            selectedSkill: original.selectedSkill,
           };
           const result = await startCodexChat({
             conversationId,
@@ -1032,6 +1034,14 @@ function createId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function normalizeSelectedSkill(skill: SkillSelection): SkillSelection {
+  return {
+    id: skill.id,
+    title: skill.title,
+    description: skill.description,
+  };
+}
+
 const CONVERSATION_TITLE_MAX_LENGTH = 24;
 
 export function buildConversationTitle(message: string): string {
@@ -1177,6 +1187,12 @@ function messageBlocksToText(blocks: ChatMessage['blocks']): string {
       }
       if (block.type === 'tool') {
         return [block.title, block.input, block.output].filter(Boolean).join('\n');
+      }
+      if (block.type === 'image_result') {
+        return [block.title, ...block.images.map((image) => image.src)].filter(Boolean).join('\n');
+      }
+      if (block.type === 'file_result') {
+        return [block.title, ...block.files.map((file) => file.path)].filter(Boolean).join('\n');
       }
       return '';
     })

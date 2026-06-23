@@ -1,11 +1,37 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { App } from './App';
 import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles } from './models';
 import { useChatStore } from './store';
 import type { Conversation } from './types';
+
+vi.mock('@tauri-apps/api/core', () => ({
+  convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
+  invoke: vi.fn((command: string) => {
+    if (command === 'list_open_apps') return Promise.resolve(['finder']);
+    if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
+    if (command === 'git_status') {
+      return Promise.resolve({
+        cwd: '/tmp/alpha-studio',
+        isRepository: false,
+        ahead: 0,
+        behind: 0,
+        clean: true,
+        changes: [],
+      });
+    }
+    return Promise.resolve(undefined);
+  }),
+}));
+
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: vi.fn(() => ({
+    onFocusChanged: vi.fn(() => Promise.resolve(() => {})),
+  })),
+}));
 
 function conversation(patch: Partial<Conversation> = {}): Conversation {
   return {
@@ -22,10 +48,13 @@ function conversation(patch: Partial<Conversation> = {}): Conversation {
 
 describe('right feature panel', () => {
   afterEach(() => {
+    vi.restoreAllMocks();
+    delete (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     cleanup();
   });
 
   beforeEach(() => {
+    window.localStorage.clear();
     useChatStore.setState({
       conversations: [conversation()],
       projects: [],
@@ -114,6 +143,60 @@ describe('right feature panel', () => {
     expect(within(skillsPage).getByText('Skill Installer')).toBeInTheDocument();
   });
 
+  it('filters the skills catalog by category from the Codex-style filter menu', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '插件' }));
+    const skillsPage = container.querySelector('.skills-page') as HTMLElement;
+
+    await user.click(within(skillsPage).getByLabelText('筛选技能'));
+    const filterMenu = screen.getByRole('menu', { name: '技能分类' });
+    await user.click(within(filterMenu).getByRole('menuitemradio', { name: '推荐' }));
+
+    expect(within(skillsPage).getByText('推荐')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('Playwright')).toBeInTheDocument();
+    expect(within(skillsPage).queryByText('Browser')).not.toBeInTheDocument();
+  });
+
+  it('opens a skill detail dialog and queues the skill for the chat composer', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '插件' }));
+    const skillsPage = container.querySelector('.skills-page') as HTMLElement;
+    await user.click(within(skillsPage).getByRole('button', { name: /OpenAI Docs/ }));
+
+    const dialog = screen.getByRole('dialog', { name: 'OpenAI Docs Skill' });
+    expect(within(dialog).getByText(/Reference OpenAI docs/)).toBeInTheDocument();
+    expect(within(dialog).getByRole('switch', { name: '禁用 OpenAI Docs' })).toHaveAttribute('aria-checked', 'true');
+
+    await user.click(within(dialog).getByRole('button', { name: '在对话中试用' }));
+
+    expect(container.querySelector('.skills-page')).not.toBeInTheDocument();
+    const composer = document.querySelector('.composer-card') as HTMLElement;
+    expect(within(composer).getByText('OpenAI Docs')).toBeInTheDocument();
+    expect(within(composer).getByText('将优先使用这个 Skill')).toBeInTheDocument();
+  });
+
+  it('installs a recommended skill and makes it available in the composer plugin menu', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '插件' }));
+    const skillsPage = container.querySelector('.skills-page') as HTMLElement;
+    await user.click(within(skillsPage).getByLabelText('筛选技能'));
+    await user.click(screen.getByRole('menuitemradio', { name: '推荐' }));
+    await user.click(within(skillsPage).getByRole('button', { name: '添加 Playwright' }));
+
+    await user.click(within(container.querySelector('.nav-menu') as HTMLElement).getByRole('button', { name: '新对话' }));
+    await user.click(screen.getByLabelText('添加内容'));
+    const plusMenu = document.querySelector('.plus-menu') as HTMLElement;
+    fireEvent.click(within(plusMenu).getByRole('button', { name: /插件/ }));
+
+    expect(screen.getByRole('menuitem', { name: 'Playwright' })).toBeInTheDocument();
+  });
+
   it('returns from the skills page to chat when starting a new conversation', async () => {
     const user = userEvent.setup();
     useChatStore.setState({
@@ -129,6 +212,33 @@ describe('right feature panel', () => {
 
     expect(container.querySelector('.skills-page')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('要求 Codex 执行任务')).toBeInTheDocument();
+  });
+
+  it('renders Codex-style relative times in the sidebar', () => {
+    const now = new Date('2026-06-22T12:00:00.000Z').getTime();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          id: 'conv-four-days',
+          title: '提交并推送代码',
+          updatedAt: now - 4 * 86_400_000,
+        }),
+        conversation({
+          id: 'conv-ten-days',
+          title: '填写开发备注注原因',
+          updatedAt: now - 10 * 86_400_000,
+        }),
+      ],
+      currentConversationId: 'conv-four-days',
+    });
+
+    const { container } = render(<App />);
+    const sidebar = container.querySelector('.sidebar') as HTMLElement;
+
+    expect(within(sidebar).getByText('4 天')).toBeInTheDocument();
+    expect(within(sidebar).getByText('1 周')).toBeInTheDocument();
+    expect(within(sidebar).queryByText('4天')).not.toBeInTheDocument();
   });
 
   it('selects a skill from the composer plugin flyout and sends it with the message', async () => {
@@ -153,6 +263,155 @@ describe('right feature panel', () => {
       [],
       expect.objectContaining({ id: 'chrome', title: 'Chrome' }),
     );
+  });
+
+  it('renders the selected skill as a dollar-prefixed label in the user message', () => {
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'msg-skill',
+              role: 'user',
+              timestamp: 1,
+              blocks: [{ type: 'text', content: '检查页面控制台' }],
+              selectedSkill: { id: 'chrome', title: 'Chrome' },
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const messageList = container.querySelector('.message-list') as HTMLElement;
+
+    expect(within(messageList).getByText('$Chrome')).toBeInTheDocument();
+  });
+
+  it('renders generated image result blocks as clickable previews in chat', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-image',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'image_result',
+                  id: 'img-result',
+                  title: '生成结果',
+                  images: [
+                    {
+                      id: 'cat-preview',
+                      src: '/Users/geb/.codex/generated_images/cat.png',
+                      alt: '猫图预览',
+                      name: 'cat.png',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const preview = within(container.querySelector('.message-list') as HTMLElement).getByRole('button', { name: /查看生成图片 猫图预览/ });
+
+    expect(preview).toBeInTheDocument();
+    expect(within(preview).getByAltText('猫图预览')).toBeInTheDocument();
+
+    await user.click(preview);
+
+    expect(screen.getByRole('dialog', { name: '猫图预览' })).toBeInTheDocument();
+  });
+
+  it('falls back to a local data URL when the Tauri asset preview cannot load', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-image',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'image_result',
+                  id: 'img-result',
+                  title: '生成结果',
+                  images: [
+                    {
+                      id: 'cat-preview',
+                      src: '/Users/geb/.alpha-studio/codex-home/generated_images/cat.png',
+                      alt: '猫图预览',
+                      name: 'cat.png',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const preview = within(container.querySelector('.message-list') as HTMLElement).getByRole('button', { name: /查看生成图片 猫图预览/ });
+    const image = within(preview).getByAltText('猫图预览') as HTMLImageElement;
+
+    expect(convertFileSrc).toHaveBeenCalledWith('/Users/geb/.alpha-studio/codex-home/generated_images/cat.png');
+    expect(image.getAttribute('src')).toBe('asset://localhost//Users/geb/.alpha-studio/codex-home/generated_images/cat.png');
+
+    fireEvent.error(image);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('local_image_data_url', { request: { path: '/Users/geb/.alpha-studio/codex-home/generated_images/cat.png' } }));
+    await waitFor(() => expect((within(preview).getByAltText('猫图预览') as HTMLImageElement).getAttribute('src')).toBe('data:image/png;base64,preview'));
+    expect(within(preview).queryByText('图片预览不可用')).not.toBeInTheDocument();
+  });
+
+  it('renders generated files as Codex-style result cards', () => {
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-file',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'file_result',
+                  id: 'file-result',
+                  title: '生成文件',
+                  files: [
+                    {
+                      id: 'cat-file',
+                      path: '/Users/geb/.alpha-studio/codex-home/generated_images/cat-illustration.png',
+                      name: 'cat-illustration.png',
+                      ext: 'png',
+                      kind: 'image',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const card = within(container.querySelector('.message-list') as HTMLElement).getByRole('group', { name: 'cat-illustration.png' });
+
+    expect(within(card).getByText('cat-illustration.png')).toBeInTheDocument();
+    expect(within(card).getByText('图像 · PNG')).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: '打开方式' })).toBeInTheDocument();
   });
 
   it('keeps bottom terminal tabs mounted and numbered sequentially while collapsed', async () => {

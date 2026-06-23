@@ -9,7 +9,7 @@ import {
   useChatStore,
   visibleConversations,
 } from './store';
-import type { ChatMessage, Conversation } from './types';
+import type { ChatMessage, Conversation, SkillSelection } from './types';
 
 function textMessage(content = 'hi'): ChatMessage {
   return { id: `msg-${content}`, role: 'user', timestamp: 1, blocks: [{ type: 'text', content }] };
@@ -171,5 +171,32 @@ describe('conversation titles', () => {
   it('uses a stable fallback for greeting-only messages', () => {
     expect(buildConversationTitle('你好')).toBe('问候');
     expect(buildConversationTitle('   ')).toBe('新对话');
+  });
+});
+
+describe('skill selections on user messages', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    useChatStore.setState({
+      conversations: [conversation('conv-skill')],
+      projects: [],
+      currentConversationId: 'conv-skill',
+      selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+      modelProfiles: defaultModelProfiles(),
+      approvalMode: 'auto',
+      projectSort: 'updated',
+      conversationSort: 'updated',
+      error: null,
+    });
+  });
+
+  it('stores the selected skill on the user message that launched the turn', async () => {
+    const skill: SkillSelection = { id: 'chrome', title: 'Chrome', description: 'Control Chrome' };
+
+    await useChatStore.getState().sendMessage('检查页面控制台', [], skill);
+
+    const userMessage = useChatStore.getState().conversations[0].messages[0];
+    expect(userMessage.role).toBe('user');
+    expect(userMessage.selectedSkill).toEqual(skill);
   });
 });

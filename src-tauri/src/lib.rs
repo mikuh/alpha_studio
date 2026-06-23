@@ -171,6 +171,12 @@ pub struct OpenInAppRequest {
 
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalImageDataUrlRequest {
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalStartRequest {
     cwd: Option<String>,
     rows: Option<u16>,
@@ -1233,6 +1239,45 @@ async fn open_in_app(request: OpenInAppRequest) -> Result<(), String> {
         let _ = path;
         Err("Opening in external apps is only supported on macOS in this build.".to_string())
     }
+}
+
+#[tauri::command]
+async fn local_image_data_url(request: LocalImageDataUrlRequest) -> Result<String, String> {
+    let path = request.path.trim();
+    if path.is_empty() {
+        return Err("Image path is required.".to_string());
+    }
+
+    let path_ref = Path::new(path);
+    let metadata =
+        fs::metadata(path_ref).map_err(|e| format!("Failed to read image metadata: {e}"))?;
+    if !metadata.is_file() {
+        return Err(format!("Path is not a file: {path}"));
+    }
+    const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
+    if metadata.len() > MAX_IMAGE_BYTES {
+        return Err("Image is too large to preview.".to_string());
+    }
+
+    let ext = path_ref
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        _ => return Err("Unsupported image type.".to_string()),
+    };
+
+    let bytes = fs::read(path_ref).map_err(|e| format!("Failed to read image: {e}"))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{encoded}"))
 }
 
 #[tauri::command]
@@ -4173,6 +4218,7 @@ pub fn run() {
             codex_chat_stop,
             list_open_apps,
             open_in_app,
+            local_image_data_url,
             terminal_start,
             terminal_write,
             terminal_resize,

@@ -40,6 +40,16 @@ describe('core coding domain', () => {
     expect(prompt).toContain('必须优先使用这个 Skill');
   });
 
+  it('tells Image Gen turns to expose progress and renderable outputs', () => {
+    const instructions = buildCodingInstructions(
+      { selectedSkill: { id: 'imagegen', title: 'Image Gen' } },
+    );
+
+    expect(instructions).toContain('图片生成展示要求');
+    expect(instructions).toContain('Markdown 图片');
+    expect(instructions).toContain('不要只回复“已生成”');
+  });
+
   it('keeps Alpha Studio instructions separate from the user task for app-server turns', () => {
     const instructions = buildCodingInstructions(
       { selectedSkill: { id: 'chrome', title: 'Chrome' } },

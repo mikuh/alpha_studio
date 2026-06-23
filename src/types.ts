@@ -36,7 +36,36 @@ export interface ErrorBlock {
   content: string;
 }
 
-export type MessageBlock = TextBlock | ThinkingBlock | ToolBlock | ErrorBlock;
+export interface GeneratedImage {
+  id: string;
+  src: string;
+  alt: string;
+  name?: string;
+}
+
+export interface GeneratedFile {
+  id: string;
+  path: string;
+  name: string;
+  ext: string;
+  kind: 'image' | 'file';
+}
+
+export interface ImageResultBlock {
+  type: 'image_result';
+  id: string;
+  title: string;
+  images: GeneratedImage[];
+}
+
+export interface FileResultBlock {
+  type: 'file_result';
+  id: string;
+  title: string;
+  files: GeneratedFile[];
+}
+
+export type MessageBlock = TextBlock | ThinkingBlock | ToolBlock | ErrorBlock | ImageResultBlock | FileResultBlock;
 
 export interface MessageAttachment {
   id: string;
@@ -99,6 +128,7 @@ export interface ChatMessage {
   timestamp: number;
   isStreaming?: boolean;
   attachments?: MessageAttachment[];
+  selectedSkill?: SkillSelection;
   // Marks an assistant turn that should render as a structured code review.
   review?: boolean;
   // Marks a user turn that kicked off a review (renders as a review chip).
