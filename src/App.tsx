@@ -140,6 +140,16 @@ import {
 } from './codexBridge';
 import { WORK_MODE_OPTIONS, activeDomain, type DomainConfig, type DomainSuggestion, type WorkModeId } from './domain';
 import {
+  activateClient,
+  ALPHA_GATEWAY_PROVIDER_ID,
+  clearClientLicenseSession,
+  defaultAlphaApiBaseUrl,
+  getOrCreateDeviceFingerprint,
+  loadClientLicenseSession,
+  renewClientLease,
+  type ClientLicenseSession,
+} from './license';
+import {
   APPROVAL_OPTIONS,
   EFFORT_OPTIONS,
   SPEED_OPTIONS,
@@ -148,6 +158,7 @@ import {
   effortLabel,
   modelProfileLabel,
   normalizeModelProfileDraft,
+  resolveModelProfile,
   shortModelProfileLabel,
   type ApprovalMode,
   type ModelProfile,
@@ -219,7 +230,6 @@ type SettingsSection =
 
 const SIDEBAR_WIDTH_KEY = 'alpha:codex-sidebar-width';
 const RIGHT_SIDEBAR_WIDTH_KEY = 'alpha:right-sidebar-width';
-const USAGE_CARD_KEY = 'alpha:usage-card-dismissed';
 const GIT_PANEL_WIDTH_KEY = 'alpha:git-panel-width';
 const REVIEW_PANEL_WIDTH_KEY = 'alpha:review-panel-width';
 const THEME_KEY = 'alpha:codex-theme';
@@ -245,7 +255,7 @@ const RIGHT_DOCK_META: Record<RightDockKind, { label: string; shortcut?: string 
   files: { label: '文件', shortcut: '⌘P' },
   'side-chat': { label: '侧边聊天', shortcut: '⌥⌘S' },
 };
-const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['browser', 'terminal', 'files', 'side-chat'];
+const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['browser', 'side-chat'];
 
 type SkillCategory = 'personal' | 'system' | 'recommended';
 type SkillCategoryFilter = SkillCategory | 'all';
@@ -672,7 +682,180 @@ function useCloseOnOutsidePointer<T extends HTMLElement>(
   }, [open, onClose, ref]);
 }
 
+function ClientLicenseBoundary({ children }: { children: ReactNode }) {
+  const setClientLicenseSession = useChatStore((state) => state.setClientLicenseSession);
+  const initialSessionRef = useRef<ClientLicenseSession | null>(loadClientLicenseSession());
+  const [status, setStatus] = useState<'checking' | 'inactive' | 'active'>(() => {
+    const stored = initialSessionRef.current;
+    if (!stored) return 'inactive';
+    return isLeaseFresh(stored) ? 'active' : 'checking';
+  });
+  const [session, setSession] = useState<ClientLicenseSession | null>(() => initialSessionRef.current);
+  const [error, setError] = useState('');
+
+  const activateSession = useCallback((next: ClientLicenseSession) => {
+    setClientLicenseSession(next);
+    setSession(next);
+    setStatus('active');
+    setError('');
+  }, [setClientLicenseSession]);
+
+  useEffect(() => {
+    let disposed = false;
+    const stored = initialSessionRef.current;
+    if (!stored) {
+      setStatus('inactive');
+      setClientLicenseSession(null);
+      return;
+    }
+    void renewClientLease(stored)
+      .then((renewed) => {
+        if (!disposed) activateSession(renewed);
+      })
+      .catch((leaseError) => {
+        if (disposed) return;
+        clearClientLicenseSession();
+        setClientLicenseSession(null);
+        setSession(null);
+        setStatus('inactive');
+        setError(`设备授权已失效，请重新激活：${stringifyUnknownError(leaseError)}`);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [activateSession, setClientLicenseSession]);
+
+  useLayoutEffect(() => {
+    if (status === 'active' && session) {
+      setClientLicenseSession(session);
+    }
+  }, [session, setClientLicenseSession, status]);
+
+  useEffect(() => {
+    if (status !== 'active' || !session) return;
+    const interval = window.setInterval(() => {
+      void renewClientLease(session)
+        .then(activateSession)
+        .catch((leaseError) => {
+          clearClientLicenseSession();
+          setClientLicenseSession(null);
+          setSession(null);
+          setStatus('inactive');
+          setError(`设备续租失败，请重新激活：${stringifyUnknownError(leaseError)}`);
+        });
+    }, 4 * 60 * 1000);
+    return () => window.clearInterval(interval);
+  }, [activateSession, session, setClientLicenseSession, status]);
+
+  if (status === 'checking') {
+    return (
+      <main className="license-screen">
+        <LicenseWindowDragRegion />
+        <section className="license-card license-card-compact">
+          <Loader2 size={22} className="spin" />
+          <h1>正在校验 Alpha Studio 授权</h1>
+          <p>正在连接后台确认客户、设备租约和可用模型。</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (status !== 'active') {
+    return <ClientActivationScreen initialError={error} onActivated={activateSession} />;
+  }
+
+  return <>{children}</>;
+}
+
+function ClientActivationScreen({
+  initialError,
+  onActivated,
+}: {
+  initialError: string;
+  onActivated: (session: ClientLicenseSession) => void;
+}) {
+  const [companyName, setCompanyName] = useState('');
+  const [authorizationCode, setAuthorizationCode] = useState('');
+  const [error, setError] = useState(initialError);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => setError(initialError), [initialError]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const session = await activateClient({
+        apiBaseUrl: defaultAlphaApiBaseUrl(),
+        companyName,
+        authorizationCode,
+        deviceName: defaultDeviceName(),
+        fingerprint: getOrCreateDeviceFingerprint(),
+      });
+      onActivated(session);
+    } catch (activationError) {
+      setError(stringifyUnknownError(activationError));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <main className="license-screen">
+      <LicenseWindowDragRegion />
+      <form className="license-card" onSubmit={submit}>
+        <div className="license-mark">
+          <ShieldCheck size={24} />
+        </div>
+        <div>
+          <h1>激活 Alpha Studio</h1>
+          <p>请输入基金公司名称和授权码。通过后台校验设备名额后，客户端才会进入工作台。</p>
+        </div>
+        <label>
+          公司名称
+          <input value={companyName} onChange={(event) => setCompanyName(event.target.value)} required />
+        </label>
+        <label>
+          授权码
+          <input value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} required />
+        </label>
+        {error && <div className="license-error">{error}</div>}
+        <button type="submit" disabled={loading}>
+          {loading ? '正在激活...' : '激活并进入'}
+        </button>
+      </form>
+    </main>
+  );
+}
+
+function LicenseWindowDragRegion() {
+  return <div className="license-window-drag-region" data-tauri-drag-region aria-hidden="true" />;
+}
+
+function defaultDeviceName(): string {
+  if (typeof navigator === 'undefined') return 'Alpha Studio Device';
+  const platform = navigator.platform || 'Device';
+  return `Alpha Studio ${platform}`;
+}
+
+function isLeaseFresh(session: ClientLicenseSession): boolean {
+  return new Date(session.device.leaseExpiresAt).getTime() > Date.now() + 15_000;
+}
+
+function stringifyUnknownError(error: unknown): string {
+  return stringifyError(error);
+}
+
 export function App() {
+  return (
+    <ClientLicenseBoundary>
+      <AppWorkspace />
+    </ClientLicenseBoundary>
+  );
+}
+
+function AppWorkspace() {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
   const loadModelConfig = useChatStore((state) => state.loadModelConfig);
   const conversations = useChatStore((state) => state.conversations);
@@ -716,11 +899,8 @@ export function App() {
   const [rightDockTabs, setRightDockTabs] = useState<RightDockTab[]>([]);
   const [activeRightDockTabId, setActiveRightDockTabId] = useState<string | null>(null);
   const nextRightDockTabRef = useRef(0);
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  const [terminalMounted, setTerminalMounted] = useState(false);
   const [mainView, setMainView] = useState<MainView>('chat');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [quickGitOpen, setQuickGitOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [theme, setTheme] = useState<Theme>(() => {
     if (typeof window === 'undefined') return 'dark';
@@ -867,11 +1047,6 @@ export function App() {
   }, []);
 
   const consumeQueuedSkill = useCallback(() => setQueuedSkill(null), []);
-
-  const toggleBottomTerminal = useCallback(() => {
-    setTerminalMounted(true);
-    setTerminalOpen((value) => !value);
-  }, []);
 
   const activeRightDockTab = useMemo(
     () => rightDockTabs.find((tab) => tab.id === activeRightDockTabId) ?? null,
@@ -1025,12 +1200,8 @@ export function App() {
                 domain={domain}
                 sidebarCollapsed={sidebarCollapsed}
                 rightPanelOpen={rightPanelVisible}
-                terminalOpen={terminalOpen}
                 onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
                 onToggleRightPanel={toggleRightPanel}
-                onToggleTerminal={toggleBottomTerminal}
-                onOpenGit={() => openRightPanel('git')}
-                onOpenQuickGit={() => setQuickGitOpen(true)}
                 onOpenSideChat={() => addRightDockTab('side-chat')}
                 onOpenSettings={() => openSettings('config')}
               />
@@ -1055,16 +1226,12 @@ export function App() {
                 onSelectTab={selectRightDockTab}
                 onCloseTab={closeRightDockTab}
                 onAddTab={addRightDockTab}
-                onOpenReviewChanges={() => addRightDockTab('review')}
-                onOpenTerminal={() => addRightDockTab('terminal')}
                 onOpenBrowser={() => addRightDockTab('browser')}
-                onOpenFiles={() => addRightDockTab('files')}
                 onOpenSideChat={() => addRightDockTab('side-chat')}
                 onCloseGit={() => setRightPanelVisible(false)}
               />
             )}
           </div>
-          {terminalMounted && <TerminalPanel theme={theme} visible={terminalOpen} onClose={() => setTerminalOpen(false)} />}
         </div>
         <SettingsPage
           domain={domain}
@@ -1075,7 +1242,6 @@ export function App() {
           theme={theme}
           onThemeChange={setTheme}
         />
-        <QuickGitDialog open={quickGitOpen} onClose={() => setQuickGitOpen(false)} />
         <AuthorizationDialog />
         <ImageLightbox />
       </div>
@@ -1270,23 +1436,6 @@ function Sidebar({
   const [menu, setMenu] = useState<SidebarMenu | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
-  // Codex's quota widget. Alpha Studio ships no telemetry, so the figures are a
-  // static placeholder; dismissing it is remembered across launches.
-  const [usageCardOpen, setUsageCardOpen] = useState(() => {
-    try {
-      return window.localStorage.getItem(USAGE_CARD_KEY) !== '1';
-    } catch {
-      return true;
-    }
-  });
-  const dismissUsageCard = useCallback(() => {
-    setUsageCardOpen(false);
-    try {
-      window.localStorage.setItem(USAGE_CARD_KEY, '1');
-    } catch {
-      /* ignore storage failures */
-    }
-  }, []);
 
   // Keep the active conversation's project expanded so a chat that just got
   // pointed at a folder (e.g. via the composer directory switcher) is visible
@@ -1337,7 +1486,7 @@ function Sidebar({
         {
           kind: 'item',
           icon: <FolderPlus size={15} />,
-          label: '新建空白项目',
+          label: '新建空白研究主题',
           onSelect: () => {
             const id = createProject();
             setExpanded((prev) => ({ ...prev, [id]: true }));
@@ -1371,12 +1520,12 @@ function Sidebar({
         {
           kind: 'item',
           icon: project.pinned ? <PinOff size={15} /> : <Pin size={15} />,
-          label: project.pinned ? '取消置顶' : '置顶项目',
+          label: project.pinned ? '取消置顶' : '置顶研究主题',
           onSelect: () => toggleProjectPin(project.id),
         },
         { kind: 'item', icon: <FolderOpen size={15} />, label: '在访达中打开', onSelect: () => void revealOrPickProject(project) },
-        { kind: 'item', icon: <FolderInput size={15} />, label: '设置工作目录', onSelect: () => void chooseProjectFolder(project) },
-        { kind: 'item', icon: <Pencil size={15} />, label: '重命名项目', onSelect: () => setEditingProjectId(project.id) },
+        { kind: 'item', icon: <FolderInput size={15} />, label: '设置资料目录', onSelect: () => void chooseProjectFolder(project) },
+        { kind: 'item', icon: <Pencil size={15} />, label: '重命名研究主题', onSelect: () => setEditingProjectId(project.id) },
         {
           kind: 'item',
           icon: <SquarePen size={15} />,
@@ -1388,7 +1537,7 @@ function Sidebar({
           },
         },
         { kind: 'separator' },
-        { kind: 'item', icon: <Archive size={15} />, label: '归档项目', danger: true, onSelect: () => archiveProject(project.id) },
+        { kind: 'item', icon: <Archive size={15} />, label: '归档研究主题', danger: true, onSelect: () => archiveProject(project.id) },
       ],
     });
   };
@@ -1506,10 +1655,10 @@ function Sidebar({
           )}
 
           <SidebarHead label={sidebarCopy.projectSectionLabel} menuOpen={menu?.owner === 'project-section' || menu?.owner === 'add'}>
-            <button className="group-action" type="button" onClick={openProjectSectionMenu} aria-label="项目排序与整理" title="排序与整理">
+            <button className="group-action" type="button" onClick={openProjectSectionMenu} aria-label="研究主题排序与整理" title="排序与整理">
               <MoreHorizontal size={15} />
             </button>
-            <button className="group-action" type="button" onClick={openNewProjectMenu} aria-label="新建项目" title="新建项目">
+            <button className="group-action" type="button" onClick={openNewProjectMenu} aria-label="新建研究主题" title="新建研究主题">
               <FolderInput size={15} />
             </button>
           </SidebarHead>
@@ -1590,23 +1739,6 @@ function Sidebar({
           )}
         </div>
         <div className="sidebar-footer">
-          {usageCardOpen && (
-            <div className="usage-card">
-              <div className="usage-card-head">
-                <span className="usage-card-title">{sidebarCopy.usageTitle}</span>
-                <button className="usage-card-dismiss" type="button" onClick={dismissUsageCard} aria-label="隐藏使用量" title="隐藏">
-                  <X size={13} />
-                </button>
-              </div>
-              <p className="usage-card-hint">{sidebarCopy.usageHint}</p>
-              <div className="usage-card-bar" role="presentation">
-                <span className="usage-card-bar-fill" style={{ width: '12%' }} />
-              </div>
-              <button className="usage-card-action" type="button" onClick={() => onOpenSettings('usage')}>
-                {sidebarCopy.usageAction}
-              </button>
-            </div>
-          )}
           <button className="nav-item settings-entry" type="button" onClick={() => onOpenSettings('general')}>
             <Settings size={15} />
             <span className="nav-label">{sidebarCopy.settingsLabel}</span>
@@ -1786,15 +1918,15 @@ function ProjectItem({
         {editing ? (
           <NameInput defaultValue={project.name} onCommit={onCommitRename} onCancel={onCancelRename} />
         ) : (
-          <span className="project-name" title={project.cwd || '未指定工作目录'}>{project.name}</span>
+          <span className="project-name" title={project.cwd || '未指定资料目录'}>{project.name}</span>
         )}
         {!editing && project.pinned && <Pin size={11} className="project-pin" />}
         {!editing && (
           <span className="project-actions" onClick={(event) => event.stopPropagation()}>
-            <button className="row-icon-btn" type="button" onClick={onNewConversation} aria-label="在项目中新建对话" title="新建对话">
+            <button className="row-icon-btn" type="button" onClick={onNewConversation} aria-label="在研究主题中新建对话" title="新建对话">
               <SquarePen size={13} />
             </button>
-            <button className={`row-icon-btn ${menuOpen ? 'active' : ''}`} type="button" onClick={(event) => onOpenMenu(anchorFromButton(event))} aria-label="项目操作" title="更多">
+            <button className={`row-icon-btn ${menuOpen ? 'active' : ''}`} type="button" onClick={(event) => onOpenMenu(anchorFromButton(event))} aria-label="研究主题操作" title="更多">
               <MoreHorizontal size={15} />
             </button>
           </span>
@@ -1930,7 +2062,7 @@ function SearchDialog({
             <Plus size={15} />
             <span><strong>{copy.newConversationLabel}</strong><em>从空白上下文开始</em></span>
           </button>
-          {projectResults.length > 0 && <CommandSection label="项目">{projectResults.map((project) => (
+          {projectResults.length > 0 && <CommandSection label="研究主题">{projectResults.map((project) => (
             <button key={project.id} type="button" className="command-result" onClick={() => onOpenProject(project.id)}>
               <Folder size={15} />
               <span><strong>{project.name}</strong><em>{project.cwd ? shortenPath(project.cwd) : '未指定目录'}</em></span>
@@ -2056,24 +2188,16 @@ function TopBar({
   domain,
   sidebarCollapsed,
   rightPanelOpen,
-  terminalOpen,
   onToggleSidebar,
   onToggleRightPanel,
-  onToggleTerminal,
-  onOpenGit,
-  onOpenQuickGit,
   onOpenSideChat,
   onOpenSettings,
 }: {
   domain: DomainConfig;
   sidebarCollapsed: boolean;
   rightPanelOpen: boolean;
-  terminalOpen: boolean;
   onToggleSidebar: () => void;
   onToggleRightPanel: () => void;
-  onToggleTerminal: () => void;
-  onOpenGit: () => void;
-  onOpenQuickGit: () => void;
   onOpenSideChat: () => void;
   onOpenSettings: () => void;
 }) {
@@ -2177,21 +2301,7 @@ function TopBar({
         <div className="top-bar-title" data-tauri-drag-region>{domain.name}</div>
       )}
       <div className="top-bar-actions">
-        <div className="top-bar-env-actions">
-          <OpenInAppMenu cwd={cwd} />
-          <EnvironmentMenu cwd={cwd} onOpenGit={onOpenGit} onOpenQuickGit={onOpenQuickGit} onOpenSettings={onOpenSettings} />
-        </div>
         <div className="top-bar-panel-actions">
-          <button
-            className={`icon-btn ${terminalOpen ? 'active' : ''}`}
-            type="button"
-            onClick={onToggleTerminal}
-            aria-label={terminalOpen ? '收起下方终端' : '打开下方终端'}
-            aria-pressed={terminalOpen}
-            title="终端"
-          >
-            {terminalOpen ? <PanelBottomClose size={16} /> : <PanelBottom size={16} />}
-          </button>
           <button
             className={`icon-btn ${rightPanelOpen ? 'active' : ''}`}
             type="button"
@@ -3064,10 +3174,7 @@ function RightDockWorkspace({
   onSelectTab,
   onCloseTab,
   onAddTab,
-  onOpenReviewChanges,
-  onOpenTerminal,
   onOpenBrowser,
-  onOpenFiles,
   onOpenSideChat,
   onCloseGit,
 }: {
@@ -3080,10 +3187,7 @@ function RightDockWorkspace({
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onAddTab: (kind: RightDockKind) => void;
-  onOpenReviewChanges: () => void;
-  onOpenTerminal: () => void;
   onOpenBrowser: () => void;
-  onOpenFiles: () => void;
   onOpenSideChat: () => void;
   onCloseGit: () => void;
 }) {
@@ -3113,10 +3217,7 @@ function RightDockWorkspace({
       ) : (
         <FeaturesPanel
           domain={domain}
-          onOpenReviewChanges={onOpenReviewChanges}
-          onOpenTerminal={onOpenTerminal}
           onOpenBrowser={onOpenBrowser}
-          onOpenFiles={onOpenFiles}
           onOpenSideChat={onOpenSideChat}
         />
       )}
@@ -3215,21 +3316,14 @@ function RightDockTabBar({
 
 function FeaturesPanel({
   domain,
-  onOpenReviewChanges,
-  onOpenTerminal,
   onOpenBrowser,
-  onOpenFiles,
   onOpenSideChat,
 }: {
   domain: DomainConfig;
-  onOpenReviewChanges: () => void;
-  onOpenTerminal: () => void;
   onOpenBrowser: () => void;
-  onOpenFiles: () => void;
   onOpenSideChat: () => void;
 }) {
   const conversation = useCurrentConversation();
-  const cwd = conversation?.cwd || '';
   const featureActions: Array<{
     id: string;
     label: string;
@@ -3241,37 +3335,12 @@ function FeaturesPanel({
     onClick: () => void;
   }> = [
     {
-      id: 'review',
-      label: '审查',
-      icon: <FileDiff size={14} />,
-      shortcut: '⌃⇧G',
-      disabled: !cwd,
-      title: cwd ? '查看代码更改' : '当前对话未绑定工作目录',
-      onClick: onOpenReviewChanges,
-    },
-    {
-      id: 'terminal',
-      label: '终端',
-      icon: <SquareTerminal size={14} />,
-      title: '启动交互式 shell',
-      onClick: onOpenTerminal,
-    },
-    {
       id: 'browser',
       label: '浏览器',
       icon: <Globe size={14} />,
       shortcut: '⌘T',
-      title: '打开内嵌浏览器',
+      title: '打开行情、公告或研究资料',
       onClick: onOpenBrowser,
-    },
-    {
-      id: 'files',
-      label: '文件',
-      icon: <Folder size={14} />,
-      shortcut: '⌘P',
-      disabled: !cwd,
-      title: cwd ? '浏览项目文件入口' : '当前对话未绑定工作目录',
-      onClick: onOpenFiles,
     },
     {
       id: 'side-chat',
@@ -3499,19 +3568,19 @@ function SkillsPage() {
   return (
     <section className="skills-page" aria-label="技能">
       <div className="skills-page-shell">
-        <div className="skills-tabs" role="tablist" aria-label="插件与技能">
-          <button type="button" role="tab" aria-selected="false">插件</button>
+        <div className="skills-tabs" role="tablist" aria-label="能力与技能">
+          <button type="button" role="tab" aria-selected="false">能力</button>
           <button type="button" role="tab" aria-selected="true" className="active">技能</button>
         </div>
         <header className="skills-page-head">
           <div>
             <h1>技能</h1>
-            <p>通过任务专用技能扩展 Codex 的能力</p>
+            <p>通过任务专用技能扩展投研能力</p>
           </div>
           <div className="skills-search-row">
             <label className="skills-search">
               <Search size={15} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索插件和技能" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索能力和技能" />
             </label>
             <div className="skills-filter-wrap" ref={filterRef}>
               <button
@@ -3858,9 +3927,13 @@ function skillIcon(skill: SkillCatalogItem | SkillSelection, size = 16): ReactNo
 function ChatArea({ domain }: { domain: DomainConfig }) {
   const conversation = useCurrentConversation();
   const codexStatus = useChatStore((state) => state.codexStatus);
+  const modelProfiles = useChatStore((state) => state.modelProfiles);
+  const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
+  const selectedModelProfile = resolveModelProfile(modelProfiles, selectedModelProfileId);
   if (!conversation) return null;
   const previewRuntime = !isTauriRuntime();
-  const codexReady = previewRuntime || Boolean(codexStatus?.installed && codexStatus.loggedIn);
+  const gatewayMode = selectedModelProfile.providerId === ALPHA_GATEWAY_PROVIDER_ID;
+  const codexReady = previewRuntime || Boolean(codexStatus?.installed && (codexStatus.loggedIn || gatewayMode));
   const isEmpty = conversation.messages.length === 0;
   return (
     <div className="chat-area">
@@ -3868,13 +3941,33 @@ function ChatArea({ domain }: { domain: DomainConfig }) {
         <div className="codex-warning">
           <AlertCircle size={16} />
           <div>
-            <strong>{previewRuntime ? '浏览器预览模式' : 'Codex CLI 暂不可用'}</strong>
-            <span>{previewRuntime ? '这里会模拟 Codex 事件流；桌面应用会直连本地 Codex CLI。' : codexStatus?.error || '请确认 Codex 已安装并登录。'}</span>
+            <strong>{previewRuntime ? '浏览器预览模式' : 'AI 引擎暂不可用'}</strong>
+            <span>{previewRuntime ? '这里会模拟分析事件流；桌面应用会连接本地 AI 运行环境。' : codexStatus?.error || '请确认本地 AI 运行环境已安装并登录。'}</span>
             {codexStatus?.path && <code>{codexStatus.path}</code>}
           </div>
         </div>
       )}
+      <ClientLicenseNotice />
       {isEmpty ? <EmptyState domain={domain} conversation={conversation} disabled={!codexReady} /> : <><div className="message-scroll"><MessageList conversation={conversation} /></div><Composer domain={domain} conversation={conversation} disabled={!codexReady} bottom /></>}
+    </div>
+  );
+}
+
+function ClientLicenseNotice() {
+  const session = useChatStore((state) => state.clientLicenseSession);
+  if (!session) return null;
+  const codexAccount = session.codexAccounts[0];
+  return (
+    <div className="client-license-banner">
+      <ShieldCheck size={15} />
+      <div>
+        <strong>{session.tenant.name}</strong>
+        <span>
+          {session.tenant.codexSubscriptionEnabled && codexAccount
+            ? `Codex 订阅账号：${codexAccount.email}${codexAccount.loginHint ? `，${codexAccount.loginHint}` : ''}`
+            : `API 网关模式，设备额度 ${session.tenant.maxDevices} 台，用量会计入该客户。`}
+        </span>
+      </div>
     </div>
   );
 }
@@ -4356,7 +4449,7 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
               submit();
             }
           }}
-          placeholder={disabled ? '请先修复 Codex CLI 状态' : bottom ? domain.ui.followupPlaceholder : domain.ui.composerPlaceholder}
+          placeholder={disabled ? '请先修复本地 AI 运行环境状态' : bottom ? domain.ui.followupPlaceholder : domain.ui.composerPlaceholder}
           rows={1}
         />
         <div className="composer-toolbar">
@@ -4836,7 +4929,7 @@ function ComposerPlusMenu({
                 onClick={() => setSubmenu((current) => (current === 'plugins' ? null : 'plugins'))}
               >
                 <Plug size={15} />
-                <span>插件</span>
+                <span>能力</span>
                 <ChevronRight size={14} className="model-menu-chevron" />
               </button>
               {submenu === 'plugins' && (
@@ -4849,7 +4942,7 @@ function ComposerPlusMenu({
                         <span>{skill.title}</span>
                       </button>
                     ))}
-                    <div className="plus-menu-hint">公开源码版保留插件入口，商业垂直包可在此扩展领域能力。</div>
+                    <div className="plus-menu-hint">金融版会在这里扩展投研数据、资料处理和自动化能力。</div>
                   </div>
                 </div>
               )}
@@ -4861,9 +4954,8 @@ function ComposerPlusMenu({
   );
 }
 
-// The working-directory pill beneath the composer doubles as a switcher: it lists
-// existing project folders and lets you point the conversation at any directory,
-// so a fresh "新对话" can target a workspace without leaving the composer.
+// The data-directory pill beneath the composer doubles as a switcher: it lists
+// existing research folders and lets a conversation bind to local materials.
 function DirectoryPicker({ conversation }: { conversation: Conversation }) {
   const projects = useChatStore((state) => state.projects);
   const setConversationCwd = useChatStore((state) => state.setConversationCwd);
@@ -4901,7 +4993,7 @@ function DirectoryPicker({ conversation }: { conversation: Conversation }) {
       <button
         type="button"
         className={`composer-meta-pill dir-pill ${open ? 'active' : ''}`}
-        title={cwd || '选择工作目录'}
+        title={cwd || '选择资料目录'}
         onClick={() => setOpen((value) => !value)}
       >
         <FolderGit2 size={12} />
@@ -4912,7 +5004,7 @@ function DirectoryPicker({ conversation }: { conversation: Conversation }) {
         <>
           <button className="menu-backdrop" type="button" aria-label="关闭目录菜单" onClick={close} />
           <div className="model-menu dir-menu" role="menu">
-            {folderProjects.length > 0 && <div className="model-menu-label">项目目录</div>}
+            {folderProjects.length > 0 && <div className="model-menu-label">研究主题目录</div>}
             {folderProjects.map((project) => {
               const selected = conversation.projectId === project.id || (!!cwd && cwd === project.cwd);
               return (
@@ -5128,49 +5220,22 @@ function BranchPicker({ cwd, currentBranch, onChanged }: { cwd: string; currentB
   );
 }
 
-// Directory + git context shown beneath the composer, mirroring Codex's footer.
+// Data-directory context shown beneath the composer.
 function ComposerMeta({ conversation }: { conversation: Conversation }) {
-  const cwd = conversation.cwd;
   const planMode = useChatStore((state) => state.planMode);
   const pursueGoal = useChatStore((state) => state.pursueGoal);
-  const [branch, setBranch] = useState<string | null>(null);
-  const [reloadToken, setReloadToken] = useState(0);
-  useEffect(() => {
-    let cancelled = false;
-    setBranch(null);
-    if (!cwd) return;
-    void (async () => {
-      try {
-        const status = await gitStatus(cwd);
-        if (cancelled) return;
-        setBranch(status.isRepository ? status.branch || 'detached' : null);
-      } catch {
-        if (!cancelled) setBranch(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [cwd, reloadToken]);
 
   return (
     <div className="composer-meta">
       <DirectoryPicker conversation={conversation} />
-      {branch && (
-        <BranchPicker
-          cwd={cwd}
-          currentBranch={branch}
-          onChanged={() => setReloadToken((value) => value + 1)}
-        />
-      )}
       {planMode && (
-        <span className="composer-meta-pill mode-on" title="计划模式已开启：Codex 会先给出可执行计划">
+        <span className="composer-meta-pill mode-on" title="计划模式已开启：Alpha Studio 会先给出可执行计划">
           <ListChecks size={12} />
           <span>计划模式</span>
         </span>
       )}
       {pursueGoal && (
-        <span className="composer-meta-pill mode-on" title="追求目标已开启：Codex 会持续推进直到目标达成">
+        <span className="composer-meta-pill mode-on" title="追求目标已开启：Alpha Studio 会持续推进直到目标达成">
           <Target size={12} />
           <span>追求目标</span>
         </span>
@@ -5254,7 +5319,7 @@ function ApprovalPicker() {
         type="button"
         className={`composer-pill approval-pill ${approvalMode === 'full-access' ? 'accent' : ''} ${open ? 'active' : ''}`}
         onClick={() => setOpen((value) => !value)}
-        title="选择 Codex 操作的批准方式"
+        title="选择 Alpha Studio 操作的批准方式"
       >
         {approvalIcon(approvalMode, 12)}
         <span>{approvalLabel(approvalMode)}</span>
@@ -7046,6 +7111,7 @@ function SettingsNavGroup({
   section: SettingsSection;
   onSectionChange: (section: SettingsSection) => void;
 }) {
+  if (items.length === 0) return null;
   return (
     <div className="settings-nav-list">
       <div className="settings-nav-grouplabel">{label}</div>
@@ -7071,12 +7137,12 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
   if (section === 'appearance') {
     return (
       <>
-        <CodePreview />
+        <ResearchPreview />
         <SettingsGroup>
           <SettingsRow title="主题" description="使用浅色、深色或匹配系统设置。">
             <SettingsSegment value={theme} onChange={onThemeChange} options={[{ id: 'light', label: '浅色', icon: <Sun size={13} /> }, { id: 'dark', label: '深色', icon: <Moon size={13} /> }]} />
           </SettingsRow>
-          <SettingsRow title="强调色" description="用于按钮、选中状态和 Git 状态。"><ColorSwatch value="#339CFF" /></SettingsRow>
+          <SettingsRow title="强调色" description="用于按钮、选中状态和风险提示。"><ColorSwatch value="#339CFF" /></SettingsRow>
           <SettingsRow title="UI 字号" description="调整工作台界面的基础字号。"><span className="settings-static">14 px</span></SettingsRow>
         </SettingsGroup>
       </>
@@ -7085,7 +7151,7 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
   if (section === 'config') {
     return (
       <SettingsGroup>
-        <SettingsRow title="批准方式" description="选择 Codex 执行操作前如何请求授权。">
+        <SettingsRow title="批准方式" description="选择 Alpha Studio 执行敏感操作前如何请求授权。">
           <select className="settings-select" value={approvalMode} onChange={(event) => setApprovalMode(event.target.value as ApprovalMode)}>
             {APPROVAL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.title}</option>)}
           </select>
@@ -7118,12 +7184,12 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
       <>
         <WorkModePanel value={workModeId} onChange={setWorkModeId} />
         <SettingsGroup>
-          <SettingsRow title="默认权限" description="默认情况下，Alpha Studio 可以读取工作区文件。"><Toggle checked /></SettingsRow>
+          <SettingsRow title="默认权限" description="默认情况下，Alpha Studio 可以读取本地资料。"><Toggle checked /></SettingsRow>
           <SettingsRow title="自动审核" description="自动审核额外访问和权限请求。"><Toggle checked /></SettingsRow>
-          <SettingsRow title="完全访问权限" description="允许编辑电脑上的文件并运行联网命令。"><Toggle checked /></SettingsRow>
+          <SettingsRow title="完全访问权限" description="允许处理资料目录并访问联网资源。"><Toggle checked /></SettingsRow>
         </SettingsGroup>
         <SettingsGroup>
-          <SettingsRow title="默认打开目标" description="默认打开文件和文件夹的位置。"><span className="settings-static">按项目目录</span></SettingsRow>
+          <SettingsRow title="默认打开目标" description="默认打开资料和文件夹的位置。"><span className="settings-static">按研究主题</span></SettingsRow>
           <SettingsRow title="语言" description="应用 UI 语言。"><span className="settings-static">自动检测</span></SettingsRow>
           <SettingsRow title="速度" description="选择用于聊天、子智能体和压缩的推理层级。">
             <SettingsSegment value={speed} onChange={(id) => setSpeed(id as Speed)} options={SPEED_OPTIONS.map((option) => ({ id: option.id, label: option.label, icon: option.fast ? <Zap size={13} /> : undefined }))} />
@@ -7228,15 +7294,15 @@ function ModelSettings() {
             <span className="settings-status-icon"><Network size={16} /></span>
             <div className="settings-status-main">
               <strong>当前模型将通过本地 adapter 运行</strong>
-              <span>Alpha Studio 会把 Codex 的 Responses 请求翻译为上游 Chat Completions 请求。</span>
+              <span>Alpha Studio 会把本地 Responses 请求翻译为上游 Chat Completions 请求。</span>
             </div>
           </div>
         )}
         <div className={`settings-status ${codexStatus?.installed && codexStatus.loggedIn ? 'ready' : 'attention'}`}>
           <span className="settings-status-icon">{isCheckingCodex ? <Loader2 size={16} className="spin" /> : <Terminal size={16} />}</span>
           <div className="settings-status-main">
-            <strong>{codexStatus?.installed && codexStatus.loggedIn ? `Codex CLI 已就绪${codexStatus.version ? ` · ${codexStatus.version}` : ''}` : 'Codex CLI 未就绪'}</strong>
-            <span>{codexStatus?.path || codexStatus?.error || '请确认 Codex 已安装并登录。'}</span>
+            <strong>{codexStatus?.installed && codexStatus.loggedIn ? `本地 AI 运行环境已就绪${codexStatus.version ? ` · ${codexStatus.version}` : ''}` : '本地 AI 运行环境未就绪'}</strong>
+            <span>{codexStatus?.path || codexStatus?.error || '请确认本地 AI 运行环境已安装并登录。'}</span>
           </div>
           <button className="settings-btn" type="button" onClick={() => void refreshCodexStatus()} disabled={isCheckingCodex}>重新检测</button>
         </div>
@@ -7362,8 +7428,8 @@ function WorkModePanel({ value, onChange }: { value: WorkModeId; onChange: (id: 
       <div className="work-mode-copy">
         <div>
           <span className="work-mode-kicker">工作模式</span>
-          <h2 id="work-mode-title">编程协作</h2>
-          <p>选择 Alpha Studio 显示多少技术细节。</p>
+          <h2 id="work-mode-title">投研协作</h2>
+          <p>选择 Alpha Studio 的投研工作模式和分析侧重点。</p>
         </div>
         <div className="work-mode-current" aria-label={`当前模式：${activeOption.title}`}>
           <span>当前</span>
@@ -7376,11 +7442,11 @@ function WorkModePanel({ value, onChange }: { value: WorkModeId; onChange: (id: 
   );
 }
 
-function CodePreview() {
+function ResearchPreview() {
   return (
     <div className="theme-preview">
-      <div className="code-pane before"><code><span>1&nbsp; const themePreview = &#123;</span><span>2&nbsp;&nbsp;&nbsp; surface: "sidebar",</span><span>3&nbsp;&nbsp;&nbsp; accent: "#2563eb",</span><span>4&nbsp;&nbsp;&nbsp; contrast: 42,</span><span>5&nbsp; &#125;;</span></code></div>
-      <div className="code-pane after"><code><span>1&nbsp; const themePreview = &#123;</span><span>2&nbsp;&nbsp;&nbsp; surface: "sidebar-elevated",</span><span>3&nbsp;&nbsp;&nbsp; accent: "#0ea5e9",</span><span>4&nbsp;&nbsp;&nbsp; contrast: 68,</span><span>5&nbsp; &#125;;</span></code></div>
+      <div className="code-pane before"><code><span>市场异动</span><span>新能源链走强</span><span>成交额放大 18%</span><span>关注政策催化</span><span>风险：估值切换</span></code></div>
+      <div className="code-pane after"><code><span>投研摘要</span><span>驱动：订单修复</span><span>验证：公告与排产</span><span>仓位：控制回撤</span><span>后续：跟踪价格</span></code></div>
     </div>
   );
 }
@@ -7436,7 +7502,7 @@ function ProfileSettings() {
       <div className="profile-metrics">
         <span><strong>公开源码</strong><em>非商业版</em></span>
         <span><strong>Core</strong><em>领域包</em></span>
-        <span><strong>Codex CLI</strong><em>本地连接</em></span>
+        <span><strong>本地 AI</strong><em>运行环境</em></span>
       </div>
     </div>
   );
@@ -7448,7 +7514,7 @@ function KeyboardSettings() {
     ['新对话', 'Start a new chat', '⌘N'],
     ['搜索', 'Search chats and projects', '⌘K'],
     ['置顶对话', 'Pin or unpin the current chat', '⌥⌘P'],
-    ['Git 面板', 'Open the Git side panel', ''],
+    ['投研侧栏', 'Open the research side panel', ''],
   ];
   return <SettingsGroup>{rows.map(([title, desc, key]) => <SettingsRow key={title} title={title} description={desc}><span className="shortcut-pill">{key || '未指定'}</span></SettingsRow>)}</SettingsGroup>;
 }
@@ -7474,7 +7540,7 @@ function PluginSettings() {
         ))}
       </SettingsGroup>
       <SettingsGroup>
-        <SettingsRow title="技能目录" description="Codex CLI 会从本地技能目录加载可用能力。">
+        <SettingsRow title="技能目录" description="Alpha Studio 会从本地技能目录加载可用能力。">
           <span className="settings-static">~/.codex/skills</span>
         </SettingsRow>
       </SettingsGroup>
@@ -7585,15 +7651,15 @@ function settingsIcon(section: SettingsSection): ReactNode {
 }
 
 function modeIcon(id: string): ReactNode {
-  if (id === 'core-coding') return <Terminal size={14} />;
+  if (id === 'finance-research') return <FileSpreadsheet size={14} />;
   return <Layers size={14} />;
 }
 
 function domainSuggestionIcon(suggestion: DomainSuggestion): ReactNode {
   const icons: Record<DomainSuggestion['icon'], ReactNode> = {
-    'file-code': <FileCode2 size={16} className="icon" />,
-    code: <Code2 size={16} className="icon" />,
-    wrench: <Wrench size={16} className="icon" />,
+    market: <ArrowDownUp size={16} className="icon" />,
+    research: <Search size={16} className="icon" />,
+    risk: <ShieldQuestion size={16} className="icon" />,
   };
   return icons[suggestion.icon];
 }
@@ -7721,13 +7787,13 @@ async function pickFolder(): Promise<string | null> {
   if (isTauriRuntime()) {
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
-      const selected = await open({ directory: true, multiple: false, title: '选择工作目录' });
+      const selected = await open({ directory: true, multiple: false, title: '选择资料目录' });
       return typeof selected === 'string' ? selected : null;
     } catch {
       return null;
     }
   }
-  const manual = window.prompt('输入工作目录的绝对路径（浏览器预览模式）');
+  const manual = window.prompt('输入资料目录的绝对路径（浏览器预览模式）');
   return manual?.trim() || null;
 }
 

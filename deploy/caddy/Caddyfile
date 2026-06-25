@@ -1,0 +1,35 @@
+{$CADDY_SITE_ADDRESS::80} {
+  encode zstd gzip
+
+  header {
+    X-Content-Type-Options nosniff
+    X-Frame-Options DENY
+    Referrer-Policy no-referrer
+  }
+
+  request_body {
+    max_size 25MB
+  }
+
+  redir / /admin/ 302
+
+  handle /api/* {
+    reverse_proxy api:8080
+  }
+
+  handle /v1/responses {
+    reverse_proxy api:8080
+  }
+
+  handle /healthz {
+    reverse_proxy api:8080
+  }
+
+  handle /readyz {
+    reverse_proxy api:8080
+  }
+
+  handle /admin* {
+    reverse_proxy admin-web:80
+  }
+}

@@ -3,13 +3,13 @@ export interface DomainPromptPack {
   responseGuidance: string[];
 }
 
-export type WorkModeId = 'core-coding';
+export type WorkModeId = 'finance-research';
 
-export type DomainSuggestionIcon = 'file-code' | 'code' | 'wrench';
+export type DomainSuggestionIcon = 'market' | 'research' | 'risk';
 
-export type DomainFeatureIcon = 'folder' | 'browser' | 'review' | 'terminal';
+export type DomainFeatureIcon = 'browser' | 'chat';
 
-export type DomainFeatureAction = 'reveal-cwd' | 'open-url' | 'open-review' | 'open-terminal';
+export type DomainFeatureAction = 'open-url' | 'open-side-chat';
 
 export interface DomainNavItem {
   id: string;
@@ -50,9 +50,6 @@ export interface DomainWorkspaceUi {
     conversationSectionLabel: string;
     conversationEmpty: string;
     settingsLabel: string;
-    usageTitle: string;
-    usageHint: string;
-    usageAction: string;
   };
   rightPanelTitle: string;
   suggestions: DomainSuggestion[];
@@ -77,103 +74,82 @@ export interface DomainConfig {
   };
 }
 
-export const coreCodingDomain: DomainConfig = {
-  id: 'core-coding',
+export const financeResearchDomain: DomainConfig = {
+  id: 'finance-research',
   name: 'Alpha Studio',
-  edition: 'Source-Available Noncommercial Edition',
+  edition: 'Finance Research Edition',
   assistantName: 'Alpha Studio',
-  modeTitle: '适用于编程',
-  modeDescription: '更具技术性的回复和控制',
-  modeTag: '公开源码版',
+  modeTitle: '金融投研',
+  modeDescription: '聚焦市场、行业、公司、组合与风险分析',
+  modeTag: '金融版',
   prompt: {
     systemLines: [
-      '你是 Alpha Studio，一个公开源码非商业版的本地编码工作台助手。',
-      '你的默认任务是帮助用户理解代码、修改项目、运行检查、解释结果，并把风险和下一步清楚说明。',
-      '优先使用当前工作区、项目文件、Git 状态和用户提供的上下文；无法确认的事实要明确说出不确定性。',
-      '执行代码变更时保持范围收敛，尊重现有架构和用户未提交的改动。',
-      '当任务涉及命令、文件、依赖或 Git 操作时，说明关键动作与验证结果。',
+      '你是 Alpha Studio，一个金融投研工作台助手。',
+      '你的默认任务是帮助用户进行市场观察、行业研究、公司分析、组合复盘、风险提示和材料整理。',
+      '优先使用用户提供的资料、可见上下文和明确来源；无法确认的事实要说明不确定性和需要补充的数据。',
+      '涉及行情、估值、交易、监管或投资判断时，说明数据时点、关键假设、风险因素，并避免把研究观点表述为确定性收益承诺。',
+      '回答应区分事实、推断和建议，必要时给出后续尽调清单。',
     ],
     responseGuidance: [
-      '回答应简洁、直接、适合工程协作。',
-      '需要计划时给出可执行步骤；需要实现时优先完成实现和验证。',
-      '不要引入任何垂直行业设定，除非用户明确要求。',
+      '回答应简洁、可追溯，适合投研协作。',
+      '优先给出结论、关键依据、风险和下一步行动。',
+      '不要提供个性化投资建议；如需判断，明确前提、时点和不确定性。',
     ],
   },
   ui: {
-    emptyHeading: '把编码任务交给 Alpha Studio',
-    composerPlaceholder: '要求 Codex 执行任务',
-    followupPlaceholder: '要求后续变更',
+    emptyHeading: '把投研问题交给 Alpha Studio',
+    composerPlaceholder: '询问市场、行业、公司或组合问题',
+    followupPlaceholder: '继续追问投研问题',
     sidebar: {
       newConversationLabel: '新对话',
-      searchPlaceholder: '搜索对话、项目或工作目录',
-      pluginsLabel: '插件',
-      automationLabel: '自动化',
-      mobileLabel: 'Codex 移动版',
-      projectSectionLabel: '项目',
-      projectEmpty: '用项目把对话绑定到本地工作目录',
+      searchPlaceholder: '搜索对话、研究主题或资料目录',
+      pluginsLabel: '能力',
+      automationLabel: '提醒',
+      mobileLabel: '移动端',
+      projectSectionLabel: '研究主题',
+      projectEmpty: '用研究主题归档相关对话和资料目录',
       projectConversationEmpty: '暂无对话',
       conversationSectionLabel: '对话',
       conversationEmpty: '暂无未归类的对话',
       settingsLabel: '设置',
-      usageTitle: '剩余 12% 使用量',
-      usageHint: 'every 1 weeks 重置一次。下次重置时间为 09:11',
-      usageAction: '添加额度',
     },
-    rightPanelTitle: '编码工具',
+    rightPanelTitle: '投研侧栏',
     suggestions: [
       {
-        id: 'understand-codebase',
-        title: '理解代码库',
-        prompt: '先扫描这个项目结构，告诉我主要模块、入口和运行方式。',
-        icon: 'file-code',
+        id: 'market-move',
+        title: '分析市场异动',
+        prompt: '帮我梳理今天市场主要异动、可能驱动因素和需要继续跟踪的信号。',
+        icon: 'market',
       },
       {
-        id: 'implement-feature',
-        title: '实现功能',
-        prompt: '帮我实现一个小功能：先读代码，再给出修改并运行必要验证。',
-        icon: 'code',
+        id: 'company-research',
+        title: '整理公司研究',
+        prompt: '基于我提供的材料，整理一家公司基本面、催化剂、风险和待验证问题。',
+        icon: 'research',
       },
       {
-        id: 'fix-tests',
-        title: '修复测试',
-        prompt: '检查当前失败测试或类型错误，定位原因并修复。',
-        icon: 'wrench',
+        id: 'portfolio-risk',
+        title: '评估组合风险',
+        prompt: '帮我复盘一个持仓组合的行业暴露、主要风险和后续观察指标。',
+        icon: 'risk',
       },
     ],
     features: [
       {
-        id: 'files',
-        icon: 'folder',
-        title: '文件',
-        desc: '浏览项目文件',
-        shortcut: '⌘P',
-        requiresCwd: true,
-        action: 'reveal-cwd',
-      },
-      {
         id: 'browser',
         icon: 'browser',
         title: '浏览器',
-        desc: '打开网站',
+        desc: '打开行情、公告或研究资料',
         shortcut: '⌘T',
         action: 'open-url',
       },
       {
-        id: 'review',
-        icon: 'review',
-        title: '审查',
-        desc: '查看代码更改',
-        shortcut: '⌃⇧G',
-        requiresCwd: true,
-        action: 'open-review',
-      },
-      {
-        id: 'terminal',
-        icon: 'terminal',
-        title: '终端',
-        desc: '启动交互式 shell',
-        shortcut: '⌃`',
-        action: 'open-terminal',
+        id: 'side-chat',
+        icon: 'chat',
+        title: '侧边聊天',
+        desc: '保留当前上下文继续追问',
+        shortcut: '⌥⌘S',
+        action: 'open-side-chat',
       },
     ],
   },
@@ -189,18 +165,12 @@ export const coreCodingDomain: DomainConfig = {
       { id: 'usage', label: '使用情况和计费' },
     ],
     integrations: [
-      { id: 'snapshots', label: '应用快照' },
-      { id: 'mcp', label: '插件' },
+      { id: 'snapshots', label: '资料快照' },
+      { id: 'mcp', label: '能力' },
       { id: 'browser', label: '浏览器' },
       { id: 'computer', label: '电脑操控' },
     ],
-    coding: [
-      { id: 'hooks', label: '钩子' },
-      { id: 'connections', label: '连接' },
-      { id: 'git', label: 'Git' },
-      { id: 'environment', label: '环境' },
-      { id: 'worktrees', label: '工作树' },
-    ],
+    coding: [],
     archived: [{ id: 'archived', label: '已归档对话' }],
   },
 };
@@ -213,14 +183,14 @@ export interface WorkModeOption {
   available: boolean;
 }
 
-export const DEFAULT_WORK_MODE_ID: WorkModeId = coreCodingDomain.id;
+export const DEFAULT_WORK_MODE_ID: WorkModeId = financeResearchDomain.id;
 
 export const WORK_MODE_OPTIONS: WorkModeOption[] = [
   {
-    id: coreCodingDomain.id,
-    title: coreCodingDomain.modeTitle,
-    description: coreCodingDomain.modeDescription,
-    tag: coreCodingDomain.modeTag,
+    id: financeResearchDomain.id,
+    title: financeResearchDomain.modeTitle,
+    description: financeResearchDomain.modeDescription,
+    tag: financeResearchDomain.modeTag,
     available: true,
   },
   {
@@ -233,7 +203,7 @@ export const WORK_MODE_OPTIONS: WorkModeOption[] = [
 ];
 
 export const DOMAIN_REGISTRY: Record<WorkModeId, DomainConfig> = {
-  [coreCodingDomain.id]: coreCodingDomain,
+  [financeResearchDomain.id]: financeResearchDomain,
 };
 
 export function isWorkModeId(value: unknown): value is WorkModeId {
@@ -241,5 +211,5 @@ export function isWorkModeId(value: unknown): value is WorkModeId {
 }
 
 export function activeDomain(modeId: unknown = DEFAULT_WORK_MODE_ID): DomainConfig {
-  return isWorkModeId(modeId) ? DOMAIN_REGISTRY[modeId] : coreCodingDomain;
+  return isWorkModeId(modeId) ? DOMAIN_REGISTRY[modeId] : financeResearchDomain;
 }

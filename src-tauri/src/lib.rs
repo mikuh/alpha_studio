@@ -439,13 +439,14 @@ async fn codex_chat_start(
     state: State<'_, CodexProcessState>,
     request: CodexChatRequest,
 ) -> Result<CodexChatStartResult, String> {
+    let mut provider_config = sanitize_model_provider(&request)?;
     let check = check_codex();
     if !check.installed {
         return Err(check
             .error
             .unwrap_or_else(|| "Codex CLI is not installed or cannot be executed.".to_string()));
     }
-    if !check.logged_in {
+    if !check.logged_in && provider_config.is_none() {
         return Err(check
             .error
             .unwrap_or_else(|| "Codex CLI is installed but not logged in.".to_string()));
@@ -455,7 +456,6 @@ async fn codex_chat_start(
     let cwd = resolve_cwd(request.cwd.as_deref())?;
     let codex_home = prepare_alpha_studio_codex_home()?;
     let sandbox_mode = sanitize_sandbox_mode(request.sandbox_mode.as_deref());
-    let mut provider_config = sanitize_model_provider(&request)?;
     let adapter_shutdown = if let Some(provider) = provider_config.as_mut() {
         if let Some(adapter) = provider.adapter.clone() {
             let handle = start_chat_completions_adapter(

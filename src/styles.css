@@ -98,6 +98,152 @@ code {
   font-family: var(--mono);
 }
 
+.license-screen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--text);
+  overflow: auto;
+  padding: 24px;
+}
+
+.license-window-drag-region {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 1;
+  height: 74px;
+}
+
+.license-card {
+  position: relative;
+  z-index: 2;
+  width: min(460px, 100%);
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  box-shadow: var(--shadow);
+  padding: 28px;
+}
+
+.license-card-compact {
+  justify-items: center;
+  text-align: center;
+}
+
+.license-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--control-accent-soft);
+  color: var(--control-accent);
+}
+
+.license-card h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.16;
+}
+
+.license-card p {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.license-card label {
+  display: grid;
+  gap: 7px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.license-card input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-elev-1);
+  color: var(--text);
+  outline: none;
+  padding: 9px 11px;
+}
+
+.license-card input:focus {
+  border-color: var(--control-accent);
+  box-shadow: 0 0 0 3px var(--control-accent-soft);
+}
+
+.license-card > button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--control-accent);
+  color: var(--on-accent);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.license-card > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.license-error {
+  border: 1px solid rgba(224, 111, 111, 0.35);
+  border-radius: 7px;
+  background: rgba(224, 111, 111, 0.1);
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 10px 12px;
+}
+
+.client-license-banner {
+  width: min(760px, calc(100% - 32px));
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  align-self: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-1);
+  color: var(--text-muted);
+  margin: 12px 0 0;
+  padding: 11px 13px;
+}
+
+.client-license-banner svg {
+  flex: 0 0 auto;
+  color: var(--success);
+  margin-top: 1px;
+}
+
+.client-license-banner strong,
+.client-license-banner span {
+  display: block;
+}
+
+.client-license-banner strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.client-license-banner span {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .app-shell {
   width: 100%;
   height: 100%;
@@ -8342,4 +8488,15 @@ button.environment-row:hover {
   .review-tree-pane {
     width: 200px;
   }
+}
+
+@media (max-width: 560px) {
+  .license-screen {
+    padding: 16px;
+  }
+
+  .license-card {
+    padding: 22px;
+  }
+
 }

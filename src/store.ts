@@ -5,6 +5,13 @@ import { buildCodingInstructions, buildReviewPrompt } from './prompt';
 import { checkCodex, isTauriRuntime, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
 import {
+  ALPHA_GATEWAY_PROVIDER_ID,
+  createGatewayRun,
+  loadClientLicenseSession,
+  modelProfilesFromClientLicense,
+  type ClientLicenseSession,
+} from './license';
+import {
   DEFAULT_APPROVAL,
   DEFAULT_EFFORT,
   DEFAULT_MODEL_PROFILE_ID,
@@ -58,6 +65,7 @@ interface ChatState {
   reasoningEffort: ReasoningEffort;
   speed: Speed;
   workModeId: WorkModeId;
+  clientLicenseSession: ClientLicenseSession | null;
   codexStatus: CodexStatus | null;
   approvalMode: ApprovalMode;
   planMode: boolean;
@@ -95,6 +103,7 @@ interface ChatState {
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setSpeed: (speed: Speed) => void;
   setWorkModeId: (modeId: WorkModeId) => void;
+  setClientLicenseSession: (session: ClientLicenseSession | null) => void;
   setApprovalMode: (mode: ApprovalMode) => void;
   setPlanMode: (planMode: boolean) => void;
   setPursueGoal: (pursueGoal: boolean) => void;
@@ -147,10 +156,10 @@ export const useChatStore = create<ChatState>()(
         const latest = get().conversations.find((item) => item.id === conversationId);
         const decision = await requestAuthorization({
           conversationId,
-          title: 'Codex 请求操作权限',
+          title: 'Alpha Studio 请求操作权限',
           description: latest?.cwd
-            ? '允许 Codex 在当前工作目录读取、修改文件并运行命令吗？'
-            : '允许 Codex 读取、修改文件并运行命令吗？',
+            ? '允许 Alpha Studio 读取和整理当前资料目录，并在需要时访问联网资源吗？'
+            : '允许 Alpha Studio 读取资料、整理内容并在需要时访问联网资源吗？',
           cwd: latest?.cwd || '',
         });
         if (decision === 'deny') {
@@ -205,6 +214,7 @@ export const useChatStore = create<ChatState>()(
         reasoningEffort: DEFAULT_EFFORT,
         speed: DEFAULT_SPEED,
       workModeId: DEFAULT_WORK_MODE_ID,
+      clientLicenseSession: loadClientLicenseSession(),
       codexStatus: null,
       approvalMode: DEFAULT_APPROVAL,
       planMode: false,
@@ -368,7 +378,7 @@ export const useChatStore = create<ChatState>()(
 
       createProject: (input) => {
         const now = Date.now();
-        const fallbackName = `新项目 ${activeProjects(get().projects).length + 1}`;
+        const fallbackName = `新研究主题 ${activeProjects(get().projects).length + 1}`;
         const project: Project = {
           id: createId('proj'),
           name: input?.name?.trim() || fallbackName,
@@ -556,6 +566,23 @@ export const useChatStore = create<ChatState>()(
 
       setWorkModeId: (workModeId: WorkModeId) => set({ workModeId }),
 
+      setClientLicenseSession: (session) => {
+        if (!session) {
+          set({ clientLicenseSession: null });
+          return;
+        }
+        const modelProfiles = modelProfilesFromClientLicense(session);
+        const selectedModelProfileId = resolveSelectedModelProfileId(
+          get().selectedModelProfileId,
+          modelProfiles,
+        );
+        set({
+          clientLicenseSession: session,
+          modelProfiles,
+          selectedModelProfileId,
+        });
+      },
+
       setApprovalMode: (mode: ApprovalMode) => set({ approvalMode: mode }),
 
       setPlanMode: (planMode: boolean) => set({ planMode }),
@@ -661,7 +688,7 @@ export const useChatStore = create<ChatState>()(
             developerInstructions: buildCodingInstructions(promptOptions, domain),
             codexThreadId: latest?.codexThreadId,
             cwd: latest?.cwd || undefined,
-            ...codexModelRequest(modelProfile, get().reasoningEffort),
+            ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
             sandboxMode,
           });
           set((state) => ({
@@ -736,7 +763,7 @@ export const useChatStore = create<ChatState>()(
 	            prompt: buildReviewPrompt(request),
 	            codexThreadId: latest?.codexThreadId,
 	            cwd: latest?.cwd || undefined,
-	            ...codexModelRequest(modelProfile, get().reasoningEffort),
+	            ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
 	            sandboxMode: 'read-only',
 	          });
           set((state) => ({
@@ -839,7 +866,7 @@ export const useChatStore = create<ChatState>()(
             prompt: promptWithAttachments(buildEditedPrompt(trimmed, previousMessages), nextAttachments),
             developerInstructions: buildCodingInstructions(promptOptions, domain),
             cwd: latest?.cwd || undefined,
-            ...codexModelRequest(modelProfile, get().reasoningEffort),
+            ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
             sandboxMode,
           });
           set((state) => ({
@@ -1136,7 +1163,18 @@ function stringifyError(error: unknown): string {
   return String(error || 'Unknown error');
 }
 
-function codexModelRequest(profile: ModelProfile, reasoningEffort: ReasoningEffort) {
+async function codexModelRequest(profile: ModelProfile, reasoningEffort: ReasoningEffort) {
+  if (profile.providerId === ALPHA_GATEWAY_PROVIDER_ID) {
+    const gateway = await createGatewayRun(profile.model);
+    return {
+      model: profile.model,
+      providerId: gateway.providerId,
+      providerBaseUrl: gateway.providerBaseUrl,
+      providerApiKey: gateway.providerApiKey,
+      providerWireApi: gateway.providerWireApi,
+      reasoningEffort: profile.supportsReasoningEffort ? reasoningEffort : undefined,
+    };
+  }
   return {
     model: profile.model,
     providerId: profile.providerId,
@@ -1210,13 +1248,13 @@ function simulateBrowserReply(conversationId: string, dispatch: (event: CodexCha
   let delay = 160;
   const push = (event: CodexChatEvent) => events.push({ delay, event });
 
-  push({ type: 'reasoning_delta', runId, conversationId, text: '先做一次只读体检：看工作区状态、目录结构和关键文件，再决定下一步。' });
+  push({ type: 'reasoning_delta', runId, conversationId, text: '先做一次只读投研梳理：确认问题范围、资料来源和需要重点验证的假设。' });
   delay += 260;
 
   const commands = [
-    { id: 'status', cmd: 'git status --short', out: ' M src/App.tsx\n M src/store.ts\n M src/styles.css\n' },
-    { id: 'ls', cmd: 'ls -la src', out: 'total 96\n-rw-r--r--  1 user  staff   72K App.tsx\n-rw-r--r--  1 user  staff   18K store.ts\n-rw-r--r--  1 user  staff   54K styles.css\n' },
-    { id: 'disk', cmd: 'du -sh node_modules 2>/dev/null || echo missing', out: 'missing\n' },
+    { id: 'scope', cmd: '识别投研问题', out: '市场异动、行业驱动、风险提示\n' },
+    { id: 'sources', cmd: '整理资料来源', out: '公告、行情、研报摘录、用户上传材料\n' },
+    { id: 'checks', cmd: '生成跟踪清单', out: '价格、成交额、政策催化、业绩预期\n' },
   ];
   for (const command of commands) {
     push({ type: 'tool_started', runId, conversationId, itemId: `${runId}-${command.id}`, title: 'command_execution', text: command.cmd });
@@ -1228,10 +1266,10 @@ function simulateBrowserReply(conversationId: string, dispatch: (event: CodexCha
   }
 
   const chunks = [
-    '预览模式已按 Codex 风格渲染事件流：',
-    '\n\n1. 连续的命令会折叠成「已运行 N 条命令」，可展开查看每条命令与终端结果。',
-    '\n2. 推理与文本会分段流式追加，任务进行时底部显示「正在思考」。',
-    '\n3. 桌面模式会把这些预览事件替换为真实 Codex CLI 输出。',
+    '预览模式已按投研工作流渲染事件流：',
+    '\n\n1. 连续的资料处理步骤会折叠成「已运行 N 条任务」，可展开查看每步结果。',
+    '\n2. 推理与文本会分段流式追加，任务进行时底部显示「正在分析」。',
+    '\n3. 桌面模式会把这些预览事件替换为真实本地 AI 运行结果。',
   ];
   for (const text of chunks) {
     push({ type: 'text_delta', runId, conversationId, text });

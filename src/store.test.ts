@@ -92,7 +92,7 @@ describe('archive semantics', () => {
     expect(useChatStore.getState().conversations.filter(isDraftConversation)).toHaveLength(1);
   });
 
-  it('migrates old persisted legacy state into coding-era state', () => {
+  it('migrates old persisted legacy state into finance-era state', () => {
     const legacyTitle = ['\u65b0\u7684', '\u5bf9\u8bdd'].join('\u6295\u7814');
     const migrated = migratePersistedState({
       conversations: [conversation('old', { title: legacyTitle })],
@@ -107,7 +107,7 @@ describe('archive semantics', () => {
     expect('watchlist' in migrated).toBe(false);
     expect(migrated.selectedModelProfileId).toBe(DEFAULT_MODEL_PROFILE_ID);
     expect(migrated.modelProfiles.some((profile) => profile.id === DEFAULT_MODEL_PROFILE_ID)).toBe(true);
-    expect(migrated.workModeId).toBe('core-coding');
+    expect(migrated.workModeId).toBe('finance-research');
   });
 
   it('migrates an unknown legacy model into a custom OpenAI profile', () => {
@@ -154,9 +154,9 @@ describe('archive semantics', () => {
   });
 
   it('persists the active work mode in store state', () => {
-    useChatStore.getState().setWorkModeId('core-coding');
+    useChatStore.getState().setWorkModeId('finance-research');
 
-    expect(useChatStore.getState().workModeId).toBe('core-coding');
+    expect(useChatStore.getState().workModeId).toBe('finance-research');
   });
 });
 

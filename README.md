@@ -35,6 +35,40 @@ npm run build
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+## Backend Deployment
+
+The commercial backend can run as a single-machine Docker Compose stack with
+Rust API/model gateway, Postgres, Redis, the internal admin web app, and Caddy:
+
+```bash
+cp .env.example .env
+docker compose build
+docker compose up -d postgres redis
+docker compose run --rm api migrate
+docker compose up -d
+```
+
+Health checks:
+
+```bash
+curl http://localhost/healthz
+curl http://localhost/readyz
+open http://localhost/admin/
+```
+
+Keep deployment secrets such as `JWT_SECRET`, `RUN_TOKEN_SECRET`, and
+`ADMIN_PASSWORD` in `.env` on the server; `.env` is intentionally ignored by
+git. Upstream model provider keys are configured inside `/admin` under the
+model gateway section, not through environment variables.
+
+The admin app now covers the commercial operating loop:
+
+- create and update customer tenants, balances, subscription dates, and machine limits
+- generate customer authorization codes for first-device activation by company name
+- configure upstream provider keys, model aliases, endpoint paths, prices, and markup
+- assign Codex subscription accounts to customers for monthly or yearly subscription access
+- inspect audit logs and usage-ledger totals
+
 ## Product Shape
 
 - Codex-style chat UI with local CLI event streaming

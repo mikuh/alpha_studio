@@ -2,28 +2,27 @@ import { describe, expect, it } from 'vitest';
 import { activeDomain } from './domain';
 import { buildCodingInstructions, buildCodingPrompt } from './prompt';
 
-describe('core coding domain', () => {
-  it('uses the source-available coding domain by default', () => {
+describe('finance research domain', () => {
+  it('uses the finance research domain by default', () => {
     const domain = activeDomain();
 
-    expect(domain.id).toBe('core-coding');
-    expect(domain.navigation.coding.some((item) => item.id === 'git')).toBe(true);
+    expect(domain.id).toBe('finance-research');
+    expect(domain.navigation.coding).toEqual([]);
     expect(domain.navigation.archived.some((item) => item.id === 'archived')).toBe(true);
   });
 
-  it('builds a coding prompt without finance domain language', () => {
-    const prompt = buildCodingPrompt('Read the codebase and fix the failing test.');
+  it('builds a finance prompt without coding domain language', () => {
+    const prompt = buildCodingPrompt('分析今天新能源板块的异动。');
     const forbiddenDomainWords = [
-      '\u91d1\u878d',
-      '\u6295\u7814',
-      '\u4ea4\u6613',
-      '\u884c\u60c5',
-      '\u6301\u4ed3',
-      '\u6536\u76ca',
-      '\u57fa\u91d1',
+      '\u672c\u5730\u7f16\u7801\u5de5\u4f5c\u53f0\u52a9\u624b',
+      '\u7406\u89e3\u4ee3\u7801',
+      '\u4fee\u6539\u9879\u76ee',
+      'Git',
+      'CLI',
     ];
 
-    expect(prompt).toContain('本地编码工作台助手');
+    expect(prompt).toContain('金融投研工作台助手');
+    expect(prompt).toContain('投研');
     expect(prompt).toContain('用户任务');
     for (const word of forbiddenDomainWords) {
       expect(prompt).not.toContain(word);
@@ -55,7 +54,7 @@ describe('core coding domain', () => {
       { selectedSkill: { id: 'chrome', title: 'Chrome' } },
     );
 
-    expect(instructions).toContain('本地编码工作台助手');
+    expect(instructions).toContain('金融投研工作台助手');
     expect(instructions).toContain('当前指定 Skill：Chrome (chrome)');
     expect(instructions).not.toContain('用户任务');
     expect(instructions).not.toContain('Open the page and debug the issue.');
