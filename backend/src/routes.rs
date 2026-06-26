@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
@@ -381,6 +381,32 @@ pub async fn admin_save_tenant(
     Ok(Json(json!({ "tenantId": tenant_id })))
 }
 
+pub async fn admin_delete_tenant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&headers)?;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(ApiError::BadRequest("tenant id is required".to_string()));
+    }
+    let row = sqlx::query("delete from tenants where id = $1 returning name")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("tenant not found".to_string()))?;
+    let name = row.get::<String, _>("name");
+    write_audit(
+        &state.db,
+        "system",
+        "tenant.delete",
+        json!({ "tenantId": id, "name": name }),
+    )
+    .await?;
+    Ok(Json(json!({ "tenantId": id })))
+}
+
 pub async fn admin_list_authorization_codes(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -388,8 +414,8 @@ pub async fn admin_list_authorization_codes(
     require_admin(&headers)?;
     let rows = sqlx::query(
         r#"
-        select a.id, a.tenant_id, t.name as tenant_name, a.code_hint, a.max_devices,
-          a.status, a.expires_at, a.last_used_at, a.note, a.created_at
+        select a.id, a.tenant_id, t.name as tenant_name, a.code_hint, a.code_plaintext,
+          a.max_devices, a.status, a.expires_at, a.last_used_at, a.note, a.created_at
         from authorization_codes a
         join tenants t on t.id = a.tenant_id
         order by a.created_at desc
@@ -403,6 +429,7 @@ pub async fn admin_list_authorization_codes(
             "tenantId": row.get::<String, _>("tenant_id"),
             "tenantName": row.get::<String, _>("tenant_name"),
             "codeHint": row.get::<String, _>("code_hint"),
+            "authorizationCode": row.try_get::<Option<String>, _>("code_plaintext").unwrap_or(None),
             "maxDevices": row.get::<i32, _>("max_devices"),
             "status": row.get::<String, _>("status"),
             "expiresAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("expires_at").unwrap_or(None),
@@ -411,6 +438,76 @@ pub async fn admin_list_authorization_codes(
             "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at")
         })).collect::<Vec<_>>()
     })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizationCodeUpdateRequest {
+    status: String,
+}
+
+pub async fn admin_update_authorization_code(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<AuthorizationCodeUpdateRequest>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&headers)?;
+    let id = id.trim();
+    let status = request.status.trim();
+    if id.is_empty() || !matches!(status, "active" | "revoked" | "expired") {
+        return Err(ApiError::BadRequest(
+            "authorization code id and a valid status are required".to_string(),
+        ));
+    }
+    let row = sqlx::query(
+        "update authorization_codes set status = $2 where id = $1 returning tenant_id, code_hint",
+    )
+    .bind(id)
+    .bind(status)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("authorization code not found".to_string()))?;
+    let tenant_id = row.get::<String, _>("tenant_id");
+    let code_hint = row.get::<String, _>("code_hint");
+    write_audit(
+        &state.db,
+        &tenant_id,
+        "authorization_code.update",
+        json!({ "id": id, "codeHint": code_hint, "status": status }),
+    )
+    .await?;
+    Ok(Json(json!({ "id": id, "status": status })))
+}
+
+pub async fn admin_delete_authorization_code(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&headers)?;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(ApiError::BadRequest(
+            "authorization code id is required".to_string(),
+        ));
+    }
+    let row =
+        sqlx::query("delete from authorization_codes where id = $1 returning tenant_id, code_hint")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("authorization code not found".to_string()))?;
+    let tenant_id = row.get::<String, _>("tenant_id");
+    let code_hint = row.get::<String, _>("code_hint");
+    write_audit(
+        &state.db,
+        &tenant_id,
+        "authorization_code.delete",
+        json!({ "id": id, "codeHint": code_hint }),
+    )
+    .await?;
+    Ok(Json(json!({ "id": id })))
 }
 
 #[derive(Deserialize)]
@@ -446,14 +543,15 @@ pub async fn admin_create_authorization_code(
     sqlx::query(
         r#"
         insert into authorization_codes
-          (id, tenant_id, code_hash, code_hint, max_devices, expires_at, note)
-        values ($1, $2, $3, $4, $5, $6, $7)
+          (id, tenant_id, code_hash, code_hint, code_plaintext, max_devices, expires_at, note)
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
         "#,
     )
     .bind(&id)
     .bind(&request.tenant_id)
     .bind(code_hash)
     .bind(&code_hint)
+    .bind(&normalized)
     .bind(request.max_devices)
     .bind(request.expires_at)
     .bind(&request.note)
@@ -487,7 +585,30 @@ pub async fn admin_list_provider_configs(
         r#"
         select provider, label, base_url, endpoint_path, api_key, enabled, updated_at
         from provider_configs
-        order by provider
+        order by
+          case provider
+            when 'openai' then 10
+            when 'anthropic' then 20
+            when 'google' then 30
+            when 'deepseek' then 40
+            when 'openrouter' then 50
+            when 'xai' then 60
+            when 'mistral' then 70
+            when 'cohere' then 80
+            when 'groq' then 90
+            when 'together' then 100
+            when 'fireworks' then 110
+            when 'dashscope' then 120
+            when 'moonshot' then 130
+            when 'baidu-qianfan' then 140
+            when 'zhipu' then 150
+            when 'siliconflow' then 160
+            when 'minimax' then 170
+            when 'volcengine-ark' then 180
+            when 'azure-openai' then 190
+            else 999
+          end,
+          label
         "#,
     )
     .fetch_all(&state.db)
@@ -564,6 +685,45 @@ pub async fn admin_save_provider_config(
     )
     .await?;
     Ok(Json(json!({ "provider": provider })))
+}
+
+pub async fn admin_delete_provider_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(provider): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&headers)?;
+    let provider = provider.trim().to_lowercase();
+    if provider.is_empty() {
+        return Err(ApiError::BadRequest("provider is required".to_string()));
+    }
+
+    let mut tx = state.db.begin().await?;
+    let deleted_provider = sqlx::query("delete from provider_configs where provider = $1")
+        .bind(&provider)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if deleted_provider == 0 {
+        return Err(ApiError::NotFound("provider not found".to_string()));
+    }
+    let deleted_models = sqlx::query("delete from model_routes where provider = $1")
+        .bind(&provider)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+
+    write_audit(
+        &state.db,
+        "system",
+        "provider_config.delete",
+        json!({ "provider": provider, "deletedModels": deleted_models }),
+    )
+    .await?;
+    Ok(Json(
+        json!({ "provider": provider, "deletedModels": deleted_models }),
+    ))
 }
 
 pub async fn admin_list_model_routes(
@@ -699,6 +859,35 @@ pub async fn admin_save_model_route(
     Ok(Json(json!({ "id": id })))
 }
 
+pub async fn admin_delete_model_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&headers)?;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(ApiError::BadRequest(
+            "model route id is required".to_string(),
+        ));
+    }
+    let row = sqlx::query("delete from model_routes where id = $1 returning model_id, provider")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("model route not found".to_string()))?;
+    let model_id = row.get::<String, _>("model_id");
+    let provider = row.get::<String, _>("provider");
+    write_audit(
+        &state.db,
+        "system",
+        "model_route.delete",
+        json!({ "id": id, "modelId": model_id, "provider": provider }),
+    )
+    .await?;
+    Ok(Json(json!({ "id": id, "modelId": model_id })))
+}
+
 pub async fn admin_list_codex_accounts(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -789,6 +978,38 @@ pub async fn admin_save_codex_account(
         request.tenant_id.as_deref().unwrap_or("system"),
         "codex_account.save",
         json!({ "email": request.email, "tenantId": request.tenant_id }),
+    )
+    .await?;
+    Ok(Json(json!({ "id": id })))
+}
+
+pub async fn admin_delete_codex_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&headers)?;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(ApiError::BadRequest(
+            "codex account id is required".to_string(),
+        ));
+    }
+    let row = sqlx::query("delete from codex_accounts where id = $1 returning tenant_id, email")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("codex account not found".to_string()))?;
+    let tenant_id = row
+        .try_get::<Option<String>, _>("tenant_id")
+        .unwrap_or(None)
+        .unwrap_or_else(|| "system".to_string());
+    let email = row.get::<String, _>("email");
+    write_audit(
+        &state.db,
+        &tenant_id,
+        "codex_account.delete",
+        json!({ "id": id, "email": email }),
     )
     .await?;
     Ok(Json(json!({ "id": id })))

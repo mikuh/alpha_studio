@@ -39,6 +39,10 @@ export interface CodexChatStartResult {
   runId: string;
 }
 
+export interface CodexLoginResult {
+  codexHome: string;
+}
+
 export interface ModelConfigFile {
   selectedModelProfileId?: string;
   modelProfiles: ModelProfile[];
@@ -60,6 +64,11 @@ export async function checkCodex(): Promise<CodexStatus> {
     };
   }
   return invoke<CodexStatus>('codex_check');
+}
+
+export async function loginCodex(): Promise<CodexLoginResult | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<CodexLoginResult>('codex_login');
 }
 
 export async function startCodexChat(request: CodexChatStartRequest): Promise<CodexChatStartResult> {

@@ -1,5 +1,5 @@
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
@@ -23,21 +23,42 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::admin_list_tenants).post(routes::admin_save_tenant),
         )
         .route(
+            "/api/admin/tenants/{id}",
+            delete(routes::admin_delete_tenant),
+        )
+        .route(
             "/api/admin/authorization-codes",
             get(routes::admin_list_authorization_codes)
                 .post(routes::admin_create_authorization_code),
+        )
+        .route(
+            "/api/admin/authorization-codes/{id}",
+            patch(routes::admin_update_authorization_code)
+                .delete(routes::admin_delete_authorization_code),
         )
         .route(
             "/api/admin/provider-configs",
             get(routes::admin_list_provider_configs).post(routes::admin_save_provider_config),
         )
         .route(
+            "/api/admin/provider-configs/{provider}",
+            delete(routes::admin_delete_provider_config),
+        )
+        .route(
             "/api/admin/model-routes",
             get(routes::admin_list_model_routes).post(routes::admin_save_model_route),
         )
         .route(
+            "/api/admin/model-routes/{id}",
+            delete(routes::admin_delete_model_route),
+        )
+        .route(
             "/api/admin/codex-accounts",
             get(routes::admin_list_codex_accounts).post(routes::admin_save_codex_account),
+        )
+        .route(
+            "/api/admin/codex-accounts/{id}",
+            delete(routes::admin_delete_codex_account),
         )
         .route("/v1/responses", post(routes::gateway_responses))
         .with_state(state)

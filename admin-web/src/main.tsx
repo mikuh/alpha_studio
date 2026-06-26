@@ -32,6 +32,7 @@ interface AuthorizationCode {
   id: string;
   tenantId: string;
   tenantName: string;
+  authorizationCode?: string | null;
   codeHint: string;
   maxDevices: number;
   status: string;
@@ -175,6 +176,7 @@ function App() {
   const [codeForm, setCodeForm] = useState(emptyCodeForm);
   const [providerForm, setProviderForm] = useState(emptyProviderForm);
   const [modelForm, setModelForm] = useState(emptyModelForm);
+  const [selectedProviderId, setSelectedProviderId] = useState(emptyProviderForm.provider);
   const [codexForm, setCodexForm] = useState(emptyCodexForm);
   const [activationProbe, setActivationProbe] = useState({
     companyName: '',
@@ -189,6 +191,22 @@ function App() {
   const [loading, setLoading] = useState(false);
 
   const money = useMemo(() => formatCents(summary.billableCents), [summary.billableCents]);
+  const selectedProvider = useMemo(
+    () => selectedProviderId ? providers.find((provider) => provider.provider === selectedProviderId) || providers[0] || null : null,
+    [providers, selectedProviderId],
+  );
+  const selectedProviderModels = useMemo(
+    () => models.filter((model) => model.provider === selectedProvider?.provider),
+    [models, selectedProvider],
+  );
+
+  useEffect(() => {
+    if (!providers.length || !selectedProviderId || providers.some((provider) => provider.provider === selectedProviderId)) return;
+    const nextProvider = providers[0];
+    setSelectedProviderId(nextProvider.provider);
+    setProviderForm(providerFormFromConfig(nextProvider));
+    setModelForm(modelFormForProvider(nextProvider));
+  }, [providers, selectedProviderId]);
 
   const login = async (event: FormEvent) => {
     event.preventDefault();
@@ -289,19 +307,26 @@ function App() {
         }),
       });
       setGeneratedCode(data.authorizationCode);
-      setNotice('授权码已生成，明文只在这里显示一次');
+      setNotice('授权码已生成，可在授权码记录中继续查看');
       await load();
     });
   };
 
   const saveProvider = async (event: FormEvent) => {
     event.preventDefault();
+    const providerId = providerForm.provider.trim().toLowerCase();
     await mutate(async () => {
       await api('/api/admin/provider-configs', token, {
         method: 'POST',
         body: JSON.stringify(providerForm),
       });
-      setProviderForm({ ...emptyProviderForm, apiKey: '' });
+      setSelectedProviderId(providerId);
+      setProviderForm({ ...providerForm, provider: providerId, apiKey: '' });
+      setModelForm(modelFormForProvider({
+        provider: providerId,
+        baseUrl: providerForm.baseUrl,
+        endpointPath: providerForm.endpointPath,
+      }));
       setNotice('供应商配置已保存');
       await load();
     });
@@ -309,13 +334,105 @@ function App() {
 
   const saveModel = async (event: FormEvent) => {
     event.preventDefault();
+    const providerId = modelForm.provider;
     await mutate(async () => {
       await api('/api/admin/model-routes', token, {
         method: 'POST',
         body: JSON.stringify({ ...modelForm, id: modelForm.id || undefined }),
       });
-      setModelForm(emptyModelForm);
+      setSelectedProviderId(providerId);
+      setModelForm(modelFormForProvider(providers.find((provider) => provider.provider === providerId)));
       setNotice('模型路由已保存');
+      await load();
+    });
+  };
+
+  const selectProvider = (provider: ProviderConfig) => {
+    setSelectedProviderId(provider.provider);
+    setProviderForm(providerFormFromConfig(provider));
+    setModelForm(modelFormForProvider(provider));
+  };
+
+  const createProvider = () => {
+    setSelectedProviderId('');
+    setProviderForm({ ...emptyProviderForm, provider: '', label: '', apiKey: '' });
+    setModelForm(modelFormForProvider(null));
+  };
+
+  const createModelForSelectedProvider = () => {
+    setModelForm(modelFormForProvider(selectedProvider));
+  };
+
+  const changeModelProvider = (providerId: string) => {
+    const provider = providers.find((candidate) => candidate.provider === providerId);
+    setSelectedProviderId(providerId);
+    setModelForm((form) => ({
+      ...form,
+      provider: providerId,
+      baseUrl: provider?.baseUrl || form.baseUrl,
+      endpointPath: provider?.endpointPath || form.endpointPath,
+    }));
+  };
+
+  const deleteProvider = async (provider: ProviderConfig) => {
+    if (!window.confirm(`删除供应商 ${provider.label} 会同时删除其下模型，继续吗？`)) return;
+    await mutate(async () => {
+      await api(`/api/admin/provider-configs/${encodeURIComponent(provider.provider)}`, token, {
+        method: 'DELETE',
+      });
+      const nextProvider = providers.find((candidate) => candidate.provider !== provider.provider) || null;
+      setSelectedProviderId(nextProvider?.provider || '');
+      setProviderForm(nextProvider ? providerFormFromConfig(nextProvider) : { ...emptyProviderForm, provider: '', label: '', apiKey: '' });
+      setModelForm(modelFormForProvider(nextProvider));
+      setNotice('供应商已删除');
+      await load();
+    });
+  };
+
+  const deleteModel = async (model: ModelRoute) => {
+    if (!window.confirm(`删除模型 ${model.label}？`)) return;
+    await mutate(async () => {
+      await api(`/api/admin/model-routes/${encodeURIComponent(model.id)}`, token, {
+        method: 'DELETE',
+      });
+      if (modelForm.id === model.id) setModelForm(modelFormForProvider(selectedProvider));
+      setNotice('模型路由已删除');
+      await load();
+    });
+  };
+
+  const deleteTenant = async (tenant: Tenant) => {
+    if (!window.confirm(`删除客户 ${tenant.name} 会清理其授权码、设备和用量记录，继续吗？`)) return;
+    await mutate(async () => {
+      await api(`/api/admin/tenants/${encodeURIComponent(tenant.id)}`, token, {
+        method: 'DELETE',
+      });
+      if (tenantForm.id === tenant.id) setTenantForm(emptyTenantForm);
+      setNotice('客户已删除');
+      await load();
+    });
+  };
+
+  const updateAuthorizationCodeStatus = async (code: AuthorizationCode, status: string) => {
+    const action = status === 'revoked' ? '撤销' : '更新';
+    if (!window.confirm(`${action}授权码 ${code.codeHint}？`)) return;
+    await mutate(async () => {
+      await api(`/api/admin/authorization-codes/${encodeURIComponent(code.id)}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+      setNotice(status === 'revoked' ? '授权码已撤销' : '授权码状态已更新');
+      await load();
+    });
+  };
+
+  const deleteAuthorizationCode = async (code: AuthorizationCode) => {
+    if (!window.confirm(`删除授权码 ${code.codeHint}？`)) return;
+    await mutate(async () => {
+      await api(`/api/admin/authorization-codes/${encodeURIComponent(code.id)}`, token, {
+        method: 'DELETE',
+      });
+      setNotice('授权码已删除');
       await load();
     });
   };
@@ -334,6 +451,35 @@ function App() {
       });
       setCodexForm(emptyCodexForm);
       setNotice('Codex 账号已保存');
+      await load();
+    });
+  };
+
+  const updateCodexAccountStatus = async (account: CodexAccount, status: string) => {
+    const form = codexFormFromAccount(account);
+    await mutate(async () => {
+      await api('/api/admin/codex-accounts', token, {
+        method: 'POST',
+        body: JSON.stringify({
+          ...form,
+          status,
+          tenantId: form.tenantId || null,
+          expiresAt: toIsoOrNull(form.expiresAt),
+        }),
+      });
+      setNotice(status === 'active' ? 'Codex 账号已启用' : 'Codex 账号已停用');
+      await load();
+    });
+  };
+
+  const deleteCodexAccount = async (account: CodexAccount) => {
+    if (!window.confirm(`删除 Codex 账号 ${account.email}？`)) return;
+    await mutate(async () => {
+      await api(`/api/admin/codex-accounts/${encodeURIComponent(account.id)}`, token, {
+        method: 'DELETE',
+      });
+      if (codexForm.id === account.id) setCodexForm(emptyCodexForm);
+      setNotice('Codex 账号已删除');
       await load();
     });
   };
@@ -465,7 +611,7 @@ function App() {
                 <h2>客户列表</h2>
                 <span>{tenants.length} 个</span>
               </div>
-              <TenantTable tenants={tenants} onEdit={setTenantForm} />
+              <TenantTable tenants={tenants} onEdit={setTenantForm} onDelete={deleteTenant} />
             </section>
           </GridSection>
         )}
@@ -491,52 +637,47 @@ function App() {
                 <h2>授权码记录</h2>
                 <span>{authorizationCodes.length} 条</span>
               </div>
-              <AuthorizationCodeTable codes={authorizationCodes} />
+              <AuthorizationCodeTable
+                codes={authorizationCodes}
+                onRevoke={(code) => updateAuthorizationCodeStatus(code, 'revoked')}
+                onDelete={deleteAuthorizationCode}
+              />
             </section>
           </GridSection>
         )}
         {activeTab === 'gateway' && (
-          <GridSection>
-            <ProviderForm
-              form={providerForm}
-              setForm={setProviderForm}
-              providers={providers}
-              onSubmit={saveProvider}
-              loading={loading}
-            />
-            <ModelForm
-              form={modelForm}
-              setForm={setModelForm}
-              providers={providers}
-              onSubmit={saveModel}
-              loading={loading}
-            />
-            <section className="panel span-2">
-              <div className="panel-head">
-                <h2>模型路由</h2>
-                <span>{models.length} 个</span>
-              </div>
-              <ModelTable models={models} onEdit={setModelForm} />
-            </section>
-          </GridSection>
+          <GatewayWorkspace
+            providerForm={providerForm}
+            setProviderForm={setProviderForm}
+            modelForm={modelForm}
+            setModelForm={setModelForm}
+            providers={providers}
+            models={models}
+            selectedProvider={selectedProvider}
+            selectedProviderModels={selectedProviderModels}
+            onSelectProvider={selectProvider}
+            onCreateProvider={createProvider}
+            onDeleteProvider={deleteProvider}
+            onSubmitProvider={saveProvider}
+            onCreateModel={createModelForSelectedProvider}
+            onChangeModelProvider={changeModelProvider}
+            onDeleteModel={deleteModel}
+            onSubmitModel={saveModel}
+            loading={loading}
+          />
         )}
         {activeTab === 'codex' && (
-          <GridSection>
-            <CodexAccountForm
-              form={codexForm}
-              setForm={setCodexForm}
-              tenants={tenants}
-              onSubmit={saveCodexAccount}
-              loading={loading}
-            />
-            <section className="panel span-2">
-              <div className="panel-head">
-                <h2>Codex 订阅账号池</h2>
-                <span>{codexAccounts.length} 个账号</span>
-              </div>
-              <CodexAccountTable accounts={codexAccounts} onEdit={setCodexForm} />
-            </section>
-          </GridSection>
+          <CodexWorkspace
+            accounts={codexAccounts}
+            form={codexForm}
+            setForm={setCodexForm}
+            tenants={tenants}
+            onSubmit={saveCodexAccount}
+            onEdit={setCodexForm}
+            onDelete={deleteCodexAccount}
+            onSetStatus={updateCodexAccountStatus}
+            loading={loading}
+          />
         )}
         {activeTab === 'audit' && (
           <section className="panel">
@@ -652,40 +793,293 @@ const activationProbeShape = {
   deviceName: '',
 };
 
-function ProviderForm({ form, setForm, providers, onSubmit, loading }: {
+function providerFormFromConfig(provider: ProviderConfig): typeof emptyProviderForm {
+  return {
+    provider: provider.provider,
+    label: provider.label,
+    baseUrl: provider.baseUrl,
+    endpointPath: provider.endpointPath,
+    apiKey: '',
+    enabled: provider.enabled,
+  };
+}
+
+function modelFormForProvider(provider?: Pick<ProviderConfig, 'provider' | 'baseUrl' | 'endpointPath'> | null): typeof emptyModelForm {
+  return {
+    ...emptyModelForm,
+    provider: provider?.provider || '',
+    baseUrl: provider?.baseUrl || '',
+    endpointPath: provider?.endpointPath || emptyModelForm.endpointPath,
+  };
+}
+
+function modelFormFromRoute(model: ModelRoute): typeof emptyModelForm {
+  return {
+    id: model.id,
+    modelId: model.modelId,
+    label: model.label,
+    provider: model.provider,
+    mode: model.mode,
+    baseUrl: model.baseUrl,
+    endpointPath: model.endpointPath,
+    upstreamModel: model.upstreamModel,
+    enabled: model.enabled,
+    sortOrder: model.sortOrder,
+    inputCentsPerMillion: model.inputCentsPerMillion,
+    outputCentsPerMillion: model.outputCentsPerMillion,
+    reasoningCentsPerMillion: model.reasoningCentsPerMillion,
+    cachedInputCentsPerMillion: model.cachedInputCentsPerMillion,
+    markupBps: model.markupBps,
+  };
+}
+
+function codexFormFromAccount(account: CodexAccount): typeof emptyCodexForm {
+  return {
+    id: account.id,
+    tenantId: account.tenantId || '',
+    email: account.email,
+    loginSecret: '',
+    loginHint: account.loginHint,
+    plan: account.plan,
+    status: account.status,
+    seatLimit: account.seatLimit,
+    expiresAt: toLocalInput(account.expiresAt),
+  };
+}
+
+function GatewayWorkspace({
+  providerForm,
+  setProviderForm,
+  modelForm,
+  setModelForm,
+  providers,
+  models,
+  selectedProvider,
+  selectedProviderModels,
+  onSelectProvider,
+  onCreateProvider,
+  onDeleteProvider,
+  onSubmitProvider,
+  onCreateModel,
+  onChangeModelProvider,
+  onDeleteModel,
+  onSubmitModel,
+  loading,
+}: {
+  providerForm: typeof emptyProviderForm;
+  setProviderForm: (form: typeof emptyProviderForm) => void;
+  modelForm: typeof emptyModelForm;
+  setModelForm: (form: typeof emptyModelForm) => void;
+  providers: ProviderConfig[];
+  models: ModelRoute[];
+  selectedProvider: ProviderConfig | null;
+  selectedProviderModels: ModelRoute[];
+  onSelectProvider: (provider: ProviderConfig) => void;
+  onCreateProvider: () => void;
+  onDeleteProvider: (provider: ProviderConfig) => void;
+  onSubmitProvider: (event: FormEvent) => void;
+  onCreateModel: () => void;
+  onChangeModelProvider: (providerId: string) => void;
+  onDeleteModel: (model: ModelRoute) => void;
+  onSubmitModel: (event: FormEvent) => void;
+  loading: boolean;
+}) {
+  const modelCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    models.forEach((model) => counts.set(model.provider, (counts.get(model.provider) || 0) + 1));
+    return counts;
+  }, [models]);
+
+  return (
+    <div className="gateway-layout">
+      <section className="panel provider-browser">
+        <div className="panel-head compact">
+          <div>
+            <h2>供应商</h2>
+            <span>{providers.length} 个上游，{models.length} 个模型</span>
+          </div>
+          <button className="secondary" type="button" onClick={onCreateProvider}>新增</button>
+        </div>
+        <div className="provider-tree">
+          {providers.length === 0 ? (
+            <div className="empty">暂无供应商。</div>
+          ) : providers.map((provider) => {
+            const modelCount = modelCounts.get(provider.provider) || 0;
+            return (
+              <button
+                type="button"
+                className={selectedProvider?.provider === provider.provider ? 'provider-node selected' : 'provider-node'}
+                key={provider.provider}
+                onClick={() => onSelectProvider(provider)}
+              >
+                <span>
+                  <strong>{provider.label}</strong>
+                  <small>{provider.provider}</small>
+                </span>
+                <em>{modelCount} 个模型</em>
+                <small>{provider.enabled ? (provider.keyConfigured ? provider.keyMask : '未配置 key') : '已停用'}</small>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <div className="gateway-detail">
+        <ProviderForm
+          form={providerForm}
+          setForm={setProviderForm}
+          selectedProvider={selectedProvider}
+          selectedModelCount={selectedProviderModels.length}
+          onNew={onCreateProvider}
+          onDelete={onDeleteProvider}
+          onSubmit={onSubmitProvider}
+          loading={loading}
+        />
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>{selectedProvider ? `${selectedProvider.label} 模型` : '模型'}</h2>
+              <span>{selectedProvider ? `${selectedProvider.provider} 下 ${selectedProviderModels.length} 个模型` : '请先选择供应商'}</span>
+            </div>
+            <button type="button" onClick={onCreateModel} disabled={loading || !selectedProvider}>新增模型</button>
+          </div>
+          <ModelTable
+            models={selectedProviderModels}
+            onEdit={(model) => setModelForm(modelFormFromRoute(model))}
+            onDelete={onDeleteModel}
+          />
+        </section>
+        <ModelForm
+          form={modelForm}
+          setForm={setModelForm}
+          providers={providers}
+          onProviderChange={onChangeModelProvider}
+          onSubmit={onSubmitModel}
+          loading={loading}
+        />
+      </div>
+    </div>
+  );
+}
+
+function CodexWorkspace({
+  accounts,
+  form,
+  setForm,
+  tenants,
+  onSubmit,
+  onEdit,
+  onDelete,
+  onSetStatus,
+  loading,
+}: {
+  accounts: CodexAccount[];
+  form: typeof emptyCodexForm;
+  setForm: (form: typeof emptyCodexForm) => void;
+  tenants: Tenant[];
+  onSubmit: (event: FormEvent) => void;
+  onEdit: (form: typeof emptyCodexForm) => void;
+  onDelete: (account: CodexAccount) => void;
+  onSetStatus: (account: CodexAccount, status: string) => void;
+  loading: boolean;
+}) {
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState('all');
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredAccounts = accounts.filter((account) => {
+    const matchesStatus = status === 'all' || account.status === status;
+    const haystack = [
+      account.email,
+      account.tenantName || '',
+      account.loginHint,
+      account.plan,
+      account.id,
+    ].join(' ').toLowerCase();
+    return matchesStatus && (!normalizedQuery || haystack.includes(normalizedQuery));
+  });
+  const activeCount = accounts.filter((account) => account.status === 'active').length;
+  const assignedCount = accounts.filter((account) => account.tenantId).length;
+
+  return (
+    <div className="management-layout codex-layout">
+      <section className="panel management-list">
+        <div className="panel-head">
+          <div>
+            <h2>Codex 账号池</h2>
+            <span>{accounts.length} 个账号，{activeCount} 个可用，{assignedCount} 个已分配</span>
+          </div>
+          <button type="button" onClick={() => setForm(emptyCodexForm)}>新增账号</button>
+        </div>
+        <div className="stat-strip">
+          <div className="mini-stat"><span>可用</span><strong>{activeCount}</strong></div>
+          <div className="mini-stat"><span>未分配</span><strong>{accounts.length - assignedCount}</strong></div>
+          <div className="mini-stat"><span>停用</span><strong>{accounts.filter((account) => account.status !== 'active').length}</strong></div>
+        </div>
+        <div className="workspace-toolbar">
+          <input
+            aria-label="搜索 Codex 账号"
+            className="toolbar-input"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索邮箱、客户或登录提示"
+          />
+          <select
+            aria-label="筛选 Codex 状态"
+            className="toolbar-select"
+            value={status}
+            onChange={(event) => setStatus(event.target.value)}
+          >
+            <option value="all">全部状态</option>
+            <option value="active">active</option>
+            <option value="suspended">suspended</option>
+          </select>
+        </div>
+        <CodexAccountTable
+          accounts={filteredAccounts}
+          onEdit={onEdit}
+          onDelete={onDelete}
+          onSetStatus={onSetStatus}
+        />
+      </section>
+      <CodexAccountForm
+        form={form}
+        setForm={setForm}
+        tenants={tenants}
+        onSubmit={onSubmit}
+        loading={loading}
+      />
+    </div>
+  );
+}
+
+function ProviderForm({ form, setForm, selectedProvider, selectedModelCount, onNew, onDelete, onSubmit, loading }: {
   form: typeof emptyProviderForm;
   setForm: (form: typeof emptyProviderForm) => void;
-  providers: ProviderConfig[];
+  selectedProvider: ProviderConfig | null;
+  selectedModelCount: number;
+  onNew: () => void;
+  onDelete: (provider: ProviderConfig) => void;
   onSubmit: (event: FormEvent) => void;
   loading: boolean;
 }) {
   return (
     <form className="panel form-panel" onSubmit={onSubmit}>
-      <div className="panel-head compact"><h2>上游供应商</h2></div>
-      <div className="provider-list">
-        {providers.map((provider) => (
-          <button
-            type="button"
-            className={form.provider === provider.provider ? 'provider-card selected' : 'provider-card'}
-            key={provider.provider}
-            onClick={() => setForm({
-              provider: provider.provider,
-              label: provider.label,
-              baseUrl: provider.baseUrl,
-              endpointPath: provider.endpointPath,
-              apiKey: '',
-              enabled: provider.enabled,
-            })}
-          >
-            <strong>{provider.label}</strong>
-            <span>{provider.keyConfigured ? provider.keyMask : '未配置 key'}</span>
-          </button>
-        ))}
+      <div className="panel-head compact">
+        <div>
+          <h2>{selectedProvider ? '供应商配置' : '新增供应商'}</h2>
+          <span>{selectedProvider ? `${selectedModelCount} 个模型挂在此供应商下` : '保存后可在其下新增模型'}</span>
+        </div>
+        <div className="head-actions">
+          <button type="button" className="secondary" onClick={onNew}>新增</button>
+          {selectedProvider && (
+            <button type="button" className="secondary danger" onClick={() => onDelete(selectedProvider)}>删除</button>
+          )}
+        </div>
       </div>
       <div className="form-grid">
-        <Field label="Provider ID" value={form.provider} onChange={(provider) => setForm({ ...form, provider })} />
-        <Field label="显示名称" value={form.label} onChange={(label) => setForm({ ...form, label })} />
-        <Field label="Base URL" value={form.baseUrl} onChange={(baseUrl) => setForm({ ...form, baseUrl })} />
+        <Field label="Provider ID" value={form.provider} onChange={(provider) => setForm({ ...form, provider })} required />
+        <Field label="显示名称" value={form.label} onChange={(label) => setForm({ ...form, label })} required />
+        <Field label="Base URL" value={form.baseUrl} onChange={(baseUrl) => setForm({ ...form, baseUrl })} required />
         <Field label="Endpoint Path" value={form.endpointPath} onChange={(endpointPath) => setForm({ ...form, endpointPath })} />
         <Field label="API Key" type="password" value={form.apiKey} onChange={(apiKey) => setForm({ ...form, apiKey })} placeholder="留空则保留原 key" />
         <label className="check-row">
@@ -698,24 +1092,37 @@ function ProviderForm({ form, setForm, providers, onSubmit, loading }: {
   );
 }
 
-function ModelForm({ form, setForm, providers, onSubmit, loading }: {
+function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, loading }: {
   form: typeof emptyModelForm;
   setForm: (form: typeof emptyModelForm) => void;
   providers: ProviderConfig[];
+  onProviderChange: (providerId: string) => void;
   onSubmit: (event: FormEvent) => void;
   loading: boolean;
 }) {
+  const providerOptions = providers.some((provider) => provider.provider === form.provider)
+    ? providers.map((provider) => provider.provider)
+    : [form.provider, ...providers.map((provider) => provider.provider)].filter(Boolean);
+
   return (
     <form className="panel form-panel" onSubmit={onSubmit}>
       <div className="panel-head compact">
         <h2>{form.id ? '编辑模型路由' : '新增模型路由'}</h2>
-        {form.id && <button type="button" className="secondary" onClick={() => setForm(emptyModelForm)}>新建</button>}
+        {form.id && (
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setForm(modelFormForProvider(providers.find((provider) => provider.provider === form.provider)))}
+          >
+            新建
+          </button>
+        )}
       </div>
       <div className="form-grid">
-        <Field label="模型 ID" value={form.modelId} onChange={(modelId) => setForm({ ...form, modelId })} />
-        <Field label="显示名称" value={form.label} onChange={(label) => setForm({ ...form, label })} />
-        <Select label="供应商" value={form.provider} onChange={(provider) => setForm({ ...form, provider })} options={providers.map((provider) => provider.provider)} />
-        <Field label="上游模型名" value={form.upstreamModel} onChange={(upstreamModel) => setForm({ ...form, upstreamModel })} />
+        <Field label="模型 ID" value={form.modelId} onChange={(modelId) => setForm({ ...form, modelId })} required />
+        <Field label="显示名称" value={form.label} onChange={(label) => setForm({ ...form, label })} required />
+        <Select label="供应商" value={form.provider} onChange={onProviderChange} options={providerOptions} />
+        <Field label="上游模型名" value={form.upstreamModel} onChange={(upstreamModel) => setForm({ ...form, upstreamModel })} required />
         <Field label="Base URL" value={form.baseUrl} onChange={(baseUrl) => setForm({ ...form, baseUrl })} />
         <Field label="Endpoint Path" value={form.endpointPath} onChange={(endpointPath) => setForm({ ...form, endpointPath })} />
         <NumberField label="排序" value={form.sortOrder} onChange={(sortOrder) => setForm({ ...form, sortOrder })} />
@@ -729,7 +1136,7 @@ function ModelForm({ form, setForm, providers, onSubmit, loading }: {
           启用模型
         </label>
       </div>
-      <div className="form-actions"><button type="submit" disabled={loading}>保存模型</button></div>
+      <div className="form-actions"><button type="submit" disabled={loading || providers.length === 0}>保存模型</button></div>
     </form>
   );
 }
@@ -762,7 +1169,11 @@ function CodexAccountForm({ form, setForm, tenants, onSubmit, loading }: {
   );
 }
 
-function TenantTable({ tenants, onEdit }: { tenants: Tenant[]; onEdit: (form: typeof emptyTenantForm) => void }) {
+function TenantTable({ tenants, onEdit, onDelete }: {
+  tenants: Tenant[];
+  onEdit: (form: typeof emptyTenantForm) => void;
+  onDelete?: (tenant: Tenant) => void;
+}) {
   if (tenants.length === 0) return <div className="empty">暂无客户。</div>;
   return (
     <div className="table-wrap">
@@ -776,19 +1187,26 @@ function TenantTable({ tenants, onEdit }: { tenants: Tenant[]; onEdit: (form: ty
               <td>{formatCents(tenant.balanceCents)}</td>
               <td>{tenant.codexSubscriptionEnabled ? `${tenant.codexSubscriptionPlan || '-'} / ${formatDate(tenant.codexSubscriptionExpiresAt)}` : '未启用'}</td>
               <td><Status value={tenant.status} /></td>
-              <td><button className="secondary" type="button" onClick={() => onEdit({
-                id: tenant.id,
-                name: tenant.name,
-                status: tenant.status,
-                maxDevices: tenant.maxDevices,
-                billingMode: tenant.billingMode,
-                balanceCents: tenant.balanceCents,
-                subscriptionPlan: tenant.subscriptionPlan || '',
-                subscriptionExpiresAt: toLocalInput(tenant.subscriptionExpiresAt),
-                codexSubscriptionEnabled: tenant.codexSubscriptionEnabled,
-                codexSubscriptionPlan: tenant.codexSubscriptionPlan || 'monthly',
-                codexSubscriptionExpiresAt: toLocalInput(tenant.codexSubscriptionExpiresAt),
-              })}>编辑</button></td>
+              <td>
+                <div className="table-actions">
+                  <button className="secondary" type="button" onClick={() => onEdit({
+                    id: tenant.id,
+                    name: tenant.name,
+                    status: tenant.status,
+                    maxDevices: tenant.maxDevices,
+                    billingMode: tenant.billingMode,
+                    balanceCents: tenant.balanceCents,
+                    subscriptionPlan: tenant.subscriptionPlan || '',
+                    subscriptionExpiresAt: toLocalInput(tenant.subscriptionExpiresAt),
+                    codexSubscriptionEnabled: tenant.codexSubscriptionEnabled,
+                    codexSubscriptionPlan: tenant.codexSubscriptionPlan || 'monthly',
+                    codexSubscriptionExpiresAt: toLocalInput(tenant.codexSubscriptionExpiresAt),
+                  })}>编辑</button>
+                  {onDelete && (
+                    <button className="secondary danger" type="button" onClick={() => onDelete(tenant)}>删除客户</button>
+                  )}
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -797,21 +1215,35 @@ function TenantTable({ tenants, onEdit }: { tenants: Tenant[]; onEdit: (form: ty
   );
 }
 
-function AuthorizationCodeTable({ codes }: { codes: AuthorizationCode[] }) {
+function AuthorizationCodeTable({ codes, onRevoke, onDelete }: {
+  codes: AuthorizationCode[];
+  onRevoke?: (code: AuthorizationCode) => void;
+  onDelete?: (code: AuthorizationCode) => void;
+}) {
   if (codes.length === 0) return <div className="empty">暂无授权码。</div>;
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>客户</th><th>授权码</th><th>机器数</th><th>到期</th><th>最近使用</th><th>状态</th></tr></thead>
+        <thead><tr><th>客户</th><th>授权码</th><th>机器数</th><th>到期</th><th>最近使用</th><th>状态</th><th /></tr></thead>
         <tbody>
           {codes.map((code) => (
             <tr key={code.id}>
               <td><strong>{code.tenantName}</strong><span>{code.note || code.tenantId}</span></td>
-              <td>{code.codeHint}</td>
+              <td><code className="secret-code">{code.authorizationCode || code.codeHint}</code></td>
               <td>{code.maxDevices}</td>
               <td>{formatDate(code.expiresAt)}</td>
               <td>{formatDate(code.lastUsedAt)}</td>
               <td><Status value={code.status} /></td>
+              <td>
+                <div className="table-actions">
+                  {onRevoke && code.status === 'active' && (
+                    <button className="secondary" type="button" onClick={() => onRevoke(code)}>撤销授权码</button>
+                  )}
+                  {onDelete && (
+                    <button className="secondary danger" type="button" onClick={() => onDelete(code)}>删除授权码</button>
+                  )}
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -820,20 +1252,29 @@ function AuthorizationCodeTable({ codes }: { codes: AuthorizationCode[] }) {
   );
 }
 
-function ModelTable({ models, onEdit }: { models: ModelRoute[]; onEdit: (form: typeof emptyModelForm) => void }) {
-  if (models.length === 0) return <div className="empty">暂无模型路由。</div>;
+function ModelTable({ models, onEdit, onDelete }: {
+  models: ModelRoute[];
+  onEdit: (model: ModelRoute) => void;
+  onDelete: (model: ModelRoute) => void;
+}) {
+  if (models.length === 0) return <div className="empty">当前供应商下暂无模型路由。</div>;
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>模型</th><th>上游</th><th>价格 cents/M</th><th>状态</th><th /></tr></thead>
+        <thead><tr><th>模型</th><th>上游模型</th><th>价格 cents/M</th><th>状态</th><th /></tr></thead>
         <tbody>
           {models.map((model) => (
             <tr key={model.id}>
               <td><strong>{model.label}</strong><span>{model.modelId}</span></td>
-              <td><strong>{model.provider}</strong><span>{model.upstreamModel}</span></td>
+              <td><strong>{model.upstreamModel}</strong><span>{model.endpointPath}</span></td>
               <td>{model.inputCentsPerMillion}/{model.outputCentsPerMillion} + {model.markupBps}bps</td>
               <td><Status value={model.enabled && model.providerReady ? 'ready' : model.enabled ? 'provider missing' : 'disabled'} /></td>
-              <td><button className="secondary" type="button" onClick={() => onEdit({ ...model })}>编辑</button></td>
+              <td>
+                <div className="table-actions">
+                  <button className="secondary" type="button" onClick={() => onEdit(model)}>编辑</button>
+                  <button className="secondary danger" type="button" onClick={() => onDelete(model)}>删除</button>
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -842,7 +1283,12 @@ function ModelTable({ models, onEdit }: { models: ModelRoute[]; onEdit: (form: t
   );
 }
 
-function CodexAccountTable({ accounts, onEdit }: { accounts: CodexAccount[]; onEdit: (form: typeof emptyCodexForm) => void }) {
+function CodexAccountTable({ accounts, onEdit, onDelete, onSetStatus }: {
+  accounts: CodexAccount[];
+  onEdit: (form: typeof emptyCodexForm) => void;
+  onDelete: (account: CodexAccount) => void;
+  onSetStatus: (account: CodexAccount, status: string) => void;
+}) {
   if (accounts.length === 0) return <div className="empty">暂无 Codex 账号。</div>;
   return (
     <div className="table-wrap">
@@ -856,17 +1302,19 @@ function CodexAccountTable({ accounts, onEdit }: { accounts: CodexAccount[]; onE
               <td>{account.plan} / {formatDate(account.expiresAt)}</td>
               <td>{account.loginSecretConfigured ? account.loginSecretMask : '未配置'}</td>
               <td><Status value={account.status} /></td>
-              <td><button className="secondary" type="button" onClick={() => onEdit({
-                id: account.id,
-                tenantId: account.tenantId || '',
-                email: account.email,
-                loginSecret: '',
-                loginHint: account.loginHint,
-                plan: account.plan,
-                status: account.status,
-                seatLimit: account.seatLimit,
-                expiresAt: toLocalInput(account.expiresAt),
-              })}>编辑</button></td>
+              <td>
+                <div className="table-actions">
+                  <button className="secondary" type="button" onClick={() => onEdit(codexFormFromAccount(account))}>编辑</button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => onSetStatus(account, account.status === 'active' ? 'suspended' : 'active')}
+                  >
+                    {account.status === 'active' ? '停用' : '启用'}
+                  </button>
+                  <button className="secondary danger" type="button" onClick={() => onDelete(account)}>删除账号</button>
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>

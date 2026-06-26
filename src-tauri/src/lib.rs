@@ -20,6 +20,7 @@ use tokio::sync::{oneshot, Mutex};
 
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
 const TERMINAL_EVENT: &str = "terminal-event";
+const CODEX_DEVICE_AUTHORIZATION_MARKER: &str = ".alpha-studio-device-authorized";
 
 static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -53,6 +54,12 @@ pub struct CodexCheckResult {
     logged_in: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLoginResult {
+    codex_home: String,
 }
 
 #[derive(Clone, Deserialize, Debug)]
@@ -390,6 +397,19 @@ async fn codex_check() -> Result<CodexCheckResult, String> {
 }
 
 #[tauri::command]
+async fn codex_login() -> Result<CodexLoginResult, String> {
+    let (path, _) = resolve_codex_binary().ok_or_else(|| {
+        "No working Codex CLI was found. Install or repair Codex first.".to_string()
+    })?;
+    let codex_home = prepare_alpha_studio_codex_home()?;
+    mark_codex_device_authorized(&codex_home)?;
+    launch_codex_login(&path, &codex_home).await?;
+    Ok(CodexLoginResult {
+        codex_home: codex_home.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
 async fn model_config_load() -> Result<ModelConfigLoadResult, String> {
     let path = model_config_path()?;
     if !path.exists() {
@@ -447,9 +467,10 @@ async fn codex_chat_start(
             .unwrap_or_else(|| "Codex CLI is not installed or cannot be executed.".to_string()));
     }
     if !check.logged_in && provider_config.is_none() {
-        return Err(check
-            .error
-            .unwrap_or_else(|| "Codex CLI is installed but not logged in.".to_string()));
+        return Err(check.error.unwrap_or_else(|| {
+            "Codex CLI is installed but Alpha Studio has not completed device authorization."
+                .to_string()
+        }));
     }
 
     let run_id = generate_run_id();
@@ -3071,7 +3092,19 @@ fn value_to_string(value: &Value) -> String {
 fn check_codex() -> CodexCheckResult {
     match resolve_codex_binary() {
         Some((path, version)) => {
-            let logged_in = codex_logged_in(&path);
+            let codex_home = match prepare_alpha_studio_codex_home() {
+                Ok(path) => path,
+                Err(error) => {
+                    return CodexCheckResult {
+                        installed: true,
+                        version,
+                        path,
+                        logged_in: false,
+                        error: Some(error),
+                    };
+                }
+            };
+            let logged_in = codex_logged_in(&path, &codex_home);
             CodexCheckResult {
                 installed: true,
                 version,
@@ -3080,7 +3113,7 @@ fn check_codex() -> CodexCheckResult {
                 error: if logged_in {
                     None
                 } else {
-                    Some("Codex CLI is installed but `codex login status` did not report an active login.".to_string())
+                    Some("Codex CLI is installed, but Alpha Studio has not completed device authorization. Click \"Authorize Codex CLI\" to sign in.".to_string())
                 },
             }
         }
@@ -3134,19 +3167,30 @@ fn home_dir() -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-fn prepare_alpha_studio_codex_home() -> Result<String, String> {
+fn prepare_alpha_studio_codex_home() -> Result<PathBuf, String> {
     let home = home_dir().ok_or_else(|| "Failed to resolve HOME for Codex config.".to_string())?;
     let source = PathBuf::from(&home).join(".codex");
     let target = PathBuf::from(home).join(".alpha-studio").join("codex-home");
-    prepare_alpha_studio_codex_home_from(&source, &target)?;
-    Ok(target.to_string_lossy().to_string())
+    let preserve_authorization = target.join(CODEX_DEVICE_AUTHORIZATION_MARKER).is_file();
+    prepare_alpha_studio_codex_home_from(&source, &target, preserve_authorization)?;
+    Ok(target)
 }
 
-fn prepare_alpha_studio_codex_home_from(source: &Path, target: &Path) -> Result<(), String> {
+fn prepare_alpha_studio_codex_home_from(
+    source: &Path,
+    target: &Path,
+    preserve_authorization: bool,
+) -> Result<(), String> {
     fs::create_dir_all(target)
         .map_err(|e| format!("Failed to create Alpha Studio Codex home: {e}"))?;
 
-    for file_name in ["auth.json", "config.toml", "AGENTS.md", "installation_id"] {
+    if !preserve_authorization {
+        for file_name in ["auth.json", "installation_id"] {
+            remove_existing_path(&target.join(file_name))?;
+        }
+    }
+
+    for file_name in ["config.toml", "AGENTS.md"] {
         let source_path = source.join(file_name);
         if source_path.is_file() {
             copy_codex_home_file(&source_path, &target.join(file_name))?;
@@ -3161,6 +3205,16 @@ fn prepare_alpha_studio_codex_home_from(source: &Path, target: &Path) -> Result<
     }
 
     Ok(())
+}
+
+fn mark_codex_device_authorized(target: &Path) -> Result<(), String> {
+    fs::create_dir_all(target)
+        .map_err(|e| format!("Failed to create Alpha Studio Codex home: {e}"))?;
+    fs::write(
+        target.join(CODEX_DEVICE_AUTHORIZATION_MARKER),
+        "Codex device authorization was started from Alpha Studio.\n",
+    )
+    .map_err(|e| format!("Failed to save Codex authorization marker: {e}"))
 }
 
 fn copy_codex_home_file(source: &Path, target: &Path) -> Result<(), String> {
@@ -3606,9 +3660,61 @@ fn codex_version(path: &str) -> Option<String> {
         .filter(|line| line.to_lowercase().contains("codex"))
 }
 
-fn codex_logged_in(path: &str) -> bool {
+async fn launch_codex_login(path: &str, codex_home: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let login_command = format!(
+            "env CODEX_HOME={} {} login; echo; echo {}",
+            shell_quote(&codex_home.to_string_lossy()),
+            shell_quote(path),
+            shell_quote("Return to Alpha Studio and click retry after Codex login finishes."),
+        );
+        let script = format!(
+            "tell application \"Terminal\" to do script \"{}\"",
+            escape_applescript_string(&login_command)
+        );
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .arg("-e")
+            .arg("tell application \"Terminal\" to activate")
+            .output()
+            .await
+            .map_err(|e| format!("Failed to launch Codex login: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(if stderr.is_empty() {
+                "Failed to launch Codex login in Terminal.".to_string()
+            } else {
+                stderr
+            })
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Command::new(path)
+            .arg("login")
+            .env("CODEX_HOME", codex_home)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to launch Codex login: {e}"))
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn escape_applescript_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn codex_logged_in(path: &str, codex_home: &Path) -> bool {
     let output = std::process::Command::new(path)
         .args(["login", "status"])
+        .env("CODEX_HOME", codex_home)
         .env("TERM", "xterm-256color")
         .env("NO_COLOR", "1")
         .output();
@@ -4212,6 +4318,7 @@ pub fn run() {
         .manage(TerminalState::default())
         .invoke_handler(tauri::generate_handler![
             codex_check,
+            codex_login,
             model_config_load,
             model_config_save,
             codex_chat_start,
@@ -4646,7 +4753,7 @@ mod tests {
     }
 
     #[test]
-    fn prepares_private_codex_home_without_copying_user_history() {
+    fn prepares_private_codex_home_without_copying_user_history_or_authorization() {
         let root = std::env::temp_dir().join(format!(
             "alpha-studio-codex-home-test-{}",
             generate_run_id()
@@ -4656,14 +4763,46 @@ mod tests {
         fs::create_dir_all(source.join("sessions")).unwrap();
         fs::write(source.join("auth.json"), "{}").unwrap();
         fs::write(source.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+        fs::write(source.join("installation_id"), "user-installation").unwrap();
         fs::write(source.join("session_index.jsonl"), "{}\n").unwrap();
 
-        prepare_alpha_studio_codex_home_from(&source, &target).unwrap();
+        prepare_alpha_studio_codex_home_from(&source, &target, false).unwrap();
 
-        assert!(target.join("auth.json").exists());
+        assert!(!target.join("auth.json").exists());
         assert!(target.join("config.toml").exists());
+        assert!(!target.join("installation_id").exists());
         assert!(!target.join("session_index.jsonl").exists());
         assert!(!target.join("sessions").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preserves_private_codex_authorization_after_explicit_device_authorization() {
+        let root = std::env::temp_dir().join(format!(
+            "alpha-studio-codex-home-test-{}",
+            generate_run_id()
+        ));
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("auth.json"), "{\"source\":true}").unwrap();
+        fs::write(source.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+        fs::write(
+            target.join(CODEX_DEVICE_AUTHORIZATION_MARKER),
+            "authorized\n",
+        )
+        .unwrap();
+        fs::write(target.join("auth.json"), "{\"private\":true}").unwrap();
+
+        prepare_alpha_studio_codex_home_from(&source, &target, true).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("auth.json")).unwrap(),
+            "{\"private\":true}"
+        );
+        assert!(target.join("config.toml").exists());
 
         let _ = fs::remove_dir_all(root);
     }

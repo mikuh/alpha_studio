@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { App } from './App';
-import { clearClientLicenseSession, saveClientLicenseSession } from './license';
+import { clearClientLicenseSession, loadClientLicenseSession, saveClientLicenseSession } from './license';
 import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles } from './models';
 import { useChatStore } from './store';
 import type { Conversation } from './types';
@@ -12,6 +12,16 @@ import type { Conversation } from './types';
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
   invoke: vi.fn((command: string) => {
+    if (command === 'codex_check') {
+      return Promise.resolve({
+        installed: true,
+        version: 'test',
+        path: '/usr/bin/codex',
+        loggedIn: false,
+        error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。',
+      });
+    }
+    if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
     if (command === 'list_open_apps') return Promise.resolve(['finder']);
     if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
     if (command === 'git_status') {
@@ -76,7 +86,16 @@ function seedClientLicenseSession() {
         enabled: true,
       },
     ],
-    codexAccounts: [],
+    codexAccounts: [
+      {
+        id: 'codex_demo',
+        email: 'codex-demo@alpha.local',
+        loginHint: 'Use browser login handoff',
+        plan: 'team',
+        seatLimit: 3,
+        expiresAt: '2026-08-01T00:00:00.000Z',
+      },
+    ],
   });
 }
 
@@ -307,6 +326,132 @@ describe('right feature panel', () => {
     expect(within(sidebar).queryByText('剩余 12% 使用量')).not.toBeInTheDocument();
     expect(within(sidebar).queryByRole('button', { name: '添加额度' })).not.toBeInTheDocument();
     expect(within(sidebar).getByRole('button', { name: '设置' })).toBeInTheDocument();
+  });
+
+  it('labels model picker groups as subscription and usage-based models', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      modelProfiles: [
+        ...defaultModelProfiles(),
+        {
+          id: 'alpha-gateway-gpt-5.5',
+          label: 'GPT-5.5 API',
+          providerId: 'alpha-gateway',
+          model: 'gpt-5.5',
+          wireApi: 'responses',
+          enabled: true,
+          supportsReasoningEffort: true,
+        },
+      ],
+    });
+    render(<App />);
+
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    const modelMenu = document.querySelector('.model-choice-menu') as HTMLElement;
+    const modelRow = within(modelMenu).getByText('GPT-5.5').closest('.model-flyout-row') as HTMLElement;
+    fireEvent.mouseEnter(modelRow);
+
+    expect(await screen.findByText('订阅模型')).toBeInTheDocument();
+    expect(screen.getByText('按量模型')).toBeInTheDocument();
+    expect(screen.queryByText('内置模型')).not.toBeInTheDocument();
+    expect(screen.queryByText('自定义模型')).not.toBeInTheDocument();
+  });
+
+  it('hides subscription models and the unavailable engine notice when Codex is not authorized', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    const user = userEvent.setup();
+    useChatStore.setState({
+      codexStatus: {
+        installed: true,
+        version: 'test',
+        path: '/usr/bin/codex',
+        loggedIn: false,
+        error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。',
+      },
+      selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+      modelProfiles: [
+        ...defaultModelProfiles(),
+        {
+          id: 'gateway:gpt-5.5',
+          label: 'GPT-5.5 API',
+          providerId: 'alpha-gateway',
+          model: 'gpt-5.5',
+          wireApi: 'responses',
+          enabled: true,
+          supportsReasoningEffort: true,
+        },
+      ],
+    });
+
+    render(<App />);
+
+    expect(screen.queryByText('AI 引擎暂不可用')).not.toBeInTheDocument();
+    expect(screen.queryByText('Alpha Studio 的 Codex CLI 尚未完成设备授权。')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('继续追问投研问题')).toBeEnabled();
+
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    const modelMenu = document.querySelector('.model-choice-menu') as HTMLElement;
+    const modelRow = within(modelMenu).getByText('GPT-5.5 API').closest('.model-flyout-row') as HTMLElement;
+    fireEvent.mouseEnter(modelRow);
+
+    expect(await screen.findByText('按量模型')).toBeInTheDocument();
+    expect(screen.getAllByText('GPT-5.5 API').length).toBeGreaterThan(0);
+    expect(screen.queryByText('订阅模型')).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitemradio', { name: 'GPT-5.5' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the work mode selector out of general settings', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+
+    const settings = screen.getByRole('dialog', { name: '设置' });
+    expect(within(settings).getByRole('heading', { name: '常规' })).toBeInTheDocument();
+    expect(within(settings).getByText('默认权限')).toBeInTheDocument();
+    expect(within(settings).queryByRole('heading', { name: '投研协作' })).not.toBeInTheDocument();
+    expect(within(settings).queryByRole('radiogroup', { name: '工作模式' })).not.toBeInTheDocument();
+    expect(settings.querySelector('.work-mode-panel')).not.toBeInTheDocument();
+  });
+
+  it('keeps client license details out of chat and allows logout from profile settings', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    expect(container.querySelector('.client-license-banner')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Codex 订阅账号/)).not.toBeInTheDocument();
+
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+    const settings = screen.getByRole('dialog', { name: '设置' });
+    await user.click(within(settings).getByRole('button', { name: '个人资料' }));
+
+    expect(within(settings).getByText('Codex 订阅账号')).toBeInTheDocument();
+    expect(within(settings).getByText('codex-demo@alpha.local')).toBeInTheDocument();
+    expect(within(settings).getByText('Use browser login handoff')).toBeInTheDocument();
+    expect(within(settings).getByText('设备授权')).toBeInTheDocument();
+    expect(within(settings).queryByText('设备租约')).not.toBeInTheDocument();
+
+    await user.click(within(settings).getByRole('button', { name: '退出登录' }));
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: '激活 Alpha Studio' })).toBeInTheDocument());
+    expect(loadClientLicenseSession()).toBeNull();
+  });
+
+  it('requires an explicit button press to launch Codex CLI device authorization', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+    const settings = screen.getByRole('dialog', { name: '设置' });
+    await user.click(within(settings).getByRole('button', { name: '个人资料' }));
+
+    const loginButton = within(settings).getByRole('button', { name: '授权 Codex CLI' });
+    expect(invoke).not.toHaveBeenCalledWith('codex_login');
+
+    await user.click(loginButton);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('codex_login'));
   });
 
   it('selects a skill from the composer plugin flyout and sends it with the message', async () => {

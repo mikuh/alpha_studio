@@ -568,7 +568,15 @@ export const useChatStore = create<ChatState>()(
 
       setClientLicenseSession: (session) => {
         if (!session) {
-          set({ clientLicenseSession: null });
+          const modelProfiles = defaultModelProfiles();
+          set({
+            clientLicenseSession: null,
+            modelProfiles,
+            selectedModelProfileId: resolveSelectedModelProfileId(
+              get().selectedModelProfileId,
+              modelProfiles,
+            ),
+          });
           return;
         }
         const modelProfiles = modelProfilesFromClientLicense(session);

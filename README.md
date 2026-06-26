@@ -16,7 +16,7 @@ This is a source-available noncommercial project, not an OSI-approved open sourc
 
 - Node.js and npm
 - Rust toolchain for Tauri development
-- OpenAI Codex CLI installed and logged in locally
+- OpenAI Codex CLI installed; authorize it from Alpha Studio with the Codex CLI device authorization button
 - Git for repository features
 
 ## Development

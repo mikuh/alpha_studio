@@ -64,6 +64,7 @@ import {
   ListChecks,
   Loader2,
   Lock,
+  LogOut,
   MessageCircle,
   MessageSquare,
   MessageSquarePlus,
@@ -130,6 +131,7 @@ import {
   isTauriRuntime,
   listOpenApps,
   localImageDataUrl,
+  loginCodex,
   openInApp,
   revealPath,
   subscribeTerminalEvents,
@@ -138,7 +140,7 @@ import {
   terminalStop,
   terminalWrite,
 } from './codexBridge';
-import { WORK_MODE_OPTIONS, activeDomain, type DomainConfig, type DomainSuggestion, type WorkModeId } from './domain';
+import { activeDomain, type DomainConfig, type DomainSuggestion } from './domain';
 import {
   activateClient,
   ALPHA_GATEWAY_PROVIDER_ID,
@@ -156,7 +158,6 @@ import {
   approvalDescription,
   approvalLabel,
   effortLabel,
-  modelProfileLabel,
   normalizeModelProfileDraft,
   resolveModelProfile,
   shortModelProfileLabel,
@@ -683,6 +684,7 @@ function useCloseOnOutsidePointer<T extends HTMLElement>(
 }
 
 function ClientLicenseBoundary({ children }: { children: ReactNode }) {
+  const hasClientLicenseSession = useChatStore((state) => Boolean(state.clientLicenseSession));
   const setClientLicenseSession = useChatStore((state) => state.setClientLicenseSession);
   const initialSessionRef = useRef<ClientLicenseSession | null>(loadClientLicenseSession());
   const [status, setStatus] = useState<'checking' | 'inactive' | 'active'>(() => {
@@ -699,6 +701,13 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
     setStatus('active');
     setError('');
   }, [setClientLicenseSession]);
+
+  useEffect(() => {
+    if (status !== 'active' || hasClientLicenseSession || loadClientLicenseSession()) return;
+    setSession(null);
+    setStatus('inactive');
+    setError('');
+  }, [hasClientLicenseSession, status]);
 
   useEffect(() => {
     let disposed = false;
@@ -754,7 +763,7 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
         <section className="license-card license-card-compact">
           <Loader2 size={22} className="spin" />
           <h1>正在校验 Alpha Studio 授权</h1>
-          <p>正在连接后台确认客户、设备租约和可用模型。</p>
+          <p>正在连接后台确认客户、设备授权和可用模型。</p>
         </section>
       </main>
     );
@@ -3929,7 +3938,7 @@ function ChatArea({ domain }: { domain: DomainConfig }) {
   const codexStatus = useChatStore((state) => state.codexStatus);
   const modelProfiles = useChatStore((state) => state.modelProfiles);
   const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
-  const selectedModelProfile = resolveModelProfile(modelProfiles, selectedModelProfileId);
+  const selectedModelProfile = resolveVisibleModelProfile(modelProfiles, selectedModelProfileId, codexStatus);
   if (!conversation) return null;
   const previewRuntime = !isTauriRuntime();
   const gatewayMode = selectedModelProfile.providerId === ALPHA_GATEWAY_PROVIDER_ID;
@@ -3942,32 +3951,12 @@ function ChatArea({ domain }: { domain: DomainConfig }) {
           <AlertCircle size={16} />
           <div>
             <strong>{previewRuntime ? '浏览器预览模式' : 'AI 引擎暂不可用'}</strong>
-            <span>{previewRuntime ? '这里会模拟分析事件流；桌面应用会连接本地 AI 运行环境。' : codexStatus?.error || '请确认本地 AI 运行环境已安装并登录。'}</span>
+            <span>{previewRuntime ? '这里会模拟分析事件流；桌面应用会连接本地 AI 运行环境。' : codexStatus?.error || '请确认本地 AI 运行环境已安装并完成设备授权。'}</span>
             {codexStatus?.path && <code>{codexStatus.path}</code>}
           </div>
         </div>
       )}
-      <ClientLicenseNotice />
       {isEmpty ? <EmptyState domain={domain} conversation={conversation} disabled={!codexReady} /> : <><div className="message-scroll"><MessageList conversation={conversation} /></div><Composer domain={domain} conversation={conversation} disabled={!codexReady} bottom /></>}
-    </div>
-  );
-}
-
-function ClientLicenseNotice() {
-  const session = useChatStore((state) => state.clientLicenseSession);
-  if (!session) return null;
-  const codexAccount = session.codexAccounts[0];
-  return (
-    <div className="client-license-banner">
-      <ShieldCheck size={15} />
-      <div>
-        <strong>{session.tenant.name}</strong>
-        <span>
-          {session.tenant.codexSubscriptionEnabled && codexAccount
-            ? `Codex 订阅账号：${codexAccount.email}${codexAccount.loginHint ? `，${codexAccount.loginHint}` : ''}`
-            : `API 网关模式，设备额度 ${session.tenant.maxDevices} 台，用量会计入该客户。`}
-        </span>
-      </div>
     </div>
   );
 }
@@ -5244,9 +5233,32 @@ function ComposerMeta({ conversation }: { conversation: Conversation }) {
   );
 }
 
+const FLOATING_MENU_MARGIN = 8;
+const FLOATING_MENU_GAP = 6;
+const HIDDEN_FLOATING_STYLE: CSSProperties = { visibility: 'hidden' };
+
+function clampFloatingPosition(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(value, Math.max(min, max)));
+}
+
+function codexSubscriptionModelsVisible(codexStatus: { loggedIn: boolean } | null): boolean {
+  return !isTauriRuntime() || codexStatus?.loggedIn !== false;
+}
+
+function visibleModelProfilesForCodexStatus(profiles: ModelProfile[], codexStatus: { loggedIn: boolean } | null): ModelProfile[] {
+  if (codexSubscriptionModelsVisible(codexStatus)) return profiles;
+  return profiles.filter((profile) => !profile.builtIn);
+}
+
+function resolveVisibleModelProfile(profiles: ModelProfile[], selectedId: string, codexStatus: { loggedIn: boolean } | null): ModelProfile {
+  const visibleProfiles = visibleModelProfilesForCodexStatus(profiles, codexStatus).filter((profile) => profile.enabled);
+  return visibleProfiles.find((profile) => profile.id === selectedId) ?? visibleProfiles[0] ?? resolveModelProfile(profiles, selectedId);
+}
+
 function ModelPicker() {
   const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
   const modelProfiles = useChatStore((state) => state.modelProfiles);
+  const codexStatus = useChatStore((state) => state.codexStatus);
   const reasoningEffort = useChatStore((state) => state.reasoningEffort);
   const speed = useChatStore((state) => state.speed);
   const setModelProfile = useChatStore((state) => state.setModelProfile);
@@ -5254,47 +5266,133 @@ function ModelPicker() {
   const setSpeed = useChatStore((state) => state.setSpeed);
   const [open, setOpen] = useState(false);
   const [submenu, setSubmenu] = useState<'model' | 'speed' | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const modelRowRef = useRef<HTMLDivElement>(null);
+  const speedRowRef = useRef<HTMLDivElement>(null);
+  const flyoutRef = useRef<HTMLDivElement>(null);
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>(HIDDEN_FLOATING_STYLE);
+  const [flyoutStyle, setFlyoutStyle] = useState<CSSProperties>(HIDDEN_FLOATING_STYLE);
   const enabledProfiles = modelProfiles.filter((profile) => profile.enabled);
-  const builtInProfiles = enabledProfiles.filter((profile) => profile.builtIn);
-  const customProfiles = enabledProfiles.filter((profile) => !profile.builtIn);
+  const visibleEnabledProfiles = visibleModelProfilesForCodexStatus(enabledProfiles, codexStatus);
+  const selectedModelProfile = visibleEnabledProfiles.find((profile) => profile.id === selectedModelProfileId) ?? visibleEnabledProfiles[0] ?? resolveModelProfile(modelProfiles, selectedModelProfileId);
+  const builtInProfiles = visibleEnabledProfiles.filter((profile) => profile.builtIn);
+  const customProfiles = visibleEnabledProfiles.filter((profile) => !profile.builtIn);
   const close = () => { setOpen(false); setSubmenu(null); };
+  useEffect(() => {
+    if (visibleEnabledProfiles.length === 0 || selectedModelProfile.id === selectedModelProfileId) return;
+    setModelProfile(selectedModelProfile.id);
+  }, [selectedModelProfile.id, selectedModelProfileId, setModelProfile, visibleEnabledProfiles.length]);
+  useLayoutEffect(() => {
+    if (!open) {
+      setMenuStyle(HIDDEN_FLOATING_STYLE);
+      return;
+    }
+
+    const updateMenuPosition = () => {
+      const triggerRect = triggerRef.current?.getBoundingClientRect();
+      const menuRect = menuRef.current?.getBoundingClientRect();
+      if (!triggerRect || !menuRect) return;
+
+      setMenuStyle({
+        left: clampFloatingPosition(
+          triggerRect.right - menuRect.width,
+          FLOATING_MENU_MARGIN,
+          window.innerWidth - menuRect.width - FLOATING_MENU_MARGIN,
+        ),
+        top: clampFloatingPosition(
+          triggerRect.top - menuRect.height - FLOATING_MENU_GAP,
+          FLOATING_MENU_MARGIN,
+          window.innerHeight - menuRect.height - FLOATING_MENU_MARGIN,
+        ),
+      });
+    };
+
+    updateMenuPosition();
+    window.addEventListener('resize', updateMenuPosition);
+    window.addEventListener('scroll', updateMenuPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition);
+      window.removeEventListener('scroll', updateMenuPosition, true);
+    };
+  }, [open, visibleEnabledProfiles.length, reasoningEffort, selectedModelProfile.id, speed]);
+  useLayoutEffect(() => {
+    if (!open || !submenu) {
+      setFlyoutStyle(HIDDEN_FLOATING_STYLE);
+      return;
+    }
+
+    const updateFlyoutPosition = () => {
+      const rowRect = (submenu === 'model' ? modelRowRef.current : speedRowRef.current)?.getBoundingClientRect();
+      const flyoutRect = flyoutRef.current?.getBoundingClientRect();
+      if (!rowRect || !flyoutRect) return;
+
+      const leftPreferred = rowRect.left - flyoutRect.width - FLOATING_MENU_GAP;
+      const leftFallback = rowRect.right + FLOATING_MENU_GAP;
+      const canOpenRight = leftFallback + flyoutRect.width <= window.innerWidth - FLOATING_MENU_MARGIN;
+      const left = leftPreferred >= FLOATING_MENU_MARGIN || !canOpenRight
+        ? leftPreferred
+        : leftFallback;
+
+      setFlyoutStyle({
+        left: clampFloatingPosition(
+          left,
+          FLOATING_MENU_MARGIN,
+          window.innerWidth - flyoutRect.width - FLOATING_MENU_MARGIN,
+        ),
+        top: clampFloatingPosition(
+          rowRect.top,
+          FLOATING_MENU_MARGIN,
+          window.innerHeight - flyoutRect.height - FLOATING_MENU_MARGIN,
+        ),
+      });
+    };
+
+    updateFlyoutPosition();
+    window.addEventListener('resize', updateFlyoutPosition);
+    window.addEventListener('scroll', updateFlyoutPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateFlyoutPosition);
+      window.removeEventListener('scroll', updateFlyoutPosition, true);
+    };
+  }, [open, submenu, builtInProfiles.length, customProfiles.length, selectedModelProfile.id, speed]);
   return (
     <div className="model-picker">
-      <button type="button" className={`composer-pill model-pill ${open ? 'active' : ''}`} onClick={() => setOpen((value) => !value)} title="选择模型与推理强度">
-        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelProfileLabel(modelProfiles, selectedModelProfileId)}</span><span className="model-pill-effort">{effortLabel(reasoningEffort)}</span><ChevronDown size={12} />
+      <button ref={triggerRef} type="button" className={`composer-pill model-pill ${open ? 'active' : ''}`} onClick={() => setOpen((value) => !value)} title="选择模型与推理强度">
+        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelProfileLabel([selectedModelProfile], selectedModelProfile.id)}</span><span className="model-pill-effort">{effortLabel(reasoningEffort)}</span><ChevronDown size={12} />
       </button>
       {open && (
         <>
           <button className="menu-backdrop" type="button" aria-label="关闭模型菜单" onClick={close} />
-          <div className="model-menu" role="menu" onMouseLeave={() => setSubmenu(null)}>
+          <div ref={menuRef} className="model-menu model-choice-menu" role="menu" style={menuStyle} onMouseLeave={() => setSubmenu(null)}>
             <div className="model-menu-label">智能</div>
             {EFFORT_OPTIONS.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === reasoningEffort} className="model-menu-item" onMouseEnter={() => setSubmenu(null)} onClick={() => { setReasoningEffort(option.id as ReasoningEffort); close(); }}><span>{option.label}</span>{option.id === reasoningEffort && <Check size={14} className="model-menu-check" />}</button>)}
             <div className="model-menu-divider" />
-            <div className="model-flyout-row" onMouseEnter={() => setSubmenu('model')}>
-              <button type="button" className="model-menu-item submenu-trigger"><span>{modelProfileLabel(modelProfiles, selectedModelProfileId)}</span><ChevronRight size={14} className="model-menu-chevron" /></button>
+            <div ref={modelRowRef} className="model-flyout-row" onMouseEnter={() => setSubmenu('model')}>
+              <button type="button" className="model-menu-item submenu-trigger" aria-haspopup="menu" aria-expanded={submenu === 'model'} onClick={() => setSubmenu((current) => (current === 'model' ? null : 'model'))}><span>{selectedModelProfile.label}</span><ChevronRight size={14} className="model-menu-chevron" /></button>
               {submenu === 'model' && (
-                <div className="model-flyout">
+                <div ref={flyoutRef} className="model-flyout model-choice-flyout" style={flyoutStyle}>
                   <div className="model-flyout-panel" role="menu">
-                    <div className="model-menu-label">内置模型</div>
+                    {builtInProfiles.length > 0 && <div className="model-menu-label">订阅模型</div>}
                     {builtInProfiles.map((option) => (
-                      <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfileId} className="model-menu-item" onClick={() => { setModelProfile(option.id); close(); }}>
-                        <span>{option.label}</span>{option.id === selectedModelProfileId && <Check size={14} className="model-menu-check" />}
+                      <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfile.id} className="model-menu-item" onClick={() => { setModelProfile(option.id); close(); }}>
+                        <span>{option.label}</span>{option.id === selectedModelProfile.id && <Check size={14} className="model-menu-check" />}
                       </button>
                     ))}
-                    {customProfiles.length > 0 && <div className="model-menu-divider" />}
-                    {customProfiles.length > 0 && <div className="model-menu-label">自定义模型</div>}
+                    {builtInProfiles.length > 0 && customProfiles.length > 0 && <div className="model-menu-divider" />}
+                    {customProfiles.length > 0 && <div className="model-menu-label">按量模型</div>}
                     {customProfiles.map((option) => (
-                      <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfileId} className="model-menu-item model-profile-item" onClick={() => { setModelProfile(option.id); close(); }}>
-                        <span><strong>{option.label}</strong><em>{option.providerId} · {option.model}</em></span>{option.id === selectedModelProfileId && <Check size={14} className="model-menu-check" />}
+                      <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfile.id} className="model-menu-item model-profile-item" onClick={() => { setModelProfile(option.id); close(); }}>
+                        <span><strong>{option.label}</strong><em>{option.providerId} · {option.model}</em></span>{option.id === selectedModelProfile.id && <Check size={14} className="model-menu-check" />}
                       </button>
                     ))}
                   </div>
                 </div>
               )}
             </div>
-            <div className="model-flyout-row" onMouseEnter={() => setSubmenu('speed')}>
-              <button type="button" className="model-menu-item submenu-trigger"><span>速度</span><ChevronRight size={14} className="model-menu-chevron" /></button>
-              {submenu === 'speed' && <div className="model-flyout"><div className="model-flyout-panel" role="menu"><div className="model-menu-label">速度</div>{SPEED_OPTIONS.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === speed} className="model-menu-item speed-item" onClick={() => { setSpeed(option.id as Speed); close(); }}><span className="speed-main">{option.fast && <Zap size={13} className="speed-icon" />}<span className="speed-text"><span className="speed-title">{option.label}</span><span className="speed-sub">{option.description}</span></span></span>{option.id === speed && <Check size={14} className="model-menu-check" />}</button>)}</div></div>}
+            <div ref={speedRowRef} className="model-flyout-row" onMouseEnter={() => setSubmenu('speed')}>
+              <button type="button" className="model-menu-item submenu-trigger" aria-haspopup="menu" aria-expanded={submenu === 'speed'} onClick={() => setSubmenu((current) => (current === 'speed' ? null : 'speed'))}><span>速度</span><ChevronRight size={14} className="model-menu-chevron" /></button>
+              {submenu === 'speed' && <div ref={flyoutRef} className="model-flyout model-choice-flyout" style={flyoutStyle}><div className="model-flyout-panel" role="menu"><div className="model-menu-label">速度</div>{SPEED_OPTIONS.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === speed} className="model-menu-item speed-item" onClick={() => { setSpeed(option.id as Speed); close(); }}><span className="speed-main">{option.fast && <Zap size={13} className="speed-icon" />}<span className="speed-text"><span className="speed-title">{option.label}</span><span className="speed-sub">{option.description}</span></span></span>{option.id === speed && <Check size={14} className="model-menu-check" />}</button>)}</div></div>}
             </div>
           </div>
         </>
@@ -7126,10 +7224,8 @@ function SettingsNavGroup({
 
 function SettingsContent({ domain, section, theme, onThemeChange }: { domain: DomainConfig; section: SettingsSection; theme: Theme; onThemeChange: (theme: Theme) => void }) {
   const speed = useChatStore((state) => state.speed);
-  const workModeId = useChatStore((state) => state.workModeId);
   const approvalMode = useChatStore((state) => state.approvalMode);
   const setSpeed = useChatStore((state) => state.setSpeed);
-  const setWorkModeId = useChatStore((state) => state.setWorkModeId);
   const setApprovalMode = useChatStore((state) => state.setApprovalMode);
 
   if (section === 'archived') return <ArchivedSettings />;
@@ -7182,7 +7278,6 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
   if (section === 'general') {
     return (
       <>
-        <WorkModePanel value={workModeId} onChange={setWorkModeId} />
         <SettingsGroup>
           <SettingsRow title="默认权限" description="默认情况下，Alpha Studio 可以读取本地资料。"><Toggle checked /></SettingsRow>
           <SettingsRow title="自动审核" description="自动审核额外访问和权限请求。"><Toggle checked /></SettingsRow>
@@ -7302,9 +7397,12 @@ function ModelSettings() {
           <span className="settings-status-icon">{isCheckingCodex ? <Loader2 size={16} className="spin" /> : <Terminal size={16} />}</span>
           <div className="settings-status-main">
             <strong>{codexStatus?.installed && codexStatus.loggedIn ? `本地 AI 运行环境已就绪${codexStatus.version ? ` · ${codexStatus.version}` : ''}` : '本地 AI 运行环境未就绪'}</strong>
-            <span>{codexStatus?.path || codexStatus?.error || '请确认本地 AI 运行环境已安装并登录。'}</span>
+            <span>{codexStatus?.loggedIn ? codexStatus.path : (codexStatus?.error || codexStatus?.path || '请确认本地 AI 运行环境已安装并完成设备授权。')}</span>
           </div>
-          <button className="settings-btn" type="button" onClick={() => void refreshCodexStatus()} disabled={isCheckingCodex}>重新检测</button>
+          <span className="settings-status-actions">
+            {codexStatus?.installed && !codexStatus.loggedIn && <CodexLoginButton compact />}
+            <button className="settings-btn" type="button" onClick={() => void refreshCodexStatus()} disabled={isCheckingCodex}>重新检测</button>
+          </span>
         </div>
       </SettingsGroup>
 
@@ -7420,67 +7518,11 @@ function SettingsSegment<T extends string>({ options, value, onChange }: { optio
   return <div className="settings-segment" role="group">{options.map((option) => <button key={option.id} type="button" className={`settings-segment-btn ${option.id === value ? 'active' : ''}`} onClick={() => onChange(option.id)}>{option.icon}<span>{option.label}</span></button>)}</div>;
 }
 
-function WorkModePanel({ value, onChange }: { value: WorkModeId; onChange: (id: WorkModeId) => void }) {
-  const activeOption = WORK_MODE_OPTIONS.find((option) => option.id === value) ?? WORK_MODE_OPTIONS[0];
-  if (!activeOption) return null;
-  return (
-    <section className="work-mode-panel" aria-labelledby="work-mode-title">
-      <div className="work-mode-copy">
-        <div>
-          <span className="work-mode-kicker">工作模式</span>
-          <h2 id="work-mode-title">投研协作</h2>
-          <p>选择 Alpha Studio 的投研工作模式和分析侧重点。</p>
-        </div>
-        <div className="work-mode-current" aria-label={`当前模式：${activeOption.title}`}>
-          <span>当前</span>
-          <strong>{activeOption.title}</strong>
-          <em>{activeOption.tag}</em>
-        </div>
-      </div>
-      <ModePicker value={value} onChange={onChange} />
-    </section>
-  );
-}
-
 function ResearchPreview() {
   return (
     <div className="theme-preview">
       <div className="code-pane before"><code><span>市场异动</span><span>新能源链走强</span><span>成交额放大 18%</span><span>关注政策催化</span><span>风险：估值切换</span></code></div>
       <div className="code-pane after"><code><span>投研摘要</span><span>驱动：订单修复</span><span>验证：公告与排产</span><span>仓位：控制回撤</span><span>后续：跟踪价格</span></code></div>
-    </div>
-  );
-}
-
-function ModePicker({ value, onChange }: { value: WorkModeId; onChange: (id: WorkModeId) => void }) {
-  return (
-    <div className="mode-card-list" role="radiogroup" aria-label="工作模式">
-      {WORK_MODE_OPTIONS.map((option) => {
-        const selected = option.id === value;
-        const availableMode = option.available ? activeDomain(option.id) : null;
-        return (
-          <button
-            key={option.id}
-            type="button"
-            className={`mode-card ${selected ? 'selected' : ''} ${option.available ? '' : 'disabled'}`}
-            role="radio"
-            aria-checked={selected}
-            disabled={!option.available}
-            onClick={() => availableMode && onChange(availableMode.id)}
-          >
-            <span className="mode-card-icon">{modeIcon(option.id)}</span>
-            <span className="mode-card-main">
-              <span className="mode-card-heading">
-                <strong>{option.title}</strong>
-                <span className={`mode-card-tag ${option.available ? '' : 'muted'}`}>{option.tag}</span>
-              </span>
-              <em>{option.description}</em>
-            </span>
-            <span className={`mode-card-radio ${selected ? 'active' : ''}`}>
-              {selected && <Check size={12} strokeWidth={3} />}
-            </span>
-          </button>
-        );
-      })}
     </div>
   );
 }
@@ -7493,18 +7535,90 @@ function ColorSwatch({ value }: { value: string }) {
   return <span className="color-swatch" style={{ ['--swatch']: value } as CSSProperties}>{value}</span>;
 }
 
-function ProfileSettings() {
+function CodexLoginButton({ compact = false }: { compact?: boolean }) {
+  const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
+  const [isLaunching, setIsLaunching] = useState(false);
+  const [error, setError] = useState('');
+
+  const launchLogin = async () => {
+    setIsLaunching(true);
+    setError('');
+    try {
+      await loginCodex();
+      await refreshCodexStatus();
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setIsLaunching(false);
+    }
+  };
+
   return (
-    <div className="profile-settings">
-      <div className="avatar">AS</div>
-      <h2>Alpha Studio</h2>
-      <span>@local · Noncommercial</span>
-      <div className="profile-metrics">
-        <span><strong>公开源码</strong><em>非商业版</em></span>
-        <span><strong>Core</strong><em>领域包</em></span>
-        <span><strong>本地 AI</strong><em>运行环境</em></span>
+    <span className={`codex-login-action ${compact ? 'compact' : ''}`}>
+      <button className="settings-btn" type="button" onClick={() => void launchLogin()} disabled={isLaunching}>
+        {isLaunching ? <Loader2 size={13} className="spin" /> : <ShieldCheck size={13} />}
+        <span>{isLaunching ? '正在打开授权' : '授权 Codex CLI'}</span>
+      </button>
+      {error && <span className="settings-inline-error">{error}</span>}
+    </span>
+  );
+}
+
+function ProfileSettings() {
+  const session = useChatStore((state) => state.clientLicenseSession);
+  const setClientLicenseSession = useChatStore((state) => state.setClientLicenseSession);
+  const codexAccount = session?.codexAccounts[0] ?? null;
+  const profileTitle = session?.tenant.name || 'Alpha Studio';
+  const profileSubtitle = session
+    ? `${session.user.name} · ${session.user.email}`
+    : '@local · Noncommercial';
+  const codexLabel = session?.tenant.codexSubscriptionEnabled
+    ? codexAccount?.email || '未分配账号'
+    : '未启用';
+  const codexDescription = session?.tenant.codexSubscriptionEnabled
+    ? codexAccount?.loginHint || `订阅计划：${session.tenant.codexSubscriptionPlan || codexAccount?.plan || '已启用'}`
+    : '当前客户使用 API 网关模式，用量会计入客户额度。';
+  const signOut = () => {
+    clearClientLicenseSession();
+    setClientLicenseSession(null);
+  };
+
+  return (
+    <>
+      <div className="profile-settings">
+        <div className="avatar">AS</div>
+        <h2>{profileTitle}</h2>
+        <span>{profileSubtitle}</span>
+        <div className="profile-actions">
+          <button className="settings-btn danger" type="button" onClick={signOut}>
+            <LogOut size={14} />
+            <span>退出登录</span>
+          </button>
+        </div>
+        <div className="profile-metrics">
+          <span><strong>{session?.tenant.maxDevices ?? 'Core'}</strong><em>设备额度</em></span>
+          <span><strong>{session?.tenant.codexSubscriptionEnabled ? 'Codex 订阅' : 'API 网关'}</strong><em>运行模式</em></span>
+          <span><strong>{session ? '已激活' : '未激活'}</strong><em>客户端状态</em></span>
+        </div>
       </div>
-    </div>
+      <SettingsGroup>
+        <SettingsRow title="客户" description="当前激活的公司授权。">
+          <span className="settings-static">{session?.tenant.name || '未激活'}</span>
+        </SettingsRow>
+        <SettingsRow title="用户" description={session?.user.email || '本地用户。'}>
+          <span className="settings-static">{session?.user.name || 'Alpha Studio'}</span>
+        </SettingsRow>
+        <SettingsRow title="Codex 订阅账号" description={codexDescription}>
+          <span className="settings-action-stack">
+            <span className="settings-static">{codexLabel}</span>
+            {session?.tenant.codexSubscriptionEnabled && <CodexLoginButton compact />}
+          </span>
+        </SettingsRow>
+        <SettingsRow title="设备授权" description={session ? `设备 ${session.device.id}` : '无有效设备授权。'}>
+          <span className="settings-static">{formatLicenseDate(session?.device.leaseExpiresAt)}</span>
+        </SettingsRow>
+      </SettingsGroup>
+    </>
   );
 }
 
@@ -7648,11 +7762,6 @@ function settingsIcon(section: SettingsSection): ReactNode {
     archived: <Archive size={15} />,
   };
   return icons[section];
-}
-
-function modeIcon(id: string): ReactNode {
-  if (id === 'finance-research') return <FileSpreadsheet size={14} />;
-  return <Layers size={14} />;
 }
 
 function domainSuggestionIcon(suggestion: DomainSuggestion): ReactNode {
@@ -7822,6 +7931,13 @@ function formatRelative(value: number): string {
 function formatDate(value?: number): string {
   if (!value) return '未知时间';
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(value);
+}
+
+function formatLicenseDate(value?: string | null): string {
+  if (!value) return '未设置';
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return value;
+  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(time);
 }
 
 function shortenPath(value: string): string {
