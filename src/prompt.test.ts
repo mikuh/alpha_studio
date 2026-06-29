@@ -49,6 +49,15 @@ describe('finance research domain', () => {
     expect(instructions).toContain('不要只回复“已生成”');
   });
 
+  it('routes reminders and scheduled automations through Codex tools', () => {
+    const instructions = buildCodingInstructions();
+
+    expect(instructions).toContain('automation_update');
+    expect(instructions).toContain('crontab');
+    expect(instructions).toContain('launchd');
+    expect(instructions).toContain('不要退回到本地定时器方案');
+  });
+
   it('keeps Alpha Studio instructions separate from the user task for app-server turns', () => {
     const instructions = buildCodingInstructions(
       { selectedSkill: { id: 'chrome', title: 'Chrome' } },

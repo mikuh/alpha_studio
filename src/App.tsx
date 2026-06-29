@@ -93,7 +93,6 @@ import {
   ShieldCheck,
   ShieldQuestion,
   SlidersHorizontal,
-  Smartphone,
   Sparkles,
   Square,
   SquarePen,
@@ -134,6 +133,7 @@ import {
   loginCodex,
   openInApp,
   revealPath,
+  revokeCodexAuthorization,
   subscribeTerminalEvents,
   terminalResize,
   terminalStart,
@@ -203,7 +203,7 @@ import type {
 
 type RightPanel = 'none' | 'git' | 'features' | 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
 type RightDockKind = 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
-type MainView = 'chat' | 'skills';
+type MainView = 'chat' | 'skills' | 'automations';
 interface RightDockTab {
   id: string;
   kind: RightDockKind;
@@ -235,6 +235,8 @@ const GIT_PANEL_WIDTH_KEY = 'alpha:git-panel-width';
 const REVIEW_PANEL_WIDTH_KEY = 'alpha:review-panel-width';
 const THEME_KEY = 'alpha:codex-theme';
 const THEME_RESTORE_KEY = 'alpha:codex-theme-restored-main-ui-v2';
+const CODEX_LOGIN_POLL_INTERVAL_MS = 2_000;
+const CODEX_LOGIN_POLL_TIMEOUT_MS = 60_000;
 const SIDEBAR_MIN_WIDTH = 244;
 const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 300;
@@ -596,6 +598,78 @@ interface SkillStatus {
 
 type SkillStatusMap = Record<string, SkillStatus>;
 
+type AutomationTab = 'tasks' | 'templates';
+type AutomationTemplateIcon = 'daily' | 'weekly' | 'project' | 'commit' | 'release' | 'ci';
+
+interface AutomationTemplate {
+  id: string;
+  title: string;
+  description: string;
+  schedule: string;
+  source: string;
+  icon: AutomationTemplateIcon;
+  prompt: string;
+}
+
+const AUTOMATION_TOOL_GUARD = '请使用 Codex 自动化工具（automation_update）来安排这个自动化；不要使用 crontab、launchd、osascript、shell 脚本、本地文件或系统通知来实现。';
+
+const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
+  {
+    id: 'daily-brief',
+    title: '每日简报',
+    description: '每天开始前汇总市场、项目或代码库状态，突出需要关注的变化和下一步动作。',
+    schedule: '每天 09:00',
+    source: '系统模板',
+    icon: 'daily',
+    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每天 09:00 的每日简报自动化，汇总市场、项目或代码库状态，并突出需要关注的变化和下一步动作。`,
+  },
+  {
+    id: 'weekly-review',
+    title: '每周回顾',
+    description: '每周整理本周完成事项、遗留风险和下周优先级，适合投研与项目复盘。',
+    schedule: '星期五 17:30',
+    source: '系统模板',
+    icon: 'weekly',
+    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每周五 17:30 的每周回顾自动化，整理本周完成事项、遗留风险和下周优先级。`,
+  },
+  {
+    id: 'project-monitor',
+    title: '项目监控',
+    description: '持续跟踪当前研究主题或代码项目，发现异常、延期或新变化时提醒你处理。',
+    schedule: '每个工作日 10:00',
+    source: 'Codex 自动化',
+    icon: 'project',
+    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每个工作日 10:00 的项目监控自动化，跟踪当前研究主题或代码项目，发现异常、延期或新变化时提醒我处理。`,
+  },
+  {
+    id: 'commit-scan',
+    title: '扫描最近提交',
+    description: '检查最近提交、PR、测试失败和 CI 信号，优先提示小且安全的修复建议。',
+    schedule: '每天 09:00',
+    source: 'Codex 自动化',
+    icon: 'commit',
+    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每天 09:00 的提交扫描自动化，检查最近提交、PR、测试失败和 CI 信号，并优先提示小且安全的修复建议。`,
+  },
+  {
+    id: 'release-note',
+    title: 'PR 发布说明',
+    description: '基于已合并 PR 起草发布说明，严格区分已合并历史和推断内容。',
+    schedule: '星期五 09:00',
+    source: '系统模板',
+    icon: 'release',
+    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每周五 09:00 的 PR 发布说明自动化，基于已合并 PR 起草发布说明，并严格区分已合并历史和推断内容。`,
+  },
+  {
+    id: 'ci-triage',
+    title: 'CI 失败总结',
+    description: '总结上一个 CI 窗口中的失败和不稳定测试，给出首要修复建议。',
+    schedule: '每天 21:00',
+    source: 'Codex 自动化',
+    icon: 'ci',
+    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每天 21:00 的 CI 失败总结自动化，总结上一个 CI 窗口中的失败和不稳定测试，并给出首要修复建议。`,
+  },
+] as const;
+
 interface SkillRuntimeContextValue {
   status: SkillStatusMap;
   queuedSkill: SkillCatalogItem | null;
@@ -867,6 +941,7 @@ export function App() {
 function AppWorkspace() {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
   const loadModelConfig = useChatStore((state) => state.loadModelConfig);
+  const sendMessage = useChatStore((state) => state.sendMessage);
   const conversations = useChatStore((state) => state.conversations);
   const currentConversationId = useChatStore((state) => state.currentConversationId);
   const setCurrentConversation = useChatStore((state) => state.setCurrentConversation);
@@ -921,6 +996,7 @@ function AppWorkspace() {
     return saved === 'dark' || saved === 'light' ? saved : 'dark';
   });
   const [windowFocused, setWindowFocused] = useState(true);
+  const wasWindowFocusedRef = useRef(true);
   const [skillStatus, setSkillStatus] = useState<SkillStatusMap>(() => readSkillStatus());
   const [queuedSkill, setQueuedSkill] = useState<SkillCatalogItem | null>(null);
 
@@ -999,6 +1075,15 @@ function AppWorkspace() {
   }, [refreshCodexStatus, loadModelConfig]);
 
   useEffect(() => {
+    const wasFocused = wasWindowFocusedRef.current;
+    wasWindowFocusedRef.current = windowFocused;
+    if (!windowFocused || wasFocused) return;
+    const latestCodexStatus = useChatStore.getState().codexStatus;
+    if (!latestCodexStatus?.installed || latestCodexStatus.loggedIn) return;
+    void refreshCodexStatus();
+  }, [windowFocused, refreshCodexStatus]);
+
+  useEffect(() => {
     if (!domainSectionIds(domain).includes(settingsSection)) {
       setSettingsSection('general');
     }
@@ -1017,6 +1102,17 @@ function AppWorkspace() {
     setSettingsOpen(false);
     setMainView('skills');
   };
+
+  const openAutomations = () => {
+    setSettingsOpen(false);
+    setMainView('automations');
+  };
+
+  const createAutomationViaChat = useCallback((prompt: string) => {
+    setSettingsOpen(false);
+    setMainView('chat');
+    void sendMessage(prompt);
+  }, [sendMessage]);
 
   const setSkillInstalled = useCallback((id: string, installed: boolean) => {
     setSkillStatus((prev) => ({
@@ -1192,6 +1288,7 @@ function AppWorkspace() {
           onCollapse={() => setSidebarCollapsed(true)}
           onOpenChat={() => setMainView('chat')}
           onOpenSkills={openSkills}
+          onOpenAutomations={openAutomations}
           onOpenSettings={openSettings}
         />
         {!sidebarCollapsed && (
@@ -1205,16 +1302,24 @@ function AppWorkspace() {
         <div className="workspace">
           <div className="workspace-row">
             <main className="main-stage">
-              <TopBar
-                domain={domain}
-                sidebarCollapsed={sidebarCollapsed}
-                rightPanelOpen={rightPanelVisible}
-                onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-                onToggleRightPanel={toggleRightPanel}
-                onOpenSideChat={() => addRightDockTab('side-chat')}
-                onOpenSettings={() => openSettings('config')}
-              />
-              {mainView === 'skills' ? <SkillsPage /> : <ChatArea domain={domain} />}
+              {mainView === 'chat' && (
+                <TopBar
+                  domain={domain}
+                  sidebarCollapsed={sidebarCollapsed}
+                  rightPanelOpen={rightPanelVisible}
+                  onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+                  onToggleRightPanel={toggleRightPanel}
+                  onOpenSideChat={() => addRightDockTab('side-chat')}
+                  onOpenSettings={() => openSettings('config')}
+                />
+              )}
+              {mainView === 'skills' ? (
+                <SkillsPage />
+              ) : mainView === 'automations' ? (
+                <AutomationsPage onCreateViaChat={createAutomationViaChat} />
+              ) : (
+                <ChatArea domain={domain} />
+              )}
             </main>
             {rightPanelResizer && (
               <RightPanelResizer
@@ -1396,6 +1501,7 @@ function Sidebar({
   onCollapse,
   onOpenChat,
   onOpenSkills,
+  onOpenAutomations,
   onOpenSettings,
 }: {
   domain: DomainConfig;
@@ -1404,6 +1510,7 @@ function Sidebar({
   onCollapse: () => void;
   onOpenChat: () => void;
   onOpenSkills: () => void;
+  onOpenAutomations: () => void;
   onOpenSettings: (section?: SettingsSection) => void;
 }) {
   const conversations = useChatStore((state) => state.conversations);
@@ -1629,13 +1736,9 @@ function Sidebar({
               <Plug size={15} />
               <span className="nav-label">{sidebarCopy.pluginsLabel}</span>
             </button>
-            <button className="nav-item" type="button" onClick={() => onOpenSettings('hooks')}>
-              <Workflow size={15} />
+            <button className={`nav-item ${activeView === 'automations' ? 'active' : ''}`} type="button" onClick={onOpenAutomations}>
+              <Clock3 size={15} />
               <span className="nav-label">{sidebarCopy.automationLabel}</span>
-            </button>
-            <button className="nav-item" type="button" onClick={() => onOpenSettings('connections')}>
-              <Smartphone size={15} />
-              <span className="nav-label">{sidebarCopy.mobileLabel}</span>
             </button>
           </div>
 
@@ -3547,6 +3650,112 @@ function SideChatPanel({ domain }: { domain: DomainConfig }) {
       )}
     </section>
   );
+}
+
+function AutomationsPage({ onCreateViaChat }: { onCreateViaChat: (prompt: string) => void }) {
+  const [tab, setTab] = useState<AutomationTab>('tasks');
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleTemplates = AUTOMATION_TEMPLATES.filter((template) => {
+    if (!normalizedQuery) return true;
+    return `${template.title} ${template.description} ${template.schedule} ${template.source}`.toLowerCase().includes(normalizedQuery);
+  });
+
+  const createWithChat = () => {
+    onCreateViaChat(`${AUTOMATION_TOOL_GUARD}\n\n请先询问我要自动化的任务内容、触发时间或频率、需要检查的上下文，以及完成后如何通知我。`);
+  };
+
+  const createFromTemplate = (template: AutomationTemplate) => {
+    onCreateViaChat(template.prompt);
+  };
+
+  return (
+    <section className="automation-page" aria-label="自动化">
+      <div className="automation-drag-strip" data-tauri-drag-region aria-hidden="true" />
+      <div className="automation-topbar">
+        <div className="automation-tabs" role="tablist" aria-label="自动化">
+          <button type="button" role="tab" aria-selected={tab === 'tasks'} className={tab === 'tasks' ? 'active' : ''} onClick={() => { setTab('tasks'); setQuery(''); }}>Tasks</button>
+          <button type="button" role="tab" aria-selected={tab === 'templates'} className={tab === 'templates' ? 'active' : ''} onClick={() => { setTab('templates'); setQuery(''); }}>Templates</button>
+        </div>
+        <button type="button" className="automation-create-btn" onClick={createWithChat}>
+          <span>通过聊天创建</span>
+          <ChevronDown size={14} />
+        </button>
+      </div>
+      <div className="automation-shell">
+        {tab === 'tasks' ? (
+          <div className="automation-view">
+            <header className="automation-head">
+              <div>
+                <h1>已安排</h1>
+                <div className="automation-subtitle">
+                  <span>通过询问 ChatGPT 来安排任务、设置提醒或跟踪更新。</span>
+                  <button type="button" onClick={() => { setTab('templates'); setQuery(''); }}>了解更多</button>
+                </div>
+              </div>
+            </header>
+
+            <div className="automation-empty">
+              <strong>创建首个已安排任务</strong>
+              <div className="automation-empty-actions">
+                {AUTOMATION_TEMPLATES.slice(0, 3).map((template) => (
+                  <button key={template.id} type="button" onClick={() => createFromTemplate(template)}>
+                    {automationTemplateIcon(template.icon, 15)}
+                    <span>{template.title}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="automation-view">
+            <header className="automation-head templates">
+              <div>
+                <h1>Templates</h1>
+                <p>Start with a scheduled task template</p>
+              </div>
+              <label className="automation-search">
+                <Search size={15} />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search templates" />
+              </label>
+            </header>
+            <section className="automation-template-section" aria-label="自动化模板">
+              <h2>System</h2>
+              {visibleTemplates.length > 0 ? (
+                <div className="automation-template-grid">
+                  {visibleTemplates.map((template) => (
+                    <button key={template.id} type="button" className="automation-template-card" onClick={() => createFromTemplate(template)}>
+                      <span className={`automation-template-icon icon-${template.icon}`}>{automationTemplateIcon(template.icon, 20)}</span>
+                      <strong>{template.title}</strong>
+                      <span>{template.description}</span>
+                      <em>{template.schedule}</em>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="automation-no-results">
+                  <Search size={18} />
+                  <span>没有匹配的模板</span>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function automationTemplateIcon(icon: AutomationTemplateIcon, size: number): ReactNode {
+  const icons: Record<AutomationTemplateIcon, ReactNode> = {
+    daily: <Clock3 size={size} />,
+    weekly: <ListChecks size={size} />,
+    project: <Target size={size} />,
+    commit: <GitCommitHorizontal size={size} />,
+    release: <FileText size={size} />,
+    ci: <AlertCircle size={size} />,
+  };
+  return icons[icon];
 }
 
 function SkillsPage() {
@@ -7401,6 +7610,7 @@ function ModelSettings() {
           </div>
           <span className="settings-status-actions">
             {codexStatus?.installed && !codexStatus.loggedIn && <CodexLoginButton compact />}
+            {codexStatus?.installed && codexStatus.loggedIn && <CodexRevokeButton compact />}
             <button className="settings-btn" type="button" onClick={() => void refreshCodexStatus()} disabled={isCheckingCodex}>重新检测</button>
           </span>
         </div>
@@ -7535,29 +7745,165 @@ function ColorSwatch({ value }: { value: string }) {
   return <span className="color-swatch" style={{ ['--swatch']: value } as CSSProperties}>{value}</span>;
 }
 
-function CodexLoginButton({ compact = false }: { compact?: boolean }) {
+function CodexLoginButton({ compact = false, stateButton = false }: { compact?: boolean; stateButton?: boolean }) {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
   const [isLaunching, setIsLaunching] = useState(false);
+  const [isWaitingForLogin, setIsWaitingForLogin] = useState(false);
   const [error, setError] = useState('');
+  const pollRunRef = useRef(0);
+  const pollTimeoutRef = useRef<number | null>(null);
+
+  const clearPollTimeout = useCallback(() => {
+    if (pollTimeoutRef.current !== null) {
+      window.clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      pollRunRef.current += 1;
+      clearPollTimeout();
+    };
+  }, [clearPollTimeout]);
+
+  const waitForNextPoll = (runId: number) => new Promise<boolean>((resolve) => {
+    clearPollTimeout();
+    pollTimeoutRef.current = window.setTimeout(() => {
+      pollTimeoutRef.current = null;
+      resolve(pollRunRef.current === runId);
+    }, CODEX_LOGIN_POLL_INTERVAL_MS);
+  });
+
+  const pollForAuthorization = async () => {
+    const runId = pollRunRef.current + 1;
+    pollRunRef.current = runId;
+    const expiresAt = Date.now() + CODEX_LOGIN_POLL_TIMEOUT_MS;
+    setIsWaitingForLogin(true);
+    while (pollRunRef.current === runId && Date.now() < expiresAt) {
+      await refreshCodexStatus();
+      if (pollRunRef.current !== runId) return;
+      if (useChatStore.getState().codexStatus?.loggedIn) break;
+      const shouldContinue = await waitForNextPoll(runId);
+      if (!shouldContinue) return;
+    }
+    if (pollRunRef.current === runId) {
+      await refreshCodexStatus();
+      setIsWaitingForLogin(false);
+    }
+  };
 
   const launchLogin = async () => {
+    pollRunRef.current += 1;
+    clearPollTimeout();
     setIsLaunching(true);
+    setIsWaitingForLogin(false);
     setError('');
     try {
       await loginCodex();
+      setIsLaunching(false);
+      await pollForAuthorization();
+    } catch (err) {
+      setError(stringifyError(err));
+      setIsWaitingForLogin(false);
+    } finally {
+      setIsLaunching(false);
+    }
+  };
+  const busy = isLaunching || isWaitingForLogin;
+  const label = isLaunching ? '正在打开授权' : isWaitingForLogin ? '等待授权完成' : '授权 Codex CLI';
+  const buttonClassName = stateButton
+    ? `settings-state-pill settings-state-button attention ${busy ? 'authorizing' : ''}`
+    : 'settings-btn';
+
+  return (
+    <span className={`codex-login-action ${compact ? 'compact' : ''}`}>
+      <button
+        className={buttonClassName}
+        type="button"
+        aria-label={label}
+        title="授权 Codex CLI"
+        onClick={() => void launchLogin()}
+        disabled={busy}
+      >
+        {busy ? (
+          <Loader2 size={13} className="spin" />
+        ) : stateButton ? (
+          <>
+            <ShieldQuestion size={13} className="state-idle-icon" aria-hidden="true" />
+            <ShieldCheck size={13} className="state-hover-icon" aria-hidden="true" />
+          </>
+        ) : (
+          <ShieldCheck size={13} />
+        )}
+        {stateButton ? (
+          <>
+            <span className="state-idle-label" aria-hidden="true">{busy ? label : '未授权'}</span>
+            {!busy && <span className="state-hover-label" aria-hidden="true">授权 Codex CLI</span>}
+          </>
+        ) : (
+          <span>{label}</span>
+        )}
+      </button>
+      {error && <span className="settings-inline-error">{error}</span>}
+    </span>
+  );
+}
+
+function CodexAuthorizationBadge({ status }: { status: 'ready' | 'checking' | 'missing' | 'attention' }) {
+  const icon = status === 'ready'
+    ? <CheckCheck size={13} />
+    : status === 'checking'
+      ? <Loader2 size={13} className="spin" />
+      : <ShieldQuestion size={13} />;
+  const label = status === 'ready'
+    ? '已授权'
+    : status === 'checking'
+      ? '检测中'
+      : status === 'missing'
+        ? '未安装'
+        : '未授权';
+  return <span className={`settings-state-pill ${status}`}>{icon}<span>{label}</span></span>;
+}
+
+function CodexRevokeButton({ compact = false }: { compact?: boolean }) {
+  const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
+  const [isRevoking, setIsRevoking] = useState(false);
+  const [error, setError] = useState('');
+
+  const revokeAuthorization = async () => {
+    setIsRevoking(true);
+    setError('');
+    try {
+      await revokeCodexAuthorization();
       await refreshCodexStatus();
     } catch (err) {
       setError(stringifyError(err));
     } finally {
-      setIsLaunching(false);
+      setIsRevoking(false);
     }
   };
 
   return (
     <span className={`codex-login-action ${compact ? 'compact' : ''}`}>
-      <button className="settings-btn" type="button" onClick={() => void launchLogin()} disabled={isLaunching}>
-        {isLaunching ? <Loader2 size={13} className="spin" /> : <ShieldCheck size={13} />}
-        <span>{isLaunching ? '正在打开授权' : '授权 Codex CLI'}</span>
+      <button
+        className={`settings-state-pill settings-state-button ready ${isRevoking ? 'revoking' : ''}`}
+        type="button"
+        aria-label={isRevoking ? '正在撤销' : '撤销授权'}
+        title="撤销 Codex CLI 授权"
+        onClick={() => void revokeAuthorization()}
+        disabled={isRevoking}
+      >
+        {isRevoking ? (
+          <Loader2 size={13} className="spin" />
+        ) : (
+          <>
+            <CheckCheck size={13} className="state-idle-icon" aria-hidden="true" />
+            <LogOut size={13} className="state-hover-icon" aria-hidden="true" />
+          </>
+        )}
+        <span className="state-idle-label" aria-hidden="true">{isRevoking ? '正在撤销' : '已授权'}</span>
+        {!isRevoking && <span className="state-hover-label" aria-hidden="true">撤销授权</span>}
       </button>
       {error && <span className="settings-inline-error">{error}</span>}
     </span>
@@ -7567,16 +7913,32 @@ function CodexLoginButton({ compact = false }: { compact?: boolean }) {
 function ProfileSettings() {
   const session = useChatStore((state) => state.clientLicenseSession);
   const setClientLicenseSession = useChatStore((state) => state.setClientLicenseSession);
+  const codexStatus = useChatStore((state) => state.codexStatus);
+  const isCheckingCodex = useChatStore((state) => state.isCheckingCodex);
   const codexAccount = session?.codexAccounts[0] ?? null;
+  const codexSubscriptionEnabled = Boolean(session?.tenant.codexSubscriptionEnabled);
+  const codexCliAuthorized = Boolean(codexStatus?.installed && codexStatus.loggedIn);
+  const codexAuthorizationStatus = codexCliAuthorized
+    ? 'ready'
+    : isCheckingCodex || !codexStatus
+      ? 'checking'
+      : codexStatus.installed
+        ? 'attention'
+        : 'missing';
+  const showCodexLoginButton = codexSubscriptionEnabled && Boolean(codexStatus?.installed) && !codexCliAuthorized;
+  const showCodexRevokeButton = codexSubscriptionEnabled && codexCliAuthorized;
   const profileTitle = session?.tenant.name || 'Alpha Studio';
   const profileSubtitle = session
     ? `${session.user.name} · ${session.user.email}`
     : '@local · Noncommercial';
-  const codexLabel = session?.tenant.codexSubscriptionEnabled
+  const codexLabel = codexSubscriptionEnabled
     ? codexAccount?.email || '未分配账号'
     : '未启用';
-  const codexDescription = session?.tenant.codexSubscriptionEnabled
-    ? codexAccount?.loginHint || `订阅计划：${session.tenant.codexSubscriptionPlan || codexAccount?.plan || '已启用'}`
+  const codexPlanLabel = session?.tenant.codexSubscriptionPlan || codexAccount?.plan || '已启用';
+  const codexDescription = codexSubscriptionEnabled
+    ? codexCliAuthorized
+      ? `本地 Codex CLI 已完成设备授权${codexStatus?.version ? ` · ${codexStatus.version}` : ''}。`
+      : codexAccount?.loginHint || `订阅计划：${codexPlanLabel}`
     : '当前客户使用 API 网关模式，用量会计入客户额度。';
   const signOut = () => {
     clearClientLicenseSession();
@@ -7597,7 +7959,7 @@ function ProfileSettings() {
         </div>
         <div className="profile-metrics">
           <span><strong>{session?.tenant.maxDevices ?? 'Core'}</strong><em>设备额度</em></span>
-          <span><strong>{session?.tenant.codexSubscriptionEnabled ? 'Codex 订阅' : 'API 网关'}</strong><em>运行模式</em></span>
+          <span><strong>{codexSubscriptionEnabled ? 'Codex 订阅' : 'API 网关'}</strong><em>运行模式</em></span>
           <span><strong>{session ? '已激活' : '未激活'}</strong><em>客户端状态</em></span>
         </div>
       </div>
@@ -7611,7 +7973,9 @@ function ProfileSettings() {
         <SettingsRow title="Codex 订阅账号" description={codexDescription}>
           <span className="settings-action-stack">
             <span className="settings-static">{codexLabel}</span>
-            {session?.tenant.codexSubscriptionEnabled && <CodexLoginButton compact />}
+            {codexSubscriptionEnabled && !showCodexRevokeButton && !showCodexLoginButton && <CodexAuthorizationBadge status={codexAuthorizationStatus} />}
+            {showCodexLoginButton && <CodexLoginButton compact stateButton />}
+            {showCodexRevokeButton && <CodexRevokeButton compact />}
           </span>
         </SettingsRow>
         <SettingsRow title="设备授权" description={session ? `设备 ${session.device.id}` : '无有效设备授权。'}>

@@ -6,6 +6,7 @@ import {
   defaultAlphaApiBaseUrl,
   loadClientLicenseSession,
   modelProfilesFromClientLicense,
+  renewClientLease,
   saveClientLicenseSession,
 } from './license';
 
@@ -119,7 +120,7 @@ describe('client license session', () => {
       gatewayUrl: 'http://localhost:18080/v1/responses',
     }));
 
-    const run = await createGatewayRun('gpt-5.5', 500);
+    const run = await createGatewayRun('gpt-5.5', 5);
 
     expect(run.providerBaseUrl).toBe('http://localhost:18080/v1');
     expect(run.providerApiKey).toBe('run-token');
@@ -130,6 +131,41 @@ describe('client license session', () => {
         body: expect.stringContaining('"tenantId":"tenant_demo"'),
       }),
     );
+    expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/runs/create',
+      expect.objectContaining({
+        body: expect.stringContaining('"budgetYuan":5'),
+      }),
+    );
+  });
+
+  it('refreshes stored gateway models when renewing the device lease returns a model catalog', async () => {
+    saveClientLicenseSession({
+      apiBaseUrl: 'http://localhost:18080',
+      activatedAt: 1,
+      ...activationResponse,
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+      leaseExpiresAt: '2026-07-01T00:05:00.000Z',
+      models: [
+        {
+          id: 'gpt-5.4-mini',
+          label: 'GPT-5.4 Mini API',
+          provider: 'openai',
+          mode: 'gateway_api',
+          enabled: true,
+        },
+      ],
+    }));
+
+    const renewed = await renewClientLease(loadClientLicenseSession()!);
+
+    expect(renewed.models).toHaveLength(1);
+    expect(renewed.models[0]).toMatchObject({
+      id: 'gpt-5.4-mini',
+      label: 'GPT-5.4 Mini API',
+    });
+    expect(loadClientLicenseSession()?.models[0]?.id).toBe('gpt-5.4-mini');
   });
 
   it('clears the stored session', () => {

@@ -39,9 +39,11 @@ export interface CodexChatStartResult {
   runId: string;
 }
 
-export interface CodexLoginResult {
+export interface CodexAuthorizationResult {
   codexHome: string;
 }
+
+export type CodexLoginResult = CodexAuthorizationResult;
 
 export interface ModelConfigFile {
   selectedModelProfileId?: string;
@@ -69,6 +71,11 @@ export async function checkCodex(): Promise<CodexStatus> {
 export async function loginCodex(): Promise<CodexLoginResult | null> {
   if (!isTauriRuntime()) return null;
   return invoke<CodexLoginResult>('codex_login');
+}
+
+export async function revokeCodexAuthorization(): Promise<CodexAuthorizationResult | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<CodexAuthorizationResult>('codex_revoke_authorization');
 }
 
 export async function startCodexChat(request: CodexChatStartRequest): Promise<CodexChatStartResult> {

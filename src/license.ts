@@ -142,7 +142,11 @@ export async function activateClient(input: ClientActivateInput): Promise<Client
 }
 
 export async function renewClientLease(session: ClientLicenseSession): Promise<ClientLicenseSession> {
-  const data = await alphaFetch<{ leaseExpiresAt: string }>(session.apiBaseUrl, '/api/devices/lease', {
+  const data = await alphaFetch<{
+    leaseExpiresAt: string;
+    models?: ClientModel[];
+    codexAccounts?: ClientCodexAccount[];
+  }>(session.apiBaseUrl, '/api/devices/lease', {
     method: 'POST',
     body: JSON.stringify({
       tenantId: session.tenant.id,
@@ -155,12 +159,14 @@ export async function renewClientLease(session: ClientLicenseSession): Promise<C
       ...session.device,
       leaseExpiresAt: data.leaseExpiresAt,
     },
+    models: Array.isArray(data.models) ? data.models : session.models,
+    codexAccounts: Array.isArray(data.codexAccounts) ? data.codexAccounts : session.codexAccounts,
   };
   saveClientLicenseSession(renewed);
   return renewed;
 }
 
-export async function createGatewayRun(modelId: string, budgetCents = 500): Promise<GatewayRunConfig> {
+export async function createGatewayRun(modelId: string, budgetYuan = 5): Promise<GatewayRunConfig> {
   const session = loadClientLicenseSession();
   if (!session) throw new Error('Alpha Studio 客户端尚未激活。');
   const data = await alphaFetch<{ runId: string; runToken: string }>(session.apiBaseUrl, '/api/runs/create', {
@@ -170,7 +176,7 @@ export async function createGatewayRun(modelId: string, budgetCents = 500): Prom
       userId: session.user.id,
       deviceId: session.device.id,
       modelId,
-      budgetCents,
+      budgetYuan,
     }),
   });
   return {

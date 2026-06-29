@@ -7,7 +7,7 @@ pub struct RunTokenService {
     secret: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RunTokenClaims {
     pub tenant_id: String,
@@ -15,7 +15,7 @@ pub struct RunTokenClaims {
     pub device_id: String,
     pub run_id: String,
     pub model_id: String,
-    pub budget_cents: u64,
+    pub budget_yuan: f64,
     pub iat: usize,
     pub exp: usize,
 }
@@ -27,7 +27,7 @@ impl RunTokenClaims {
         device_id: String,
         run_id: String,
         model_id: String,
-        budget_cents: u64,
+        budget_yuan: f64,
         ttl_seconds: i64,
     ) -> Self {
         let now = Utc::now();
@@ -37,7 +37,7 @@ impl RunTokenClaims {
             device_id,
             run_id,
             model_id,
-            budget_cents,
+            budget_yuan,
             iat: now.timestamp() as usize,
             exp: (now + Duration::seconds(ttl_seconds)).timestamp() as usize,
         }

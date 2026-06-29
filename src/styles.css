@@ -1549,6 +1549,91 @@ code {
   flex-wrap: nowrap;
 }
 
+.settings-state-pill {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.settings-state-pill.ready {
+  border-color: color-mix(in srgb, var(--success) 34%, var(--border));
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-soft));
+  color: var(--success);
+}
+
+.settings-state-button {
+  appearance: none;
+  min-width: 92px;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.settings-state-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.settings-state-button .state-hover-icon,
+.settings-state-button .state-hover-label {
+  display: none;
+}
+
+.settings-state-button.ready:not(:disabled):hover,
+.settings-state-button.ready:not(:disabled):focus-visible {
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-soft));
+  color: var(--danger);
+}
+
+.settings-state-button.attention:not(:disabled):hover,
+.settings-state-button.attention:not(:disabled):focus-visible {
+  border-color: color-mix(in srgb, var(--success) 34%, var(--border));
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-soft));
+  color: var(--success);
+}
+
+.settings-state-button:not(:disabled):hover .state-idle-icon,
+.settings-state-button:not(:disabled):hover .state-idle-label,
+.settings-state-button:not(:disabled):focus-visible .state-idle-icon,
+.settings-state-button:not(:disabled):focus-visible .state-idle-label {
+  display: none;
+}
+
+.settings-state-button:not(:disabled):hover .state-hover-icon,
+.settings-state-button:not(:disabled):hover .state-hover-label,
+.settings-state-button:not(:disabled):focus-visible .state-hover-icon,
+.settings-state-button:not(:disabled):focus-visible .state-hover-label {
+  display: inline-flex;
+}
+
+.settings-state-button.revoking:hover,
+.settings-state-button.revoking:focus-visible {
+  border-color: color-mix(in srgb, var(--success) 34%, var(--border));
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-soft));
+  color: var(--success);
+}
+
+.settings-state-pill.attention,
+.settings-state-pill.missing {
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-soft));
+  color: var(--danger);
+}
+
+.settings-state-pill.checking {
+  border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
+  background: color-mix(in srgb, var(--warning) 8%, var(--bg-soft));
+  color: var(--warning);
+}
+
 .settings-inline-error {
   max-width: min(320px, 42vw);
   color: var(--danger);
@@ -2825,6 +2910,307 @@ button {
   border-radius: 999px;
   background: var(--scrollbar-thumb);
   background-clip: padding-box;
+}
+
+.automation-page {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg);
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+  scrollbar-width: thin;
+}
+
+.automation-page::-webkit-scrollbar {
+  width: 10px;
+}
+
+.automation-page::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+.automation-drag-strip {
+  position: absolute;
+  z-index: 0;
+  inset: 0 0 auto;
+  height: 44px;
+}
+
+.automation-topbar {
+  position: relative;
+  z-index: 1;
+  height: 44px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 10px 0 16px;
+  pointer-events: none;
+}
+
+.automation-shell {
+  position: relative;
+  z-index: 1;
+  width: min(728px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 23px 0 64px;
+}
+
+.automation-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: transparent;
+  pointer-events: auto;
+}
+
+.automation-tabs button {
+  height: 27px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0 11px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.automation-tabs button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.automation-tabs button.active {
+  background: var(--bg-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.automation-create-btn {
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  font-size: 13px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.automation-create-btn:hover {
+  background: var(--bg-soft);
+}
+
+.automation-view {
+  display: grid;
+  gap: 28px;
+}
+
+.automation-head {
+  display: grid;
+  gap: 17px;
+}
+
+.automation-head h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: 28px;
+  line-height: 1.15;
+  font-weight: 650;
+}
+
+.automation-head p,
+.automation-subtitle {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.automation-subtitle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.automation-subtitle button {
+  border: 0;
+  background: transparent;
+  color: #2f9bff;
+  padding: 0;
+  cursor: pointer;
+}
+
+.automation-subtitle button:hover {
+  text-decoration: underline;
+}
+
+.automation-search {
+  height: 33px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--bg);
+  color: var(--text-muted);
+}
+
+.automation-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.automation-empty {
+  min-height: clamp(260px, 48vh, 520px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  text-align: center;
+}
+
+.automation-empty strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.automation-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.automation-empty-actions button {
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 13px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.automation-empty-actions button:hover {
+  background: var(--bg-soft);
+}
+
+.automation-template-section h2 {
+  margin: 0 0 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.automation-template-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.automation-template-card {
+  min-height: 184px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 9px;
+  padding: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.automation-template-card:hover {
+  background: var(--bg-soft);
+}
+
+.automation-template-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  display: inline-grid;
+  place-items: center;
+  background: var(--bg-soft);
+}
+
+.automation-template-icon.icon-daily {
+  color: #d09b35;
+}
+
+.automation-template-icon.icon-weekly {
+  color: #7d76dc;
+}
+
+.automation-template-icon.icon-project {
+  color: #2dbf9f;
+}
+
+.automation-template-icon.icon-commit {
+  color: #5f86ed;
+}
+
+.automation-template-icon.icon-release {
+  color: #cf7f45;
+}
+
+.automation-template-icon.icon-ci {
+  color: #d96868;
+}
+
+.automation-template-card strong {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.automation-template-card span:not(.automation-template-icon) {
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.automation-template-card em {
+  color: var(--text-faint);
+  font-size: 13px;
+  font-style: normal;
+}
+
+.automation-no-results {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .skills-page-shell {
@@ -7218,6 +7604,14 @@ button.environment-row:hover {
     display: none;
   }
 
+  .automation-shell {
+    width: min(728px, calc(100% - 32px));
+  }
+
+  .automation-template-grid {
+    grid-template-columns: 1fr;
+  }
+
   .right-dock-workspace {
     position: fixed;
     inset: 0 0 0 auto;
@@ -8360,6 +8754,29 @@ button.environment-row:hover {
 
   .license-card {
     padding: 22px;
+  }
+
+  .automation-topbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    height: auto;
+    min-height: 78px;
+    padding: 8px 16px 0;
+  }
+
+  .automation-create-btn {
+    justify-content: center;
+  }
+
+  .automation-empty-actions {
+    flex-direction: column;
+    align-items: stretch;
+    width: min(260px, 100%);
+  }
+
+  .automation-empty-actions button {
+    justify-content: center;
   }
 
 }

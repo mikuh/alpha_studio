@@ -21,6 +21,8 @@ use tokio::sync::{oneshot, Mutex};
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
 const TERMINAL_EVENT: &str = "terminal-event";
 const CODEX_DEVICE_AUTHORIZATION_MARKER: &str = ".alpha-studio-device-authorized";
+const FALLBACK_REASONING_CONTENT: &str =
+    "Reasoning content was not available in the persisted transcript.";
 
 static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -404,6 +406,14 @@ async fn codex_login() -> Result<CodexLoginResult, String> {
     let codex_home = prepare_alpha_studio_codex_home()?;
     mark_codex_device_authorized(&codex_home)?;
     launch_codex_login(&path, &codex_home).await?;
+    Ok(CodexLoginResult {
+        codex_home: codex_home.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+async fn codex_revoke_authorization() -> Result<CodexLoginResult, String> {
+    let codex_home = revoke_alpha_studio_codex_authorization()?;
     Ok(CodexLoginResult {
         codex_home: codex_home.to_string_lossy().to_string(),
     })
@@ -2430,8 +2440,8 @@ fn remember_chat_reasoning_for_tool_calls(state: &ChatAdapterState, response: &V
         .entry(state.conversation_id.clone())
         .or_default();
     for call in tool_calls {
-        if let Some(call_id) = call.get("id").and_then(Value::as_str) {
-            stored.insert(call_id.to_string(), reasoning_content.clone());
+        for key in chat_tool_call_reasoning_keys(call) {
+            stored.insert(key, reasoning_content.clone());
         }
     }
 }
@@ -2482,6 +2492,9 @@ fn build_chat_completion_request(
     flush_pending_chat_tool_calls(&mut messages, &mut pending_tool_calls);
     if messages.is_empty() {
         push_chat_text_message(&mut messages, "user", "");
+    }
+    if thinking_enabled {
+        ensure_assistant_reasoning_content(&mut messages, reasoning_by_call_id);
     }
 
     let mut body = Map::new();
@@ -2556,10 +2569,21 @@ fn append_responses_input_item_as_chat_message(
                 "tool" => "tool",
                 _ => "user",
             };
+            let reasoning_content = if chat_role == "assistant" {
+                response_message_reasoning_content(item)
+                    .or_else(|| pending_reasoning_content.take())
+            } else {
+                None
+            };
             if let Some(text) =
                 response_content_to_text(item.get("content").unwrap_or(&Value::Null))
             {
-                push_chat_text_message(messages, chat_role, &text);
+                push_chat_text_message_with_reasoning(
+                    messages,
+                    chat_role,
+                    &text,
+                    reasoning_content,
+                );
             }
             if chat_role == "assistant" || chat_role == "user" {
                 pending_reasoning_content.take();
@@ -2580,7 +2604,15 @@ fn append_responses_input_item_as_chat_message(
                 pending_tool_calls.reasoning_content = pending_reasoning_content
                     .take()
                     .filter(|value| !value.trim().is_empty())
-                    .or_else(|| reasoning_by_call_id.get(call_id).cloned());
+                    .or_else(|| {
+                        lookup_reasoning_for_function_call(
+                            reasoning_by_call_id,
+                            item,
+                            call_id,
+                            name,
+                            &arguments,
+                        )
+                    });
             } else {
                 pending_reasoning_content.take();
             }
@@ -2641,11 +2673,147 @@ fn flush_pending_chat_tool_calls(
     messages.push(Value::Object(assistant));
 }
 
+fn ensure_assistant_reasoning_content(
+    messages: &mut [Value],
+    reasoning_by_call_id: &HashMap<String, String>,
+) {
+    for message in messages {
+        let Some(map) = message.as_object_mut() else {
+            continue;
+        };
+        if map.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        if map_has_reasoning_content(map) {
+            continue;
+        }
+        let reasoning_content = map
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .and_then(|tool_calls| {
+                tool_calls.iter().find_map(|call| {
+                    lookup_reasoning_for_chat_tool_call(reasoning_by_call_id, call)
+                })
+            })
+            .unwrap_or_else(|| FALLBACK_REASONING_CONTENT.to_string());
+        map.insert("reasoning_content".to_string(), json!(reasoning_content));
+    }
+}
+
+fn map_has_reasoning_content(map: &Map<String, Value>) -> bool {
+    [
+        "reasoning_content",
+        "reasoningContent",
+        "thinking_content",
+        "thinkingContent",
+        "reasoning",
+    ]
+    .iter()
+    .filter_map(|key| map.get(*key))
+    .map(chat_message_content_to_text)
+    .any(|text| !text.trim().is_empty())
+}
+
+fn lookup_reasoning_for_function_call(
+    reasoning_by_call_id: &HashMap<String, String>,
+    item: &Value,
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+) -> Option<String> {
+    let mut keys = Vec::new();
+    push_unique_non_empty(&mut keys, call_id);
+    if let Some(item_id) = item.get("id").and_then(Value::as_str) {
+        push_unique_non_empty(&mut keys, item_id);
+    }
+    if let Some(item_call_id) = item.get("call_id").and_then(Value::as_str) {
+        push_unique_non_empty(&mut keys, item_call_id);
+    }
+    if !name.trim().is_empty() {
+        push_unique_non_empty(&mut keys, &format!("fn:{name}:{arguments}"));
+    }
+    keys.into_iter().find_map(|key| {
+        reasoning_by_call_id
+            .get(&key)
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+    })
+}
+
+fn lookup_reasoning_for_chat_tool_call(
+    reasoning_by_call_id: &HashMap<String, String>,
+    call: &Value,
+) -> Option<String> {
+    chat_tool_call_reasoning_keys(call)
+        .into_iter()
+        .find_map(|key| {
+            reasoning_by_call_id
+                .get(&key)
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+        })
+}
+
+fn chat_tool_call_reasoning_keys(call: &Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(id) = call.get("id").and_then(Value::as_str) {
+        push_unique_non_empty(&mut keys, id);
+    }
+    if let Some(call_id) = call.get("call_id").and_then(Value::as_str) {
+        push_unique_non_empty(&mut keys, call_id);
+    }
+    let name = call
+        .get("function")
+        .and_then(|function| function.get("name"))
+        .or_else(|| call.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let arguments = call
+        .get("function")
+        .and_then(|function| function.get("arguments"))
+        .or_else(|| call.get("arguments"))
+        .map(value_to_string)
+        .unwrap_or_default();
+    if !name.trim().is_empty() {
+        push_unique_non_empty(&mut keys, &format!("fn:{name}:{arguments}"));
+    }
+    keys
+}
+
+fn push_unique_non_empty(keys: &mut Vec<String>, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if !keys.iter().any(|key| key == trimmed) {
+        keys.push(trimmed.to_string());
+    }
+}
+
 fn push_chat_text_message(messages: &mut Vec<Value>, role: &str, content: &str) {
+    push_chat_text_message_with_reasoning(messages, role, content, None);
+}
+
+fn push_chat_text_message_with_reasoning(
+    messages: &mut Vec<Value>,
+    role: &str,
+    content: &str,
+    reasoning_content: Option<String>,
+) {
+    let reasoning_content = reasoning_content.filter(|value| !value.trim().is_empty());
     if let Some(last) = messages.last_mut() {
         let last_role = last.get("role").and_then(Value::as_str);
         let has_tool_calls = last.get("tool_calls").is_some();
-        if last_role == Some(role) && !has_tool_calls && role != "tool" {
+        let has_reasoning_content = last
+            .as_object()
+            .map(map_has_reasoning_content)
+            .unwrap_or(false);
+        if last_role == Some(role)
+            && !has_tool_calls
+            && role != "tool"
+            && reasoning_content.is_none()
+            && !has_reasoning_content
+        {
             if let Some(existing) = last
                 .get("content")
                 .and_then(Value::as_str)
@@ -2663,7 +2831,15 @@ fn push_chat_text_message(messages: &mut Vec<Value>, role: &str, content: &str) 
             }
         }
     }
-    messages.push(json!({ "role": role, "content": content }));
+    let mut message = Map::new();
+    message.insert("role".to_string(), json!(role));
+    message.insert("content".to_string(), json!(content));
+    if role == "assistant" {
+        if let Some(reasoning_content) = reasoning_content {
+            message.insert("reasoning_content".to_string(), json!(reasoning_content));
+        }
+    }
+    messages.push(Value::Object(message));
 }
 
 fn response_content_to_text(content: &Value) -> Option<String> {
@@ -2695,6 +2871,21 @@ fn response_content_to_text(content: &Value) -> Option<String> {
             .map(str::to_string),
         _ => None,
     }
+}
+
+fn response_message_reasoning_content(item: &Value) -> Option<String> {
+    [
+        "reasoning_content",
+        "reasoningContent",
+        "thinking_content",
+        "thinkingContent",
+        "reasoning",
+    ]
+    .iter()
+    .find_map(|key| item.get(*key))
+    .and_then(response_content_to_text)
+    .map(|text| text.trim().to_string())
+    .filter(|text| !text.is_empty())
 }
 
 fn response_reasoning_item_to_text(item: &Value) -> Option<String> {
@@ -2871,6 +3062,7 @@ fn chat_message_reasoning_content(message: &Value) -> String {
         "reasoningContent",
         "thinking_content",
         "thinkingContent",
+        "reasoning",
     ]
     .iter()
     .find_map(|key| message.get(*key))
@@ -3170,10 +3362,19 @@ fn home_dir() -> Option<String> {
 fn prepare_alpha_studio_codex_home() -> Result<PathBuf, String> {
     let home = home_dir().ok_or_else(|| "Failed to resolve HOME for Codex config.".to_string())?;
     let source = PathBuf::from(&home).join(".codex");
-    let target = PathBuf::from(home).join(".alpha-studio").join("codex-home");
+    let target = alpha_studio_codex_home_path_from(&home);
     let preserve_authorization = target.join(CODEX_DEVICE_AUTHORIZATION_MARKER).is_file();
     prepare_alpha_studio_codex_home_from(&source, &target, preserve_authorization)?;
     Ok(target)
+}
+
+fn alpha_studio_codex_home_path() -> Result<PathBuf, String> {
+    let home = home_dir().ok_or_else(|| "Failed to resolve HOME for Codex config.".to_string())?;
+    Ok(alpha_studio_codex_home_path_from(&home))
+}
+
+fn alpha_studio_codex_home_path_from(home: &str) -> PathBuf {
+    PathBuf::from(home).join(".alpha-studio").join("codex-home")
 }
 
 fn prepare_alpha_studio_codex_home_from(
@@ -3204,6 +3405,23 @@ fn prepare_alpha_studio_codex_home_from(
         }
     }
 
+    Ok(())
+}
+
+fn revoke_alpha_studio_codex_authorization() -> Result<PathBuf, String> {
+    let target = alpha_studio_codex_home_path()?;
+    revoke_alpha_studio_codex_authorization_from(&target)?;
+    Ok(target)
+}
+
+fn revoke_alpha_studio_codex_authorization_from(target: &Path) -> Result<(), String> {
+    for file_name in [
+        "auth.json",
+        "installation_id",
+        CODEX_DEVICE_AUTHORIZATION_MARKER,
+    ] {
+        remove_existing_path(&target.join(file_name))?;
+    }
     Ok(())
 }
 
@@ -4319,6 +4537,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             codex_check,
             codex_login,
+            codex_revoke_authorization,
             model_config_load,
             model_config_save,
             codex_chat_start,
@@ -4808,6 +5027,33 @@ mod tests {
     }
 
     #[test]
+    fn revokes_private_codex_authorization_without_removing_config() {
+        let root = std::env::temp_dir().join(format!(
+            "alpha-studio-codex-home-test-{}",
+            generate_run_id()
+        ));
+        let target = root.join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("auth.json"), "{\"private\":true}").unwrap();
+        fs::write(target.join("installation_id"), "private-installation").unwrap();
+        fs::write(
+            target.join(CODEX_DEVICE_AUTHORIZATION_MARKER),
+            "authorized\n",
+        )
+        .unwrap();
+        fs::write(target.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+
+        revoke_alpha_studio_codex_authorization_from(&target).unwrap();
+
+        assert!(!target.join("auth.json").exists());
+        assert!(!target.join("installation_id").exists());
+        assert!(!target.join(CODEX_DEVICE_AUTHORIZATION_MARKER).exists());
+        assert!(target.join("config.toml").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn sanitizes_empty_provider_as_openai() {
         let request = codex_request_with_provider(None, None, None, None);
 
@@ -4955,6 +5201,55 @@ mod tests {
     }
 
     #[test]
+    fn adapter_attaches_reasoning_to_following_assistant_message() {
+        let request = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "创建一个提醒" }] },
+                { "type": "reasoning", "summary": [{ "type": "summary_text", "text": "需要先判断是否有自动化工具" }] },
+                { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "好的，我先看看当前环境。" }] }
+            ],
+            "reasoning": { "effort": "high" }
+        });
+
+        let chat = build_chat_completion_request(&request, true, &HashMap::new()).unwrap();
+        let messages = chat.get("messages").and_then(Value::as_array).unwrap();
+        let assistant = messages
+            .iter()
+            .find(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
+            .unwrap();
+
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("需要先判断是否有自动化工具")
+        );
+    }
+
+    #[test]
+    fn adapter_adds_fallback_reasoning_for_plain_assistant_history_in_thinking_mode() {
+        let request = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "创建一个提醒" }] },
+                { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "好的，我先看看当前环境。" }] }
+            ],
+            "reasoning": { "effort": "high" }
+        });
+
+        let chat = build_chat_completion_request(&request, true, &HashMap::new()).unwrap();
+        let messages = chat.get("messages").and_then(Value::as_array).unwrap();
+        let assistant = messages
+            .iter()
+            .find(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
+            .unwrap();
+
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some(FALLBACK_REASONING_CONTENT)
+        );
+    }
+
+    #[test]
     fn adapter_preserves_reasoning_content_for_tool_call_history() {
         let request = serde_json::json!({
             "model": "deepseek-v4-flash",
@@ -5071,6 +5366,91 @@ mod tests {
     }
 
     #[test]
+    fn adapter_restores_cached_reasoning_by_function_signature() {
+        let request = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "查一下项目结构" }] },
+                { "type": "function_call", "id": "different_response_item", "call_id": "different_call_id", "name": "exec_command", "arguments": "{\"cmd\":\"find . -maxdepth 2\"}" },
+                { "type": "function_call_output", "call_id": "different_call_id", "output": "package.json" }
+            ],
+            "tools": [
+                { "type": "function", "name": "exec_command", "description": "run", "parameters": { "type": "object" } }
+            ],
+            "reasoning": { "effort": "high" }
+        });
+        let reasoning_by_call_id = HashMap::from([(
+            "fn:exec_command:{\"cmd\":\"find . -maxdepth 2\"}".to_string(),
+            "需要先读取文件列表".to_string(),
+        )]);
+
+        let chat = build_chat_completion_request(&request, true, &reasoning_by_call_id).unwrap();
+        let messages = chat.get("messages").and_then(Value::as_array).unwrap();
+        let assistant = messages
+            .iter()
+            .find(|message| message.get("tool_calls").is_some())
+            .unwrap();
+
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("需要先读取文件列表")
+        );
+    }
+
+    #[test]
+    fn adapter_adds_fallback_reasoning_for_thinking_tool_call_history() {
+        let request = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "创建一个提醒" }] },
+                { "type": "function_call", "call_id": "call_1", "name": "automation_update", "arguments": "{\"mode\":\"create\"}" },
+                { "type": "function_call_output", "call_id": "call_1", "output": "{\"ok\":true}" }
+            ],
+            "tools": [
+                { "type": "function", "name": "automation_update", "description": "schedule", "parameters": { "type": "object" } }
+            ],
+            "reasoning": { "effort": "high" }
+        });
+
+        let chat = build_chat_completion_request(&request, true, &HashMap::new()).unwrap();
+        let messages = chat.get("messages").and_then(Value::as_array).unwrap();
+        let assistant = messages
+            .iter()
+            .find(|message| message.get("tool_calls").is_some())
+            .unwrap();
+
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some(FALLBACK_REASONING_CONTENT)
+        );
+    }
+
+    #[test]
+    fn adapter_does_not_add_fallback_reasoning_when_thinking_is_disabled() {
+        let request = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "创建一个提醒" }] },
+                { "type": "function_call", "call_id": "call_1", "name": "automation_update", "arguments": "{\"mode\":\"create\"}" },
+                { "type": "function_call_output", "call_id": "call_1", "output": "{\"ok\":true}" }
+            ],
+            "tools": [
+                { "type": "function", "name": "automation_update", "description": "schedule", "parameters": { "type": "object" } }
+            ],
+            "reasoning": { "effort": "high" }
+        });
+
+        let chat = build_chat_completion_request(&request, false, &HashMap::new()).unwrap();
+        let messages = chat.get("messages").and_then(Value::as_array).unwrap();
+        let assistant = messages
+            .iter()
+            .find(|message| message.get("tool_calls").is_some())
+            .unwrap();
+
+        assert!(assistant.get("reasoning_content").is_none());
+    }
+
+    #[test]
     fn adapter_caches_reasoning_content_by_tool_call_id() {
         let state = ChatAdapterState {
             conversation_id: "conv-1".to_string(),
@@ -5099,6 +5479,55 @@ mod tests {
             stored.get("call_1").map(String::as_str),
             Some("需要先读取文件列表")
         );
+    }
+
+    #[test]
+    fn adapter_caches_reasoning_field_by_function_signature() {
+        let state = ChatAdapterState {
+            conversation_id: "conv-1".to_string(),
+            reasoning_by_conversation: Arc::new(StdMutex::new(HashMap::new())),
+        };
+        let response = serde_json::json!({
+            "id": "chatcmpl_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning": "需要先读取文件列表",
+                    "content": "",
+                    "tool_calls": [{
+                        "type": "function",
+                        "function": { "name": "exec_command", "arguments": "{\"cmd\":\"find . -maxdepth 2\"}" }
+                    }]
+                }
+            }]
+        });
+
+        remember_chat_reasoning_for_tool_calls(&state, &response);
+
+        let stored = adapter_reasoning_snapshot(&state);
+        assert_eq!(
+            stored
+                .get("fn:exec_command:{\"cmd\":\"find . -maxdepth 2\"}")
+                .map(String::as_str),
+            Some("需要先读取文件列表")
+        );
+    }
+
+    #[test]
+    fn adapter_reads_reasoning_field_from_chat_completion() {
+        let chat = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning": "先分析问题",
+                    "content": "hello"
+                }
+            }]
+        });
+
+        let message = first_chat_choice_message(&chat).unwrap();
+
+        assert_eq!(chat_message_reasoning_content(message), "先分析问题");
     }
 
     #[test]

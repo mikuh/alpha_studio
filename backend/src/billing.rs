@@ -9,48 +9,40 @@ pub struct GatewayUsage {
     pub cached_tokens: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Pricing {
-    pub input_cents_per_million: u64,
-    pub output_cents_per_million: u64,
-    pub reasoning_cents_per_million: u64,
-    pub cached_input_cents_per_million: u64,
+    pub input_yuan_per_million: f64,
+    pub output_yuan_per_million: f64,
+    pub reasoning_yuan_per_million: f64,
+    pub cached_input_yuan_per_million: f64,
     pub markup_bps: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageCharge {
-    pub cost_cents: u64,
-    pub billable_cents: u64,
+    pub cost_yuan: f64,
+    pub billable_yuan: f64,
 }
 
-pub fn settle_usage_cents(usage: &GatewayUsage, pricing: &Pricing) -> UsageCharge {
-    let cost_cents = cents_for(usage.input_tokens, pricing.input_cents_per_million)
-        + cents_for(usage.output_tokens, pricing.output_cents_per_million)
-        + cents_for(usage.reasoning_tokens, pricing.reasoning_cents_per_million)
-        + cents_for(usage.cached_tokens, pricing.cached_input_cents_per_million);
-    let billable_cents = div_ceil(
-        (cost_cents as u128) * ((10_000 + pricing.markup_bps) as u128),
-        10_000,
-    ) as u64;
+pub fn settle_usage_yuan(usage: &GatewayUsage, pricing: &Pricing) -> UsageCharge {
+    let cost_yuan = yuan_for_tokens(usage.input_tokens, pricing.input_yuan_per_million)
+        + yuan_for_tokens(usage.output_tokens, pricing.output_yuan_per_million)
+        + yuan_for_tokens(usage.reasoning_tokens, pricing.reasoning_yuan_per_million)
+        + yuan_for_tokens(usage.cached_tokens, pricing.cached_input_yuan_per_million);
+    let billable_yuan = cost_yuan * ((10_000 + pricing.markup_bps) as f64) / 10_000.0;
     UsageCharge {
-        cost_cents,
-        billable_cents,
+        cost_yuan,
+        billable_yuan,
     }
 }
 
-fn cents_for(tokens: u64, cents_per_million: u64) -> u64 {
-    div_ceil((tokens as u128) * (cents_per_million as u128), 1_000_000) as u64
-}
-
-fn div_ceil(numerator: u128, denominator: u128) -> u128 {
-    if numerator == 0 {
-        0
-    } else {
-        ((numerator - 1) / denominator) + 1
+fn yuan_for_tokens(tokens: u64, yuan_per_million: f64) -> f64 {
+    if tokens == 0 || !yuan_per_million.is_finite() || yuan_per_million <= 0.0 {
+        return 0.0;
     }
+    (tokens as f64) * yuan_per_million / 1_000_000.0
 }
 
 pub fn usage_from_openai_response(value: &serde_json::Value) -> GatewayUsage {

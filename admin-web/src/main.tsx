@@ -2,13 +2,13 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-type Tab = 'overview' | 'tenants' | 'codes' | 'gateway' | 'codex' | 'audit';
+type Tab = 'overview' | 'tenants' | 'gateway' | 'codex' | 'audit';
 
 interface Summary {
   tenants: number;
   activeDevices: number;
   runs: number;
-  billableCents: number;
+  billableYuan: number;
   configuredProviders: number;
 }
 
@@ -18,14 +18,14 @@ interface Tenant {
   status: string;
   maxDevices: number;
   billingMode: string;
-  balanceCents: number;
+  balanceYuan: number;
   subscriptionPlan?: string | null;
   subscriptionExpiresAt?: string | null;
   codexSubscriptionEnabled: boolean;
   codexSubscriptionPlan?: string | null;
   codexSubscriptionExpiresAt?: string | null;
   activeDevices: number;
-  billableCents: number;
+  billableYuan: number;
 }
 
 interface AuthorizationCode {
@@ -63,10 +63,10 @@ interface ModelRoute {
   upstreamModel: string;
   enabled: boolean;
   sortOrder: number;
-  inputCentsPerMillion: number;
-  outputCentsPerMillion: number;
-  reasoningCentsPerMillion: number;
-  cachedInputCentsPerMillion: number;
+  inputYuanPerMillion: number;
+  outputYuanPerMillion: number;
+  reasoningYuanPerMillion: number;
+  cachedInputYuanPerMillion: number;
   markupBps: number;
   providerReady: boolean;
 }
@@ -92,11 +92,19 @@ interface AuditLog {
   createdAt: string;
 }
 
+interface ConfirmDialogState {
+  title: string;
+  message: string;
+  detail?: string;
+  confirmLabel: string;
+  onConfirm: () => Promise<void> | void;
+}
+
 const defaultSummary: Summary = {
   tenants: 0,
   activeDevices: 0,
   runs: 0,
-  billableCents: 0,
+  billableYuan: 0,
   configuredProviders: 0,
 };
 
@@ -106,7 +114,7 @@ const emptyTenantForm = {
   status: 'active',
   maxDevices: 3,
   billingMode: 'hybrid',
-  balanceCents: 0,
+  balanceYuan: 0,
   subscriptionPlan: '',
   subscriptionExpiresAt: '',
   codexSubscriptionEnabled: false,
@@ -141,10 +149,10 @@ const emptyModelForm = {
   upstreamModel: '',
   enabled: true,
   sortOrder: 100,
-  inputCentsPerMillion: 0,
-  outputCentsPerMillion: 0,
-  reasoningCentsPerMillion: 0,
-  cachedInputCentsPerMillion: 0,
+  inputYuanPerMillion: 0,
+  outputYuanPerMillion: 0,
+  reasoningYuanPerMillion: 0,
+  cachedInputYuanPerMillion: 0,
   markupBps: 2500,
 };
 
@@ -160,11 +168,19 @@ const emptyCodexForm = {
   expiresAt: '',
 };
 
+const navItems: Array<[Tab, string]> = [
+  ['overview', '总览'],
+  ['tenants', '客户'],
+  ['gateway', '模型网关'],
+  ['codex', 'Codex 账号'],
+  ['audit', '审计'],
+];
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('alpha-admin-token') || '');
   const [email, setEmail] = useState('admin@alpha-studio.local');
   const [password, setPassword] = useState('');
-  const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const [activeTab, setActiveTab] = useState<Tab>(() => tabFromLocation());
   const [summary, setSummary] = useState<Summary>(defaultSummary);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [authorizationCodes, setAuthorizationCodes] = useState<AuthorizationCode[]>([]);
@@ -189,8 +205,9 @@ function App() {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
 
-  const money = useMemo(() => formatCents(summary.billableCents), [summary.billableCents]);
+  const money = useMemo(() => formatYuan(summary.billableYuan), [summary.billableYuan]);
   const selectedProvider = useMemo(
     () => selectedProviderId ? providers.find((provider) => provider.provider === selectedProviderId) || providers[0] || null : null,
     [providers, selectedProviderId],
@@ -198,6 +215,14 @@ function App() {
   const selectedProviderModels = useMemo(
     () => models.filter((model) => model.provider === selectedProvider?.provider),
     [models, selectedProvider],
+  );
+  const selectedAuthorizationTenant = useMemo(
+    () => tenants.find((tenant) => tenant.id === codeForm.tenantId) || tenants[0] || null,
+    [tenants, codeForm.tenantId],
+  );
+  const selectedAuthorizationCodes = useMemo(
+    () => authorizationCodes.filter((code) => code.tenantId === selectedAuthorizationTenant?.id),
+    [authorizationCodes, selectedAuthorizationTenant],
   );
 
   useEffect(() => {
@@ -207,6 +232,24 @@ function App() {
     setProviderForm(providerFormFromConfig(nextProvider));
     setModelForm(modelFormForProvider(nextProvider));
   }, [providers, selectedProviderId]);
+
+  useEffect(() => {
+    const handlePopState = () => setActiveTab(tabFromLocation());
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    document.title = `${tabTitle(activeTab)} - Alpha Studio Admin`;
+  }, [activeTab]);
+
+  const navigateTab = (tab: Tab) => {
+    setActiveTab(tab);
+    const nextPath = pathForTab(tab);
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({}, '', nextPath);
+    }
+  };
 
   const login = async (event: FormEvent) => {
     event.preventDefault();
@@ -251,18 +294,15 @@ function App() {
         api<{ logs: AuditLog[] }>('/api/admin/audit-logs', token),
       ]);
       setSummary(summaryData);
-      setTenants(tenantData.tenants || []);
+      const loadedTenants = tenantData.tenants || [];
+      setTenants(loadedTenants);
       setAuthorizationCodes(codeData.authorizationCodes || []);
       setProviders(providerData.providers || []);
       setModels(modelData.models || []);
       setCodexAccounts(codexData.accounts || []);
       setLogs(auditData.logs || []);
-      if (!codeForm.tenantId && tenantData.tenants?.[0]) {
-        setCodeForm((form) => ({ ...form, tenantId: tenantData.tenants[0].id }));
-      }
-      if (!codexForm.tenantId && tenantData.tenants?.[0]) {
-        setCodexForm((form) => ({ ...form, tenantId: tenantData.tenants[0].id }));
-      }
+      setCodeForm((form) => ({ ...form, tenantId: selectExistingTenantId(loadedTenants, form.tenantId) }));
+      setCodexForm((form) => ({ ...form, tenantId: selectExistingTenantId(loadedTenants, form.tenantId) }));
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败');
     } finally {
@@ -297,17 +337,18 @@ function App() {
   const createAuthorizationCode = async (event: FormEvent) => {
     event.preventDefault();
     await mutate(async () => {
+      if (!selectedAuthorizationTenant) throw new Error('请先选择客户');
       const data = await api<{ authorizationCode: string }>('/api/admin/authorization-codes', token, {
         method: 'POST',
         body: JSON.stringify({
-          tenantId: codeForm.tenantId,
+          tenantId: selectedAuthorizationTenant.id,
           maxDevices: codeForm.maxDevices,
           expiresAt: toIsoOrNull(codeForm.expiresAt),
           note: codeForm.note,
         }),
       });
       setGeneratedCode(data.authorizationCode);
-      setNotice('授权码已生成，可在授权码记录中继续查看');
+      setNotice(`${selectedAuthorizationTenant.name} 的授权码已生成`);
       await load();
     });
   };
@@ -375,65 +416,90 @@ function App() {
   };
 
   const deleteProvider = async (provider: ProviderConfig) => {
-    if (!window.confirm(`删除供应商 ${provider.label} 会同时删除其下模型，继续吗？`)) return;
-    await mutate(async () => {
-      await api(`/api/admin/provider-configs/${encodeURIComponent(provider.provider)}`, token, {
-        method: 'DELETE',
-      });
-      const nextProvider = providers.find((candidate) => candidate.provider !== provider.provider) || null;
-      setSelectedProviderId(nextProvider?.provider || '');
-      setProviderForm(nextProvider ? providerFormFromConfig(nextProvider) : { ...emptyProviderForm, provider: '', label: '', apiKey: '' });
-      setModelForm(modelFormForProvider(nextProvider));
-      setNotice('供应商已删除');
-      await load();
+    setConfirmDialog({
+      title: '删除供应商',
+      message: `确定删除 ${provider.label}？`,
+      detail: `${provider.provider} 下的模型路由也会一起删除，操作不可恢复。`,
+      confirmLabel: '删除供应商',
+      onConfirm: () => mutate(async () => {
+        await api(`/api/admin/provider-configs/${encodeURIComponent(provider.provider)}`, token, {
+          method: 'DELETE',
+        });
+        const nextProvider = providers.find((candidate) => candidate.provider !== provider.provider) || null;
+        setSelectedProviderId(nextProvider?.provider || '');
+        setProviderForm(nextProvider ? providerFormFromConfig(nextProvider) : { ...emptyProviderForm, provider: '', label: '', apiKey: '' });
+        setModelForm(modelFormForProvider(nextProvider));
+        setNotice('供应商已删除');
+        await load();
+      }),
     });
   };
 
   const deleteModel = async (model: ModelRoute) => {
-    if (!window.confirm(`删除模型 ${model.label}？`)) return;
-    await mutate(async () => {
-      await api(`/api/admin/model-routes/${encodeURIComponent(model.id)}`, token, {
-        method: 'DELETE',
-      });
-      if (modelForm.id === model.id) setModelForm(modelFormForProvider(selectedProvider));
-      setNotice('模型路由已删除');
-      await load();
+    setConfirmDialog({
+      title: '删除模型路由',
+      message: `确定删除 ${model.label}？`,
+      detail: `模型 ID：${model.modelId}`,
+      confirmLabel: '删除模型',
+      onConfirm: () => mutate(async () => {
+        await api(`/api/admin/model-routes/${encodeURIComponent(model.id)}`, token, {
+          method: 'DELETE',
+        });
+        if (modelForm.id === model.id) setModelForm(modelFormForProvider(selectedProvider));
+        setNotice('模型路由已删除');
+        await load();
+      }),
     });
   };
 
   const deleteTenant = async (tenant: Tenant) => {
-    if (!window.confirm(`删除客户 ${tenant.name} 会清理其授权码、设备和用量记录，继续吗？`)) return;
-    await mutate(async () => {
-      await api(`/api/admin/tenants/${encodeURIComponent(tenant.id)}`, token, {
-        method: 'DELETE',
-      });
-      if (tenantForm.id === tenant.id) setTenantForm(emptyTenantForm);
-      setNotice('客户已删除');
-      await load();
+    setConfirmDialog({
+      title: '删除客户',
+      message: `确定删除 ${tenant.name}？`,
+      detail: `客户 ID：${tenant.id}。这会清理其授权码、设备和用量记录，操作不可恢复。`,
+      confirmLabel: '删除客户',
+      onConfirm: () => mutate(async () => {
+        await api(`/api/admin/tenants/${encodeURIComponent(tenant.id)}`, token, {
+          method: 'DELETE',
+        });
+        if (tenantForm.id === tenant.id) setTenantForm(emptyTenantForm);
+        setNotice('客户已删除');
+        await load();
+      }),
     });
   };
 
   const updateAuthorizationCodeStatus = async (code: AuthorizationCode, status: string) => {
     const action = status === 'revoked' ? '撤销' : '更新';
-    if (!window.confirm(`${action}授权码 ${code.codeHint}？`)) return;
-    await mutate(async () => {
-      await api(`/api/admin/authorization-codes/${encodeURIComponent(code.id)}`, token, {
-        method: 'PATCH',
-        body: JSON.stringify({ status }),
-      });
-      setNotice(status === 'revoked' ? '授权码已撤销' : '授权码状态已更新');
-      await load();
+    setConfirmDialog({
+      title: `${action}授权码`,
+      message: `确定${action}授权码 ${code.codeHint}？`,
+      detail: `客户：${code.tenantName}`,
+      confirmLabel: status === 'revoked' ? '撤销授权码' : '更新状态',
+      onConfirm: () => mutate(async () => {
+        await api(`/api/admin/authorization-codes/${encodeURIComponent(code.id)}`, token, {
+          method: 'PATCH',
+          body: JSON.stringify({ status }),
+        });
+        setNotice(status === 'revoked' ? '授权码已撤销' : '授权码状态已更新');
+        await load();
+      }),
     });
   };
 
   const deleteAuthorizationCode = async (code: AuthorizationCode) => {
-    if (!window.confirm(`删除授权码 ${code.codeHint}？`)) return;
-    await mutate(async () => {
-      await api(`/api/admin/authorization-codes/${encodeURIComponent(code.id)}`, token, {
-        method: 'DELETE',
-      });
-      setNotice('授权码已删除');
-      await load();
+    setConfirmDialog({
+      title: '删除授权码',
+      message: `确定删除授权码 ${code.codeHint}？`,
+      detail: `客户：${code.tenantName}`,
+      confirmLabel: '删除授权码',
+      onConfirm: () => mutate(async () => {
+        await api(`/api/admin/authorization-codes/${encodeURIComponent(code.id)}`, token, {
+          method: 'DELETE',
+        });
+        setNotice('授权码已删除');
+        await load();
+      }),
     });
   };
 
@@ -473,14 +539,19 @@ function App() {
   };
 
   const deleteCodexAccount = async (account: CodexAccount) => {
-    if (!window.confirm(`删除 Codex 账号 ${account.email}？`)) return;
-    await mutate(async () => {
-      await api(`/api/admin/codex-accounts/${encodeURIComponent(account.id)}`, token, {
-        method: 'DELETE',
-      });
-      if (codexForm.id === account.id) setCodexForm(emptyCodexForm);
-      setNotice('Codex 账号已删除');
-      await load();
+    setConfirmDialog({
+      title: '删除 Codex 账号',
+      message: `确定删除 ${account.email}？`,
+      detail: account.tenantName ? `当前分配客户：${account.tenantName}` : '当前未分配给客户。',
+      confirmLabel: '删除账号',
+      onConfirm: () => mutate(async () => {
+        await api(`/api/admin/codex-accounts/${encodeURIComponent(account.id)}`, token, {
+          method: 'DELETE',
+        });
+        if (codexForm.id === account.id) setCodexForm(emptyCodexForm);
+        setNotice('Codex 账号已删除');
+        await load();
+      }),
     });
   };
 
@@ -508,6 +579,20 @@ function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const selectTenantForAuthorization = (tenant: Tenant) => {
+    setGeneratedCode('');
+    setProbeResult('');
+    setCodeForm((form) => ({ ...form, tenantId: tenant.id, maxDevices: tenant.maxDevices }));
+    setActivationProbe((form) => ({ ...form, companyName: tenant.name }));
+  };
+
+  const confirmPendingAction = async () => {
+    if (!confirmDialog) return;
+    const { onConfirm } = confirmDialog;
+    setConfirmDialog(null);
+    await onConfirm();
   };
 
   if (!token) {
@@ -544,19 +629,12 @@ function App() {
           </div>
         </div>
         <nav>
-          {[
-            ['overview', '总览'],
-            ['tenants', '客户'],
-            ['codes', '授权码'],
-            ['gateway', '模型网关'],
-            ['codex', 'Codex 账号'],
-            ['audit', '审计'],
-          ].map(([tab, label]) => (
+          {navItems.map(([tab, label]) => (
             <button
               className={activeTab === tab ? 'active' : ''}
               key={tab}
               type="button"
-              onClick={() => setActiveTab(tab as Tab)}
+              onClick={() => navigateTab(tab)}
             >
               {label}
             </button>
@@ -606,41 +684,32 @@ function App() {
         {activeTab === 'tenants' && (
           <GridSection>
             <TenantForm form={tenantForm} setForm={setTenantForm} onSubmit={saveTenant} loading={loading} />
+            <TenantAuthorizationPanel
+              tenant={selectedAuthorizationTenant}
+              form={codeForm}
+              setForm={setCodeForm}
+              generatedCode={generatedCode}
+              codes={selectedAuthorizationCodes}
+              activationForm={activationProbe}
+              setActivationForm={setActivationProbe}
+              activationResult={probeResult}
+              onSubmit={createAuthorizationCode}
+              onActivationSubmit={testActivation}
+              onRevoke={(code) => updateAuthorizationCodeStatus(code, 'revoked')}
+              onDelete={deleteAuthorizationCode}
+              loading={loading}
+            />
             <section className="panel span-2">
               <div className="panel-head">
                 <h2>客户列表</h2>
-                <span>{tenants.length} 个</span>
+                <span>{tenants.length} 个，选择客户后在上方管理授权码</span>
               </div>
-              <TenantTable tenants={tenants} onEdit={setTenantForm} onDelete={deleteTenant} />
-            </section>
-          </GridSection>
-        )}
-        {activeTab === 'codes' && (
-          <GridSection>
-            <AuthorizationCodeForm
-              form={codeForm}
-              setForm={setCodeForm}
-              tenants={tenants}
-              generatedCode={generatedCode}
-              onSubmit={createAuthorizationCode}
-              loading={loading}
-            />
-            <ActivationProbe
-              form={activationProbe}
-              setForm={setActivationProbe}
-              result={probeResult}
-              onSubmit={testActivation}
-              loading={loading}
-            />
-            <section className="panel span-2">
-              <div className="panel-head">
-                <h2>授权码记录</h2>
-                <span>{authorizationCodes.length} 条</span>
-              </div>
-              <AuthorizationCodeTable
-                codes={authorizationCodes}
-                onRevoke={(code) => updateAuthorizationCodeStatus(code, 'revoked')}
-                onDelete={deleteAuthorizationCode}
+              <TenantTable
+                tenants={tenants}
+                onEdit={setTenantForm}
+                onDelete={deleteTenant}
+                onManageCodes={selectTenantForAuthorization}
+                selectedTenantId={selectedAuthorizationTenant?.id}
               />
             </section>
           </GridSection>
@@ -702,6 +771,12 @@ function App() {
           </section>
         )}
       </section>
+      <ConfirmDialog
+        dialog={confirmDialog}
+        loading={loading}
+        onCancel={() => setConfirmDialog(null)}
+        onConfirm={confirmPendingAction}
+      />
     </main>
   );
 }
@@ -724,7 +799,7 @@ function TenantForm({ form, setForm, onSubmit, loading }: {
         <Select label="状态" value={form.status} onChange={(status) => setForm({ ...form, status })} options={['active', 'suspended']} />
         <NumberField label="授权机器数" value={form.maxDevices} onChange={(maxDevices) => setForm({ ...form, maxDevices })} />
         <Select label="计费模式" value={form.billingMode} onChange={(billingMode) => setForm({ ...form, billingMode })} options={['hybrid', 'gateway_api', 'subscription']} />
-        <NumberField label="预付余额 cents" value={form.balanceCents} onChange={(balanceCents) => setForm({ ...form, balanceCents })} />
+        <NumberField label="预付余额 元" value={form.balanceYuan} min={0} step="any" onChange={(balanceYuan) => setForm({ ...form, balanceYuan })} />
         <Field label="API 套餐" value={form.subscriptionPlan} onChange={(subscriptionPlan) => setForm({ ...form, subscriptionPlan })} />
         <Field label="API 到期时间" type="datetime-local" value={form.subscriptionExpiresAt} onChange={(subscriptionExpiresAt) => setForm({ ...form, subscriptionExpiresAt })} />
         <label className="check-row">
@@ -741,46 +816,124 @@ function TenantForm({ form, setForm, onSubmit, loading }: {
   );
 }
 
-function AuthorizationCodeForm({ form, setForm, tenants, generatedCode, onSubmit, loading }: {
+function TenantAuthorizationPanel({
+  tenant,
+  form,
+  setForm,
+  generatedCode,
+  codes,
+  activationForm,
+  setActivationForm,
+  activationResult,
+  onSubmit,
+  onActivationSubmit,
+  onRevoke,
+  onDelete,
+  loading,
+}: {
+  tenant: Tenant | null;
   form: typeof emptyCodeForm;
   setForm: (form: typeof emptyCodeForm) => void;
-  tenants: Tenant[];
   generatedCode: string;
+  codes: AuthorizationCode[];
+  activationForm: typeof activationProbeShape;
+  setActivationForm: (form: typeof activationProbeShape) => void;
+  activationResult: string;
   onSubmit: (event: FormEvent) => void;
+  onActivationSubmit: (event: FormEvent) => void;
+  onRevoke: (code: AuthorizationCode) => void;
+  onDelete: (code: AuthorizationCode) => void;
   loading: boolean;
 }) {
+  const activeCodes = codes.filter((code) => code.status === 'active').length;
+
   return (
-    <form className="panel form-panel" onSubmit={onSubmit}>
-      <div className="panel-head compact"><h2>生成客户授权码</h2></div>
-      <div className="form-grid">
-        <Select label="客户" value={form.tenantId} onChange={(tenantId) => setForm({ ...form, tenantId })} options={tenants.map((tenant) => tenant.id)} optionLabels={Object.fromEntries(tenants.map((tenant) => [tenant.id, tenant.name]))} />
-        <NumberField label="授权机器数" value={form.maxDevices} onChange={(maxDevices) => setForm({ ...form, maxDevices })} />
-        <Field label="到期时间" type="datetime-local" value={form.expiresAt} onChange={(expiresAt) => setForm({ ...form, expiresAt })} />
-        <Field label="备注" value={form.note} onChange={(note) => setForm({ ...form, note })} />
+    <section className="panel tenant-auth-panel">
+      <div className="panel-head">
+        <div>
+          <h2>客户授权</h2>
+          <span>{tenant ? `${tenant.name} · ${codes.length} 条授权码` : '选择客户后创建授权码'}</span>
+        </div>
+        {tenant && <Status value={tenant.status} />}
       </div>
-      {generatedCode && <div className="secret-box"><span>新授权码</span><strong>{generatedCode}</strong></div>}
-      <div className="form-actions"><button type="submit" disabled={loading || !form.tenantId}>生成授权码</button></div>
-    </form>
+      {!tenant ? (
+        <div className="empty">暂无客户。先创建客户后即可在这里生成授权码。</div>
+      ) : (
+        <>
+          <div className="tenant-auth-strip">
+            <div className="mini-stat"><span>当前客户</span><strong>{tenant.name}</strong></div>
+            <div className="mini-stat"><span>授权机器数</span><strong>{tenant.maxDevices}</strong></div>
+            <div className="mini-stat"><span>活跃授权码</span><strong>{activeCodes}</strong></div>
+          </div>
+          <div className="tenant-auth-grid">
+            <form className="embedded-form" onSubmit={onSubmit}>
+              <div className="embedded-head">
+                <div>
+                  <h3>生成授权码</h3>
+                  <span>{tenant.id}</span>
+                </div>
+              </div>
+              <div className="form-grid compact-grid">
+                <NumberField label="授权机器数" value={form.maxDevices} onChange={(maxDevices) => setForm({ ...form, maxDevices })} />
+                <Field label="到期时间" type="datetime-local" value={form.expiresAt} onChange={(expiresAt) => setForm({ ...form, expiresAt })} />
+                <Field label="备注" value={form.note} onChange={(note) => setForm({ ...form, note })} />
+              </div>
+              {generatedCode && <div className="secret-box"><span>新授权码</span><strong>{generatedCode}</strong></div>}
+              <div className="form-actions embedded-actions">
+                <button type="submit" disabled={loading}>生成授权码</button>
+              </div>
+            </form>
+            <ActivationProbe
+              form={activationForm}
+              setForm={setActivationForm}
+              result={activationResult}
+              onSubmit={onActivationSubmit}
+              loading={loading}
+              tenantName={tenant.name}
+            />
+          </div>
+          <div className="panel-subhead">
+            <div>
+              <h3>授权码记录</h3>
+              <span>仅显示当前客户的授权码</span>
+            </div>
+            <span>{codes.length} 条</span>
+          </div>
+          <AuthorizationCodeTable
+            codes={codes}
+            showTenant={false}
+            onRevoke={onRevoke}
+            onDelete={onDelete}
+          />
+        </>
+      )}
+    </section>
   );
 }
 
-function ActivationProbe({ form, setForm, result, onSubmit, loading }: {
+function ActivationProbe({ form, setForm, result, onSubmit, loading, tenantName }: {
   form: typeof activationProbeShape;
   setForm: (form: typeof activationProbeShape) => void;
   result: string;
   onSubmit: (event: FormEvent) => void;
   loading: boolean;
+  tenantName?: string;
 }) {
   return (
-    <form className="panel form-panel" onSubmit={onSubmit}>
-      <div className="panel-head compact"><h2>模拟客户端首次激活</h2></div>
-      <div className="form-grid">
+    <form className="embedded-form" onSubmit={onSubmit}>
+      <div className="embedded-head">
+        <div>
+          <h3>模拟首次激活</h3>
+          <span>{tenantName ? `客户：${tenantName}` : '验证客户端激活流程'}</span>
+        </div>
+      </div>
+      <div className="form-grid compact-grid">
         <Field label="公司名称" value={form.companyName} onChange={(companyName) => setForm({ ...form, companyName })} />
         <Field label="授权码" value={form.authorizationCode} onChange={(authorizationCode) => setForm({ ...form, authorizationCode })} />
         <Field label="机器指纹" value={form.fingerprint} onChange={(fingerprint) => setForm({ ...form, fingerprint })} />
         <Field label="设备名" value={form.deviceName} onChange={(deviceName) => setForm({ ...form, deviceName })} />
       </div>
-      <div className="form-actions"><button type="submit" disabled={loading}>测试激活</button></div>
+      <div className="form-actions embedded-actions"><button type="submit" disabled={loading}>测试激活</button></div>
       {result && <pre className="result-box">{result}</pre>}
     </form>
   );
@@ -825,10 +978,10 @@ function modelFormFromRoute(model: ModelRoute): typeof emptyModelForm {
     upstreamModel: model.upstreamModel,
     enabled: model.enabled,
     sortOrder: model.sortOrder,
-    inputCentsPerMillion: model.inputCentsPerMillion,
-    outputCentsPerMillion: model.outputCentsPerMillion,
-    reasoningCentsPerMillion: model.reasoningCentsPerMillion,
-    cachedInputCentsPerMillion: model.cachedInputCentsPerMillion,
+    inputYuanPerMillion: model.inputYuanPerMillion,
+    outputYuanPerMillion: model.outputYuanPerMillion,
+    reasoningYuanPerMillion: model.reasoningYuanPerMillion,
+    cachedInputYuanPerMillion: model.cachedInputYuanPerMillion,
     markupBps: model.markupBps,
   };
 }
@@ -845,6 +998,11 @@ function codexFormFromAccount(account: CodexAccount): typeof emptyCodexForm {
     seatLimit: account.seatLimit,
     expiresAt: toLocalInput(account.expiresAt),
   };
+}
+
+function selectExistingTenantId(tenants: Tenant[], tenantId: string) {
+  if (tenantId && tenants.some((tenant) => tenant.id === tenantId)) return tenantId;
+  return tenants[0]?.id || '';
 }
 
 function GatewayWorkspace({
@@ -1126,11 +1284,11 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, loadi
         <Field label="Base URL" value={form.baseUrl} onChange={(baseUrl) => setForm({ ...form, baseUrl })} />
         <Field label="Endpoint Path" value={form.endpointPath} onChange={(endpointPath) => setForm({ ...form, endpointPath })} />
         <NumberField label="排序" value={form.sortOrder} onChange={(sortOrder) => setForm({ ...form, sortOrder })} />
-        <NumberField label="输入 cents/M" value={form.inputCentsPerMillion} onChange={(inputCentsPerMillion) => setForm({ ...form, inputCentsPerMillion })} />
-        <NumberField label="输出 cents/M" value={form.outputCentsPerMillion} onChange={(outputCentsPerMillion) => setForm({ ...form, outputCentsPerMillion })} />
-        <NumberField label="推理 cents/M" value={form.reasoningCentsPerMillion} onChange={(reasoningCentsPerMillion) => setForm({ ...form, reasoningCentsPerMillion })} />
-        <NumberField label="缓存输入 cents/M" value={form.cachedInputCentsPerMillion} onChange={(cachedInputCentsPerMillion) => setForm({ ...form, cachedInputCentsPerMillion })} />
-        <NumberField label="加价 bps" value={form.markupBps} onChange={(markupBps) => setForm({ ...form, markupBps })} />
+        <NumberField label="输入 元/百万" value={form.inputYuanPerMillion} min={0} step="any" onChange={(inputYuanPerMillion) => setForm({ ...form, inputYuanPerMillion })} />
+        <NumberField label="输出 元/百万" value={form.outputYuanPerMillion} min={0} step="any" onChange={(outputYuanPerMillion) => setForm({ ...form, outputYuanPerMillion })} />
+        <NumberField label="推理 元/百万" value={form.reasoningYuanPerMillion} min={0} step="any" onChange={(reasoningYuanPerMillion) => setForm({ ...form, reasoningYuanPerMillion })} />
+        <NumberField label="缓存输入 元/百万" value={form.cachedInputYuanPerMillion} min={0} step="any" onChange={(cachedInputYuanPerMillion) => setForm({ ...form, cachedInputYuanPerMillion })} />
+        <NumberField label="加价 bps" value={form.markupBps} min={0} step={1} title="10000 bps = 100%" onChange={(markupBps) => setForm({ ...form, markupBps })} />
         <label className="check-row">
           <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
           启用模型
@@ -1169,10 +1327,12 @@ function CodexAccountForm({ form, setForm, tenants, onSubmit, loading }: {
   );
 }
 
-function TenantTable({ tenants, onEdit, onDelete }: {
+function TenantTable({ tenants, onEdit, onDelete, onManageCodes, selectedTenantId }: {
   tenants: Tenant[];
   onEdit: (form: typeof emptyTenantForm) => void;
   onDelete?: (tenant: Tenant) => void;
+  onManageCodes?: (tenant: Tenant) => void;
+  selectedTenantId?: string;
 }) {
   if (tenants.length === 0) return <div className="empty">暂无客户。</div>;
   return (
@@ -1181,21 +1341,24 @@ function TenantTable({ tenants, onEdit, onDelete }: {
         <thead><tr><th>客户</th><th>设备</th><th>余额</th><th>Codex</th><th>状态</th><th /></tr></thead>
         <tbody>
           {tenants.map((tenant) => (
-            <tr key={tenant.id}>
+            <tr className={tenant.id === selectedTenantId ? 'selected-row' : ''} key={tenant.id}>
               <td><strong>{tenant.name}</strong><span>{tenant.id}</span></td>
               <td>{tenant.activeDevices}/{tenant.maxDevices}</td>
-              <td>{formatCents(tenant.balanceCents)}</td>
+              <td>{formatYuan(tenant.balanceYuan)}</td>
               <td>{tenant.codexSubscriptionEnabled ? `${tenant.codexSubscriptionPlan || '-'} / ${formatDate(tenant.codexSubscriptionExpiresAt)}` : '未启用'}</td>
               <td><Status value={tenant.status} /></td>
               <td>
                 <div className="table-actions">
+                  {onManageCodes && (
+                    <button className="secondary" type="button" onClick={() => onManageCodes(tenant)}>授权码</button>
+                  )}
                   <button className="secondary" type="button" onClick={() => onEdit({
                     id: tenant.id,
                     name: tenant.name,
                     status: tenant.status,
                     maxDevices: tenant.maxDevices,
                     billingMode: tenant.billingMode,
-                    balanceCents: tenant.balanceCents,
+                    balanceYuan: tenant.balanceYuan,
                     subscriptionPlan: tenant.subscriptionPlan || '',
                     subscriptionExpiresAt: toLocalInput(tenant.subscriptionExpiresAt),
                     codexSubscriptionEnabled: tenant.codexSubscriptionEnabled,
@@ -1215,20 +1378,31 @@ function TenantTable({ tenants, onEdit, onDelete }: {
   );
 }
 
-function AuthorizationCodeTable({ codes, onRevoke, onDelete }: {
+function AuthorizationCodeTable({ codes, onRevoke, onDelete, showTenant = true }: {
   codes: AuthorizationCode[];
   onRevoke?: (code: AuthorizationCode) => void;
   onDelete?: (code: AuthorizationCode) => void;
+  showTenant?: boolean;
 }) {
   if (codes.length === 0) return <div className="empty">暂无授权码。</div>;
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>客户</th><th>授权码</th><th>机器数</th><th>到期</th><th>最近使用</th><th>状态</th><th /></tr></thead>
+        <thead>
+          <tr>
+            {showTenant && <th>客户</th>}
+            <th>授权码</th>
+            <th>机器数</th>
+            <th>到期</th>
+            <th>最近使用</th>
+            <th>状态</th>
+            <th />
+          </tr>
+        </thead>
         <tbody>
           {codes.map((code) => (
             <tr key={code.id}>
-              <td><strong>{code.tenantName}</strong><span>{code.note || code.tenantId}</span></td>
+              {showTenant && <td><strong>{code.tenantName}</strong><span>{code.note || code.tenantId}</span></td>}
               <td><code className="secret-code">{code.authorizationCode || code.codeHint}</code></td>
               <td>{code.maxDevices}</td>
               <td>{formatDate(code.expiresAt)}</td>
@@ -1261,13 +1435,13 @@ function ModelTable({ models, onEdit, onDelete }: {
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>模型</th><th>上游模型</th><th>价格 cents/M</th><th>状态</th><th /></tr></thead>
+        <thead><tr><th>模型</th><th>上游模型</th><th>价格 元/百万</th><th>状态</th><th /></tr></thead>
         <tbody>
           {models.map((model) => (
             <tr key={model.id}>
               <td><strong>{model.label}</strong><span>{model.modelId}</span></td>
               <td><strong>{model.upstreamModel}</strong><span>{model.endpointPath}</span></td>
-              <td>{model.inputCentsPerMillion}/{model.outputCentsPerMillion} + {model.markupBps}bps</td>
+              <td>{formatYuanPerMillion(model.inputYuanPerMillion)}/{formatYuanPerMillion(model.outputYuanPerMillion)} + {model.markupBps}bps</td>
               <td><Status value={model.enabled && model.providerReady ? 'ready' : model.enabled ? 'provider missing' : 'disabled'} /></td>
               <td>
                 <div className="table-actions">
@@ -1323,6 +1497,39 @@ function CodexAccountTable({ accounts, onEdit, onDelete, onSetStatus }: {
   );
 }
 
+function ConfirmDialog({ dialog, loading, onCancel, onConfirm }: {
+  dialog: ConfirmDialogState | null;
+  loading: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  if (!dialog) return null;
+  return (
+    <div
+      className="dialog-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <div className="confirm-mark" aria-hidden="true">!</div>
+        <div className="confirm-copy">
+          <h2 id="confirm-title">{dialog.title}</h2>
+          <p>{dialog.message}</p>
+          {dialog.detail && <div className="confirm-detail">{dialog.detail}</div>}
+        </div>
+        <div className="confirm-actions">
+          <button type="button" className="secondary" onClick={onCancel} disabled={loading}>取消</button>
+          <button type="button" className="danger-primary" onClick={onConfirm} disabled={loading} autoFocus>
+            {loading ? '处理中...' : dialog.confirmLabel}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function GridSection({ children }: { children: React.ReactNode }) {
   return <div className="work-grid">{children}</div>;
 }
@@ -1352,11 +1559,25 @@ function Field({ label, value, onChange, type = 'text', required = false, placeh
   );
 }
 
-function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+function NumberField({ label, value, onChange, min, step = 1, title }: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  step?: number | 'any';
+  title?: string;
+}) {
   return (
-    <label>
+    <label title={title}>
       {label}
-      <input type="number" value={value} onChange={(event) => onChange(Number(event.target.value || 0))} />
+      <input
+        type="number"
+        value={value}
+        min={min}
+        step={step}
+        title={title}
+        onChange={(event) => onChange(Number(event.target.value || 0))}
+      />
     </label>
   );
 }
@@ -1414,8 +1635,7 @@ async function request<T>(path: string, options: RequestInit): Promise<T> {
 function tabTitle(tab: Tab) {
   return {
     overview: '运营总览',
-    tenants: '客户与计费',
-    codes: '客户授权',
+    tenants: '客户与授权',
     gateway: '模型网关',
     codex: 'Codex 订阅账号',
     audit: '审计日志',
@@ -1425,19 +1645,45 @@ function tabTitle(tab: Tab) {
 function tabSubtitle(tab: Tab) {
   return {
     overview: '客户、设备、模型网关和用量账本状态。',
-    tenants: '维护基金公司客户、授权机器数、余额和订阅有效期。',
-    codes: '为客户生成一次性授权码，并模拟客户端首次激活。',
+    tenants: '维护基金公司客户，并在客户上下文中生成和管理授权码。',
     gateway: '在后台配置上游 key、模型别名、价格和加价规则。',
     codex: '管理我们提供给客户使用的 Codex 订阅账号。',
     audit: '查看资金、授权、模型和账号配置变更。',
   }[tab];
 }
 
-function formatCents(cents: number) {
+function tabFromLocation(): Tab {
+  const segment = window.location.pathname.replace(/\/+$/, '').split('/').pop() || '';
+  if (segment === 'codes') return 'tenants';
+  if (isTab(segment)) return segment;
+  const hashTab = window.location.hash.replace(/^#\/?/, '');
+  if (hashTab === 'codes') return 'tenants';
+  if (isTab(hashTab)) return hashTab;
+  return 'overview';
+}
+
+function pathForTab(tab: Tab) {
+  return tab === 'overview' ? '/admin/' : `/admin/${tab}`;
+}
+
+function isTab(value: string): value is Tab {
+  return navItems.some(([tab]) => tab === value);
+}
+
+function formatYuan(yuan: number) {
   return new Intl.NumberFormat('zh-CN', {
     style: 'currency',
-    currency: 'USD',
-  }).format(cents / 100);
+    currency: 'CNY',
+  }).format(yuan);
+}
+
+function formatYuanPerMillion(yuan: number) {
+  return new Intl.NumberFormat('zh-CN', {
+    style: 'currency',
+    currency: 'CNY',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6,
+  }).format(yuan);
 }
 
 function formatDate(value?: string | null) {

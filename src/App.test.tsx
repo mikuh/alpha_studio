@@ -22,6 +22,7 @@ vi.mock('@tauri-apps/api/core', () => ({
       });
     }
     if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
+    if (command === 'codex_revoke_authorization') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
     if (command === 'list_open_apps') return Promise.resolve(['finder']);
     if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
     if (command === 'git_status') {
@@ -220,6 +221,41 @@ describe('right feature panel', () => {
     expect(within(skillsPage).getByText('Skill Installer')).toBeInTheDocument();
   });
 
+  it('opens the automations page from the sidebar automation menu', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+
+    const automationPage = container.querySelector('.automation-page') as HTMLElement;
+    expect(automationPage).toBeInTheDocument();
+    expect(container.querySelector('.top-bar')).not.toBeInTheDocument();
+    expect(automationPage.querySelector('.automation-drag-strip')).toHaveAttribute('data-tauri-drag-region');
+    expect(screen.queryByRole('dialog', { name: '设置' })).not.toBeInTheDocument();
+    expect(within(automationPage).getByRole('heading', { name: '已安排' })).toBeInTheDocument();
+    expect(within(automationPage).getByRole('tab', { name: 'Tasks' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(automationPage).getByText('创建首个已安排任务')).toBeInTheDocument();
+  });
+
+  it('starts automation creation from a template through chat tools', async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ sendMessage });
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const automationPage = container.querySelector('.automation-page') as HTMLElement;
+    await user.click(within(automationPage).getByRole('tab', { name: 'Templates' }));
+    await user.click(within(automationPage).getByRole('button', { name: /CI 失败总结/ }));
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const prompt = sendMessage.mock.calls[0][0] as string;
+    expect(prompt).toContain('automation_update');
+    expect(prompt).toContain('CI 失败总结');
+    expect(prompt).toContain('不要使用 crontab');
+    expect(prompt).toContain('launchd');
+  });
+
   it('filters the skills catalog by category from the capability filter menu', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
@@ -316,6 +352,15 @@ describe('right feature panel', () => {
     expect(within(sidebar).getByText('4 天')).toBeInTheDocument();
     expect(within(sidebar).getByText('1 周')).toBeInTheDocument();
     expect(within(sidebar).queryByText('4天')).not.toBeInTheDocument();
+  });
+
+  it('does not show the mobile entry in the sidebar navigation', () => {
+    const { container } = render(<App />);
+    const navMenu = container.querySelector('.nav-menu') as HTMLElement;
+
+    expect(within(navMenu).queryByRole('button', { name: '移动端' })).not.toBeInTheDocument();
+    expect(within(navMenu).queryByRole('button', { name: '提醒' })).not.toBeInTheDocument();
+    expect(within(navMenu).getByRole('button', { name: '自动化' })).toBeInTheDocument();
   });
 
   it('does not show the static usage card in the sidebar footer', () => {
@@ -439,6 +484,15 @@ describe('right feature panel', () => {
 
   it('requires an explicit button press to launch Codex CLI device authorization', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    useChatStore.setState({
+      codexStatus: {
+        installed: true,
+        loggedIn: false,
+        path: '/usr/bin/codex',
+        version: 'test',
+        error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。',
+      },
+    });
     const user = userEvent.setup();
     const { container } = render(<App />);
 
@@ -452,6 +506,97 @@ describe('right feature panel', () => {
     await user.click(loginButton);
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('codex_login'));
+  });
+
+  it('shows the Codex CLI as authorized after device authorization is detected', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === 'codex_check') {
+        return Promise.resolve({
+          installed: true,
+          version: 'test',
+          path: '/usr/bin/codex',
+          loggedIn: true,
+        });
+      }
+      if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
+      if (command === 'codex_revoke_authorization') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
+      if (command === 'list_open_apps') return Promise.resolve(['finder']);
+      if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
+      if (command === 'git_status') {
+        return Promise.resolve({
+          cwd: '/tmp/alpha-studio',
+          isRepository: false,
+          ahead: 0,
+          behind: 0,
+          clean: true,
+          changes: [],
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    useChatStore.setState({
+      codexStatus: { installed: true, loggedIn: true, path: '/usr/bin/codex', version: 'test' },
+    });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+    const settings = screen.getByRole('dialog', { name: '设置' });
+    await user.click(within(settings).getByRole('button', { name: '个人资料' }));
+
+    await waitFor(() => expect(within(settings).getByText('已授权')).toBeInTheDocument());
+    expect(within(settings).queryByRole('button', { name: '授权 Codex CLI' })).not.toBeInTheDocument();
+  });
+
+  it('revokes Codex CLI authorization from profile settings', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    let revoked = false;
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === 'codex_check') {
+        return Promise.resolve({
+          installed: true,
+          version: 'test',
+          path: '/usr/bin/codex',
+          loggedIn: !revoked,
+          error: revoked ? 'Alpha Studio 的 Codex CLI 尚未完成设备授权。' : undefined,
+        });
+      }
+      if (command === 'codex_revoke_authorization') {
+        revoked = true;
+        return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
+      }
+      if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
+      if (command === 'list_open_apps') return Promise.resolve(['finder']);
+      if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
+      if (command === 'git_status') {
+        return Promise.resolve({
+          cwd: '/tmp/alpha-studio',
+          isRepository: false,
+          ahead: 0,
+          behind: 0,
+          clean: true,
+          changes: [],
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    useChatStore.setState({
+      codexStatus: { installed: true, loggedIn: true, path: '/usr/bin/codex', version: 'test' },
+    });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+    const settings = screen.getByRole('dialog', { name: '设置' });
+    await user.click(within(settings).getByRole('button', { name: '个人资料' }));
+
+    await user.click(await within(settings).findByRole('button', { name: '撤销授权' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('codex_revoke_authorization'));
+    await waitFor(() => expect(within(settings).getByText('未授权')).toBeInTheDocument());
+    expect(within(settings).getByRole('button', { name: '授权 Codex CLI' })).toBeInTheDocument();
+    expect(within(settings).queryByRole('button', { name: '撤销授权' })).not.toBeInTheDocument();
   });
 
   it('selects a skill from the composer plugin flyout and sends it with the message', async () => {

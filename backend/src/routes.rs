@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use chrono::Utc;
@@ -12,9 +12,11 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::{
-    billing::{settle_usage_cents, usage_from_openai_response, GatewayUsage, Pricing},
+    billing::{settle_usage_yuan, usage_from_openai_response, GatewayUsage, Pricing},
     error::{ApiError, ApiResult},
-    gateway::{build_upstream_request, mask_secret, ProviderConfig},
+    gateway::{
+        build_upstream_request, mask_secret, normalize_upstream_success_body, ProviderConfig,
+    },
     license::{
         can_activate_device, codex_subscription_available, normalize_authorization_code,
         normalize_company_name,
@@ -160,8 +162,10 @@ pub async fn device_lease(
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| ApiError::Forbidden("device is not active for this tenant".to_string()))?;
+    let models = load_models(&state.db).await?;
     Ok(Json(json!({
-        "leaseExpiresAt": row.get::<chrono::DateTime<Utc>, _>("lease_expires_at")
+        "leaseExpiresAt": row.get::<chrono::DateTime<Utc>, _>("lease_expires_at"),
+        "models": models
     })))
 }
 
@@ -172,8 +176,8 @@ pub struct RunCreateRequest {
     user_id: String,
     device_id: String,
     model_id: String,
-    #[serde(default = "default_budget_cents")]
-    budget_cents: u64,
+    #[serde(default = "default_budget_yuan")]
+    budget_yuan: f64,
 }
 
 pub async fn run_create(
@@ -182,11 +186,11 @@ pub async fn run_create(
 ) -> ApiResult<Json<Value>> {
     ensure_device_lease(&state.db, &request.tenant_id, &request.device_id).await?;
     ensure_model_enabled(&state.db, &request.model_id).await?;
-    ensure_balance(&state.db, &request.tenant_id, request.budget_cents as i64).await?;
+    ensure_balance(&state.db, &request.tenant_id, request.budget_yuan).await?;
     let run_id = format!("run_{}", Uuid::new_v4().simple());
     sqlx::query(
         r#"
-        insert into model_runs (id, tenant_id, user_id, device_id, model_id, mode, status, budget_cents)
+        insert into model_runs (id, tenant_id, user_id, device_id, model_id, mode, status, budget_yuan)
         values ($1, $2, $3, $4, $5, 'gateway_api', 'created', $6)
         "#,
     )
@@ -195,7 +199,7 @@ pub async fn run_create(
     .bind(&request.user_id)
     .bind(&request.device_id)
     .bind(&request.model_id)
-    .bind(request.budget_cents as i64)
+    .bind(request.budget_yuan)
     .execute(&state.db)
     .await?;
     let token = state.run_tokens.issue(RunTokenClaims::new(
@@ -204,7 +208,7 @@ pub async fn run_create(
         request.device_id,
         run_id.clone(),
         request.model_id,
-        request.budget_cents,
+        request.budget_yuan,
         20 * 60,
     ))?;
     Ok(Json(json!({
@@ -226,9 +230,9 @@ pub async fn admin_summary(
     )
     .await?;
     let runs = scalar_count(&state.db, "select count(*) from model_runs").await?;
-    let usage = scalar_i64(
+    let usage = scalar_f64(
         &state.db,
-        "select coalesce(sum(billable_cents), 0)::bigint from usage_events",
+        "select coalesce(sum(billable_yuan), 0)::double precision from usage_events",
     )
     .await?;
     let configured_providers = scalar_count(
@@ -240,7 +244,7 @@ pub async fn admin_summary(
         "tenants": tenants,
         "activeDevices": devices,
         "runs": runs,
-        "billableCents": usage,
+        "billableYuan": usage,
         "configuredProviders": configured_providers
     })))
 }
@@ -282,12 +286,12 @@ pub async fn admin_list_tenants(
     let rows = sqlx::query(
         r#"
         select
-          t.id, t.name, t.status, t.max_devices, t.billing_mode, t.balance_cents,
+          t.id, t.name, t.status, t.max_devices, t.billing_mode, t.balance_yuan,
           t.subscription_plan, t.subscription_expires_at,
           t.codex_subscription_enabled, t.codex_subscription_plan, t.codex_subscription_expires_at,
           t.created_at,
           (select count(*) from devices d where d.tenant_id = t.id and d.status = 'active')::bigint as active_devices,
-          (select coalesce(sum(u.billable_cents), 0)::bigint from usage_events u where u.tenant_id = t.id) as billable_cents
+          (select coalesce(sum(u.billable_yuan), 0)::double precision from usage_events u where u.tenant_id = t.id) as billable_yuan
         from tenants t
         order by t.created_at desc
         "#,
@@ -311,7 +315,7 @@ pub struct TenantSaveRequest {
     #[serde(default = "default_billing_mode")]
     billing_mode: String,
     #[serde(default)]
-    balance_cents: i64,
+    balance_yuan: f64,
     subscription_plan: Option<String>,
     subscription_expires_at: Option<chrono::DateTime<Utc>>,
     #[serde(default)]
@@ -337,7 +341,7 @@ pub async fn admin_save_tenant(
     sqlx::query(
         r#"
         insert into tenants (
-          id, name, company_key, status, max_devices, billing_mode, balance_cents,
+          id, name, company_key, status, max_devices, billing_mode, balance_yuan,
           subscription_plan, subscription_expires_at,
           codex_subscription_enabled, codex_subscription_plan, codex_subscription_expires_at
         )
@@ -348,7 +352,7 @@ pub async fn admin_save_tenant(
           status = excluded.status,
           max_devices = excluded.max_devices,
           billing_mode = excluded.billing_mode,
-          balance_cents = excluded.balance_cents,
+          balance_yuan = excluded.balance_yuan,
           subscription_plan = excluded.subscription_plan,
           subscription_expires_at = excluded.subscription_expires_at,
           codex_subscription_enabled = excluded.codex_subscription_enabled,
@@ -363,7 +367,7 @@ pub async fn admin_save_tenant(
     .bind(&request.status)
     .bind(request.max_devices)
     .bind(&request.billing_mode)
-    .bind(request.balance_cents)
+    .bind(request.balance_yuan)
     .bind(&request.subscription_plan)
     .bind(request.subscription_expires_at)
     .bind(request.codex_subscription_enabled)
@@ -735,8 +739,8 @@ pub async fn admin_list_model_routes(
         r#"
         select m.id, m.model_id, m.label, m.provider, m.mode, m.base_url, m.endpoint_path,
           m.upstream_model, m.enabled, m.sort_order,
-          m.input_cents_per_million, m.output_cents_per_million,
-          m.reasoning_cents_per_million, m.cached_input_cents_per_million, m.markup_bps,
+          m.input_yuan_per_million, m.output_yuan_per_million,
+          m.reasoning_yuan_per_million, m.cached_input_yuan_per_million, m.markup_bps,
           coalesce(p.api_key <> '' and p.enabled = true, false) as provider_ready,
           m.created_at, m.updated_at
         from model_routes m
@@ -769,13 +773,13 @@ pub struct ModelRouteSaveRequest {
     #[serde(default = "default_sort_order")]
     sort_order: i32,
     #[serde(default)]
-    input_cents_per_million: i64,
+    input_yuan_per_million: f64,
     #[serde(default)]
-    output_cents_per_million: i64,
+    output_yuan_per_million: f64,
     #[serde(default)]
-    reasoning_cents_per_million: i64,
+    reasoning_yuan_per_million: f64,
     #[serde(default)]
-    cached_input_cents_per_million: i64,
+    cached_input_yuan_per_million: f64,
     #[serde(default)]
     markup_bps: i64,
 }
@@ -811,8 +815,8 @@ pub async fn admin_save_model_route(
         r#"
         insert into model_routes (
           id, model_id, label, provider, mode, base_url, endpoint_path, upstream_model, enabled,
-          sort_order, input_cents_per_million, output_cents_per_million,
-          reasoning_cents_per_million, cached_input_cents_per_million, markup_bps, updated_at
+          sort_order, input_yuan_per_million, output_yuan_per_million,
+          reasoning_yuan_per_million, cached_input_yuan_per_million, markup_bps, updated_at
         )
         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
         on conflict (model_id) do update set
@@ -824,10 +828,10 @@ pub async fn admin_save_model_route(
           upstream_model = excluded.upstream_model,
           enabled = excluded.enabled,
           sort_order = excluded.sort_order,
-          input_cents_per_million = excluded.input_cents_per_million,
-          output_cents_per_million = excluded.output_cents_per_million,
-          reasoning_cents_per_million = excluded.reasoning_cents_per_million,
-          cached_input_cents_per_million = excluded.cached_input_cents_per_million,
+          input_yuan_per_million = excluded.input_yuan_per_million,
+          output_yuan_per_million = excluded.output_yuan_per_million,
+          reasoning_yuan_per_million = excluded.reasoning_yuan_per_million,
+          cached_input_yuan_per_million = excluded.cached_input_yuan_per_million,
           markup_bps = excluded.markup_bps,
           updated_at = now()
         "#,
@@ -842,10 +846,10 @@ pub async fn admin_save_model_route(
     .bind(request.upstream_model.trim())
     .bind(request.enabled)
     .bind(request.sort_order)
-    .bind(request.input_cents_per_million)
-    .bind(request.output_cents_per_million)
-    .bind(request.reasoning_cents_per_million)
-    .bind(request.cached_input_cents_per_million)
+    .bind(request.input_yuan_per_million)
+    .bind(request.output_yuan_per_million)
+    .bind(request.reasoning_yuan_per_million)
+    .bind(request.cached_input_yuan_per_million)
     .bind(request.markup_bps)
     .execute(&state.db)
     .await?;
@@ -1134,7 +1138,7 @@ pub async fn gateway_responses(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(mut body): Json<Value>,
-) -> ApiResult<impl IntoResponse> {
+) -> ApiResult<Response> {
     let token = bearer_token(&headers)?;
     let claims = state.run_tokens.verify(token)?;
     let route = load_model_route(&state.db, &claims.model_id).await?;
@@ -1150,7 +1154,7 @@ pub async fn gateway_responses(
 
     let upstream = state
         .http
-        .post(upstream_request.url)
+        .post(upstream_request.url.clone())
         .header("authorization", upstream_request.authorization_header)
         .header("content-type", "application/json")
         .json(&body)
@@ -1162,7 +1166,10 @@ pub async fn gateway_responses(
         serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({ "raw": text }));
 
     if status.is_success() {
-        let usage = usage_from_openai_response(&upstream_body);
+        let response_body =
+            normalize_upstream_success_body(upstream_request.response_format, upstream_body)
+                .map_err(ApiError::Upstream)?;
+        let usage = usage_from_openai_response(&response_body);
         settle_and_record_usage(
             &state.db,
             &claims,
@@ -1172,10 +1179,18 @@ pub async fn gateway_responses(
             started,
         )
         .await?;
-        Ok((
-            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK),
-            Json(upstream_body),
-        ))
+        let response_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
+        if upstream_request.stream_response {
+            let sse = crate::gateway::responses_body_to_sse(&response_body);
+            Ok((
+                response_status,
+                [("content-type", "text/event-stream; charset=utf-8")],
+                sse,
+            )
+                .into_response())
+        } else {
+            Ok((response_status, Json(response_body)).into_response())
+        }
     } else {
         sqlx::query(
             "update model_runs set status = 'failed', completed_at = now(), upstream_status = $2 where id = $1",
@@ -1187,7 +1202,8 @@ pub async fn gateway_responses(
         Ok((
             StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
             Json(upstream_body),
-        ))
+        )
+            .into_response())
     }
 }
 
@@ -1228,9 +1244,9 @@ async fn load_models(pool: &PgPool) -> Result<Vec<Value>, sqlx::Error> {
 async fn load_model_route(pool: &PgPool, model_id: &str) -> ApiResult<ModelRoute> {
     let row = sqlx::query(
         r#"
-        select provider, base_url, endpoint_path, upstream_model, input_cents_per_million,
-            output_cents_per_million, reasoning_cents_per_million,
-            cached_input_cents_per_million, markup_bps
+        select provider, base_url, endpoint_path, upstream_model, input_yuan_per_million,
+            output_yuan_per_million, reasoning_yuan_per_million,
+            cached_input_yuan_per_million, markup_bps
         from model_routes
         where model_id = $1 and enabled = true and mode = 'gateway_api'
         "#,
@@ -1247,11 +1263,10 @@ async fn load_model_route(pool: &PgPool, model_id: &str) -> ApiResult<ModelRoute
         endpoint_path: row.get("endpoint_path"),
         upstream_model: row.get("upstream_model"),
         pricing: Pricing {
-            input_cents_per_million: row.get::<i64, _>("input_cents_per_million") as u64,
-            output_cents_per_million: row.get::<i64, _>("output_cents_per_million") as u64,
-            reasoning_cents_per_million: row.get::<i64, _>("reasoning_cents_per_million") as u64,
-            cached_input_cents_per_million: row.get::<i64, _>("cached_input_cents_per_million")
-                as u64,
+            input_yuan_per_million: row.get("input_yuan_per_million"),
+            output_yuan_per_million: row.get("output_yuan_per_million"),
+            reasoning_yuan_per_million: row.get("reasoning_yuan_per_million"),
+            cached_input_yuan_per_million: row.get("cached_input_yuan_per_million"),
             markup_bps: row.get::<i64, _>("markup_bps") as u64,
         },
     })
@@ -1374,14 +1389,14 @@ async fn ensure_model_enabled(pool: &PgPool, model_id: &str) -> ApiResult<()> {
     }
 }
 
-async fn ensure_balance(pool: &PgPool, tenant_id: &str, budget_cents: i64) -> ApiResult<()> {
-    let row = sqlx::query("select balance_cents from tenants where id = $1 and status = 'active'")
+async fn ensure_balance(pool: &PgPool, tenant_id: &str, budget_yuan: f64) -> ApiResult<()> {
+    let row = sqlx::query("select balance_yuan from tenants where id = $1 and status = 'active'")
         .bind(tenant_id)
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| ApiError::Forbidden("tenant is not active".to_string()))?;
-    let balance = row.get::<i64, _>("balance_cents");
-    if balance < budget_cents {
+    let balance = row.get::<f64, _>("balance_yuan");
+    if balance < budget_yuan {
         return Err(ApiError::Forbidden(
             "prepaid balance is insufficient".to_string(),
         ));
@@ -1397,13 +1412,13 @@ async fn settle_and_record_usage(
     upstream_status: u16,
     started: chrono::DateTime<Utc>,
 ) -> ApiResult<()> {
-    let charge = settle_usage_cents(usage, pricing);
+    let charge = settle_usage_yuan(usage, pricing);
     let latency_ms = (Utc::now() - started).num_milliseconds().max(0);
     sqlx::query(
         r#"
         insert into usage_events (
             id, tenant_id, run_id, model_id, input_tokens, output_tokens,
-            reasoning_tokens, cached_tokens, cost_cents, billable_cents,
+            reasoning_tokens, cached_tokens, cost_yuan, billable_yuan,
             upstream_status, latency_ms
         )
         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -1417,27 +1432,27 @@ async fn settle_and_record_usage(
     .bind(usage.output_tokens as i64)
     .bind(usage.reasoning_tokens as i64)
     .bind(usage.cached_tokens as i64)
-    .bind(charge.cost_cents as i64)
-    .bind(charge.billable_cents as i64)
+    .bind(charge.cost_yuan)
+    .bind(charge.billable_yuan)
     .bind(upstream_status as i32)
     .bind(latency_ms)
     .execute(pool)
     .await?;
-    sqlx::query("update tenants set balance_cents = balance_cents - $2 where id = $1")
+    sqlx::query("update tenants set balance_yuan = balance_yuan - $2 where id = $1")
         .bind(&claims.tenant_id)
-        .bind(charge.billable_cents as i64)
+        .bind(charge.billable_yuan)
         .execute(pool)
         .await?;
     sqlx::query(
         r#"
-        insert into billing_ledger (id, tenant_id, run_id, entry_type, amount_cents, description)
+        insert into billing_ledger (id, tenant_id, run_id, entry_type, amount_yuan, description)
         values ($1, $2, $3, 'usage_charge', $4, $5)
         "#,
     )
     .bind(format!("ledger_{}", Uuid::new_v4().simple()))
     .bind(&claims.tenant_id)
     .bind(&claims.run_id)
-    .bind(-(charge.billable_cents as i64))
+    .bind(-charge.billable_yuan)
     .bind(format!("{} usage charge", claims.model_id))
     .execute(pool)
     .await?;
@@ -1476,14 +1491,14 @@ fn tenant_json(row: sqlx::postgres::PgRow) -> Value {
         "status": row.get::<String, _>("status"),
         "maxDevices": row.get::<i32, _>("max_devices"),
         "billingMode": row.get::<String, _>("billing_mode"),
-        "balanceCents": row.get::<i64, _>("balance_cents"),
+        "balanceYuan": row.get::<f64, _>("balance_yuan"),
         "subscriptionPlan": row.try_get::<Option<String>, _>("subscription_plan").unwrap_or(None),
         "subscriptionExpiresAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("subscription_expires_at").unwrap_or(None),
         "codexSubscriptionEnabled": row.get::<bool, _>("codex_subscription_enabled"),
         "codexSubscriptionPlan": row.try_get::<Option<String>, _>("codex_subscription_plan").unwrap_or(None),
         "codexSubscriptionExpiresAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("codex_subscription_expires_at").unwrap_or(None),
         "activeDevices": row.get::<i64, _>("active_devices"),
-        "billableCents": row.get::<i64, _>("billable_cents"),
+        "billableYuan": row.get::<f64, _>("billable_yuan"),
         "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at")
     })
 }
@@ -1500,10 +1515,10 @@ fn model_route_json(row: sqlx::postgres::PgRow) -> Value {
         "upstreamModel": row.get::<String, _>("upstream_model"),
         "enabled": row.get::<bool, _>("enabled"),
         "sortOrder": row.get::<i32, _>("sort_order"),
-        "inputCentsPerMillion": row.get::<i64, _>("input_cents_per_million"),
-        "outputCentsPerMillion": row.get::<i64, _>("output_cents_per_million"),
-        "reasoningCentsPerMillion": row.get::<i64, _>("reasoning_cents_per_million"),
-        "cachedInputCentsPerMillion": row.get::<i64, _>("cached_input_cents_per_million"),
+        "inputYuanPerMillion": row.get::<f64, _>("input_yuan_per_million"),
+        "outputYuanPerMillion": row.get::<f64, _>("output_yuan_per_million"),
+        "reasoningYuanPerMillion": row.get::<f64, _>("reasoning_yuan_per_million"),
+        "cachedInputYuanPerMillion": row.get::<f64, _>("cached_input_yuan_per_million"),
         "markupBps": row.get::<i64, _>("markup_bps"),
         "providerReady": row.get::<bool, _>("provider_ready"),
         "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at"),
@@ -1656,9 +1671,9 @@ async fn scalar_count(pool: &PgPool, sql: &str) -> Result<i64, sqlx::Error> {
     row.try_get::<i64, _>(0)
 }
 
-async fn scalar_i64(pool: &PgPool, sql: &str) -> Result<i64, sqlx::Error> {
+async fn scalar_f64(pool: &PgPool, sql: &str) -> Result<f64, sqlx::Error> {
     let row = sqlx::query(sql).fetch_one(pool).await?;
-    row.try_get::<i64, _>(0)
+    row.try_get::<f64, _>(0)
 }
 
 fn bearer_token(headers: &HeaderMap) -> ApiResult<&str> {
@@ -1673,8 +1688,8 @@ fn bearer_token(headers: &HeaderMap) -> ApiResult<&str> {
         .ok_or_else(|| ApiError::Unauthorized("invalid bearer token".to_string()))
 }
 
-fn default_budget_cents() -> u64 {
-    500
+fn default_budget_yuan() -> f64 {
+    5.0
 }
 
 fn default_status() -> String {

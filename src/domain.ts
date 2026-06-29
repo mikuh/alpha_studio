@@ -43,7 +43,6 @@ export interface DomainWorkspaceUi {
     searchPlaceholder: string;
     pluginsLabel: string;
     automationLabel: string;
-    mobileLabel: string;
     projectSectionLabel: string;
     projectEmpty: string;
     projectConversationEmpty: string;
@@ -104,8 +103,7 @@ export const financeResearchDomain: DomainConfig = {
       newConversationLabel: '新对话',
       searchPlaceholder: '搜索对话、研究主题或资料目录',
       pluginsLabel: '能力',
-      automationLabel: '提醒',
-      mobileLabel: '移动端',
+      automationLabel: '自动化',
       projectSectionLabel: '研究主题',
       projectEmpty: '用研究主题归档相关对话和资料目录',
       projectConversationEmpty: '暂无对话',
