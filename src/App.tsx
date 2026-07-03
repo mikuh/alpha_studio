@@ -601,6 +601,15 @@ type SkillStatusMap = Record<string, SkillStatus>;
 type AutomationTab = 'tasks' | 'templates';
 type AutomationTemplateIcon = 'daily' | 'weekly' | 'project' | 'commit' | 'release' | 'ci';
 
+interface AutomationFormState {
+  title: string;
+  prompt: string;
+  environment: string;
+  project: string;
+  schedule: string;
+  model: string;
+}
+
 interface AutomationTemplate {
   id: string;
   title: string;
@@ -611,7 +620,15 @@ interface AutomationTemplate {
   prompt: string;
 }
 
-const AUTOMATION_TOOL_GUARD = '请使用 Codex 自动化工具（automation_update）来安排这个自动化；不要使用 crontab、launchd、osascript、shell 脚本、本地文件或系统通知来实现。';
+interface ScheduledAutomationTask extends AutomationFormState {
+  id: string;
+  createdAt: number;
+}
+
+const AUTOMATION_ENVIRONMENT_OPTIONS = ['工作树', '当前对话', '无代码环境'] as const;
+const AUTOMATION_SCHEDULE_OPTIONS = ['每天 9:00', '每天 21:00', '每个工作日 10:00', '每周五 17:30', '每周五 9:00'] as const;
+const AUTOMATION_MODEL_OPTIONS = ['GPT-5.5 超高', 'GPT-5.5 高', 'GPT-5.5 标准', 'GPT-5'] as const;
+const AUTOMATION_TASKS_KEY = 'alpha:automation-tasks-v1';
 
 const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
   {
@@ -621,7 +638,7 @@ const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
     schedule: '每天 09:00',
     source: '系统模板',
     icon: 'daily',
-    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每天 09:00 的每日简报自动化，汇总市场、项目或代码库状态，并突出需要关注的变化和下一步动作。`,
+    prompt: '汇总市场、项目或代码库状态，并突出需要关注的变化和下一步动作。',
   },
   {
     id: 'weekly-review',
@@ -630,7 +647,7 @@ const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
     schedule: '星期五 17:30',
     source: '系统模板',
     icon: 'weekly',
-    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每周五 17:30 的每周回顾自动化，整理本周完成事项、遗留风险和下周优先级。`,
+    prompt: '整理本周完成事项、遗留风险和下周优先级。',
   },
   {
     id: 'project-monitor',
@@ -639,7 +656,7 @@ const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
     schedule: '每个工作日 10:00',
     source: 'Codex 自动化',
     icon: 'project',
-    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每个工作日 10:00 的项目监控自动化，跟踪当前研究主题或代码项目，发现异常、延期或新变化时提醒我处理。`,
+    prompt: '跟踪当前研究主题或代码项目，发现异常、延期或新变化时提醒我处理。',
   },
   {
     id: 'commit-scan',
@@ -648,7 +665,7 @@ const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
     schedule: '每天 09:00',
     source: 'Codex 自动化',
     icon: 'commit',
-    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每天 09:00 的提交扫描自动化，检查最近提交、PR、测试失败和 CI 信号，并优先提示小且安全的修复建议。`,
+    prompt: '检查最近提交、PR、测试失败和 CI 信号，并优先提示小且安全的修复建议。',
   },
   {
     id: 'release-note',
@@ -657,7 +674,7 @@ const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
     schedule: '星期五 09:00',
     source: '系统模板',
     icon: 'release',
-    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每周五 09:00 的 PR 发布说明自动化，基于已合并 PR 起草发布说明，并严格区分已合并历史和推断内容。`,
+    prompt: '基于已合并 PR 起草发布说明，并严格区分已合并历史和推断内容。',
   },
   {
     id: 'ci-triage',
@@ -666,7 +683,7 @@ const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
     schedule: '每天 21:00',
     source: 'Codex 自动化',
     icon: 'ci',
-    prompt: `${AUTOMATION_TOOL_GUARD}\n\n任务：创建一个每天 21:00 的 CI 失败总结自动化，总结上一个 CI 窗口中的失败和不稳定测试，并给出首要修复建议。`,
+    prompt: '总结上一个 CI 窗口中的失败和不稳定测试，并给出首要修复建议。',
   },
 ] as const;
 
@@ -941,7 +958,6 @@ export function App() {
 function AppWorkspace() {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
   const loadModelConfig = useChatStore((state) => state.loadModelConfig);
-  const sendMessage = useChatStore((state) => state.sendMessage);
   const conversations = useChatStore((state) => state.conversations);
   const currentConversationId = useChatStore((state) => state.currentConversationId);
   const setCurrentConversation = useChatStore((state) => state.setCurrentConversation);
@@ -1107,12 +1123,6 @@ function AppWorkspace() {
     setSettingsOpen(false);
     setMainView('automations');
   };
-
-  const createAutomationViaChat = useCallback((prompt: string) => {
-    setSettingsOpen(false);
-    setMainView('chat');
-    void sendMessage(prompt);
-  }, [sendMessage]);
 
   const setSkillInstalled = useCallback((id: string, installed: boolean) => {
     setSkillStatus((prev) => ({
@@ -1316,7 +1326,7 @@ function AppWorkspace() {
               {mainView === 'skills' ? (
                 <SkillsPage />
               ) : mainView === 'automations' ? (
-                <AutomationsPage onCreateViaChat={createAutomationViaChat} />
+                <AutomationsPage />
               ) : (
                 <ChatArea domain={domain} />
               )}
@@ -3652,97 +3662,366 @@ function SideChatPanel({ domain }: { domain: DomainConfig }) {
   );
 }
 
-function AutomationsPage({ onCreateViaChat }: { onCreateViaChat: (prompt: string) => void }) {
+function AutomationsPage() {
   const [tab, setTab] = useState<AutomationTab>('tasks');
   const [query, setQuery] = useState('');
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<ScheduledAutomationTask[]>(() => loadScheduledAutomationTasks());
+  const [form, setForm] = useState<AutomationFormState>(() => blankAutomationForm());
+  const allProjects = useChatStore((state) => state.projects);
+  const projects = useMemo(() => activeProjects(allProjects), [allProjects]);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const projectOptions = useMemo(() => {
+    const names = projects.map((project) => project.name).filter(Boolean);
+    return ['选择项目', ...Array.from(new Set(names))];
+  }, [projects]);
   const normalizedQuery = query.trim().toLowerCase();
   const visibleTemplates = AUTOMATION_TEMPLATES.filter((template) => {
     if (!normalizedQuery) return true;
     return `${template.title} ${template.description} ${template.schedule} ${template.source}`.toLowerCase().includes(normalizedQuery);
   });
 
-  const createWithChat = () => {
-    onCreateViaChat(`${AUTOMATION_TOOL_GUARD}\n\n请先询问我要自动化的任务内容、触发时间或频率、需要检查的上下文，以及完成后如何通知我。`);
+  useEffect(() => {
+    if (editorOpen && !selectedTaskId) {
+      titleInputRef.current?.focus();
+    }
+  }, [editorOpen, selectedTaskId]);
+
+  useEffect(() => {
+    saveScheduledAutomationTasks(tasks);
+  }, [tasks]);
+
+  const updateForm = <Field extends keyof AutomationFormState>(field: Field, value: AutomationFormState[Field]) => {
+    setForm((current) => ({ ...current, [field]: value }));
   };
 
-  const createFromTemplate = (template: AutomationTemplate) => {
-    onCreateViaChat(template.prompt);
+  const openManualEditor = (template?: AutomationTemplate) => {
+    setSelectedTaskId(null);
+    setForm(template ? automationFormFromTemplate(template) : blankAutomationForm());
+    setEditorOpen(true);
+  };
+
+  const inspectTask = (task: ScheduledAutomationTask) => {
+    setSelectedTaskId(task.id);
+    setForm({
+      title: task.title,
+      prompt: task.prompt,
+      environment: task.environment,
+      project: task.project,
+      schedule: task.schedule,
+      model: task.model,
+    });
+    setEditorOpen(true);
+  };
+
+  const submitManualTask = (event: FormEvent) => {
+    event.preventDefault();
+    const prompt = form.prompt.trim();
+    if (!prompt) return;
+
+    const task: ScheduledAutomationTask = {
+      ...form,
+      id: selectedTaskId ?? createScheduledAutomationId(),
+      title: form.title.trim() || automationTitleFromPrompt(prompt),
+      prompt,
+      createdAt: tasks.find((item) => item.id === selectedTaskId)?.createdAt ?? Date.now(),
+    };
+
+    setTasks((current) => {
+      if (selectedTaskId) {
+        return current.map((item) => (item.id === selectedTaskId ? task : item));
+      }
+      return [task, ...current];
+    });
+    setSelectedTaskId(task.id);
+    setForm(task);
+    setTab('tasks');
   };
 
   return (
-    <section className="automation-page" aria-label="自动化">
+    <section className={`automation-page ${editorOpen ? 'manual-editor-open' : ''}`} aria-label="自动化">
       <div className="automation-drag-strip" data-tauri-drag-region aria-hidden="true" />
       <div className="automation-topbar">
         <div className="automation-tabs" role="tablist" aria-label="自动化">
           <button type="button" role="tab" aria-selected={tab === 'tasks'} className={tab === 'tasks' ? 'active' : ''} onClick={() => { setTab('tasks'); setQuery(''); }}>Tasks</button>
           <button type="button" role="tab" aria-selected={tab === 'templates'} className={tab === 'templates' ? 'active' : ''} onClick={() => { setTab('templates'); setQuery(''); }}>Templates</button>
         </div>
-        <button type="button" className="automation-create-btn" onClick={createWithChat}>
-          <span>通过聊天创建</span>
+        <button type="button" className={`automation-create-btn ${editorOpen && !selectedTaskId ? 'active' : ''}`} onClick={() => openManualEditor()}>
+          <span>手动创建</span>
           <ChevronDown size={14} />
         </button>
       </div>
-      <div className="automation-shell">
-        {tab === 'tasks' ? (
-          <div className="automation-view">
-            <header className="automation-head">
-              <div>
-                <h1>已安排</h1>
-                <div className="automation-subtitle">
-                  <span>通过询问 ChatGPT 来安排任务、设置提醒或跟踪更新。</span>
-                  <button type="button" onClick={() => { setTab('templates'); setQuery(''); }}>了解更多</button>
+      <div className="automation-layout">
+        <div className="automation-shell">
+          {tab === 'tasks' ? (
+            <div className="automation-view">
+              <header className="automation-head">
+                <div>
+                  <h1>已安排</h1>
+                  <div className="automation-subtitle">
+                    <span>管理周期性任务、提醒和监控</span>
+                    <button type="button" onClick={() => { setTab('templates'); setQuery(''); }}>了解更多</button>
+                  </div>
                 </div>
-              </div>
-            </header>
+              </header>
 
-            <div className="automation-empty">
-              <strong>创建首个已安排任务</strong>
-              <div className="automation-empty-actions">
-                {AUTOMATION_TEMPLATES.slice(0, 3).map((template) => (
-                  <button key={template.id} type="button" onClick={() => createFromTemplate(template)}>
-                    {automationTemplateIcon(template.icon, 15)}
-                    <span>{template.title}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="automation-view">
-            <header className="automation-head templates">
-              <div>
-                <h1>Templates</h1>
-                <p>Start with a scheduled task template</p>
-              </div>
-              <label className="automation-search">
-                <Search size={15} />
-                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search templates" />
-              </label>
-            </header>
-            <section className="automation-template-section" aria-label="自动化模板">
-              <h2>System</h2>
-              {visibleTemplates.length > 0 ? (
-                <div className="automation-template-grid">
-                  {visibleTemplates.map((template) => (
-                    <button key={template.id} type="button" className="automation-template-card" onClick={() => createFromTemplate(template)}>
-                      <span className={`automation-template-icon icon-${template.icon}`}>{automationTemplateIcon(template.icon, 20)}</span>
-                      <strong>{template.title}</strong>
-                      <span>{template.description}</span>
-                      <em>{template.schedule}</em>
-                    </button>
-                  ))}
-                </div>
+              {tasks.length > 0 ? (
+                <section className="automation-task-section" aria-label="当前自动化任务">
+                  <h2>当前</h2>
+                  <div className="automation-task-list">
+                    {tasks.map((task) => (
+                      <button
+                        key={task.id}
+                        type="button"
+                        className={`automation-task-row ${task.id === selectedTaskId ? 'active' : ''}`}
+                        onClick={() => inspectTask(task)}
+                      >
+                        <span className="automation-task-status" aria-hidden="true" />
+                        <span className="automation-task-copy">
+                          <strong>{task.title}</strong>
+                          <span>Next run 待安排 · {task.schedule}</span>
+                        </span>
+                        <span className="automation-task-meta">{task.project === '选择项目' ? '手动创建' : task.project}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
               ) : (
-                <div className="automation-no-results">
-                  <Search size={18} />
-                  <span>没有匹配的模板</span>
+                <div className="automation-empty">
+                  <strong>创建首个已安排任务</strong>
+                  <div className="automation-empty-actions">
+                    {AUTOMATION_TEMPLATES.slice(0, 3).map((template) => (
+                      <button key={template.id} type="button" onClick={() => openManualEditor(template)}>
+                        {automationTemplateIcon(template.icon, 15)}
+                        <span>{template.title}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
-            </section>
-          </div>
+            </div>
+          ) : (
+            <div className="automation-view">
+              <header className="automation-head templates">
+                <div>
+                  <h1>Templates</h1>
+                  <p>Start with a scheduled task template</p>
+                </div>
+                <label className="automation-search">
+                  <Search size={15} />
+                  <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search templates" />
+                </label>
+              </header>
+              <section className="automation-template-section" aria-label="自动化模板">
+                <h2>System</h2>
+                {visibleTemplates.length > 0 ? (
+                  <div className="automation-template-grid">
+                    {visibleTemplates.map((template) => (
+                      <button key={template.id} type="button" className="automation-template-card" onClick={() => openManualEditor(template)}>
+                        <span className={`automation-template-icon icon-${template.icon}`}>{automationTemplateIcon(template.icon, 20)}</span>
+                        <strong>{template.title}</strong>
+                        <span>{template.description}</span>
+                        <em>{template.schedule}</em>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="automation-no-results">
+                    <Search size={18} />
+                    <span>没有匹配的模板</span>
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
+        </div>
+        {editorOpen && (
+          <AutomationManualEditor
+            form={form}
+            projectOptions={projectOptions}
+            selectedTaskId={selectedTaskId}
+            titleInputRef={titleInputRef}
+            onCancel={() => setEditorOpen(false)}
+            onChange={updateForm}
+            onSubmit={submitManualTask}
+          />
         )}
       </div>
     </section>
+  );
+}
+
+function blankAutomationForm(): AutomationFormState {
+  return {
+    title: '',
+    prompt: '',
+    environment: AUTOMATION_ENVIRONMENT_OPTIONS[0],
+    project: '选择项目',
+    schedule: AUTOMATION_SCHEDULE_OPTIONS[0],
+    model: AUTOMATION_MODEL_OPTIONS[0],
+  };
+}
+
+function automationFormFromTemplate(template: AutomationTemplate): AutomationFormState {
+  return {
+    title: template.title,
+    prompt: template.prompt,
+    environment: AUTOMATION_ENVIRONMENT_OPTIONS[0],
+    project: '选择项目',
+    schedule: normalizeAutomationSchedule(template.schedule),
+    model: AUTOMATION_MODEL_OPTIONS[0],
+  };
+}
+
+function normalizeAutomationSchedule(schedule: string): string {
+  return schedule.replace('星期五', '每周五').replace('09:00', '9:00');
+}
+
+function automationTitleFromPrompt(prompt: string): string {
+  const compact = prompt.replace(/\s+/g, ' ').trim();
+  return compact.length > 18 ? `${compact.slice(0, 18)}...` : compact || '未命名自动化任务';
+}
+
+function createScheduledAutomationId(): string {
+  return `automation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function loadScheduledAutomationTasks(): ScheduledAutomationTask[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(AUTOMATION_TASKS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Partial<ScheduledAutomationTask>[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isScheduledAutomationTask);
+  } catch {
+    return [];
+  }
+}
+
+function saveScheduledAutomationTasks(tasks: ScheduledAutomationTask[]): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(AUTOMATION_TASKS_KEY, JSON.stringify(tasks));
+}
+
+function isScheduledAutomationTask(task: Partial<ScheduledAutomationTask>): task is ScheduledAutomationTask {
+  return Boolean(
+    typeof task.id === 'string' &&
+    typeof task.title === 'string' &&
+    typeof task.prompt === 'string' &&
+    typeof task.environment === 'string' &&
+    typeof task.project === 'string' &&
+    typeof task.schedule === 'string' &&
+    typeof task.model === 'string' &&
+    typeof task.createdAt === 'number',
+  );
+}
+
+function AutomationManualEditor({
+  form,
+  projectOptions,
+  selectedTaskId,
+  titleInputRef,
+  onCancel,
+  onChange,
+  onSubmit,
+}: {
+  form: AutomationFormState;
+  projectOptions: string[];
+  selectedTaskId: string | null;
+  titleInputRef: RefObject<HTMLInputElement | null>;
+  onCancel: () => void;
+  onChange: <Field extends keyof AutomationFormState>(field: Field, value: AutomationFormState[Field]) => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  return (
+    <aside className="automation-editor" aria-label="手动创建自动化任务">
+      <form className="automation-editor-form" onSubmit={onSubmit}>
+        <div className="automation-editor-main">
+          <input
+            ref={titleInputRef}
+            className="automation-editor-title"
+            value={form.title}
+            onChange={(event) => onChange('title', event.target.value)}
+            placeholder="已安排任务标题"
+            aria-label="已安排任务标题"
+          />
+          <textarea
+            className="automation-editor-prompt"
+            value={form.prompt}
+            onChange={(event) => onChange('prompt', event.target.value)}
+            placeholder="添加提示词，例如：在 $sentry 中查找崩溃"
+            aria-label="提示词"
+          />
+        </div>
+        <div className="automation-editor-details">
+          <span className="automation-editor-section-title">详情</span>
+          <AutomationEditorSelect
+            label="运行环境"
+            value={form.environment}
+            options={AUTOMATION_ENVIRONMENT_OPTIONS}
+            showInfo
+            onChange={(value) => onChange('environment', value)}
+          />
+          <AutomationEditorSelect
+            label="项目"
+            value={form.project}
+            options={projectOptions}
+            onChange={(value) => onChange('project', value)}
+          />
+          <AutomationEditorSelect
+            label="重复次数"
+            value={form.schedule}
+            options={AUTOMATION_SCHEDULE_OPTIONS}
+            onChange={(value) => onChange('schedule', value)}
+          />
+          <AutomationEditorSelect
+            label="模型"
+            value={form.model}
+            options={AUTOMATION_MODEL_OPTIONS}
+            onChange={(value) => onChange('model', value)}
+          />
+        </div>
+        <div className="automation-editor-actions">
+          <button type="button" className="automation-editor-secondary" onClick={onCancel}>取消</button>
+          <button type="submit" className="automation-editor-primary" disabled={!form.prompt.trim()}>
+            {selectedTaskId ? '保存任务' : '创建任务'}
+          </button>
+        </div>
+      </form>
+    </aside>
+  );
+}
+
+function AutomationEditorSelect({
+  label,
+  value,
+  options,
+  showInfo = false,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  showInfo?: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="automation-editor-row">
+      <span className="automation-editor-label">
+        <span>{label}</span>
+        {showInfo && <Info size={13} aria-hidden="true" />}
+      </span>
+      <span className="automation-editor-select">
+        <select value={value} aria-label={label} onChange={(event) => onChange(event.target.value)}>
+          {options.map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
+        <ChevronDown size={14} aria-hidden="true" />
+      </span>
+    </label>
   );
 }
 
@@ -4145,9 +4424,10 @@ function skillIcon(skill: SkillCatalogItem | SkillSelection, size = 16): ReactNo
 function ChatArea({ domain }: { domain: DomainConfig }) {
   const conversation = useCurrentConversation();
   const codexStatus = useChatStore((state) => state.codexStatus);
+  const clientLicenseSession = useChatStore((state) => state.clientLicenseSession);
   const modelProfiles = useChatStore((state) => state.modelProfiles);
   const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
-  const selectedModelProfile = resolveVisibleModelProfile(modelProfiles, selectedModelProfileId, codexStatus);
+  const selectedModelProfile = resolveVisibleModelProfile(modelProfiles, selectedModelProfileId, codexStatus, clientLicenseSession);
   if (!conversation) return null;
   const previewRuntime = !isTauriRuntime();
   const gatewayMode = selectedModelProfile.providerId === ALPHA_GATEWAY_PROVIDER_ID;
@@ -5450,17 +5730,18 @@ function clampFloatingPosition(value: number, min: number, max: number): number 
   return Math.max(min, Math.min(value, Math.max(min, max)));
 }
 
-function codexSubscriptionModelsVisible(codexStatus: { loggedIn: boolean } | null): boolean {
+function codexSubscriptionModelsVisible(codexStatus: { loggedIn: boolean } | null, session: ClientLicenseSession | null): boolean {
+  if (session && !session.tenant.codexSubscriptionEnabled) return false;
   return !isTauriRuntime() || codexStatus?.loggedIn !== false;
 }
 
-function visibleModelProfilesForCodexStatus(profiles: ModelProfile[], codexStatus: { loggedIn: boolean } | null): ModelProfile[] {
-  if (codexSubscriptionModelsVisible(codexStatus)) return profiles;
+function visibleModelProfilesForCodexStatus(profiles: ModelProfile[], codexStatus: { loggedIn: boolean } | null, session: ClientLicenseSession | null): ModelProfile[] {
+  if (codexSubscriptionModelsVisible(codexStatus, session)) return profiles;
   return profiles.filter((profile) => !profile.builtIn);
 }
 
-function resolveVisibleModelProfile(profiles: ModelProfile[], selectedId: string, codexStatus: { loggedIn: boolean } | null): ModelProfile {
-  const visibleProfiles = visibleModelProfilesForCodexStatus(profiles, codexStatus).filter((profile) => profile.enabled);
+function resolveVisibleModelProfile(profiles: ModelProfile[], selectedId: string, codexStatus: { loggedIn: boolean } | null, session: ClientLicenseSession | null): ModelProfile {
+  const visibleProfiles = visibleModelProfilesForCodexStatus(profiles, codexStatus, session).filter((profile) => profile.enabled);
   return visibleProfiles.find((profile) => profile.id === selectedId) ?? visibleProfiles[0] ?? resolveModelProfile(profiles, selectedId);
 }
 
@@ -5468,6 +5749,7 @@ function ModelPicker() {
   const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
   const modelProfiles = useChatStore((state) => state.modelProfiles);
   const codexStatus = useChatStore((state) => state.codexStatus);
+  const clientLicenseSession = useChatStore((state) => state.clientLicenseSession);
   const reasoningEffort = useChatStore((state) => state.reasoningEffort);
   const speed = useChatStore((state) => state.speed);
   const setModelProfile = useChatStore((state) => state.setModelProfile);
@@ -5483,7 +5765,7 @@ function ModelPicker() {
   const [menuStyle, setMenuStyle] = useState<CSSProperties>(HIDDEN_FLOATING_STYLE);
   const [flyoutStyle, setFlyoutStyle] = useState<CSSProperties>(HIDDEN_FLOATING_STYLE);
   const enabledProfiles = modelProfiles.filter((profile) => profile.enabled);
-  const visibleEnabledProfiles = visibleModelProfilesForCodexStatus(enabledProfiles, codexStatus);
+  const visibleEnabledProfiles = visibleModelProfilesForCodexStatus(enabledProfiles, codexStatus, clientLicenseSession);
   const selectedModelProfile = visibleEnabledProfiles.find((profile) => profile.id === selectedModelProfileId) ?? visibleEnabledProfiles[0] ?? resolveModelProfile(modelProfiles, selectedModelProfileId);
   const builtInProfiles = visibleEnabledProfiles.filter((profile) => profile.builtIn);
   const customProfiles = visibleEnabledProfiles.filter((profile) => !profile.builtIn);
@@ -7535,6 +7817,7 @@ function ModelSettings() {
   const deleteModelProfile = useChatStore((state) => state.deleteModelProfile);
   const toggleModelProfile = useChatStore((state) => state.toggleModelProfile);
   const codexStatus = useChatStore((state) => state.codexStatus);
+  const clientLicenseSession = useChatStore((state) => state.clientLicenseSession);
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
   const isCheckingCodex = useChatStore((state) => state.isCheckingCodex);
   const modelConfigPath = useChatStore((state) => state.modelConfigPath);
@@ -7543,12 +7826,27 @@ function ModelSettings() {
   const [draft, setDraft] = useState<ModelProfileDraft>(EMPTY_MODEL_DRAFT);
 
   const enabledProfiles = modelProfiles.filter((profile) => profile.enabled);
-  const customProfiles = modelProfiles.filter((profile) => !profile.builtIn);
+  const visibleEnabledProfiles = visibleModelProfilesForCodexStatus(enabledProfiles, codexStatus, clientLicenseSession);
+  const customProfiles = modelProfiles.filter((profile) => !profile.builtIn && profile.providerId !== ALPHA_GATEWAY_PROVIDER_ID);
   const editingProfile = editingId ? customProfiles.find((profile) => profile.id === editingId) : null;
-  const selectedProfile = modelProfiles.find((profile) => profile.id === selectedModelProfileId);
+  const selectedProfile =
+    visibleEnabledProfiles.find((profile) => profile.id === selectedModelProfileId) ??
+    visibleEnabledProfiles[0] ??
+    modelProfiles.find((profile) => profile.id === selectedModelProfileId);
+  const selectedProfileId = selectedProfile?.id ?? '';
+  const selectedUsesGateway = selectedProfile?.providerId === ALPHA_GATEWAY_PROVIDER_ID;
+  const codexRuntimeReady = Boolean(codexStatus?.installed && (codexStatus.loggedIn || selectedUsesGateway));
   const normalizedDraft = normalizeModelProfileDraft(draft);
   const requiresBaseUrl = normalizedDraft.providerId !== 'openai';
   const canSave = Boolean(normalizedDraft.label && normalizedDraft.model && (!requiresBaseUrl || normalizedDraft.baseUrl));
+  const codexRuntimeTitle = codexRuntimeReady
+    ? `${selectedUsesGateway && !codexStatus?.loggedIn ? '本地 AI 运行环境可用于按量模型' : '本地 AI 运行环境已就绪'}${codexStatus?.version ? ` · ${codexStatus.version}` : ''}`
+    : '本地 AI 运行环境未就绪';
+  const codexRuntimeDescription = codexStatus?.installed && selectedUsesGateway && !codexStatus.loggedIn
+    ? '按量模型无需 Codex 订阅设备授权。'
+    : codexStatus?.loggedIn
+      ? codexStatus.path
+      : (codexStatus?.error || codexStatus?.path || '请确认本地 AI 运行环境已安装并完成设备授权。');
 
   const beginCreate = (template: 'blank' | 'deepseek' | 'claude') => {
     setEditingId(null);
@@ -7578,13 +7876,17 @@ function ModelSettings() {
       if (ok) deleteModelProfile(profile.id);
     });
   };
+  useEffect(() => {
+    if (visibleEnabledProfiles.length === 0 || visibleEnabledProfiles.some((profile) => profile.id === selectedModelProfileId)) return;
+    setModelProfile(visibleEnabledProfiles[0].id);
+  }, [selectedModelProfileId, setModelProfile, visibleEnabledProfiles]);
 
   return (
     <>
       <SettingsGroup>
         <SettingsRow title="当前模型" description="对话使用的基础模型，可随时切换。">
-          <select className="settings-select model-settings-select" value={selectedModelProfileId} onChange={(event) => setModelProfile(event.target.value)}>
-            {enabledProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
+          <select className="settings-select model-settings-select" value={selectedProfileId} onChange={(event) => setModelProfile(event.target.value)} disabled={visibleEnabledProfiles.length === 0}>
+            {visibleEnabledProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
           </select>
         </SettingsRow>
         <SettingsRow title="推理强度" description="更高的强度更细致，但响应更慢；不支持的自定义模型会自动跳过。">
@@ -7602,14 +7904,14 @@ function ModelSettings() {
             </div>
           </div>
         )}
-        <div className={`settings-status ${codexStatus?.installed && codexStatus.loggedIn ? 'ready' : 'attention'}`}>
+        <div className={`settings-status ${codexRuntimeReady ? 'ready' : 'attention'}`}>
           <span className="settings-status-icon">{isCheckingCodex ? <Loader2 size={16} className="spin" /> : <Terminal size={16} />}</span>
           <div className="settings-status-main">
-            <strong>{codexStatus?.installed && codexStatus.loggedIn ? `本地 AI 运行环境已就绪${codexStatus.version ? ` · ${codexStatus.version}` : ''}` : '本地 AI 运行环境未就绪'}</strong>
-            <span>{codexStatus?.loggedIn ? codexStatus.path : (codexStatus?.error || codexStatus?.path || '请确认本地 AI 运行环境已安装并完成设备授权。')}</span>
+            <strong>{codexRuntimeTitle}</strong>
+            <span>{codexRuntimeDescription}</span>
           </div>
           <span className="settings-status-actions">
-            {codexStatus?.installed && !codexStatus.loggedIn && <CodexLoginButton compact />}
+            {codexStatus?.installed && !codexStatus.loggedIn && codexSubscriptionModelsVisible(codexStatus, clientLicenseSession) && <CodexLoginButton compact />}
             {codexStatus?.installed && codexStatus.loggedIn && <CodexRevokeButton compact />}
             <button className="settings-btn" type="button" onClick={() => void refreshCodexStatus()} disabled={isCheckingCodex}>重新检测</button>
           </span>

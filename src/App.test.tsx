@@ -58,7 +58,11 @@ function conversation(patch: Partial<Conversation> = {}): Conversation {
   };
 }
 
-function seedClientLicenseSession() {
+function futureIso(ms = 86_400_000) {
+  return new Date(Date.now() + ms).toISOString();
+}
+
+function seedClientLicenseSession(codexSubscriptionEnabled = true) {
   saveClientLicenseSession({
     apiBaseUrl: 'http://localhost:18080',
     activatedAt: 1,
@@ -66,8 +70,8 @@ function seedClientLicenseSession() {
       id: 'tenant_demo',
       name: 'Demo Fund',
       maxDevices: 5,
-      codexSubscriptionEnabled: true,
-      codexSubscriptionPlan: 'monthly',
+      codexSubscriptionEnabled,
+      codexSubscriptionPlan: codexSubscriptionEnabled ? 'monthly' : null,
     },
     user: {
       id: 'user_demo',
@@ -76,7 +80,7 @@ function seedClientLicenseSession() {
     },
     device: {
       id: 'dev_demo',
-      leaseExpiresAt: '2026-07-01T00:00:00.000Z',
+      leaseExpiresAt: futureIso(),
     },
     models: [
       {
@@ -87,7 +91,7 @@ function seedClientLicenseSession() {
         enabled: true,
       },
     ],
-    codexAccounts: [
+    codexAccounts: codexSubscriptionEnabled ? [
       {
         id: 'codex_demo',
         email: 'codex-demo@alpha.local',
@@ -96,7 +100,7 @@ function seedClientLicenseSession() {
         seatLimit: 3,
         expiresAt: '2026-08-01T00:00:00.000Z',
       },
-    ],
+    ] : [],
   });
 }
 
@@ -120,7 +124,7 @@ describe('right feature panel', () => {
     window.localStorage.clear();
     seedClientLicenseSession();
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse({
-      leaseExpiresAt: '2026-07-01T00:05:00.000Z',
+      leaseExpiresAt: futureIso(),
     }))));
     useChatStore.setState({
       conversations: [conversation()],
@@ -234,10 +238,27 @@ describe('right feature panel', () => {
     expect(screen.queryByRole('dialog', { name: '设置' })).not.toBeInTheDocument();
     expect(within(automationPage).getByRole('heading', { name: '已安排' })).toBeInTheDocument();
     expect(within(automationPage).getByRole('tab', { name: 'Tasks' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(automationPage).getByRole('button', { name: '手动创建' })).toBeInTheDocument();
     expect(within(automationPage).getByText('创建首个已安排任务')).toBeInTheDocument();
   });
 
-  it('starts automation creation from a template through chat tools', async () => {
+  it('opens the manual automation editor from the create button', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const automationPage = container.querySelector('.automation-page') as HTMLElement;
+    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+
+    const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
+    expect(within(editor).getByPlaceholderText('已安排任务标题')).toBeInTheDocument();
+    expect(within(editor).getByPlaceholderText('添加提示词，例如：在 $sentry 中查找崩溃')).toBeInTheDocument();
+    expect(within(editor).getByLabelText('运行环境')).toHaveValue('工作树');
+    expect(within(editor).getByLabelText('重复次数')).toHaveValue('每天 9:00');
+    expect(within(editor).getByLabelText('模型')).toHaveValue('GPT-5.5 超高');
+  });
+
+  it('prefills the manual automation editor from a template', async () => {
     const user = userEvent.setup();
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     useChatStore.setState({ sendMessage });
@@ -248,12 +269,29 @@ describe('right feature panel', () => {
     await user.click(within(automationPage).getByRole('tab', { name: 'Templates' }));
     await user.click(within(automationPage).getByRole('button', { name: /CI 失败总结/ }));
 
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    const prompt = sendMessage.mock.calls[0][0] as string;
-    expect(prompt).toContain('automation_update');
-    expect(prompt).toContain('CI 失败总结');
-    expect(prompt).toContain('不要使用 crontab');
-    expect(prompt).toContain('launchd');
+    const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
+    expect(within(editor).getByLabelText('已安排任务标题')).toHaveValue('CI 失败总结');
+    expect(within(editor).getByLabelText('提示词')).toHaveValue('总结上一个 CI 窗口中的失败和不稳定测试，并给出首要修复建议。');
+    expect(within(editor).getByLabelText('重复次数')).toHaveValue('每天 21:00');
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('creates a scheduled automation task from the manual editor', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const automationPage = container.querySelector('.automation-page') as HTMLElement;
+    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+    const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
+
+    await user.type(within(editor).getByLabelText('已安排任务标题'), '每日 Neostream 题材研究日报');
+    await user.type(within(editor).getByLabelText('提示词'), '汇总 Neostream 每日题材研究，并突出异常波动。');
+    await user.click(within(editor).getByRole('button', { name: '创建任务' }));
+
+    expect(within(automationPage).getByRole('heading', { name: '当前' })).toBeInTheDocument();
+    expect(within(automationPage).getByRole('button', { name: /每日 Neostream 题材研究日报/ })).toBeInTheDocument();
+    expect(within(automationPage).getByText('Next run 待安排 · 每天 9:00')).toBeInTheDocument();
   });
 
   it('filters the skills catalog by category from the capability filter menu', async () => {
@@ -441,6 +479,74 @@ describe('right feature panel', () => {
 
     expect(await screen.findByText('按量模型')).toBeInTheDocument();
     expect(screen.getAllByText('GPT-5.5 API').length).toBeGreaterThan(0);
+    expect(screen.queryByText('订阅模型')).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitemradio', { name: 'GPT-5.5' })).not.toBeInTheDocument();
+  });
+
+  it('keeps empty local model config from restoring subscription models without Codex subscription', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    seedClientLicenseSession(false);
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === 'codex_check') {
+        return Promise.resolve({
+          installed: true,
+          version: 'test',
+          path: '/usr/bin/codex',
+          loggedIn: false,
+          error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。',
+        });
+      }
+      if (command === 'model_config_load') {
+        return Promise.resolve({
+          selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+          modelProfiles: [],
+          path: '/tmp/model-providers.json',
+        });
+      }
+      if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
+      if (command === 'codex_revoke_authorization') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
+      if (command === 'list_open_apps') return Promise.resolve(['finder']);
+      if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
+      if (command === 'git_status') {
+        return Promise.resolve({
+          cwd: '/tmp/alpha-studio',
+          isRepository: false,
+          ahead: 0,
+          behind: 0,
+          clean: true,
+          changes: [],
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    const user = userEvent.setup();
+    useChatStore.setState({
+      clientLicenseSession: null,
+      codexStatus: {
+        installed: true,
+        version: 'test',
+        path: '/usr/bin/codex',
+        loggedIn: false,
+        error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。',
+      },
+      selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+      modelProfiles: defaultModelProfiles(),
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('model_config_load'));
+    await waitFor(() => expect(screen.getByTitle('选择模型与推理强度')).toHaveTextContent('5.5 API'));
+    expect(screen.queryByText('AI 引擎暂不可用')).not.toBeInTheDocument();
+    expect(screen.queryByText('Alpha Studio 的 Codex CLI 尚未完成设备授权。')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('继续追问投研问题')).toBeEnabled();
+
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    const modelMenu = document.querySelector('.model-choice-menu') as HTMLElement;
+    const modelRow = within(modelMenu).getByText('GPT-5.5 API').closest('.model-flyout-row') as HTMLElement;
+    fireEvent.mouseEnter(modelRow);
+
+    expect(await screen.findByText('按量模型')).toBeInTheDocument();
     expect(screen.queryByText('订阅模型')).not.toBeInTheDocument();
     expect(screen.queryByRole('menuitemradio', { name: 'GPT-5.5' })).not.toBeInTheDocument();
   });

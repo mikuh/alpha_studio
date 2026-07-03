@@ -195,7 +195,7 @@ export const useChatStore = create<ChatState>()(
         const state = get();
         void saveModelConfigFile({
           selectedModelProfileId: state.selectedModelProfileId,
-          modelProfiles: state.modelProfiles.filter((profile) => !profile.builtIn),
+          modelProfiles: state.modelProfiles.filter(isLocalModelProfile),
         })
           .then((path) => {
             if (path) set({ modelConfigPath: path });
@@ -544,7 +544,10 @@ export const useChatStore = create<ChatState>()(
             set({ isLoadingModelConfig: false });
             return;
           }
-          const modelProfiles = normalizeModelProfiles(config.modelProfiles);
+          const modelProfiles = modelProfilesForCurrentLicense(
+            get().clientLicenseSession,
+            normalizeModelProfiles(config.modelProfiles),
+          );
           const selectedModelProfileId = resolveSelectedModelProfileId(
             config.selectedModelProfileId,
             modelProfiles,
@@ -580,13 +583,15 @@ export const useChatStore = create<ChatState>()(
           return;
         }
         const modelProfiles = modelProfilesFromClientLicense(session);
+        const existingCustomProfiles = get().modelProfiles.filter(isLocalModelProfile);
+        const mergedModelProfiles = mergeUniqueModelProfiles(modelProfiles, existingCustomProfiles);
         const selectedModelProfileId = resolveSelectedModelProfileId(
           get().selectedModelProfileId,
-          modelProfiles,
+          mergedModelProfiles,
         );
         set({
           clientLicenseSession: session,
-          modelProfiles,
+          modelProfiles: mergedModelProfiles,
           selectedModelProfileId,
         });
       },
@@ -1169,6 +1174,32 @@ function clampConversationTitle(title: string): string {
 function stringifyError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error || 'Unknown error');
+}
+
+function isLocalModelProfile(profile: ModelProfile): boolean {
+  return !profile.builtIn && profile.providerId !== ALPHA_GATEWAY_PROVIDER_ID;
+}
+
+function modelProfilesForCurrentLicense(
+  session: ClientLicenseSession | null,
+  configuredProfiles: ModelProfile[],
+): ModelProfile[] {
+  if (!session) return configuredProfiles;
+  return mergeUniqueModelProfiles(
+    modelProfilesFromClientLicense(session),
+    configuredProfiles.filter(isLocalModelProfile),
+  );
+}
+
+function mergeUniqueModelProfiles(baseProfiles: ModelProfile[], extraProfiles: ModelProfile[]): ModelProfile[] {
+  const seen = new Set(baseProfiles.map((profile) => profile.id));
+  const merged = [...baseProfiles];
+  for (const profile of extraProfiles) {
+    if (seen.has(profile.id)) continue;
+    seen.add(profile.id);
+    merged.push(profile);
+  }
+  return merged;
 }
 
 async function codexModelRequest(profile: ModelProfile, reasoningEffort: ReasoningEffort) {
