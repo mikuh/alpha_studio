@@ -25,7 +25,7 @@ export function buildCodingInstructions(
   if (options.selectedSkill) {
     const skill = options.selectedSkill;
     modeLines.push(
-      `当前指定 Skill：${skill.title} (${skill.id})。必须优先使用这个 Skill 的能力、说明和工具路线来完成任务；如果任务明显不适合该 Skill，先简短说明原因，再用最合适的方式继续。`,
+      `当前指定 Skill：${skill.title} (${skill.id})。必须优先使用这个 Skill 的说明、工作流和工具路线来完成任务；如果任务明显不适合该 Skill，先简短说明原因，再用最合适的方式继续。`,
     );
     if (skill.id === 'imagegen') {
       modeLines.push(
@@ -39,9 +39,9 @@ export function buildCodingInstructions(
     ...(modeLines.length ? ['', ...modeLines] : []),
     '',
     '自动化与提醒：',
-    '- 当用户要求创建、查看、更新或删除提醒、定时任务、周期自动化、监控、跟进或线程唤醒时，必须优先使用当前环境提供的 Codex 自动化工具（例如 `automation_update`）。',
-    '- 不要自行通过 shell、crontab、launchd、osascript、本地文件、后台脚本或系统通知来实现自动化；除非用户明确要求本机系统级方案。',
-    '- 如果当前运行环境没有可用的自动化工具，直接说明需要启用或接入 Codex 自动化能力，再向用户确认下一步；不要退回到本地定时器方案。',
+    '- Alpha Studio 会在发送给模型前直接处理简单的提醒和周期任务；如果你仍收到自动化请求，说明它需要澄清或超出了客户端自动识别范围。',
+    '- 不要声称可以调用 `automation_update`，也不要自行通过 shell、crontab、launchd、osascript、本地文件、后台脚本或系统通知来实现自动化；除非用户明确要求本机系统级方案。',
+    '- 对复杂自动化，请用简短中文列出建议配置（标题、频率、任务内容、运行环境）并请用户到左侧「自动化」页创建或补充缺失信息。',
     '',
     '回答要求：',
     ...domain.prompt.responseGuidance.map((line) => `- ${line}`),

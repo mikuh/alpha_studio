@@ -85,6 +85,7 @@ import {
   Pin,
   PinOff,
   Plug,
+  Play,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -140,6 +141,19 @@ import {
   terminalStop,
   terminalWrite,
 } from './codexBridge';
+import {
+  AUTOMATION_ENVIRONMENT_OPTIONS,
+  AUTOMATION_MODEL_OPTIONS,
+  AUTOMATION_SCHEDULE_OPTIONS,
+  AUTOMATION_TASKS_CHANGED_EVENT,
+  automationTitleFromPrompt,
+  blankAutomationForm,
+  createScheduledAutomationId,
+  loadScheduledAutomationTasks,
+  saveScheduledAutomationTasks,
+  type AutomationFormState,
+  type ScheduledAutomationTask,
+} from './automation';
 import { activeDomain, type DomainConfig, type DomainSuggestion } from './domain';
 import {
   activateClient,
@@ -272,7 +286,6 @@ type SkillIcon =
   | 'plugin'
   | 'skill'
   | 'playwright'
-  | 'ios'
   | 'github'
   | 'calendar'
   | 'drive'
@@ -312,76 +325,6 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
       'Open and control the in-app browser for local development pages, web QA, screenshots, DOM snapshots, and interaction checks.',
       'Use this when a task needs a rendered web surface inside Alpha Studio instead of an external browser session.',
     ),
-  },
-  {
-    id: 'ios-app-intents',
-    title: 'iOS App Intents',
-    description: 'Build and debug iOS App Intents integrations',
-    category: 'personal',
-    source: '个人',
-    installed: true,
-    icon: 'ios',
-    detail: detail('Design App Intents, app entities, and App Shortcuts for iOS features that need system-level integration.'),
-  },
-  {
-    id: 'ios-debugger-agent',
-    title: 'iOS Debugger Agent',
-    description: 'Debug iOS apps on Simulator',
-    category: 'personal',
-    source: '个人',
-    installed: true,
-    icon: 'ios',
-    detail: detail('Build, run, and debug iOS apps on Simulator with XcodeBuildMCP-backed tooling.'),
-  },
-  {
-    id: 'ios-ettrace-performance',
-    title: 'iOS ETTrace Performance',
-    description: 'Profile symbolicated iOS simulator flows with ETTrace',
-    category: 'personal',
-    source: '个人',
-    installed: true,
-    icon: 'ios',
-    detail: detail('Capture and interpret ETTrace profiles for iOS Simulator performance investigations.'),
-  },
-  {
-    id: 'ios-memgraph-leaks',
-    title: 'iOS Memgraph Leaks',
-    description: 'Capture and prove iOS simulator memory leaks',
-    category: 'personal',
-    source: '个人',
-    installed: true,
-    icon: 'ios',
-    detail: detail('Capture and inspect iOS memgraphs when you need leak evidence instead of a guess.'),
-  },
-  {
-    id: 'ios-simulator-browser',
-    title: 'iOS Simulator Browser',
-    description: 'Mirror an iOS Simulator into the in-app browser',
-    category: 'personal',
-    source: '个人',
-    installed: true,
-    icon: 'ios',
-    detail: detail('Stream an iOS Simulator view into Alpha Studio for visual checks and app walkthroughs.'),
-  },
-  {
-    id: 'swiftui-liquid-glass',
-    title: 'SwiftUI Liquid Glass',
-    description: 'Implement and review iOS 26+ SwiftUI Liquid Glass UI',
-    category: 'personal',
-    source: '个人',
-    installed: true,
-    icon: 'ios',
-    detail: detail('Apply SwiftUI Liquid Glass patterns with platform-appropriate spacing, materials, and controls.'),
-  },
-  {
-    id: 'swiftui-performance-audit',
-    title: 'SwiftUI Performance Audit',
-    description: 'Audit SwiftUI runtime performance from code first',
-    category: 'personal',
-    source: '个人',
-    installed: true,
-    icon: 'ios',
-    detail: detail('Review SwiftUI view composition and state usage before profiling deeper runtime behavior.'),
   },
   {
     id: 'chrome',
@@ -601,15 +544,6 @@ type SkillStatusMap = Record<string, SkillStatus>;
 type AutomationTab = 'tasks' | 'templates';
 type AutomationTemplateIcon = 'daily' | 'weekly' | 'project' | 'commit' | 'release' | 'ci';
 
-interface AutomationFormState {
-  title: string;
-  prompt: string;
-  environment: string;
-  project: string;
-  schedule: string;
-  model: string;
-}
-
 interface AutomationTemplate {
   id: string;
   title: string;
@@ -619,16 +553,6 @@ interface AutomationTemplate {
   icon: AutomationTemplateIcon;
   prompt: string;
 }
-
-interface ScheduledAutomationTask extends AutomationFormState {
-  id: string;
-  createdAt: number;
-}
-
-const AUTOMATION_ENVIRONMENT_OPTIONS = ['工作树', '当前对话', '无代码环境'] as const;
-const AUTOMATION_SCHEDULE_OPTIONS = ['每天 9:00', '每天 21:00', '每个工作日 10:00', '每周五 17:30', '每周五 9:00'] as const;
-const AUTOMATION_MODEL_OPTIONS = ['GPT-5.5 超高', 'GPT-5.5 高', 'GPT-5.5 标准', 'GPT-5'] as const;
-const AUTOMATION_TASKS_KEY = 'alpha:automation-tasks-v1';
 
 const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
   {
@@ -1326,7 +1250,7 @@ function AppWorkspace() {
               {mainView === 'skills' ? (
                 <SkillsPage />
               ) : mainView === 'automations' ? (
-                <AutomationsPage />
+                <AutomationsPage onOpenChat={() => setMainView('chat')} />
               ) : (
                 <ChatArea domain={domain} />
               )}
@@ -3662,7 +3586,7 @@ function SideChatPanel({ domain }: { domain: DomainConfig }) {
   );
 }
 
-function AutomationsPage() {
+function AutomationsPage({ onOpenChat }: { onOpenChat: () => void }) {
   const [tab, setTab] = useState<AutomationTab>('tasks');
   const [query, setQuery] = useState('');
   const [editorOpen, setEditorOpen] = useState(false);
@@ -3670,6 +3594,10 @@ function AutomationsPage() {
   const [tasks, setTasks] = useState<ScheduledAutomationTask[]>(() => loadScheduledAutomationTasks());
   const [form, setForm] = useState<AutomationFormState>(() => blankAutomationForm());
   const allProjects = useChatStore((state) => state.projects);
+  const createConversation = useChatStore((state) => state.createConversation);
+  const setCurrentConversation = useChatStore((state) => state.setCurrentConversation);
+  const unarchiveConversation = useChatStore((state) => state.unarchiveConversation);
+  const sendMessage = useChatStore((state) => state.sendMessage);
   const projects = useMemo(() => activeProjects(allProjects), [allProjects]);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const projectOptions = useMemo(() => {
@@ -3689,8 +3617,20 @@ function AutomationsPage() {
   }, [editorOpen, selectedTaskId]);
 
   useEffect(() => {
-    saveScheduledAutomationTasks(tasks);
-  }, [tasks]);
+    const refreshTasks = () => setTasks(loadScheduledAutomationTasks());
+    window.addEventListener(AUTOMATION_TASKS_CHANGED_EVENT, refreshTasks);
+    window.addEventListener('storage', refreshTasks);
+    return () => {
+      window.removeEventListener(AUTOMATION_TASKS_CHANGED_EVENT, refreshTasks);
+      window.removeEventListener('storage', refreshTasks);
+    };
+  }, []);
+
+  const commitTasks = (updater: ScheduledAutomationTask[] | ((current: ScheduledAutomationTask[]) => ScheduledAutomationTask[])) => {
+    const nextTasks = typeof updater === 'function' ? updater(tasks) : updater;
+    setTasks(nextTasks);
+    saveScheduledAutomationTasks(nextTasks);
+  };
 
   const updateForm = <Field extends keyof AutomationFormState>(field: Field, value: AutomationFormState[Field]) => {
     setForm((current) => ({ ...current, [field]: value }));
@@ -3715,6 +3655,47 @@ function AutomationsPage() {
     setEditorOpen(true);
   };
 
+  const runTaskNow = (task: ScheduledAutomationTask) => {
+    const state = useChatStore.getState();
+    const currentConversation = state.conversations.find(
+      (conversation) => conversation.id === state.currentConversationId && !conversation.archivedAt,
+    );
+    const linkedConversation = task.conversationId
+      ? state.conversations.find((conversation) => conversation.id === task.conversationId)
+      : undefined;
+    const selectedProjectId =
+      task.project === '选择项目'
+        ? undefined
+        : projects.find((project) => project.name === task.project)?.id;
+
+    if (linkedConversation) {
+      if (linkedConversation.archivedAt) {
+        unarchiveConversation(linkedConversation.id);
+      } else {
+        setCurrentConversation(linkedConversation.id);
+      }
+    } else if (task.environment === '当前对话' && currentConversation?.status === 'idle') {
+      setCurrentConversation(currentConversation.id);
+    } else {
+      createConversation(task.environment === '无代码环境' ? undefined : selectedProjectId);
+    }
+
+    setSelectedTaskId(task.id);
+    setEditorOpen(false);
+    setTab('tasks');
+    onOpenChat();
+    void sendMessage(automationRunPrompt(task));
+  };
+
+  const deleteTask = (taskId: string) => {
+    commitTasks((current) => current.filter((task) => task.id !== taskId));
+    if (selectedTaskId === taskId) {
+      setSelectedTaskId(null);
+      setEditorOpen(false);
+      setForm(blankAutomationForm());
+    }
+  };
+
   const submitManualTask = (event: FormEvent) => {
     event.preventDefault();
     const prompt = form.prompt.trim();
@@ -3726,9 +3707,10 @@ function AutomationsPage() {
       title: form.title.trim() || automationTitleFromPrompt(prompt),
       prompt,
       createdAt: tasks.find((item) => item.id === selectedTaskId)?.createdAt ?? Date.now(),
+      conversationId: tasks.find((item) => item.id === selectedTaskId)?.conversationId ?? useChatStore.getState().currentConversationId ?? undefined,
     };
 
-    setTasks((current) => {
+    commitTasks((current) => {
       if (selectedTaskId) {
         return current.map((item) => (item.id === selectedTaskId ? task : item));
       }
@@ -3771,19 +3753,30 @@ function AutomationsPage() {
                   <h2>当前</h2>
                   <div className="automation-task-list">
                     {tasks.map((task) => (
-                      <button
+                      <div
                         key={task.id}
-                        type="button"
                         className={`automation-task-row ${task.id === selectedTaskId ? 'active' : ''}`}
-                        onClick={() => inspectTask(task)}
                       >
-                        <span className="automation-task-status" aria-hidden="true" />
-                        <span className="automation-task-copy">
-                          <strong>{task.title}</strong>
-                          <span>Next run 待安排 · {task.schedule}</span>
-                        </span>
+                        <button type="button" className="automation-task-main" onClick={() => inspectTask(task)}>
+                          <span className="automation-task-status" aria-hidden="true" />
+                          <span className="automation-task-copy">
+                            <strong>{task.title}</strong>
+                            <span>Next run 待安排 · {task.schedule}</span>
+                          </span>
+                        </button>
                         <span className="automation-task-meta">{task.project === '选择项目' ? '手动创建' : task.project}</span>
-                      </button>
+                        <span className="automation-task-actions" aria-label="任务操作">
+                          <button type="button" className="automation-task-action" aria-label="立即执行" title="立即执行" onClick={() => runTaskNow(task)}>
+                            <Play size={14} />
+                          </button>
+                          <button type="button" className="automation-task-action" aria-label="编辑" title="编辑" onClick={() => inspectTask(task)}>
+                            <Pencil size={14} />
+                          </button>
+                          <button type="button" className="automation-task-action danger" aria-label="删除" title="删除" onClick={() => deleteTask(task.id)}>
+                            <Trash2 size={14} />
+                          </button>
+                        </span>
+                      </div>
                     ))}
                   </div>
                 </section>
@@ -3852,17 +3845,6 @@ function AutomationsPage() {
   );
 }
 
-function blankAutomationForm(): AutomationFormState {
-  return {
-    title: '',
-    prompt: '',
-    environment: AUTOMATION_ENVIRONMENT_OPTIONS[0],
-    project: '选择项目',
-    schedule: AUTOMATION_SCHEDULE_OPTIONS[0],
-    model: AUTOMATION_MODEL_OPTIONS[0],
-  };
-}
-
 function automationFormFromTemplate(template: AutomationTemplate): AutomationFormState {
   return {
     title: template.title,
@@ -3878,44 +3860,16 @@ function normalizeAutomationSchedule(schedule: string): string {
   return schedule.replace('星期五', '每周五').replace('09:00', '9:00');
 }
 
-function automationTitleFromPrompt(prompt: string): string {
-  const compact = prompt.replace(/\s+/g, ' ').trim();
-  return compact.length > 18 ? `${compact.slice(0, 18)}...` : compact || '未命名自动化任务';
-}
-
-function createScheduledAutomationId(): string {
-  return `automation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function loadScheduledAutomationTasks(): ScheduledAutomationTask[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = window.localStorage.getItem(AUTOMATION_TASKS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as Partial<ScheduledAutomationTask>[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isScheduledAutomationTask);
-  } catch {
-    return [];
-  }
-}
-
-function saveScheduledAutomationTasks(tasks: ScheduledAutomationTask[]): void {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(AUTOMATION_TASKS_KEY, JSON.stringify(tasks));
-}
-
-function isScheduledAutomationTask(task: Partial<ScheduledAutomationTask>): task is ScheduledAutomationTask {
-  return Boolean(
-    typeof task.id === 'string' &&
-    typeof task.title === 'string' &&
-    typeof task.prompt === 'string' &&
-    typeof task.environment === 'string' &&
-    typeof task.project === 'string' &&
-    typeof task.schedule === 'string' &&
-    typeof task.model === 'string' &&
-    typeof task.createdAt === 'number',
-  );
+function automationRunPrompt(task: ScheduledAutomationTask): string {
+  const lines = [
+    `请立即执行已安排任务「${task.title}」。`,
+    `运行环境：${task.environment}`,
+    task.project === '选择项目' ? null : `项目：${task.project}`,
+    `原计划：${task.schedule}`,
+    '',
+    task.prompt,
+  ];
+  return lines.filter((line): line is string => line !== null).join('\n');
 }
 
 function AutomationManualEditor({
@@ -4064,20 +4018,17 @@ function SkillsPage() {
 
   return (
     <section className="skills-page" aria-label="技能">
+      <div className="skills-drag-strip" data-tauri-drag-region aria-hidden="true" />
       <div className="skills-page-shell">
-        <div className="skills-tabs" role="tablist" aria-label="能力与技能">
-          <button type="button" role="tab" aria-selected="false">能力</button>
-          <button type="button" role="tab" aria-selected="true" className="active">技能</button>
-        </div>
         <header className="skills-page-head">
           <div>
             <h1>技能</h1>
-            <p>通过任务专用技能扩展投研能力</p>
+            <p>通过任务专用技能扩展投研工作流</p>
           </div>
           <div className="skills-search-row">
             <label className="skills-search">
               <Search size={15} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索能力和技能" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索技能" />
             </label>
             <div className="skills-filter-wrap" ref={filterRef}>
               <button
@@ -4383,8 +4334,6 @@ function skillCategoryLabel(category: SkillCategory): string {
 function skillIcon(skill: SkillCatalogItem | SkillSelection, size = 16): ReactNode {
   const icon = 'icon' in skill ? skill.icon : undefined;
   switch (icon) {
-    case 'ios':
-      return <Box size={size} />;
     case 'chrome':
       return <Globe size={size} />;
     case 'computer':
@@ -5407,7 +5356,7 @@ function ComposerPlusMenu({
                 onClick={() => setSubmenu((current) => (current === 'plugins' ? null : 'plugins'))}
               >
                 <Plug size={15} />
-                <span>能力</span>
+                <span>技能</span>
                 <ChevronRight size={14} className="model-menu-chevron" />
               </button>
               {submenu === 'plugins' && (
@@ -5420,7 +5369,7 @@ function ComposerPlusMenu({
                         <span>{skill.title}</span>
                       </button>
                     ))}
-                    <div className="plus-menu-hint">金融版会在这里扩展投研数据、资料处理和自动化能力。</div>
+                    <div className="plus-menu-hint">金融版会在这里扩展投研数据、资料处理和自动化技能。</div>
                   </div>
                 </div>
               )}
@@ -8320,7 +8269,7 @@ function PluginSettings() {
         ))}
       </SettingsGroup>
       <SettingsGroup>
-        <SettingsRow title="技能目录" description="Alpha Studio 会从本地技能目录加载可用能力。">
+        <SettingsRow title="技能目录" description="Alpha Studio 会从本地技能目录加载可用技能。">
           <span className="settings-static">~/.codex/skills</span>
         </SettingsRow>
       </SettingsGroup>

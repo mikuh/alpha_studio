@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { addScheduledAutomationTask, automationCreatedReply, detectAutomationIntent } from './automation';
 import { applyCodexEventToConversation } from './codexEvents';
 import { buildCodingInstructions, buildReviewPrompt } from './prompt';
 import { checkCodex, isTauriRuntime, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
@@ -661,6 +662,35 @@ export const useChatStore = create<ChatState>()(
         const nextTitle = conversation.messages.length === 0
           ? buildConversationTitle(trimmed || attachmentList?.[0]?.name || '')
           : conversation.title;
+        const automationIntent = !attachmentList && !selectedSkill ? detectAutomationIntent(trimmed) : null;
+
+        if (automationIntent) {
+          const task = addScheduledAutomationTask({ ...automationIntent, conversationId });
+          set((state) => ({
+            conversations: state.conversations.map((item) =>
+              item.id === conversationId
+                ? {
+                    ...item,
+                    title: nextTitle,
+                    messages: [
+                      ...item.messages,
+                      userMessage,
+                      {
+                        ...assistantMessage,
+                        isStreaming: false,
+                        blocks: [{ type: 'text', content: automationCreatedReply(task) }],
+                      },
+                    ],
+                    status: 'idle',
+                    updatedAt: Date.now(),
+                    runId: undefined,
+                  }
+                : item
+            ),
+            error: null,
+          }));
+          return;
+        }
 
         set((state) => ({
           conversations: state.conversations.map((item) =>

@@ -102,7 +102,7 @@ export const financeResearchDomain: DomainConfig = {
     sidebar: {
       newConversationLabel: '新对话',
       searchPlaceholder: '搜索对话、研究主题或资料目录',
-      pluginsLabel: '能力',
+      pluginsLabel: '技能',
       automationLabel: '自动化',
       projectSectionLabel: '研究主题',
       projectEmpty: '用研究主题归档相关对话和资料目录',
@@ -164,7 +164,7 @@ export const financeResearchDomain: DomainConfig = {
     ],
     integrations: [
       { id: 'snapshots', label: '资料快照' },
-      { id: 'mcp', label: '能力' },
+      { id: 'mcp', label: '技能' },
       { id: 'browser', label: '浏览器' },
       { id: 'computer', label: '电脑操控' },
     ],

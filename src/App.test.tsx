@@ -208,20 +208,22 @@ describe('right feature panel', () => {
     expect(within(tabMenu).queryByRole('button', { name: /文件/ })).not.toBeInTheDocument();
   });
 
-  it('opens the skills page from the sidebar capability menu', async () => {
+  it('opens the skills page from the sidebar skills menu', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByRole('button', { name: '能力' }));
+    await user.click(screen.getByRole('button', { name: '技能' }));
 
     const skillsPage = container.querySelector('.skills-page') as HTMLElement;
     expect(skillsPage).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: '设置' })).not.toBeInTheDocument();
     expect(within(skillsPage).getByRole('heading', { name: '技能' })).toBeInTheDocument();
-    expect(within(skillsPage).getByPlaceholderText('搜索能力和技能')).toBeInTheDocument();
+    expect(within(skillsPage).getByPlaceholderText('搜索技能')).toBeInTheDocument();
     expect(within(skillsPage).getByText('个人')).toBeInTheDocument();
     expect(within(skillsPage).getByText('系统')).toBeInTheDocument();
     expect(within(skillsPage).getByText('Browser')).toBeInTheDocument();
+    expect(within(skillsPage).queryByText('iOS App Intents')).not.toBeInTheDocument();
+    expect(within(skillsPage).queryByText('SwiftUI Performance Audit')).not.toBeInTheDocument();
     expect(within(skillsPage).getByText('Skill Installer')).toBeInTheDocument();
   });
 
@@ -294,11 +296,61 @@ describe('right feature panel', () => {
     expect(within(automationPage).getByText('Next run 待安排 · 每天 9:00')).toBeInTheDocument();
   });
 
-  it('filters the skills catalog by category from the capability filter menu', async () => {
+  it('runs edits and deletes scheduled automation tasks from the task row', async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ sendMessage });
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    let automationPage = container.querySelector('.automation-page') as HTMLElement;
+    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+    let editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
+
+    await user.type(within(editor).getByLabelText('已安排任务标题'), '每日 Neostream 题材研究日报');
+    await user.type(within(editor).getByLabelText('提示词'), '汇总 Neostream 每日题材研究，并突出异常波动。');
+    await user.click(within(editor).getByRole('button', { name: '创建任务' }));
+
+    let taskRow = within(automationPage)
+      .getByRole('button', { name: /每日 Neostream 题材研究日报/ })
+      .closest('.automation-task-row') as HTMLElement;
+    await user.click(within(taskRow).getByLabelText('立即执行'));
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().conversations).toHaveLength(1);
+    expect(useChatStore.getState().currentConversationId).toBe('conv-right-panel');
+    const sentPrompt = sendMessage.mock.calls[0][0] as string;
+    expect(sentPrompt).toContain('请立即执行已安排任务「每日 Neostream 题材研究日报」。');
+    expect(sentPrompt).toContain('汇总 Neostream 每日题材研究，并突出异常波动。');
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    automationPage = container.querySelector('.automation-page') as HTMLElement;
+    taskRow = within(automationPage)
+      .getByRole('button', { name: /每日 Neostream 题材研究日报/ })
+      .closest('.automation-task-row') as HTMLElement;
+    await user.click(within(taskRow).getByLabelText('编辑'));
+
+    editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
+    await user.clear(within(editor).getByLabelText('已安排任务标题'));
+    await user.type(within(editor).getByLabelText('已安排任务标题'), '更新后的任务');
+    await user.click(within(editor).getByRole('button', { name: '保存任务' }));
+
+    expect(within(automationPage).getByRole('button', { name: /更新后的任务/ })).toBeInTheDocument();
+
+    taskRow = within(automationPage)
+      .getByRole('button', { name: /更新后的任务/ })
+      .closest('.automation-task-row') as HTMLElement;
+    await user.click(within(taskRow).getByLabelText('删除'));
+
+    expect(within(automationPage).queryByRole('button', { name: /更新后的任务/ })).not.toBeInTheDocument();
+    expect(within(automationPage).getByText('创建首个已安排任务')).toBeInTheDocument();
+  });
+
+  it('filters the skills catalog by category from the skills filter menu', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByRole('button', { name: '能力' }));
+    await user.click(screen.getByRole('button', { name: '技能' }));
     const skillsPage = container.querySelector('.skills-page') as HTMLElement;
 
     await user.click(within(skillsPage).getByLabelText('筛选技能'));
@@ -314,7 +366,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByRole('button', { name: '能力' }));
+    await user.click(screen.getByRole('button', { name: '技能' }));
     const skillsPage = container.querySelector('.skills-page') as HTMLElement;
     await user.click(within(skillsPage).getByRole('button', { name: /OpenAI Docs/ }));
 
@@ -330,11 +382,11 @@ describe('right feature panel', () => {
     expect(within(composer).getByText('将优先使用这个 Skill')).toBeInTheDocument();
   });
 
-  it('installs a recommended skill and makes it available in the composer capability menu', async () => {
+  it('installs a recommended skill and makes it available in the composer skills menu', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByRole('button', { name: '能力' }));
+    await user.click(screen.getByRole('button', { name: '技能' }));
     const skillsPage = container.querySelector('.skills-page') as HTMLElement;
     await user.click(within(skillsPage).getByLabelText('筛选技能'));
     await user.click(screen.getByRole('menuitemradio', { name: '推荐' }));
@@ -343,7 +395,7 @@ describe('right feature panel', () => {
     await user.click(within(container.querySelector('.nav-menu') as HTMLElement).getByRole('button', { name: '新对话' }));
     await user.click(screen.getByLabelText('添加内容'));
     const plusMenu = document.querySelector('.plus-menu') as HTMLElement;
-    fireEvent.click(within(plusMenu).getByRole('button', { name: /能力/ }));
+    fireEvent.click(within(plusMenu).getByRole('button', { name: /技能/ }));
 
     expect(screen.getByRole('menuitem', { name: 'Playwright' })).toBeInTheDocument();
   });
@@ -356,7 +408,7 @@ describe('right feature panel', () => {
     });
     const { container } = render(<App />);
 
-    await user.click(screen.getByRole('button', { name: '能力' }));
+    await user.click(screen.getByRole('button', { name: '技能' }));
     expect(container.querySelector('.skills-page')).toBeInTheDocument();
 
     await user.click(within(container.querySelector('.nav-menu') as HTMLElement).getByRole('button', { name: '新对话' }));
@@ -713,7 +765,7 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByLabelText('添加内容'));
     const plusMenu = document.querySelector('.plus-menu') as HTMLElement;
-    fireEvent.click(within(plusMenu).getByRole('button', { name: /能力/ }));
+    fireEvent.click(within(plusMenu).getByRole('button', { name: /技能/ }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Chrome' }));
 
     const composer = document.querySelector('.composer-card') as HTMLElement;

@@ -49,13 +49,14 @@ describe('finance research domain', () => {
     expect(instructions).toContain('不要只回复“已生成”');
   });
 
-  it('routes reminders and scheduled automations through Codex tools', () => {
+  it('keeps automation guidance aligned with Alpha Studio client handling', () => {
     const instructions = buildCodingInstructions();
 
-    expect(instructions).toContain('automation_update');
+    expect(instructions).toContain('Alpha Studio 会在发送给模型前直接处理简单的提醒和周期任务');
+    expect(instructions).toContain('不要声称可以调用 `automation_update`');
     expect(instructions).toContain('crontab');
     expect(instructions).toContain('launchd');
-    expect(instructions).toContain('不要退回到本地定时器方案');
+    expect(instructions).toContain('左侧「自动化」页');
   });
 
   it('keeps Alpha Studio instructions separate from the user task for app-server turns', () => {

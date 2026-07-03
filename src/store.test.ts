@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { AUTOMATION_TASKS_KEY } from './automation';
 import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles } from './models';
 import {
   activeConversations,
@@ -198,5 +199,49 @@ describe('skill selections on user messages', () => {
     const userMessage = useChatStore.getState().conversations[0].messages[0];
     expect(userMessage.role).toBe('user');
     expect(userMessage.selectedSkill).toEqual(skill);
+  });
+});
+
+describe('automation turns', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    window.localStorage.clear();
+    useChatStore.setState({
+      conversations: [conversation('conv-automation')],
+      projects: [],
+      currentConversationId: 'conv-automation',
+      selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+      modelProfiles: defaultModelProfiles(),
+      approvalMode: 'request',
+      pendingAuthorization: null,
+      projectSort: 'updated',
+      conversationSort: 'updated',
+      error: null,
+    });
+  });
+
+  it('creates a local automation instead of sending simple reminder requests to Codex', async () => {
+    await useChatStore.getState().sendMessage('每隔5分钟提醒我喝水');
+
+    const state = useChatStore.getState();
+    const current = state.conversations[0];
+    const savedTasks = JSON.parse(window.localStorage.getItem(AUTOMATION_TASKS_KEY) || '[]');
+
+    expect(current.status).toBe('idle');
+    expect(state.pendingAuthorization).toBeNull();
+    expect(current.messages).toHaveLength(2);
+    expect(current.messages[1].blocks).toEqual([
+      expect.objectContaining({
+        type: 'text',
+        content: expect.stringContaining('已在 Alpha Studio 自动化任务列表中创建'),
+      }),
+    ]);
+    expect(savedTasks[0]).toMatchObject({
+      title: '提醒我喝水。',
+      prompt: '提醒我喝水。',
+      schedule: '每 5 分钟',
+      environment: '当前对话',
+      conversationId: 'conv-automation',
+    });
   });
 });
