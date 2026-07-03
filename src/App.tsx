@@ -146,6 +146,7 @@ import {
   AUTOMATION_MODEL_OPTIONS,
   AUTOMATION_SCHEDULE_OPTIONS,
   AUTOMATION_TASKS_CHANGED_EVENT,
+  CUSTOM_AUTOMATION_SCHEDULE_VALUE,
   automationTitleFromPrompt,
   blankAutomationForm,
   createScheduledAutomationId,
@@ -553,6 +554,62 @@ interface AutomationTemplate {
   icon: AutomationTemplateIcon;
   prompt: string;
 }
+
+interface AutomationSelectOption {
+  value: string;
+  label: string;
+}
+
+interface AutomationSelectGroup {
+  label: string;
+  options: readonly AutomationSelectOption[];
+}
+
+type AutomationSelectEntry = string | AutomationSelectOption | AutomationSelectGroup;
+
+const CUSTOM_AUTOMATION_SCHEDULE_DEFAULT = 'Cron: 0 9 * * *';
+const AUTOMATION_SCHEDULE_OPTION_GROUPS: readonly AutomationSelectGroup[] = [
+  {
+    label: '分钟 / 小时',
+    options: automationSelectOptions([
+      '每 5 分钟',
+      '每 10 分钟',
+      '每 15 分钟',
+      '每 30 分钟',
+      '每小时',
+      '每 2 小时',
+      '每 3 小时',
+      '每 6 小时',
+      '每 12 小时',
+    ]),
+  },
+  {
+    label: '每天',
+    options: automationSelectOptions(['每天 8:00', '每天 9:00', '每天 12:00', '每天 18:00', '每天 21:00']),
+  },
+  {
+    label: '工作日',
+    options: automationSelectOptions(['每个工作日 9:00', '每个工作日 10:00', '每个工作日 18:00']),
+  },
+  {
+    label: '每周',
+    options: automationSelectOptions(['每周一 9:00', '每周三 14:00', '每周五 9:00', '每周五 17:30', '每周日 20:00']),
+  },
+  {
+    label: '每月 / 更长周期',
+    options: automationSelectOptions([
+      '每月 1 日 9:00',
+      '每月 15 日 9:00',
+      '每月最后一天 18:00',
+      '每季度第一个工作日 9:00',
+      '每年 1 月 1 日 9:00',
+    ]),
+  },
+  {
+    label: '自定义',
+    options: automationSelectOptions([CUSTOM_AUTOMATION_SCHEDULE_VALUE]),
+  },
+];
 
 const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
   {
@@ -1248,9 +1305,16 @@ function AppWorkspace() {
                 />
               )}
               {mainView === 'skills' ? (
-                <SkillsPage />
+                <SkillsPage
+                  sidebarCollapsed={sidebarCollapsed}
+                  onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+                />
               ) : mainView === 'automations' ? (
-                <AutomationsPage onOpenChat={() => setMainView('chat')} />
+                <AutomationsPage
+                  sidebarCollapsed={sidebarCollapsed}
+                  onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+                  onOpenChat={() => setMainView('chat')}
+                />
               ) : (
                 <ChatArea domain={domain} />
               )}
@@ -1294,6 +1358,21 @@ function AppWorkspace() {
         <ImageLightbox />
       </div>
     </SkillRuntimeContext.Provider>
+  );
+}
+
+function ViewSidebarToggle({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  const label = collapsed ? '展开侧栏' : '收起侧栏';
+  return (
+    <button className="icon-btn view-sidebar-toggle" type="button" onClick={onToggle} aria-label={label} title={label}>
+      {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+    </button>
   );
 }
 
@@ -3586,7 +3665,15 @@ function SideChatPanel({ domain }: { domain: DomainConfig }) {
   );
 }
 
-function AutomationsPage({ onOpenChat }: { onOpenChat: () => void }) {
+function AutomationsPage({
+  sidebarCollapsed,
+  onToggleSidebar,
+  onOpenChat,
+}: {
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
+  onOpenChat: () => void;
+}) {
   const [tab, setTab] = useState<AutomationTab>('tasks');
   const [query, setQuery] = useState('');
   const [editorOpen, setEditorOpen] = useState(false);
@@ -3598,12 +3685,19 @@ function AutomationsPage({ onOpenChat }: { onOpenChat: () => void }) {
   const setCurrentConversation = useChatStore((state) => state.setCurrentConversation);
   const unarchiveConversation = useChatStore((state) => state.unarchiveConversation);
   const sendMessage = useChatStore((state) => state.sendMessage);
+  const modelProfiles = useChatStore((state) => state.modelProfiles);
+  const codexStatus = useChatStore((state) => state.codexStatus);
+  const clientLicenseSession = useChatStore((state) => state.clientLicenseSession);
   const projects = useMemo(() => activeProjects(allProjects), [allProjects]);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const projectOptions = useMemo(() => {
     const names = projects.map((project) => project.name).filter(Boolean);
     return ['选择项目', ...Array.from(new Set(names))];
   }, [projects]);
+  const modelOptions = useMemo(
+    () => automationModelOptionGroups(modelProfiles, codexStatus, clientLicenseSession, form.model),
+    [clientLicenseSession, codexStatus, form.model, modelProfiles],
+  );
   const normalizedQuery = query.trim().toLowerCase();
   const visibleTemplates = AUTOMATION_TEMPLATES.filter((template) => {
     if (!normalizedQuery) return true;
@@ -3725,9 +3819,12 @@ function AutomationsPage({ onOpenChat }: { onOpenChat: () => void }) {
     <section className={`automation-page ${editorOpen ? 'manual-editor-open' : ''}`} aria-label="自动化">
       <div className="automation-drag-strip" data-tauri-drag-region aria-hidden="true" />
       <div className="automation-topbar">
-        <div className="automation-tabs" role="tablist" aria-label="自动化">
-          <button type="button" role="tab" aria-selected={tab === 'tasks'} className={tab === 'tasks' ? 'active' : ''} onClick={() => { setTab('tasks'); setQuery(''); }}>Tasks</button>
-          <button type="button" role="tab" aria-selected={tab === 'templates'} className={tab === 'templates' ? 'active' : ''} onClick={() => { setTab('templates'); setQuery(''); }}>Templates</button>
+        <div className="automation-topbar-start">
+          <ViewSidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
+          <div className="automation-tabs" role="tablist" aria-label="自动化">
+            <button type="button" role="tab" aria-selected={tab === 'tasks'} className={tab === 'tasks' ? 'active' : ''} onClick={() => { setTab('tasks'); setQuery(''); }}>Tasks</button>
+            <button type="button" role="tab" aria-selected={tab === 'templates'} className={tab === 'templates' ? 'active' : ''} onClick={() => { setTab('templates'); setQuery(''); }}>Templates</button>
+          </div>
         </div>
         <button type="button" className={`automation-create-btn ${editorOpen && !selectedTaskId ? 'active' : ''}`} onClick={() => openManualEditor()}>
           <span>手动创建</span>
@@ -3832,6 +3929,7 @@ function AutomationsPage({ onOpenChat }: { onOpenChat: () => void }) {
         {editorOpen && (
           <AutomationManualEditor
             form={form}
+            modelOptions={modelOptions}
             projectOptions={projectOptions}
             selectedTaskId={selectedTaskId}
             titleInputRef={titleInputRef}
@@ -3860,12 +3958,77 @@ function normalizeAutomationSchedule(schedule: string): string {
   return schedule.replace('星期五', '每周五').replace('09:00', '9:00');
 }
 
+function automationSelectOptions(values: readonly string[]): AutomationSelectOption[] {
+  return values.map((value) => ({ value, label: value }));
+}
+
+function isAutomationSelectGroup(option: AutomationSelectEntry): option is AutomationSelectGroup {
+  return typeof option === 'object' && 'options' in option;
+}
+
+function renderAutomationSelectOption(option: string | AutomationSelectOption): ReactNode {
+  const value = typeof option === 'string' ? option : option.value;
+  const label = typeof option === 'string' ? option : option.label;
+  return <option key={value} value={value}>{label}</option>;
+}
+
+function isCustomAutomationSchedule(schedule: string): boolean {
+  return schedule === CUSTOM_AUTOMATION_SCHEDULE_VALUE || !AUTOMATION_SCHEDULE_OPTIONS.some((option) => option === schedule);
+}
+
+function automationModelOptionGroups(
+  modelProfiles: ModelProfile[],
+  codexStatus: { loggedIn: boolean } | null,
+  session: ClientLicenseSession | null,
+  currentValue: string,
+): AutomationSelectGroup[] {
+  const enabledProfiles = modelProfiles.filter((profile) => profile.enabled);
+  const visibleProfiles = visibleModelProfilesForCodexStatus(enabledProfiles, codexStatus, session);
+  const usageBasedOptions = uniqueAutomationSelectOptions(
+    visibleProfiles
+      .filter((profile) => !profile.builtIn)
+      .map((profile) => ({ value: profile.label, label: profile.label })),
+  );
+  const groups: AutomationSelectGroup[] = [
+    {
+      label: '订阅模型',
+      options: automationSelectOptions(AUTOMATION_MODEL_OPTIONS),
+    },
+  ];
+
+  if (usageBasedOptions.length > 0) {
+    groups.push({ label: '按量付费模型', options: usageBasedOptions });
+  }
+
+  if (currentValue && !automationSelectGroupsContain(groups, currentValue)) {
+    groups.push({ label: '当前任务', options: [{ value: currentValue, label: currentValue }] });
+  }
+
+  return groups;
+}
+
+function uniqueAutomationSelectOptions(options: AutomationSelectOption[]): AutomationSelectOption[] {
+  const seen = new Set<string>();
+  const result: AutomationSelectOption[] = [];
+  for (const option of options) {
+    if (seen.has(option.value)) continue;
+    seen.add(option.value);
+    result.push(option);
+  }
+  return result;
+}
+
+function automationSelectGroupsContain(groups: readonly AutomationSelectGroup[], value: string): boolean {
+  return groups.some((group) => group.options.some((option) => option.value === value));
+}
+
 function automationRunPrompt(task: ScheduledAutomationTask): string {
   const lines = [
     `请立即执行已安排任务「${task.title}」。`,
     `运行环境：${task.environment}`,
     task.project === '选择项目' ? null : `项目：${task.project}`,
     `原计划：${task.schedule}`,
+    `模型：${task.model}`,
     '',
     task.prompt,
   ];
@@ -3874,6 +4037,7 @@ function automationRunPrompt(task: ScheduledAutomationTask): string {
 
 function AutomationManualEditor({
   form,
+  modelOptions,
   projectOptions,
   selectedTaskId,
   titleInputRef,
@@ -3882,6 +4046,7 @@ function AutomationManualEditor({
   onSubmit,
 }: {
   form: AutomationFormState;
+  modelOptions: readonly AutomationSelectGroup[];
   projectOptions: string[];
   selectedTaskId: string | null;
   titleInputRef: RefObject<HTMLInputElement | null>;
@@ -3889,6 +4054,19 @@ function AutomationManualEditor({
   onChange: <Field extends keyof AutomationFormState>(field: Field, value: AutomationFormState[Field]) => void;
   onSubmit: (event: FormEvent) => void;
 }) {
+  const customSchedule = isCustomAutomationSchedule(form.schedule);
+  const scheduleSelectValue = customSchedule ? CUSTOM_AUTOMATION_SCHEDULE_VALUE : form.schedule;
+  const customScheduleValue = form.schedule === CUSTOM_AUTOMATION_SCHEDULE_VALUE ? '' : form.schedule;
+
+  const changeSchedule = (value: string) => {
+    onChange(
+      'schedule',
+      value === CUSTOM_AUTOMATION_SCHEDULE_VALUE
+        ? (customSchedule ? customScheduleValue || CUSTOM_AUTOMATION_SCHEDULE_DEFAULT : CUSTOM_AUTOMATION_SCHEDULE_DEFAULT)
+        : value,
+    );
+  };
+
   return (
     <aside className="automation-editor" aria-label="手动创建自动化任务">
       <form className="automation-editor-form" onSubmit={onSubmit}>
@@ -3926,14 +4104,25 @@ function AutomationManualEditor({
           />
           <AutomationEditorSelect
             label="重复次数"
-            value={form.schedule}
-            options={AUTOMATION_SCHEDULE_OPTIONS}
-            onChange={(value) => onChange('schedule', value)}
+            value={scheduleSelectValue}
+            options={AUTOMATION_SCHEDULE_OPTION_GROUPS}
+            onChange={changeSchedule}
           />
+          {customSchedule && (
+            <label className="automation-editor-custom-rule">
+              <span>自定义规则</span>
+              <input
+                value={customScheduleValue}
+                onChange={(event) => onChange('schedule', event.target.value)}
+                placeholder="Cron: 0 9 * * * 或 每 2 天 9:00"
+                aria-label="自定义重复规则"
+              />
+            </label>
+          )}
           <AutomationEditorSelect
             label="模型"
             value={form.model}
-            options={AUTOMATION_MODEL_OPTIONS}
+            options={modelOptions}
             onChange={(value) => onChange('model', value)}
           />
         </div>
@@ -3957,7 +4146,7 @@ function AutomationEditorSelect({
 }: {
   label: string;
   value: string;
-  options: readonly string[];
+  options: readonly AutomationSelectEntry[];
   showInfo?: boolean;
   onChange: (value: string) => void;
 }) {
@@ -3970,7 +4159,15 @@ function AutomationEditorSelect({
       <span className="automation-editor-select">
         <select value={value} aria-label={label} onChange={(event) => onChange(event.target.value)}>
           {options.map((option) => (
-            <option key={option} value={option}>{option}</option>
+            isAutomationSelectGroup(option)
+              ? (
+                <optgroup key={option.label} label={option.label}>
+                  {option.options.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </optgroup>
+              )
+              : renderAutomationSelectOption(option)
           ))}
         </select>
         <ChevronDown size={14} aria-hidden="true" />
@@ -3991,7 +4188,13 @@ function automationTemplateIcon(icon: AutomationTemplateIcon, size: number): Rea
   return icons[icon];
 }
 
-function SkillsPage() {
+function SkillsPage({
+  sidebarCollapsed,
+  onToggleSidebar,
+}: {
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
+}) {
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<SkillCategoryFilter>('all');
   const [filterOpen, setFilterOpen] = useState(false);
@@ -4021,9 +4224,12 @@ function SkillsPage() {
       <div className="skills-drag-strip" data-tauri-drag-region aria-hidden="true" />
       <div className="skills-page-shell">
         <header className="skills-page-head">
-          <div>
-            <h1>技能</h1>
-            <p>通过任务专用技能扩展投研工作流</p>
+          <div className="skills-page-title-row">
+            <ViewSidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
+            <div>
+              <h1>技能</h1>
+              <p>通过任务专用技能扩展投研工作流</p>
+            </div>
           </div>
           <div className="skills-search-row">
             <label className="skills-search">

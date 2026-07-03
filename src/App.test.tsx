@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { App } from './App';
-import { clearClientLicenseSession, loadClientLicenseSession, saveClientLicenseSession } from './license';
+import { ALPHA_GATEWAY_PROVIDER_ID, clearClientLicenseSession, loadClientLicenseSession, saveClientLicenseSession } from './license';
 import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles } from './models';
 import { useChatStore } from './store';
 import type { Conversation } from './types';
@@ -258,6 +258,70 @@ describe('right feature panel', () => {
     expect(within(editor).getByLabelText('运行环境')).toHaveValue('工作树');
     expect(within(editor).getByLabelText('重复次数')).toHaveValue('每天 9:00');
     expect(within(editor).getByLabelText('模型')).toHaveValue('GPT-5.5 超高');
+  });
+
+  it('toggles the left sidebar while the automation editor is open', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const automationPage = container.querySelector('.automation-page') as HTMLElement;
+    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+
+    expect(within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' })).toBeInTheDocument();
+
+    await user.click(within(automationPage).getByLabelText('收起侧栏'));
+    expect(container.querySelector('.app-shell')).toHaveClass('sidebar-collapsed');
+    expect(container.querySelector('.sidebar')).toHaveClass('collapsed');
+
+    await user.click(within(automationPage).getByLabelText('展开侧栏'));
+    expect(container.querySelector('.app-shell')).not.toHaveClass('sidebar-collapsed');
+    expect(container.querySelector('.sidebar')).not.toHaveClass('collapsed');
+  });
+
+  it('offers richer automation schedules and usage-based models', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      modelProfiles: [
+        ...defaultModelProfiles(),
+        {
+          id: 'gateway:gpt-5.5',
+          label: 'GPT-5.5 API',
+          providerId: ALPHA_GATEWAY_PROVIDER_ID,
+          model: 'gpt-5.5',
+          wireApi: 'responses',
+          enabled: true,
+          supportsReasoningEffort: true,
+        },
+      ],
+    });
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const automationPage = container.querySelector('.automation-page') as HTMLElement;
+    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+
+    const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
+    const scheduleSelect = within(editor).getByLabelText('重复次数') as HTMLSelectElement;
+    expect(Array.from(scheduleSelect.options).map((option) => option.value)).toEqual(expect.arrayContaining([
+      '每 6 小时',
+      '每月最后一天 18:00',
+      '每季度第一个工作日 9:00',
+      '自定义',
+    ]));
+
+    await user.selectOptions(scheduleSelect, '自定义');
+    const customSchedule = within(editor).getByLabelText('自定义重复规则');
+    expect(scheduleSelect).toHaveValue('自定义');
+    expect(customSchedule).toHaveValue('Cron: 0 9 * * *');
+    await user.clear(customSchedule);
+    await user.type(customSchedule, '每 2 天 9:00');
+    expect(customSchedule).toHaveValue('每 2 天 9:00');
+
+    const modelSelect = within(editor).getByLabelText('模型') as HTMLSelectElement;
+    expect(Array.from(modelSelect.options).map((option) => option.value)).toContain('GPT-5.5 API');
+    await user.selectOptions(modelSelect, 'GPT-5.5 API');
+    expect(modelSelect).toHaveValue('GPT-5.5 API');
   });
 
   it('prefills the manual automation editor from a template', async () => {

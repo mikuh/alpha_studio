@@ -1,6 +1,38 @@
 export const AUTOMATION_ENVIRONMENT_OPTIONS = ['工作树', '当前对话', '无代码环境'] as const;
-export const AUTOMATION_SCHEDULE_OPTIONS = ['每 5 分钟', '每 15 分钟', '每 30 分钟', '每小时', '每天 9:00', '每天 21:00', '每个工作日 10:00', '每周五 17:30', '每周五 9:00'] as const;
+export const CUSTOM_AUTOMATION_SCHEDULE_VALUE = '自定义';
+export const AUTOMATION_SCHEDULE_OPTIONS = [
+  '每 5 分钟',
+  '每 10 分钟',
+  '每 15 分钟',
+  '每 30 分钟',
+  '每小时',
+  '每 2 小时',
+  '每 3 小时',
+  '每 6 小时',
+  '每 12 小时',
+  '每天 8:00',
+  '每天 9:00',
+  '每天 12:00',
+  '每天 18:00',
+  '每天 21:00',
+  '每个工作日 9:00',
+  '每个工作日 10:00',
+  '每个工作日 18:00',
+  '每周一 9:00',
+  '每周三 14:00',
+  '每周五 9:00',
+  '每周五 17:30',
+  '每周日 20:00',
+  '每月 1 日 9:00',
+  '每月 15 日 9:00',
+  '每月最后一天 18:00',
+  '每季度第一个工作日 9:00',
+  '每年 1 月 1 日 9:00',
+  CUSTOM_AUTOMATION_SCHEDULE_VALUE,
+] as const;
+export const DEFAULT_AUTOMATION_SCHEDULE = '每天 9:00';
 export const AUTOMATION_MODEL_OPTIONS = ['GPT-5.5 超高', 'GPT-5.5 高', 'GPT-5.5 标准', 'GPT-5'] as const;
+export const DEFAULT_AUTOMATION_MODEL = AUTOMATION_MODEL_OPTIONS[0];
 export const AUTOMATION_TASKS_KEY = 'alpha:automation-tasks-v1';
 export const AUTOMATION_TASKS_CHANGED_EVENT = 'alpha:automation-tasks-changed';
 
@@ -25,8 +57,8 @@ export function blankAutomationForm(): AutomationFormState {
     prompt: '',
     environment: AUTOMATION_ENVIRONMENT_OPTIONS[0],
     project: '选择项目',
-    schedule: AUTOMATION_SCHEDULE_OPTIONS[4],
-    model: AUTOMATION_MODEL_OPTIONS[0],
+    schedule: DEFAULT_AUTOMATION_SCHEDULE,
+    model: DEFAULT_AUTOMATION_MODEL,
   };
 }
 
@@ -74,7 +106,10 @@ export function addScheduledAutomationTask(input: AutomationFormState): Schedule
 export function detectAutomationIntent(message: string): AutomationFormState | null {
   const source = normalizeText(message);
   if (/立即执行已安排任务|原计划[:：]/.test(source)) return null;
-  if (!source || !/(提醒|叫我|通知|自动化|定时|每隔|每[0-9一二三四五六七八九十半两]+|每个|每天|每日|每周|每小时|每分钟)/.test(source)) {
+  if (
+    !source ||
+    !/(提醒|叫我|通知|自动化|定时|每隔|每[0-9一二三四五六七八九十半两]+|每个|每天|每日|每周|每星期|每月|每季度|每年|每小时|每分钟|工作日)/.test(source)
+  ) {
     return null;
   }
   const schedule = extractSchedule(source);
@@ -90,7 +125,7 @@ export function detectAutomationIntent(message: string): AutomationFormState | n
     environment: '当前对话',
     project: '选择项目',
     schedule,
-    model: AUTOMATION_MODEL_OPTIONS[0],
+    model: DEFAULT_AUTOMATION_MODEL,
   };
 }
 
@@ -127,18 +162,43 @@ function normalizeText(value: string): string {
 }
 
 function extractSchedule(text: string): string | null {
-  const interval = text.match(/每(?:隔)?([0-9０-９一二三四五六七八九十两半]+)(分钟|小时)/);
+  if (/每(?:隔)?半小时/.test(text)) return '每 30 分钟';
+
+  const interval = text.match(/每(?:隔)?([0-9０-９一二三四五六七八九十两]+)(分钟|小时|天|周|星期|月)/);
   if (interval) {
     const count = chineseNumberToInteger(interval[1]);
     if (!count) return null;
-    return interval[2] === '小时'
-      ? (count === 1 ? '每小时' : `每 ${count} 小时`)
-      : `每 ${count} 分钟`;
+    return formatIntervalSchedule(count, interval[2], extractTime(text));
   }
+
+  if (/每分钟/.test(text)) return '每 1 分钟';
   if (/每小时/.test(text)) return '每小时';
-  if (/每天|每日/.test(text)) return '每天 9:00';
-  if (/每周五|每星期五/.test(text)) return '每周五 9:00';
-  if (/每周|每星期/.test(text)) return '每周五 9:00';
+
+  const time = extractTime(text);
+  if (/每(?:个)?工作日|工作日/.test(text)) return `每个工作日 ${time ?? '9:00'}`;
+
+  const weekday = extractWeekday(text);
+  if (weekday) return `每周${weekday} ${time ?? '9:00'}`;
+  if (/每周|每星期/.test(text)) return `每周五 ${time ?? '9:00'}`;
+
+  if (/每月/.test(text)) {
+    if (/月底|月末|最后(?:一天|一日|1天|1日)/.test(text)) return `每月最后一天 ${time ?? '18:00'}`;
+    const day = extractMonthDay(text) ?? 1;
+    return `每月 ${day} 日 ${time ?? '9:00'}`;
+  }
+
+  if (/每季度|每季/.test(text)) {
+    const anchor = /工作日/.test(text) ? '第一个工作日' : '第一天';
+    return `每季度${anchor} ${time ?? '9:00'}`;
+  }
+
+  if (/每年/.test(text)) {
+    const date = extractYearDate(text);
+    return `每年 ${date?.month ?? 1} 月 ${date?.day ?? 1} 日 ${time ?? '9:00'}`;
+  }
+
+  if (/每天|每日/.test(text)) return `每天 ${time ?? '9:00'}`;
+
   return null;
 }
 
@@ -146,8 +206,13 @@ function extractReminderTask(text: string): string | null {
   let task = text
     .replace(/^请?(?:你)?(?:帮我|给我|替我)?/, '')
     .replace(/^(?:设置|创建|新增|加一个)?(?:自动化|定时任务|提醒|闹钟)?/, '')
-    .replace(/每(?:隔)?[0-9０-９一二三四五六七八九十两半]+(?:分钟|小时)/, '')
-    .replace(/(?:每天|每日|每周五|每星期五|每周|每星期)/, '')
+    .replace(/每(?:隔)?(?:半小时|分钟|小时|[0-9０-９一二三四五六七八九十两]+(?:分钟|小时|天|周|星期|月))/, '')
+    .replace(/每年[0-9０-９一二三四五六七八九十两]+月[0-9０-９一二三四五六七八九十两]+(?:日|号)?/, '')
+    .replace(/每月(?:最后(?:一天|一日|1天|1日)|[0-9０-９一二三四五六七八九十两]+(?:日|号))?/, '')
+    .replace(/每季度(?:第一个工作日|第一天)?/, '')
+    .replace(/(?:每个工作日|工作日|每天|每日|每周[一二三四五六日天1-7]?|每星期[一二三四五六日天1-7]?)/, '')
+    .replace(/(?:凌晨|早上|上午|中午|下午|晚上|傍晚)?[0-9０-９一二三四五六七八九十两]+点(?:半|[0-5]?\d分?|[一二三四五六七八九十]+分?)?/, '')
+    .replace(/[0-2]?[0-9][:：][0-5][0-9]/, '')
     .replace(/^(?:提醒|叫|通知)(?:我)?/, '')
     .replace(/(?:提醒|叫|通知)(?:我)?$/, '')
     .replace(/^(?:我)?/, '')
@@ -166,6 +231,8 @@ function chineseNumberToInteger(value: string): number | null {
   if (/^\d+$/.test(normalized)) return Number.parseInt(normalized, 10);
   if (normalized === '半') return null;
   const digits: Record<string, number> = {
+    零: 0,
+    〇: 0,
     一: 1,
     二: 2,
     两: 2,
@@ -187,4 +254,79 @@ function chineseNumberToInteger(value: string): number | null {
     return tens * 10 + ones;
   }
   return digits[normalized] ?? null;
+}
+
+function formatIntervalSchedule(count: number, unit: string, time?: string | null): string {
+  if (unit === '分钟') return `每 ${count} 分钟`;
+  if (unit === '小时') return count === 1 ? '每小时' : `每 ${count} 小时`;
+  if (unit === '天') return count === 1 ? `每天 ${time ?? '9:00'}` : `每 ${count} 天${time ? ` ${time}` : ''}`;
+  if (unit === '月') return count === 1 ? `每月 1 日 ${time ?? '9:00'}` : `每 ${count} 个月${time ? ` ${time}` : ''}`;
+  return count === 1 ? `每周五 ${time ?? '9:00'}` : `每 ${count} 周${time ? ` ${time}` : ''}`;
+}
+
+function extractTime(text: string): string | null {
+  const digital = text.match(/([01]?\d|2[0-3])[:：]([0-5]\d)/);
+  if (digital) return `${Number.parseInt(digital[1], 10)}:${digital[2]}`;
+
+  const chinese = text.match(/(凌晨|早上|上午|中午|下午|晚上|傍晚)?([0-9０-９一二三四五六七八九十两]+)点(?:(半)|([0-5]?\d|[一二三四五六七八九十两]+)分?)?/);
+  if (!chinese) return null;
+
+  const hourValue = chineseNumberToInteger(chinese[2]);
+  if (hourValue === null || hourValue > 24) return null;
+  let hour = hourValue;
+  const period = chinese[1] ?? '';
+  if (/下午|晚上|傍晚/.test(period) && hour < 12) hour += 12;
+  if (/中午/.test(period) && hour > 0 && hour < 11) hour += 12;
+  if (/凌晨|上午|早上/.test(period) && hour === 12) hour = 0;
+  if (hour === 24) hour = 0;
+
+  let minute = 0;
+  if (chinese[3]) {
+    minute = 30;
+  } else if (chinese[4]) {
+    const minuteValue = chineseNumberToInteger(chinese[4]);
+    if (minuteValue === null || minuteValue > 59) return null;
+    minute = minuteValue;
+  }
+
+  return `${hour}:${minute.toString().padStart(2, '0')}`;
+}
+
+function extractWeekday(text: string): string | null {
+  const match = text.match(/每(?:周|星期)([一二三四五六日天1-7])/);
+  if (!match) return null;
+  const weekdays: Record<string, string> = {
+    '1': '一',
+    '2': '二',
+    '3': '三',
+    '4': '四',
+    '5': '五',
+    '6': '六',
+    '7': '日',
+    一: '一',
+    二: '二',
+    三: '三',
+    四: '四',
+    五: '五',
+    六: '六',
+    日: '日',
+    天: '日',
+  };
+  return weekdays[match[1]] ?? null;
+}
+
+function extractMonthDay(text: string): number | null {
+  const match = text.match(/每月(?:第)?([0-9０-９一二三四五六七八九十两]+)(?:日|号)/);
+  if (!match) return null;
+  const day = chineseNumberToInteger(match[1]);
+  return day && day >= 1 && day <= 31 ? day : null;
+}
+
+function extractYearDate(text: string): { month: number; day: number } | null {
+  const match = text.match(/每年([0-9０-９一二三四五六七八九十两]+)月([0-9０-９一二三四五六七八九十两]+)(?:日|号)?/);
+  if (!match) return null;
+  const month = chineseNumberToInteger(match[1]);
+  const day = chineseNumberToInteger(match[2]);
+  if (!month || month < 1 || month > 12 || !day || day < 1 || day > 31) return null;
+  return { month, day };
 }

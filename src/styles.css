@@ -2762,6 +2762,10 @@ button {
   padding-left: 82px;
 }
 
+.app-shell.sidebar-collapsed .automation-topbar {
+  padding-left: 82px;
+}
+
 .top-bar {
   height: 47px;
   flex-shrink: 0;
@@ -2853,6 +2857,11 @@ button {
 
 .top-bar-actions button:focus-visible {
   box-shadow: 0 0 0 2px var(--border-strong);
+}
+
+.view-sidebar-toggle {
+  flex: 0 0 auto;
+  pointer-events: auto;
 }
 
 .codex-chip {
@@ -2958,6 +2967,14 @@ button {
   gap: 16px;
   padding: 8px 10px 0 16px;
   pointer-events: none;
+}
+
+.automation-topbar-start {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
 }
 
 .automation-shell {
@@ -3378,10 +3395,52 @@ button {
   cursor: pointer;
 }
 
+.automation-editor-select optgroup {
+  color: var(--text-faint);
+  font-weight: 650;
+}
+
 .automation-editor-select svg {
   flex: 0 0 auto;
   color: var(--text-faint);
   pointer-events: none;
+}
+
+.automation-editor-custom-rule {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(180px, 0.82fr);
+  align-items: center;
+  gap: 16px;
+}
+
+.automation-editor-custom-rule span {
+  color: var(--text-faint);
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.automation-editor-custom-rule input {
+  min-width: 0;
+  width: 100%;
+  height: 31px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: 0;
+  background: var(--bg-soft);
+  color: var(--text);
+  padding: 0 9px;
+  font-size: 13px;
+  font-family: var(--mono);
+}
+
+.automation-editor-custom-rule input:focus {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+.automation-editor-custom-rule input::placeholder {
+  color: var(--text-faint);
 }
 
 .automation-editor-actions {
@@ -3537,6 +3596,12 @@ button {
   display: grid;
   gap: 12px;
   margin-bottom: 25px;
+}
+
+.skills-page-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
 }
 
 .skills-page-head h1 {
@@ -9093,6 +9158,11 @@ button.environment-row:hover {
   .automation-editor-row {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+
+  .automation-editor-custom-rule {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 
   .automation-editor-select {
