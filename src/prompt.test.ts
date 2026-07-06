@@ -70,3 +70,64 @@ describe('finance research domain', () => {
     expect(instructions).not.toContain('Open the page and debug the issue.');
   });
 });
+
+describe('coworker orchestration protocol', () => {
+  it('tells the main agent to spawn a single summoned coworker sub-agent', () => {
+    const instructions = buildCodingInstructions({
+      coworkers: [{ id: 'mainline', no: '①', name: '主线交易官' }],
+    });
+
+    expect(instructions).toContain('用户为本次任务召集了以下 AI 同事');
+    expect(instructions).toContain('agent `mainline`');
+    expect(instructions).toContain('① 主线交易官');
+    expect(instructions).toContain('职责');
+    expect(instructions).toContain('你是调度者(主 agent)');
+    expect(instructions).toContain('spawn agent 工具');
+    expect(instructions).toContain('转述其交付物');
+    expect(instructions).not.toContain('并行 spawn');
+  });
+
+  it('asks for parallel spawns and a merged signed report for multiple coworkers', () => {
+    const instructions = buildCodingInstructions({
+      coworkers: [
+        { id: 'mainline', no: '①', name: '主线交易官' },
+        { id: 'risk', no: '⑦', name: '风险控制官' },
+      ],
+    });
+
+    expect(instructions).toContain('agent `mainline`');
+    expect(instructions).toContain('agent `risk`');
+    expect(instructions).toContain('并行 spawn');
+    expect(instructions).toContain('联合结论');
+    expect(instructions).toContain('署名');
+    expect(instructions).not.toContain('基金经理副官在场');
+  });
+
+  it('lets the PM deputy own the merged conclusion when summoned', () => {
+    const instructions = buildCodingInstructions({
+      coworkers: [
+        { id: 'mainline', no: '①', name: '主线交易官' },
+        { id: 'pm_deputy', no: '⑧', name: '基金经理副官' },
+      ],
+    });
+
+    expect(instructions).toContain('⑧ 基金经理副官在场');
+    expect(instructions).toContain('带立场的综合判断');
+  });
+
+  it('keeps a graceful fallback for runtimes without spawn support', () => {
+    const instructions = buildCodingInstructions({
+      coworkers: [{ id: 'theme', no: '②', name: '题材挖掘官' }],
+    });
+
+    expect(instructions).toContain('不支持 spawn agent 工具');
+    expect(instructions).toContain('依次扮演每位同事');
+  });
+
+  it('omits the orchestration protocol when no coworkers are summoned', () => {
+    const instructions = buildCodingInstructions();
+
+    expect(instructions).not.toContain('召集了以下 AI 同事');
+    expect(instructions).not.toContain('spawn agent 工具');
+  });
+});

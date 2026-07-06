@@ -241,6 +241,37 @@ code {
   display: flex;
   align-items: center;
   padding: 0 10px;
+  position: relative;
+  --sidebar-account-left: 96px;
+}
+
+.app-shell.window-fullscreen .sidebar-traffic {
+  --sidebar-account-left: 12px;
+}
+
+.sidebar-account {
+  min-width: 0;
+  position: absolute;
+  left: var(--sidebar-account-left);
+  right: 44px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0;
+  user-select: none;
+}
+
+.sidebar-account span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-collapse-btn,
@@ -2829,6 +2860,10 @@ button {
   flex: 0 0 auto;
 }
 
+.floating-right-panel-actions {
+  z-index: 130;
+}
+
 .top-bar-env-actions,
 .top-bar-panel-actions {
   display: inline-flex;
@@ -2843,11 +2878,23 @@ button {
   z-index: 91;
 }
 
+.app-shell.right-panel-open .top-bar-actions {
+  right: calc(var(--right-sidebar-width, 416px) + 16px);
+}
+
 .app-shell.git-panel-open .top-bar-env-actions {
   right: calc(var(--git-panel-width, 430px) + 16px);
 }
 
+.app-shell.git-panel-open .top-bar-actions {
+  right: calc(var(--git-panel-width, 430px) + 16px);
+}
+
 .app-shell.review-panel-open .top-bar-env-actions {
+  right: calc(var(--review-panel-width, 704px) + 16px);
+}
+
+.app-shell.review-panel-open .top-bar-actions {
   right: calc(var(--review-panel-width, 704px) + 16px);
 }
 
@@ -2857,11 +2904,6 @@ button {
 
 .top-bar-actions button:focus-visible {
   box-shadow: 0 0 0 2px var(--border-strong);
-}
-
-.view-sidebar-toggle {
-  flex: 0 0 auto;
-  pointer-events: auto;
 }
 
 .codex-chip {
@@ -3596,6 +3638,14 @@ button {
   display: grid;
   gap: 12px;
   margin-bottom: 25px;
+}
+
+.skills-sidebar-open-btn {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  left: 82px;
+  pointer-events: auto;
 }
 
 .skills-page-title-row {
@@ -7945,8 +7995,343 @@ button.environment-row:hover {
   flex: 0 0 auto;
 }
 
+/* ---- AI coworkers sidebar ---- */
+.coworkers-panel {
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.coworkers-panel-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px 8px;
+}
+
+.coworkers-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.coworkers-panel-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-elev-1);
+  white-space: nowrap;
+}
+
+.coworkers-panel-hint {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0 16px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.coworkers-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 2px 12px 14px;
+}
+
+.coworker-card {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev-1);
+  overflow: hidden;
+  cursor: grab;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.coworker-card:active {
+  cursor: grabbing;
+}
+
+.coworker-card:hover {
+  border-color: var(--accent-soft);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+}
+
+.coworker-card-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.coworker-badge {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.coworker-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.coworker-card-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.coworker-group {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.coworker-card-desc {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coworker-card-side {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-faint);
+}
+
+.coworker-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.coworker-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #34c759;
+}
+
+.coworker-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+
+.coworker-summon {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.coworker-summon:hover {
+  background: var(--bg-hover);
+}
+
+.coworker-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.coworker-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.coworker-task-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.coworker-task-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.coworker-task-prompt {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.coworker-task-import {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.coworker-task-import:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+/* Composer coworker chips + drop highlight */
+.composer-card.coworker-drag-over {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.composer-coworkers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+
+.composer-coworkers-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.composer-coworker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.composer-coworker-no {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.composer-coworker-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.composer-coworker-remove:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* Coworker chips on sent user messages */
+.message-coworkers-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  margin-right: 7px;
+  color: var(--text-muted);
+  vertical-align: 1px;
+}
+
+.message-coworker-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--bg-elev-1);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
 @media (max-width: 900px) {
-  .app-shell.features-panel-open .right-panel-resizer {
+  .app-shell.features-panel-open .right-panel-resizer,
+  .app-shell.coworkers-panel-open .right-panel-resizer {
     display: none;
   }
 

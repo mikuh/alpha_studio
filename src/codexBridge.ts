@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { CoworkerAgentDefinition } from './coworkers';
 import type { ModelProfile } from './models';
 import type {
   CodexChatEvent,
@@ -80,6 +81,20 @@ export async function revokeCodexAuthorization(): Promise<CodexAuthorizationResu
 
 export async function startCodexChat(request: CodexChatStartRequest): Promise<CodexChatStartResult> {
   return invoke<CodexChatStartResult>('codex_chat_start', { request });
+}
+
+export interface CoworkersSyncResult {
+  agentsDir: string;
+  written: number;
+}
+
+// Materializes the coworker catalog into Codex custom agent files
+// (CODEX_HOME/agents/<id>.toml) so the main agent can spawn them.
+export async function syncCoworkerAgents(
+  definitions: CoworkerAgentDefinition[],
+): Promise<CoworkersSyncResult | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<CoworkersSyncResult>('coworkers_sync', { request: { definitions } });
 }
 
 export async function stopCodexChat(runId: string): Promise<boolean> {

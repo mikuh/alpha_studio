@@ -19,7 +19,7 @@ use crate::{
     },
     license::{
         can_activate_device, codex_subscription_available, normalize_authorization_code,
-        normalize_company_name,
+        normalize_company_name, CLIENT_DEVICE_LEASE_YEARS,
     },
     state::AppState,
     tokens::RunTokenClaims,
@@ -111,10 +111,10 @@ pub async fn device_activate(
     let row = sqlx::query(
         r#"
         insert into devices (id, tenant_id, user_id, fingerprint, name, status, lease_expires_at, last_seen_at)
-        values ($1, $2, $3, $4, $5, 'active', now() + interval '5 minutes', now())
+        values ($1, $2, $3, $4, $5, 'active', now() + make_interval(years => $6), now())
         on conflict (tenant_id, fingerprint)
         do update set name = excluded.name, user_id = excluded.user_id, status = 'active',
-            lease_expires_at = now() + interval '5 minutes', last_seen_at = now()
+            lease_expires_at = now() + make_interval(years => $6), last_seen_at = now()
         returning id, lease_expires_at
         "#,
     )
@@ -123,6 +123,7 @@ pub async fn device_activate(
     .bind(&request.user_id)
     .bind(&request.fingerprint)
     .bind(&request.name)
+    .bind(CLIENT_DEVICE_LEASE_YEARS)
     .fetch_one(&state.db)
     .await?;
     write_audit(
@@ -152,20 +153,54 @@ pub async fn device_lease(
     let row = sqlx::query(
         r#"
         update devices
-        set lease_expires_at = now() + interval '5 minutes', last_seen_at = now()
+        set lease_expires_at = now() + make_interval(years => $3), last_seen_at = now()
         where tenant_id = $1 and id = $2 and status = 'active'
         returning lease_expires_at
         "#,
     )
     .bind(&request.tenant_id)
     .bind(&request.device_id)
+    .bind(CLIENT_DEVICE_LEASE_YEARS)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| ApiError::Forbidden("device is not active for this tenant".to_string()))?;
+    let tenant_row = sqlx::query(
+        r#"
+        select id, name, max_devices, codex_subscription_enabled,
+          codex_subscription_plan, codex_subscription_expires_at
+        from tenants
+        where id = $1
+        "#,
+    )
+    .bind(&request.tenant_id)
+    .fetch_one(&state.db)
+    .await?;
+    let codex_subscription_expires_at = tenant_row
+        .try_get::<Option<chrono::DateTime<Utc>>, _>("codex_subscription_expires_at")
+        .unwrap_or(None);
+    let subscription_enabled = codex_subscription_available(
+        tenant_row.get::<bool, _>("codex_subscription_enabled"),
+        codex_subscription_expires_at,
+        Utc::now(),
+    );
     let models = load_models(&state.db).await?;
+    let codex_accounts = if subscription_enabled {
+        load_codex_accounts_for_client(&state.db, &request.tenant_id).await?
+    } else {
+        Vec::new()
+    };
     Ok(Json(json!({
         "leaseExpiresAt": row.get::<chrono::DateTime<Utc>, _>("lease_expires_at"),
-        "models": models
+        "tenant": {
+            "id": tenant_row.get::<String, _>("id"),
+            "name": tenant_row.get::<String, _>("name"),
+            "maxDevices": tenant_row.get::<i32, _>("max_devices"),
+            "codexSubscriptionEnabled": subscription_enabled,
+            "codexSubscriptionPlan": tenant_row.try_get::<Option<String>, _>("codex_subscription_plan").unwrap_or(None),
+            "codexSubscriptionExpiresAt": codex_subscription_expires_at
+        },
+        "models": models,
+        "codexAccounts": codex_accounts
     })))
 }
 
@@ -1583,10 +1618,10 @@ async fn upsert_device(
     let row = sqlx::query(
         r#"
         insert into devices (id, tenant_id, user_id, fingerprint, name, status, lease_expires_at, last_seen_at)
-        values ($1, $2, $3, $4, $5, 'active', now() + interval '5 minutes', now())
+        values ($1, $2, $3, $4, $5, 'active', now() + make_interval(years => $6), now())
         on conflict (tenant_id, fingerprint)
         do update set name = excluded.name, user_id = excluded.user_id, status = 'active',
-            lease_expires_at = now() + interval '5 minutes', last_seen_at = now()
+            lease_expires_at = now() + make_interval(years => $6), last_seen_at = now()
         returning id, lease_expires_at
         "#,
     )
@@ -1595,6 +1630,7 @@ async fn upsert_device(
     .bind(user_id)
     .bind(fingerprint)
     .bind(name)
+    .bind(CLIENT_DEVICE_LEASE_YEARS)
     .fetch_one(pool)
     .await?;
     Ok((

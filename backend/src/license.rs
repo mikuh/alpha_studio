@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
 
+pub const CLIENT_DEVICE_LEASE_YEARS: i32 = 3;
+
 pub fn normalize_company_name(value: &str) -> String {
     value
         .split_whitespace()

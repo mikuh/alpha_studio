@@ -2,6 +2,7 @@ import { Fragment, createContext, useCallback, useContext, useEffect, useLayoutE
 import type {
   ChangeEvent,
   CSSProperties,
+  DragEvent as ReactDragEvent,
   FormEvent,
   ImgHTMLAttributes,
   KeyboardEvent as ReactKeyboardEvent,
@@ -105,6 +106,7 @@ import {
   Undo2,
   Upload,
   UserCircle,
+  Users,
   Workflow,
   Wrench,
   X,
@@ -136,11 +138,19 @@ import {
   revealPath,
   revokeCodexAuthorization,
   subscribeTerminalEvents,
+  syncCoworkerAgents,
   terminalResize,
   terminalStart,
   terminalStop,
   terminalWrite,
 } from './codexBridge';
+import {
+  COWORKER_CATALOG,
+  COWORKER_GROUP_LABELS,
+  coworkerAgentDefinitions,
+  toCoworkerSelection,
+  type CoworkerProfile,
+} from './coworkers';
 import {
   AUTOMATION_ENVIRONMENT_OPTIONS,
   AUTOMATION_MODEL_OPTIONS,
@@ -196,6 +206,7 @@ import {
 import type {
   ChatMessage,
   Conversation,
+  CoworkerSelection,
   GhAuthStatus,
   GitBranch as GitBranchInfo,
   GitCommit,
@@ -216,7 +227,7 @@ import type {
   SkillSelection,
 } from './types';
 
-type RightPanel = 'none' | 'git' | 'features' | 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
+type RightPanel = 'none' | 'git' | 'features' | 'coworkers' | 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
 type RightDockKind = 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
 type MainView = 'chat' | 'skills' | 'automations';
 interface RightDockTab {
@@ -252,6 +263,7 @@ const THEME_KEY = 'alpha:codex-theme';
 const THEME_RESTORE_KEY = 'alpha:codex-theme-restored-main-ui-v2';
 const CODEX_LOGIN_POLL_INTERVAL_MS = 2_000;
 const CODEX_LOGIN_POLL_TIMEOUT_MS = 60_000;
+const CLIENT_LICENSE_RENEW_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const SIDEBAR_MIN_WIDTH = 244;
 const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 300;
@@ -668,14 +680,27 @@ const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
   },
 ] as const;
 
+// Drag payload MIME for coworker cards dropped onto the composer.
+const COWORKER_DRAG_MIME = 'application/x-alpha-coworker';
+
+// A coworker (optionally with a preset task prompt) queued from the coworkers
+// panel, waiting for the composer to pick it up.
+interface QueuedCoworkerTask {
+  coworker: CoworkerSelection;
+  taskPrompt?: string;
+}
+
 interface SkillRuntimeContextValue {
   status: SkillStatusMap;
   queuedSkill: SkillCatalogItem | null;
+  queuedCoworkerTask: QueuedCoworkerTask | null;
   setSkillInstalled: (id: string, installed: boolean) => void;
   setSkillEnabled: (id: string, enabled: boolean) => void;
   resetSkillStatus: (id: string) => void;
   queueSkillForComposer: (skill: SkillCatalogItem) => void;
   consumeQueuedSkill: () => void;
+  queueCoworkerTask: (coworker: CoworkerSelection, taskPrompt?: string) => void;
+  consumeQueuedCoworkerTask: () => void;
 }
 
 const SkillRuntimeContext = createContext<SkillRuntimeContextValue | null>(null);
@@ -774,6 +799,14 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
     setError('');
   }, [setClientLicenseSession]);
 
+  const deactivateSession = useCallback((message: string) => {
+    clearClientLicenseSession();
+    setClientLicenseSession(null);
+    setSession(null);
+    setStatus('inactive');
+    setError(message);
+  }, [setClientLicenseSession]);
+
   useEffect(() => {
     if (status !== 'active' || hasClientLicenseSession || loadClientLicenseSession()) return;
     setSession(null);
@@ -789,22 +822,31 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
       setClientLicenseSession(null);
       return;
     }
+    if (isLeaseFresh(stored)) {
+      activateSession(stored);
+      void renewClientLease(stored)
+        .then((renewed) => {
+          if (!disposed) activateSession(renewed);
+        })
+        .catch(() => {
+          // A still-valid three-year lease should survive transient startup/network failures.
+        });
+      return () => {
+        disposed = true;
+      };
+    }
     void renewClientLease(stored)
       .then((renewed) => {
         if (!disposed) activateSession(renewed);
       })
       .catch((leaseError) => {
         if (disposed) return;
-        clearClientLicenseSession();
-        setClientLicenseSession(null);
-        setSession(null);
-        setStatus('inactive');
-        setError(`设备授权已失效，请重新激活：${stringifyUnknownError(leaseError)}`);
+        deactivateSession(`设备授权已失效，请重新激活：${stringifyUnknownError(leaseError)}`);
       });
     return () => {
       disposed = true;
     };
-  }, [activateSession, setClientLicenseSession]);
+  }, [activateSession, deactivateSession, setClientLicenseSession]);
 
   useLayoutEffect(() => {
     if (status === 'active' && session) {
@@ -818,15 +860,13 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
       void renewClientLease(session)
         .then(activateSession)
         .catch((leaseError) => {
-          clearClientLicenseSession();
-          setClientLicenseSession(null);
-          setSession(null);
-          setStatus('inactive');
-          setError(`设备续租失败，请重新激活：${stringifyUnknownError(leaseError)}`);
+          if (!isLeaseFresh(session)) {
+            deactivateSession(`设备续租失败，请重新激活：${stringifyUnknownError(leaseError)}`);
+          }
         });
-    }, 4 * 60 * 1000);
+    }, CLIENT_LICENSE_RENEW_INTERVAL_MS);
     return () => window.clearInterval(interval);
-  }, [activateSession, session, setClientLicenseSession, status]);
+  }, [activateSession, deactivateSession, session, status]);
 
   if (status === 'checking') {
     return (
@@ -928,6 +968,20 @@ function stringifyUnknownError(error: unknown): string {
   return stringifyError(error);
 }
 
+function activatedTenantDisplayName(session: ClientLicenseSession | null): string {
+  const tenant = session?.tenant.name.trim();
+  if (tenant) return tenant;
+  const name = session?.user.name.trim();
+  if (name) return name;
+  const email = session?.user.email.trim();
+  if (email) return email.split('@')[0] || email;
+  return 'Alpha Studio';
+}
+
+function isDocumentFullscreen(): boolean {
+  return typeof document !== 'undefined' && Boolean(document.fullscreenElement);
+}
+
 export function App() {
   return (
     <ClientLicenseBoundary>
@@ -993,9 +1047,11 @@ function AppWorkspace() {
     return saved === 'dark' || saved === 'light' ? saved : 'dark';
   });
   const [windowFocused, setWindowFocused] = useState(true);
+  const [windowFullscreen, setWindowFullscreen] = useState(() => isDocumentFullscreen());
   const wasWindowFocusedRef = useRef(true);
   const [skillStatus, setSkillStatus] = useState<SkillStatusMap>(() => readSkillStatus());
   const [queuedSkill, setQueuedSkill] = useState<SkillCatalogItem | null>(null);
+  const [queuedCoworkerTask, setQueuedCoworkerTask] = useState<QueuedCoworkerTask | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1029,33 +1085,52 @@ function AppWorkspace() {
 
   useEffect(() => {
     let disposed = false;
-    let cleanup: (() => void) | null = null;
+    const cleanups: Array<() => void> = [];
     if (isTauriRuntime()) {
       void import('@tauri-apps/api/window')
         .then(({ getCurrentWindow }) => {
           if (disposed) return;
-          return getCurrentWindow()
+          const appWindow = getCurrentWindow();
+          const syncFullscreen = () => {
+            void appWindow.isFullscreen()
+              .then((fullscreen) => {
+                if (!disposed) setWindowFullscreen(fullscreen);
+              })
+              .catch(() => undefined);
+          };
+          syncFullscreen();
+          void appWindow
             .onFocusChanged(({ payload }) => setWindowFocused(payload))
             .then((unlisten) => {
               if (disposed) unlisten();
-              else cleanup = unlisten;
+              else cleanups.push(unlisten);
+            });
+          void appWindow
+            .onResized(syncFullscreen)
+            .then((unlisten) => {
+              if (disposed) unlisten();
+              else cleanups.push(unlisten);
             });
         })
         .catch(() => undefined);
     } else {
       const onFocus = () => setWindowFocused(true);
       const onBlur = () => setWindowFocused(false);
+      const onFullscreenChange = () => setWindowFullscreen(isDocumentFullscreen());
       setWindowFocused(document.hasFocus());
+      setWindowFullscreen(isDocumentFullscreen());
       window.addEventListener('focus', onFocus);
       window.addEventListener('blur', onBlur);
-      cleanup = () => {
+      document.addEventListener('fullscreenchange', onFullscreenChange);
+      cleanups.push(() => {
         window.removeEventListener('focus', onFocus);
         window.removeEventListener('blur', onBlur);
-      };
+        document.removeEventListener('fullscreenchange', onFullscreenChange);
+      });
     }
     return () => {
       disposed = true;
-      cleanup?.();
+      cleanups.forEach((cleanup) => cleanup());
     };
   }, []);
 
@@ -1070,6 +1145,12 @@ function AppWorkspace() {
     void refreshCodexStatus();
     void loadModelConfig();
   }, [refreshCodexStatus, loadModelConfig]);
+
+  // Materialize the coworker catalog into Codex sub-agent definitions
+  // (CODEX_HOME/agents/<id>.toml) so the main agent can spawn them.
+  useEffect(() => {
+    void syncCoworkerAgents(coworkerAgentDefinitions()).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const wasFocused = wasWindowFocusedRef.current;
@@ -1144,6 +1225,14 @@ function AppWorkspace() {
 
   const consumeQueuedSkill = useCallback(() => setQueuedSkill(null), []);
 
+  const queueCoworkerTask = useCallback((coworker: CoworkerSelection, taskPrompt?: string) => {
+    setQueuedCoworkerTask({ coworker, taskPrompt });
+    setSettingsOpen(false);
+    setMainView('chat');
+  }, []);
+
+  const consumeQueuedCoworkerTask = useCallback(() => setQueuedCoworkerTask(null), []);
+
   const activeRightDockTab = useMemo(
     () => rightDockTabs.find((tab) => tab.id === activeRightDockTabId) ?? null,
     [rightDockTabs, activeRightDockTabId],
@@ -1152,7 +1241,7 @@ function AppWorkspace() {
 
   const openRightPanel = useCallback((panel: RightPanel = 'features') => {
     setRightPanel(panel);
-    if (panel === 'features' || panel === 'git') setActiveRightDockTabId(null);
+    if (panel === 'features' || panel === 'coworkers' || panel === 'git') setActiveRightDockTabId(null);
     setRightDockMounted(true);
     setRightPanelVisible(true);
   }, []);
@@ -1191,13 +1280,37 @@ function AppWorkspace() {
     }
   }, [activeRightDockTabId, rightDockTabs]);
 
+  const coworkersPanelOpen = rightPanelVisible && currentRightPanel === 'coworkers';
+  const rightPanelToggleOpen = rightPanelVisible && currentRightPanel !== 'coworkers';
+
   const toggleRightPanel = useCallback(() => {
     setRightDockMounted(true);
-    setRightPanelVisible((visible) => !visible);
-  }, []);
+    if (rightPanelVisible) {
+      if (currentRightPanel === 'coworkers') {
+        openRightPanel('features');
+        return;
+      }
+      setRightPanelVisible(false);
+      return;
+    }
+    if (currentRightPanel === 'coworkers') {
+      openRightPanel('features');
+      return;
+    }
+    setRightPanelVisible(true);
+  }, [currentRightPanel, openRightPanel, rightPanelVisible]);
+
+  const toggleCoworkersPanel = useCallback(() => {
+    if (coworkersPanelOpen) {
+      setRightPanelVisible(false);
+      return;
+    }
+    openRightPanel('coworkers');
+  }, [coworkersPanelOpen, openRightPanel]);
 
   const compactRightPanel =
     currentRightPanel === 'features' ||
+    currentRightPanel === 'coworkers' ||
     currentRightPanel === 'terminal' ||
     currentRightPanel === 'browser' ||
     currentRightPanel === 'files' ||
@@ -1239,29 +1352,36 @@ function AppWorkspace() {
               onCommit: setReviewPanelWidth,
             }
           : null;
+  const showFloatingRightPanelToggle = rightPanelVisible && (mainView !== 'chat' || settingsOpen);
 
   const skillRuntime = useMemo<SkillRuntimeContextValue>(() => ({
     status: skillStatus,
     queuedSkill,
+    queuedCoworkerTask,
     setSkillInstalled,
     setSkillEnabled,
     resetSkillStatus,
     queueSkillForComposer,
     consumeQueuedSkill,
+    queueCoworkerTask,
+    consumeQueuedCoworkerTask,
   }), [
     skillStatus,
     queuedSkill,
+    queuedCoworkerTask,
     setSkillInstalled,
     setSkillEnabled,
     resetSkillStatus,
     queueSkillForComposer,
     consumeQueuedSkill,
+    queueCoworkerTask,
+    consumeQueuedCoworkerTask,
   ]);
 
   return (
     <SkillRuntimeContext.Provider value={skillRuntime}>
       <div
-        className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'features' ? 'features-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'}`}
+        className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'features' ? 'features-panel-open' : ''} ${coworkersPanelOpen ? 'coworkers-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'} ${windowFullscreen ? 'window-fullscreen' : ''}`}
         data-work-mode={domain.id}
         style={
           {
@@ -1297,9 +1417,12 @@ function AppWorkspace() {
                 <TopBar
                   domain={domain}
                   sidebarCollapsed={sidebarCollapsed}
-                  rightPanelOpen={rightPanelVisible}
+                  rightPanelOpen={rightPanelToggleOpen}
+                  coworkersPanelOpen={coworkersPanelOpen}
+                  hideRightPanelToggle={settingsOpen && rightPanelVisible}
                   onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
                   onToggleRightPanel={toggleRightPanel}
+                  onToggleCoworkersPanel={toggleCoworkersPanel}
                   onOpenSideChat={() => addRightDockTab('side-chat')}
                   onOpenSettings={() => openSettings('config')}
                 />
@@ -1344,6 +1467,14 @@ function AppWorkspace() {
               />
             )}
           </div>
+          {showFloatingRightPanelToggle && (
+            <div className="top-bar-actions floating-right-panel-actions">
+              <div className="top-bar-panel-actions">
+                <CoworkersToggleButton open={coworkersPanelOpen} onToggle={toggleCoworkersPanel} />
+                <RightPanelToggleButton open={rightPanelToggleOpen} onToggle={toggleRightPanel} />
+              </div>
+            </div>
+          )}
         </div>
         <SettingsPage
           domain={domain}
@@ -1361,17 +1492,62 @@ function AppWorkspace() {
   );
 }
 
-function ViewSidebarToggle({
+function CollapsedSidebarToggle({
   collapsed,
   onToggle,
+  className = '',
 }: {
   collapsed: boolean;
   onToggle: () => void;
+  className?: string;
 }) {
-  const label = collapsed ? '展开侧栏' : '收起侧栏';
+  if (!collapsed) return null;
+  const classes = ['icon-btn', className].filter(Boolean).join(' ');
   return (
-    <button className="icon-btn view-sidebar-toggle" type="button" onClick={onToggle} aria-label={label} title={label}>
-      {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+    <button className={classes} type="button" onClick={onToggle} aria-label="展开侧栏" title="展开侧栏">
+      <PanelLeftOpen size={16} />
+    </button>
+  );
+}
+
+function CoworkersToggleButton({
+  open,
+  onToggle,
+}: {
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      className={`icon-btn ${open ? 'active' : ''}`}
+      type="button"
+      onClick={onToggle}
+      aria-label={open ? '关闭 AI 同事面板' : '打开 AI 同事面板'}
+      aria-pressed={open}
+      title="AI 同事"
+    >
+      <Users size={16} />
+    </button>
+  );
+}
+
+function RightPanelToggleButton({
+  open,
+  onToggle,
+}: {
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      className={`icon-btn ${open ? 'active' : ''}`}
+      type="button"
+      onClick={onToggle}
+      aria-label={open ? '关闭侧边栏' : '打开侧边栏'}
+      aria-pressed={open}
+      title={open ? '关闭侧边栏' : '侧边栏'}
+    >
+      {open ? <PanelRightClose size={16} /> : <PanelRight size={16} />}
     </button>
   );
 }
@@ -1544,6 +1720,7 @@ function Sidebar({
   const setProjectSort = useChatStore((state) => state.setProjectSort);
   const conversationSort = useChatStore((state) => state.conversationSort);
   const setConversationSort = useChatStore((state) => state.setConversationSort);
+  const clientLicenseSession = useChatStore((state) => state.clientLicenseSession);
 
   // Only conversations with at least one message show up in the sidebar; unsent
   // drafts stay hidden (like Codex) until the user sends their first message.
@@ -1560,6 +1737,13 @@ function Sidebar({
   const sortedStandalone = useMemo(() => sortConversations(standalone, conversationSort), [standalone, conversationSort]);
   const sortedProjects = useMemo(() => sortProjects(liveProjects, projectSort), [liveProjects, projectSort]);
   const sidebarCopy = domain.ui.sidebar;
+  const activatedTenantName = activatedTenantDisplayName(clientLicenseSession);
+  const activatedUserTitle = clientLicenseSession
+    ? [clientLicenseSession.tenant.name, clientLicenseSession.user.name, clientLicenseSession.user.email]
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join(' · ')
+    : 'Alpha Studio';
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [menu, setMenu] = useState<SidebarMenu | null>(null);
@@ -1733,6 +1917,9 @@ function Sidebar({
           <button className="sidebar-collapse-btn" type="button" onClick={onCollapse} aria-label="收起侧栏" title="收起侧栏">
             <PanelLeftClose size={16} />
           </button>
+          <div className="sidebar-account" title={activatedUserTitle} data-tauri-drag-region>
+            <span>{activatedTenantName}</span>
+          </div>
         </div>
         <div className="sidebar-scroll">
           <div className="sidebar-menu-panel nav-menu">
@@ -2313,16 +2500,22 @@ function TopBar({
   domain,
   sidebarCollapsed,
   rightPanelOpen,
+  coworkersPanelOpen,
+  hideRightPanelToggle = false,
   onToggleSidebar,
   onToggleRightPanel,
+  onToggleCoworkersPanel,
   onOpenSideChat,
   onOpenSettings,
 }: {
   domain: DomainConfig;
   sidebarCollapsed: boolean;
   rightPanelOpen: boolean;
+  coworkersPanelOpen: boolean;
+  hideRightPanelToggle?: boolean;
   onToggleSidebar: () => void;
   onToggleRightPanel: () => void;
+  onToggleCoworkersPanel: () => void;
   onOpenSideChat: () => void;
   onOpenSettings: () => void;
 }) {
@@ -2425,20 +2618,14 @@ function TopBar({
       ) : (
         <div className="top-bar-title" data-tauri-drag-region>{domain.name}</div>
       )}
-      <div className="top-bar-actions">
-        <div className="top-bar-panel-actions">
-          <button
-            className={`icon-btn ${rightPanelOpen ? 'active' : ''}`}
-            type="button"
-            onClick={onToggleRightPanel}
-            aria-label={rightPanelOpen ? '关闭侧边栏' : '打开侧边栏'}
-            aria-pressed={rightPanelOpen}
-            title={rightPanelOpen ? '关闭侧边栏' : '侧边栏'}
-          >
-            {rightPanelOpen ? <PanelRightClose size={16} /> : <PanelRight size={16} />}
-          </button>
+      {!hideRightPanelToggle && (
+        <div className="top-bar-actions">
+          <div className="top-bar-panel-actions">
+            <CoworkersToggleButton open={coworkersPanelOpen} onToggle={onToggleCoworkersPanel} />
+            <RightPanelToggleButton open={rightPanelOpen} onToggle={onToggleRightPanel} />
+          </div>
         </div>
-      </div>
+      )}
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
     </header>
   );
@@ -3339,6 +3526,8 @@ function RightDockWorkspace({
         </>
       ) : mode === 'git' ? (
         <GitPanel onClose={onCloseGit} />
+      ) : mode === 'coworkers' ? (
+        <CoworkersPanel />
       ) : (
         <FeaturesPanel
           domain={domain}
@@ -3498,6 +3687,98 @@ function FeaturesPanel({
             </button>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Right-side panel listing the nine AI coworkers. Cards can be dragged into
+// the composer (one or more) and preset tasks can be imported with one click.
+function CoworkersPanel() {
+  const { queueCoworkerTask } = useSkillRuntime();
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const startDrag = (event: ReactDragEvent<HTMLElement>, coworker: CoworkerProfile) => {
+    const selection = toCoworkerSelection(coworker);
+    event.dataTransfer.setData(COWORKER_DRAG_MIME, JSON.stringify(selection));
+    event.dataTransfer.setData('text/plain', `${coworker.no} ${coworker.name}`);
+    event.dataTransfer.effectAllowed = 'copy';
+  };
+
+  return (
+    <div className="coworkers-panel" aria-label="AI 同事">
+      <header className="coworkers-panel-head" data-tauri-drag-region>
+        <div className="coworkers-panel-title" data-tauri-drag-region>
+          <Users size={15} />
+          <span>AI 同事</span>
+        </div>
+        <span className="coworkers-panel-count">{COWORKER_CATALOG.length} 位在线</span>
+      </header>
+      <p className="coworkers-panel-hint">拖动同事到对话框召集他们协同工作,或点开任务一键导入。</p>
+      <div className="coworkers-list">
+        {COWORKER_CATALOG.map((coworker) => {
+          const expanded = expandedId === coworker.id;
+          return (
+            <article
+              key={coworker.id}
+              className={`coworker-card ${expanded ? 'expanded' : ''}`}
+              draggable
+              onDragStart={(event) => startDrag(event, coworker)}
+            >
+              <button
+                type="button"
+                className="coworker-card-head"
+                onClick={() => setExpandedId(expanded ? null : coworker.id)}
+                aria-expanded={expanded}
+              >
+                <span className="coworker-badge">{coworker.no}</span>
+                <span className="coworker-card-main">
+                  <span className="coworker-card-name">
+                    {coworker.name}
+                    <span className={`coworker-group coworker-group-${coworker.group}`}>
+                      {COWORKER_GROUP_LABELS[coworker.group]}
+                    </span>
+                  </span>
+                  <span className="coworker-card-desc">{coworker.description}</span>
+                </span>
+                <span className="coworker-card-side">
+                  <span className="coworker-status" title="在线"><span className="coworker-status-dot" />在线</span>
+                  {expanded ? <ChevronsDownUp size={13} /> : <ChevronsUpDown size={13} />}
+                </span>
+              </button>
+              {expanded && (
+                <div className="coworker-card-body">
+                  <button
+                    type="button"
+                    className="coworker-summon"
+                    onClick={() => queueCoworkerTask(toCoworkerSelection(coworker))}
+                  >
+                    <MessageSquarePlus size={13} />
+                    召集到对话框
+                  </button>
+                  <div className="coworker-task-list">
+                    {coworker.presetTasks.map((task) => (
+                      <div key={task.id} className="coworker-task">
+                        <div className="coworker-task-copy">
+                          <span className="coworker-task-title">{task.title}</span>
+                          <span className="coworker-task-prompt">{task.prompt}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="coworker-task-import"
+                          onClick={() => queueCoworkerTask(toCoworkerSelection(coworker), task.prompt)}
+                          title="导入任务到对话框"
+                        >
+                          导入
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </article>
+          );
+        })}
       </div>
     </div>
   );
@@ -3698,6 +3979,16 @@ function AutomationsPage({
     () => automationModelOptionGroups(modelProfiles, codexStatus, clientLicenseSession, form.model),
     [clientLicenseSession, codexStatus, form.model, modelProfiles],
   );
+  useEffect(() => {
+    if (!editorOpen || automationSelectGroupsContain(modelOptions, form.model)) return;
+    const fallbackModel = firstAutomationSelectValue(modelOptions);
+    if (!fallbackModel) return;
+    setForm((current) => (
+      automationSelectGroupsContain(modelOptions, current.model)
+        ? current
+        : { ...current, model: fallbackModel }
+    ));
+  }, [editorOpen, form.model, modelOptions]);
   const normalizedQuery = query.trim().toLowerCase();
   const visibleTemplates = AUTOMATION_TEMPLATES.filter((template) => {
     if (!normalizedQuery) return true;
@@ -3820,7 +4111,7 @@ function AutomationsPage({
       <div className="automation-drag-strip" data-tauri-drag-region aria-hidden="true" />
       <div className="automation-topbar">
         <div className="automation-topbar-start">
-          <ViewSidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
+          <CollapsedSidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
           <div className="automation-tabs" role="tablist" aria-label="自动化">
             <button type="button" role="tab" aria-selected={tab === 'tasks'} className={tab === 'tasks' ? 'active' : ''} onClick={() => { setTab('tasks'); setQuery(''); }}>Tasks</button>
             <button type="button" role="tab" aria-selected={tab === 'templates'} className={tab === 'templates' ? 'active' : ''} onClick={() => { setTab('templates'); setQuery(''); }}>Templates</button>
@@ -3984,27 +4275,46 @@ function automationModelOptionGroups(
 ): AutomationSelectGroup[] {
   const enabledProfiles = modelProfiles.filter((profile) => profile.enabled);
   const visibleProfiles = visibleModelProfilesForCodexStatus(enabledProfiles, codexStatus, session);
+  const visibleSubscriptionLabels = new Set(
+    visibleProfiles
+      .filter((profile) => profile.builtIn)
+      .map((profile) => profile.label),
+  );
+  const subscriptionOptions = automationSelectOptions(
+    AUTOMATION_MODEL_OPTIONS.filter((option) => visibleSubscriptionLabels.has(automationSubscriptionModelLabel(option))),
+  );
   const usageBasedOptions = uniqueAutomationSelectOptions(
     visibleProfiles
       .filter((profile) => !profile.builtIn)
       .map((profile) => ({ value: profile.label, label: profile.label })),
   );
-  const groups: AutomationSelectGroup[] = [
-    {
-      label: '订阅模型',
-      options: automationSelectOptions(AUTOMATION_MODEL_OPTIONS),
-    },
-  ];
+  const groups: AutomationSelectGroup[] = [];
+
+  if (subscriptionOptions.length > 0) {
+    groups.push({ label: '订阅模型', options: subscriptionOptions });
+  }
 
   if (usageBasedOptions.length > 0) {
     groups.push({ label: '按量付费模型', options: usageBasedOptions });
   }
 
-  if (currentValue && !automationSelectGroupsContain(groups, currentValue)) {
+  if (
+    currentValue &&
+    !automationSelectGroupsContain(groups, currentValue) &&
+    !isAutomationSubscriptionModelOption(currentValue)
+  ) {
     groups.push({ label: '当前任务', options: [{ value: currentValue, label: currentValue }] });
   }
 
   return groups;
+}
+
+function automationSubscriptionModelLabel(option: string): string {
+  return option.replace(/\s+(超高|高|标准)$/, '');
+}
+
+function isAutomationSubscriptionModelOption(value: string): boolean {
+  return AUTOMATION_MODEL_OPTIONS.some((option) => option === value);
 }
 
 function uniqueAutomationSelectOptions(options: AutomationSelectOption[]): AutomationSelectOption[] {
@@ -4020,6 +4330,10 @@ function uniqueAutomationSelectOptions(options: AutomationSelectOption[]): Autom
 
 function automationSelectGroupsContain(groups: readonly AutomationSelectGroup[], value: string): boolean {
   return groups.some((group) => group.options.some((option) => option.value === value));
+}
+
+function firstAutomationSelectValue(groups: readonly AutomationSelectGroup[]): string {
+  return groups[0]?.options[0]?.value ?? '';
 }
 
 function automationRunPrompt(task: ScheduledAutomationTask): string {
@@ -4222,10 +4536,10 @@ function SkillsPage({
   return (
     <section className="skills-page" aria-label="技能">
       <div className="skills-drag-strip" data-tauri-drag-region aria-hidden="true" />
+      <CollapsedSidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} className="skills-sidebar-open-btn" />
       <div className="skills-page-shell">
         <header className="skills-page-head">
           <div className="skills-page-title-row">
-            <ViewSidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
             <div>
               <h1>技能</h1>
               <p>通过任务专用技能扩展投研工作流</p>
@@ -4720,11 +5034,12 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
           {message.role === 'user' && message.attachments?.length ? (
             <MessageAttachments attachments={message.attachments} />
           ) : null}
-          {(message.role !== 'user' || message.blocks.length > 0 || message.selectedSkill) && (
+          {(message.role !== 'user' || message.blocks.length > 0 || message.selectedSkill || message.coworkers?.length) && (
             <div className="bubble">
               {message.role === 'user'
                 ? (
                     <>
+                      {message.coworkers && message.coworkers.length > 0 && <MessageCoworkersLabel coworkers={message.coworkers} />}
                       {message.selectedSkill && <MessageSkillLabel skill={message.selectedSkill} />}
                       {message.blocks.map((block, index) => block.type === 'text' ? <span key={index}>{block.content}</span> : <BlockRenderer key={index} block={block} />)}
                     </>
@@ -4759,6 +5074,20 @@ function MessageSkillLabel({ skill }: { skill: SkillSelection }) {
   return (
     <span className="message-skill-label" title={`指定 Skill：${name}`}>
       {`$${name}`}
+    </span>
+  );
+}
+
+// Chips on a user message showing which coworkers were summoned for the turn.
+function MessageCoworkersLabel({ coworkers }: { coworkers: CoworkerSelection[] }) {
+  return (
+    <span className="message-coworkers-label" title={`召集同事：${coworkers.map((item) => `${item.no} ${item.name}`).join('、')}`}>
+      <Users size={12} />
+      {coworkers.map((coworker) => (
+        <span key={coworker.id} className="message-coworker-chip">
+          {coworker.no} {coworker.name}
+        </span>
+      ))}
     </span>
   );
 }
@@ -5017,8 +5346,10 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<SkillCatalogItem | null>(null);
+  const [selectedCoworkers, setSelectedCoworkers] = useState<CoworkerSelection[]>([]);
+  const [coworkerDragOver, setCoworkerDragOver] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { queuedSkill, consumeQueuedSkill } = useSkillRuntime();
+  const { queuedSkill, consumeQueuedSkill, queuedCoworkerTask, consumeQueuedCoworkerTask } = useSkillRuntime();
   const sendMessage = useChatStore((state) => state.sendMessage);
   const stopCurrentConversation = useChatStore((state) => state.stopCurrentConversation);
   const isStreaming = conversation.status === 'streaming';
@@ -5034,6 +5365,44 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
     consumeQueuedSkill();
     textareaRef.current?.focus();
   }, [queuedSkill, consumeQueuedSkill]);
+  const addCoworker = useCallback((coworker: CoworkerSelection) => {
+    setSelectedCoworkers((prev) => (prev.some((item) => item.id === coworker.id) ? prev : [...prev, coworker]));
+  }, []);
+  useEffect(() => {
+    if (!queuedCoworkerTask) return;
+    addCoworker(queuedCoworkerTask.coworker);
+    if (queuedCoworkerTask.taskPrompt) {
+      setValue((prev) => (prev.trim() ? `${prev.trimEnd()}\n${queuedCoworkerTask.taskPrompt}` : queuedCoworkerTask.taskPrompt ?? ''));
+    }
+    consumeQueuedCoworkerTask();
+    textareaRef.current?.focus();
+  }, [queuedCoworkerTask, consumeQueuedCoworkerTask, addCoworker]);
+  const removeCoworker = (id: string) => setSelectedCoworkers((prev) => prev.filter((item) => item.id !== id));
+  const readCoworkerDrag = (event: ReactDragEvent<HTMLElement>): CoworkerSelection | null => {
+    const raw = event.dataTransfer.getData(COWORKER_DRAG_MIME);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as Partial<CoworkerSelection>;
+      if (typeof parsed.id !== 'string' || typeof parsed.name !== 'string') return null;
+      return { id: parsed.id, no: typeof parsed.no === 'string' ? parsed.no : '', name: parsed.name };
+    } catch {
+      return null;
+    }
+  };
+  const handleCoworkerDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    if (!event.dataTransfer.types.includes(COWORKER_DRAG_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setCoworkerDragOver(true);
+  };
+  const handleCoworkerDrop = (event: ReactDragEvent<HTMLElement>) => {
+    const coworker = readCoworkerDrag(event);
+    setCoworkerDragOver(false);
+    if (!coworker) return;
+    event.preventDefault();
+    addCoworker(coworker);
+    textareaRef.current?.focus();
+  };
   const addAttachments = (items: MessageAttachment[]) => {
     setAttachments((prev) => mergeAttachments(prev, items));
   };
@@ -5043,14 +5412,43 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
     if (!canSend || isStreaming || disabled) return;
     const outgoing = attachments;
     const outgoingSkill = selectedSkill;
+    const outgoingCoworkers = selectedCoworkers;
     setValue('');
     setAttachments([]);
     setSelectedSkill(null);
-    void sendMessage(value.trim(), outgoing, outgoingSkill);
+    setSelectedCoworkers([]);
+    void sendMessage(value.trim(), outgoing, outgoingSkill, outgoingCoworkers);
   };
   return (
     <div className={`composer-wrap ${bottom ? 'bottom' : ''}`}>
-      <div className="composer-card">
+      <div
+        className={`composer-card ${coworkerDragOver ? 'coworker-drag-over' : ''}`}
+        onDragOver={handleCoworkerDragOver}
+        onDragLeave={() => setCoworkerDragOver(false)}
+        onDrop={handleCoworkerDrop}
+      >
+        {selectedCoworkers.length > 0 && (
+          <div className="composer-coworkers">
+            <span className="composer-coworkers-label">
+              <Users size={13} />
+              {selectedCoworkers.length > 1 ? '召集同事协同' : '召集同事'}
+            </span>
+            {selectedCoworkers.map((coworker) => (
+              <span key={coworker.id} className="composer-coworker-chip">
+                <span className="composer-coworker-no">{coworker.no}</span>
+                {coworker.name}
+                <button
+                  type="button"
+                  className="composer-coworker-remove"
+                  onClick={() => removeCoworker(coworker.id)}
+                  aria-label={`移除 ${coworker.name}`}
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {selectedSkill && (
           <div className="composer-skill-selection">
             <span className={`composer-skill-icon skill-icon-${selectedSkill.icon}`}>{skillIcon(selectedSkill, 16)}</span>

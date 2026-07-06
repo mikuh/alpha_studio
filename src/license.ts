@@ -144,6 +144,7 @@ export async function activateClient(input: ClientActivateInput): Promise<Client
 export async function renewClientLease(session: ClientLicenseSession): Promise<ClientLicenseSession> {
   const data = await alphaFetch<{
     leaseExpiresAt: string;
+    tenant?: ClientTenant;
     models?: ClientModel[];
     codexAccounts?: ClientCodexAccount[];
   }>(session.apiBaseUrl, '/api/devices/lease', {
@@ -159,6 +160,7 @@ export async function renewClientLease(session: ClientLicenseSession): Promise<C
       ...session.device,
       leaseExpiresAt: data.leaseExpiresAt,
     },
+    tenant: data.tenant ? { ...session.tenant, ...data.tenant } : session.tenant,
     models: Array.isArray(data.models) ? data.models : session.models,
     codexAccounts: Array.isArray(data.codexAccounts) ? data.codexAccounts : session.codexAccounts,
   };

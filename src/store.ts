@@ -40,6 +40,7 @@ import type {
   CodexChatEvent,
   CodexStatus,
   Conversation,
+  CoworkerSelection,
   MessageAttachment,
   MessageBlock,
   Project,
@@ -110,7 +111,7 @@ interface ChatState {
   setPursueGoal: (pursueGoal: boolean) => void;
   resolveAuthorization: (id: string, decision: ApprovalDecision) => void;
   refreshCodexStatus: () => Promise<void>;
-  sendMessage: (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null) => Promise<void>;
+  sendMessage: (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null, coworkers?: CoworkerSelection[] | null) => Promise<void>;
   startReview: (request: ReviewRequest) => Promise<void>;
   editUserMessageAndResend: (conversationId: string, messageId: string, message: string, attachments?: MessageAttachment[]) => Promise<void>;
   stopCurrentConversation: () => Promise<void>;
@@ -631,9 +632,10 @@ export const useChatStore = create<ChatState>()(
         }
       },
 
-      sendMessage: async (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null) => {
+      sendMessage: async (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null, coworkers?: CoworkerSelection[] | null) => {
         const trimmed = message.trim();
         const attachmentList = attachments && attachments.length ? attachments : undefined;
+        const coworkerList = coworkers && coworkers.length ? coworkers.map(normalizeCoworkerSelection) : undefined;
         if (!trimmed && !attachmentList) return;
 
         let conversationId = get().currentConversationId;
@@ -651,6 +653,7 @@ export const useChatStore = create<ChatState>()(
           blocks: trimmed ? [{ type: 'text', content: trimmed }] : [],
           attachments: attachmentList,
           selectedSkill: selectedSkill ? normalizeSelectedSkill(selectedSkill) : undefined,
+          coworkers: coworkerList,
         };
         const assistantMessage: ChatMessage = {
           id: createId('assistant'),
@@ -662,7 +665,7 @@ export const useChatStore = create<ChatState>()(
         const nextTitle = conversation.messages.length === 0
           ? buildConversationTitle(trimmed || attachmentList?.[0]?.name || '')
           : conversation.title;
-        const automationIntent = !attachmentList && !selectedSkill ? detectAutomationIntent(trimmed) : null;
+        const automationIntent = !attachmentList && !selectedSkill && !coworkerList ? detectAutomationIntent(trimmed) : null;
 
         if (automationIntent) {
           const task = addScheduledAutomationTask({ ...automationIntent, conversationId });
@@ -724,6 +727,7 @@ export const useChatStore = create<ChatState>()(
             planMode: get().planMode,
             pursueGoal: get().pursueGoal,
             selectedSkill: userMessage.selectedSkill,
+            coworkers: userMessage.coworkers,
           };
           const result = await startCodexChat({
             conversationId,
@@ -903,6 +907,7 @@ export const useChatStore = create<ChatState>()(
             planMode: get().planMode,
             pursueGoal: get().pursueGoal,
             selectedSkill: original.selectedSkill,
+            coworkers: original.coworkers,
           };
           const result = await startCodexChat({
             conversationId,
@@ -1109,6 +1114,14 @@ function normalizeSelectedSkill(skill: SkillSelection): SkillSelection {
     id: skill.id,
     title: skill.title,
     description: skill.description,
+  };
+}
+
+function normalizeCoworkerSelection(coworker: CoworkerSelection): CoworkerSelection {
+  return {
+    id: coworker.id,
+    no: coworker.no,
+    name: coworker.name,
   };
 }
 

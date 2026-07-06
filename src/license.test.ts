@@ -168,6 +168,42 @@ describe('client license session', () => {
     expect(loadClientLicenseSession()?.models[0]?.id).toBe('gpt-5.4-mini');
   });
 
+  it('refreshes stored tenant Codex subscription status when renewing the device lease', async () => {
+    saveClientLicenseSession({
+      apiBaseUrl: 'http://localhost:18080',
+      activatedAt: 1,
+      ...activationResponse,
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+      leaseExpiresAt: '2026-07-01T00:05:00.000Z',
+      tenant: {
+        id: 'tenant_demo',
+        name: 'Demo Fund',
+        maxDevices: 5,
+        codexSubscriptionEnabled: true,
+        codexSubscriptionPlan: 'monthly',
+        codexSubscriptionExpiresAt: null,
+      },
+      codexAccounts: [
+        {
+          id: 'codex_demo',
+          email: 'codex-demo@alpha.local',
+          loginHint: 'Use browser login handoff',
+          plan: 'monthly',
+          seatLimit: 5,
+          expiresAt: null,
+        },
+      ],
+    }));
+
+    const renewed = await renewClientLease(loadClientLicenseSession()!);
+
+    expect(renewed.tenant.codexSubscriptionEnabled).toBe(true);
+    expect(renewed.tenant.maxDevices).toBe(5);
+    expect(renewed.codexAccounts[0]?.email).toBe('codex-demo@alpha.local');
+    expect(loadClientLicenseSession()?.tenant.codexSubscriptionEnabled).toBe(true);
+  });
+
   it('clears the stored session', () => {
     saveClientLicenseSession({
       apiBaseUrl: defaultAlphaApiBaseUrl(),

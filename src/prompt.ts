@@ -1,10 +1,39 @@
+import { coworkerById } from './coworkers';
 import { activeDomain, type DomainConfig } from './domain';
-import type { ReviewRequest, SkillSelection } from './types';
+import type { CoworkerSelection, ReviewRequest, SkillSelection } from './types';
 
 export interface PromptOptions {
   planMode?: boolean;
   pursueGoal?: boolean;
   selectedSkill?: SkillSelection | null;
+  coworkers?: CoworkerSelection[] | null;
+}
+
+// Builds the orchestration protocol injected when the user summons one or
+// more AI coworkers. The main agent always stays the dispatcher: it spawns
+// the matching sub-agents (defined in CODEX_HOME/agents/<id>.toml), assigns
+// each a sub-task, waits for the results, and merges them into one reply.
+export function buildCoworkerOrchestrationLines(coworkers: CoworkerSelection[]): string[] {
+  const roster = coworkers.map((coworker) => {
+    const profile = coworkerById(coworker.id);
+    const duty = profile ? profile.description : '';
+    return `- agent \`${coworker.id}\`(${coworker.no} ${coworker.name}${duty ? `,职责:${duty}` : ''})`;
+  });
+  const hasPmDeputy = coworkers.some((coworker) => coworker.id === 'pm_deputy');
+  const lines = [
+    '用户为本次任务召集了以下 AI 同事(它们已在 agents 目录中定义为可 spawn 的 sub-agent):',
+    ...roster,
+    '协作规则:',
+    '- 你是调度者(主 agent),不要亲自替同事完成研究;必须使用 spawn agent 工具启动上面列出的每一位同事的 sub-agent(按 agent 名称精确匹配),把与其职责匹配的子任务分派给它。',
+    coworkers.length > 1
+      ? '- 多位同事的子任务应并行 spawn;等全部同事返回结果后,再汇总输出一份联合结论,联合结论按同事分小节呈现,每个小节以「编号 + 姓名」署名,最后给出综合判断。'
+      : '- 等该同事返回结果后,转述其交付物并以「编号 + 姓名」署名,再补充你作为调度者的简短结论。',
+  ];
+  if (hasPmDeputy) {
+    lines.push('- ⑧ 基金经理副官在场:最终汇总部分由它的口吻执笔,给出带立场的综合判断(「我会怎么做、为什么」)。');
+  }
+  lines.push('- 如果当前环境不支持 spawn agent 工具,则退化为:你在同一回复中依次扮演每位同事,产出同样按署名小节组织的结论,并说明是在单会话内模拟的协作。');
+  return lines;
 }
 
 export function buildCodingInstructions(
@@ -32,6 +61,9 @@ export function buildCodingInstructions(
         '图片生成展示要求：在对话中简短说明正在生成或处理的关键步骤；最终必须把每张生成图片用可渲染的 Markdown 图片语法 `![说明](绝对路径或URL)` 或明确的本地绝对路径/URL 展示出来，并说明保存位置。不要只回复“已生成”；如果没有实际得到图片文件、URL 或可展示结果，必须说明未完成和原因。',
       );
     }
+  }
+  if (options.coworkers && options.coworkers.length) {
+    modeLines.push(...buildCoworkerOrchestrationLines(options.coworkers));
   }
 
   return [

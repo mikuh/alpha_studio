@@ -1,6 +1,6 @@
 use alpha_studio_backend::license::{
     can_activate_device, codex_subscription_available, normalize_authorization_code,
-    normalize_company_name,
+    normalize_company_name, CLIENT_DEVICE_LEASE_YEARS,
 };
 use chrono::{Duration, Utc};
 
@@ -18,6 +18,11 @@ fn allows_existing_device_to_renew_when_customer_is_at_capacity() {
     assert!(can_activate_device(3, 3, true));
     assert!(!can_activate_device(3, 3, false));
     assert!(can_activate_device(2, 3, false));
+}
+
+#[test]
+fn client_device_lease_is_kept_for_three_years() {
+    assert_eq!(CLIENT_DEVICE_LEASE_YEARS, 3);
 }
 
 #[test]

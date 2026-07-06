@@ -84,6 +84,15 @@ export interface SkillSelection {
   description?: string;
 }
 
+// An AI coworker attached to a user turn. The main agent orchestrates the
+// matching Codex sub-agent (CODEX_HOME/agents/<id>.toml) for each entry.
+export interface CoworkerSelection {
+  id: string;
+  // Circled number badge, e.g. "①".
+  no: string;
+  name: string;
+}
+
 // What a review turn was asked to inspect, mirroring Codex's /review presets.
 export type ReviewTargetKind = 'uncommitted' | 'base' | 'commit' | 'custom';
 
@@ -129,6 +138,8 @@ export interface ChatMessage {
   isStreaming?: boolean;
   attachments?: MessageAttachment[];
   selectedSkill?: SkillSelection;
+  // Coworkers summoned for this turn; the main agent spawns their sub-agents.
+  coworkers?: CoworkerSelection[];
   // Marks an assistant turn that should render as a structured code review.
   review?: boolean;
   // Marks a user turn that kicked off a review (renders as a review chip).
@@ -194,15 +205,6 @@ export interface CodexChatEvent {
   text?: string;
   message?: string;
   raw?: unknown;
-}
-
-export interface Coworker {
-  id: string;
-  code: string;
-  name: string;
-  role: string;
-  status: string;
-  promptHint: string;
 }
 
 export type GitChangeStatus =

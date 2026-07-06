@@ -10,7 +10,7 @@ import {
   useChatStore,
   visibleConversations,
 } from './store';
-import type { ChatMessage, Conversation, SkillSelection } from './types';
+import type { ChatMessage, Conversation, CoworkerSelection, SkillSelection } from './types';
 
 function textMessage(content = 'hi'): ChatMessage {
   return { id: `msg-${content}`, role: 'user', timestamp: 1, blocks: [{ type: 'text', content }] };
@@ -199,6 +199,34 @@ describe('skill selections on user messages', () => {
     const userMessage = useChatStore.getState().conversations[0].messages[0];
     expect(userMessage.role).toBe('user');
     expect(userMessage.selectedSkill).toEqual(skill);
+  });
+
+  it('stores the summoned coworkers on the user message that launched the turn', async () => {
+    const coworkers: CoworkerSelection[] = [
+      { id: 'mainline', no: '①', name: '主线交易官' },
+      { id: 'risk', no: '⑦', name: '风险控制官' },
+    ];
+
+    await useChatStore.getState().sendMessage('评估白酒板块减仓建议', [], null, coworkers);
+
+    const userMessage = useChatStore.getState().conversations[0].messages[0];
+    expect(userMessage.role).toBe('user');
+    expect(userMessage.coworkers).toEqual(coworkers);
+  });
+
+  it('keeps coworker turns out of the client-side automation shortcut', async () => {
+    await useChatStore.getState().sendMessage(
+      '每天 9 点提醒我复盘',
+      [],
+      null,
+      [{ id: 'risk', no: '⑦', name: '风险控制官' }],
+    );
+
+    const messages = useChatStore.getState().conversations[0].messages;
+    expect(messages[0].coworkers).toHaveLength(1);
+    // Automation intents short-circuit into an instant reply; coworker turns
+    // must instead go through the normal (streaming) chat pipeline.
+    expect(useChatStore.getState().conversations[0].status).not.toBe('idle');
   });
 });
 

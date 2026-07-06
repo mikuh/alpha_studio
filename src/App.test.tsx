@@ -9,9 +9,15 @@ import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles } from './models';
 import { useChatStore } from './store';
 import type { Conversation } from './types';
 
+const windowMockState = vi.hoisted(() => ({
+  fullscreen: false,
+  resizeHandler: null as (() => void) | null,
+}));
+
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
   invoke: vi.fn((command: string) => {
+    if (command === 'plugin:window|is_fullscreen') return Promise.resolve(windowMockState.fullscreen);
     if (command === 'codex_check') {
       return Promise.resolve({
         installed: true,
@@ -41,6 +47,14 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: vi.fn(() => ({
+    setTheme: vi.fn(() => Promise.resolve()),
+    isFullscreen: vi.fn(() => Promise.resolve(windowMockState.fullscreen)),
+    onResized: vi.fn((handler: () => void) => {
+      windowMockState.resizeHandler = handler;
+      return Promise.resolve(() => {
+        if (windowMockState.resizeHandler === handler) windowMockState.resizeHandler = null;
+      });
+    }),
     onFocusChanged: vi.fn(() => Promise.resolve(() => {})),
   })),
 }));
@@ -62,7 +76,7 @@ function futureIso(ms = 86_400_000) {
   return new Date(Date.now() + ms).toISOString();
 }
 
-function seedClientLicenseSession(codexSubscriptionEnabled = true) {
+function seedClientLicenseSession(codexSubscriptionEnabled = true, leaseExpiresAt = futureIso()) {
   saveClientLicenseSession({
     apiBaseUrl: 'http://localhost:18080',
     activatedAt: 1,
@@ -80,7 +94,7 @@ function seedClientLicenseSession(codexSubscriptionEnabled = true) {
     },
     device: {
       id: 'dev_demo',
-      leaseExpiresAt: futureIso(),
+      leaseExpiresAt,
     },
     models: [
       {
@@ -121,6 +135,9 @@ describe('right feature panel', () => {
   });
 
   beforeEach(() => {
+    windowMockState.fullscreen = false;
+    windowMockState.resizeHandler = null;
+    Object.defineProperty(document, 'fullscreenElement', { value: null, configurable: true });
     window.localStorage.clear();
     seedClientLicenseSession();
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse({
@@ -157,6 +174,32 @@ describe('right feature panel', () => {
     expect(container.querySelector('.app-shell')).not.toBeInTheDocument();
   });
 
+  it('keeps a fresh stored activation when the startup lease refresh fails', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('offline'));
+
+    const { container } = render(<App />);
+
+    expect(container.querySelector('.app-shell')).toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/devices/lease',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    expect(screen.queryByRole('heading', { name: '激活 Alpha Studio' })).not.toBeInTheDocument();
+    expect(loadClientLicenseSession()?.device.id).toBe('dev_demo');
+  });
+
+  it('requires renewal when the stored activation has expired', async () => {
+    seedClientLicenseSession(true, new Date(Date.now() - 60_000).toISOString());
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('offline'));
+
+    const { container } = render(<App />);
+
+    expect(screen.getByRole('heading', { name: '正在校验 Alpha Studio 授权' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('heading', { name: '激活 Alpha Studio' })).toBeInTheDocument());
+    expect(loadClientLicenseSession()).toBeNull();
+    expect(container.querySelector('.app-shell')).not.toBeInTheDocument();
+  });
+
   it('removes coding tools from the right-top toolbar in the finance workspace', () => {
     const { container } = render(<App />);
 
@@ -190,6 +233,136 @@ describe('right feature panel', () => {
     expect(screen.getAllByLabelText('关闭侧边栏')[0].querySelector('svg')).toHaveClass('lucide-panel-right-close');
   });
 
+  it('keeps the right sidebar close button visible after opening the skills page', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    expect(container.querySelector('.features-panel')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '技能' }));
+
+    const skillsPage = container.querySelector('.skills-page') as HTMLElement;
+    const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
+    expect(skillsPage).toBeInTheDocument();
+    expect(dock).not.toHaveClass('collapsed');
+
+    await user.click(screen.getByLabelText('关闭侧边栏'));
+
+    expect(dock).toHaveClass('collapsed');
+    expect(screen.queryByLabelText('关闭侧边栏')).not.toBeInTheDocument();
+  });
+
+  it('keeps one right sidebar close button above settings when the right sidebar is open', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+
+    const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
+    expect(screen.getByRole('dialog', { name: '设置' })).toBeInTheDocument();
+    expect(screen.getAllByLabelText('关闭侧边栏')).toHaveLength(1);
+
+    await user.click(screen.getByLabelText('关闭侧边栏'));
+
+    expect(dock).toHaveClass('collapsed');
+    expect(screen.queryByLabelText('关闭侧边栏')).not.toBeInTheDocument();
+  });
+
+  it('opens the AI coworkers panel from the top-right toggle', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    const coworkersToggle = screen.getByLabelText('打开 AI 同事面板');
+
+    expect(coworkersToggle).toHaveAttribute('aria-pressed', 'false');
+
+    await user.click(coworkersToggle);
+
+    const panel = container.querySelector('.coworkers-panel') as HTMLElement;
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByText('AI 同事')).toBeInTheDocument();
+    expect(within(panel).getByText('9 位在线')).toBeInTheDocument();
+    expect(container.querySelectorAll('.coworker-card')).toHaveLength(9);
+    expect(within(panel).getByText('主线交易官')).toBeInTheDocument();
+    expect(within(panel).getByText('基金经理副官')).toBeInTheDocument();
+    expect(screen.getByLabelText('关闭 AI 同事面板')).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(screen.getByLabelText('关闭 AI 同事面板'));
+
+    expect(container.querySelector('.right-dock-workspace')).toHaveClass('collapsed');
+  });
+
+  it('keeps the original right sidebar available while AI coworkers are open', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开 AI 同事面板'));
+
+    expect(container.querySelector('.coworkers-panel')).toBeInTheDocument();
+    expect(screen.getByLabelText('打开侧边栏')).toHaveAttribute('aria-pressed', 'false');
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+
+    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
+    expect(featuresPanel).toBeInTheDocument();
+    expect(featuresPanel).toHaveAccessibleName('投研侧栏');
+    expect(container.querySelector('.coworkers-panel')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('关闭侧边栏')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByLabelText('打开 AI 同事面板')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('imports a coworker preset task into the composer with one click', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开 AI 同事面板'));
+    const panel = container.querySelector('.coworkers-panel') as HTMLElement;
+    await user.click(within(panel).getByRole('button', { name: /主线交易官/ }));
+    await user.click(within(panel).getAllByRole('button', { name: '导入' })[0]);
+
+    const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
+    expect(within(composerCard).getByText('主线交易官')).toBeInTheDocument();
+    const textarea = within(composerCard).getByRole('textbox') as HTMLTextAreaElement;
+    expect(textarea.value).toContain('梳理今天市场的主线');
+  });
+
+  it('collects multiple coworkers dropped onto the composer without duplicates', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
+
+    const dropCoworker = (payload: { id: string; no: string; name: string }) => {
+      const dataTransfer = {
+        types: ['application/x-alpha-coworker'],
+        getData: (type: string) =>
+          type === 'application/x-alpha-coworker' ? JSON.stringify(payload) : '',
+        setData: vi.fn(),
+        dropEffect: 'none',
+        effectAllowed: 'all',
+      };
+      fireEvent.dragOver(composerCard, { dataTransfer });
+      expect(composerCard).toHaveClass('coworker-drag-over');
+      fireEvent.drop(composerCard, { dataTransfer });
+    };
+
+    dropCoworker({ id: 'mainline', no: '①', name: '主线交易官' });
+    dropCoworker({ id: 'risk', no: '⑦', name: '风险控制官' });
+    dropCoworker({ id: 'mainline', no: '①', name: '主线交易官' });
+
+    expect(composerCard).not.toHaveClass('coworker-drag-over');
+    const chips = composerCard.querySelectorAll('.composer-coworker-chip');
+    expect(chips).toHaveLength(2);
+    expect(within(composerCard).getByText('召集同事协同')).toBeInTheDocument();
+    expect(within(composerCard).getByText('主线交易官')).toBeInTheDocument();
+    expect(within(composerCard).getByText('风险控制官')).toBeInTheDocument();
+
+    await user.click(within(composerCard).getByLabelText('移除 风险控制官'));
+
+    expect(composerCard.querySelectorAll('.composer-coworker-chip')).toHaveLength(1);
+    expect(within(composerCard).getByText('召集同事')).toBeInTheDocument();
+  });
+
   it('keeps coding tabs out of the right sidebar add menu', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
@@ -218,6 +391,8 @@ describe('right feature panel', () => {
     expect(skillsPage).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: '设置' })).not.toBeInTheDocument();
     expect(within(skillsPage).getByRole('heading', { name: '技能' })).toBeInTheDocument();
+    expect(within(skillsPage).queryByLabelText('收起侧栏')).not.toBeInTheDocument();
+    expect(within(skillsPage).queryByLabelText('展开侧栏')).not.toBeInTheDocument();
     expect(within(skillsPage).getByPlaceholderText('搜索技能')).toBeInTheDocument();
     expect(within(skillsPage).getByText('个人')).toBeInTheDocument();
     expect(within(skillsPage).getByText('系统')).toBeInTheDocument();
@@ -225,6 +400,23 @@ describe('right feature panel', () => {
     expect(within(skillsPage).queryByText('iOS App Intents')).not.toBeInTheDocument();
     expect(within(skillsPage).queryByText('SwiftUI Performance Audit')).not.toBeInTheDocument();
     expect(within(skillsPage).getByText('Skill Installer')).toBeInTheDocument();
+  });
+
+  it('shows a sidebar reopen button on the skills page after collapsing the sidebar', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '技能' }));
+    await user.click(screen.getByRole('button', { name: '收起侧栏' }));
+
+    const skillsPage = container.querySelector('.skills-page') as HTMLElement;
+    expect(container.querySelector('.app-shell')).toHaveClass('sidebar-collapsed');
+
+    await user.click(within(skillsPage).getByLabelText('展开侧栏'));
+
+    expect(container.querySelector('.app-shell')).not.toHaveClass('sidebar-collapsed');
+    expect(container.querySelector('.sidebar')).not.toHaveClass('collapsed');
+    expect(within(skillsPage).queryByLabelText('展开侧栏')).not.toBeInTheDocument();
   });
 
   it('opens the automations page from the sidebar automation menu', async () => {
@@ -260,7 +452,7 @@ describe('right feature panel', () => {
     expect(within(editor).getByLabelText('模型')).toHaveValue('GPT-5.5 超高');
   });
 
-  it('toggles the left sidebar while the automation editor is open', async () => {
+  it('does not show the left sidebar collapse button in the automation page', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
@@ -269,14 +461,8 @@ describe('right feature panel', () => {
     await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
 
     expect(within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' })).toBeInTheDocument();
-
-    await user.click(within(automationPage).getByLabelText('收起侧栏'));
-    expect(container.querySelector('.app-shell')).toHaveClass('sidebar-collapsed');
-    expect(container.querySelector('.sidebar')).toHaveClass('collapsed');
-
-    await user.click(within(automationPage).getByLabelText('展开侧栏'));
-    expect(container.querySelector('.app-shell')).not.toHaveClass('sidebar-collapsed');
-    expect(container.querySelector('.sidebar')).not.toHaveClass('collapsed');
+    expect(within(automationPage).queryByLabelText('收起侧栏')).not.toBeInTheDocument();
+    expect(within(automationPage).queryByLabelText('展开侧栏')).not.toBeInTheDocument();
   });
 
   it('offers richer automation schedules and usage-based models', async () => {
@@ -322,6 +508,25 @@ describe('right feature panel', () => {
     expect(Array.from(modelSelect.options).map((option) => option.value)).toContain('GPT-5.5 API');
     await user.selectOptions(modelSelect, 'GPT-5.5 API');
     expect(modelSelect).toHaveValue('GPT-5.5 API');
+  });
+
+  it('hides unavailable subscription models in the manual automation editor', async () => {
+    seedClientLicenseSession(false);
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const automationPage = container.querySelector('.automation-page') as HTMLElement;
+    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+
+    const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
+    const modelSelect = within(editor).getByLabelText('模型') as HTMLSelectElement;
+    await waitFor(() => expect(modelSelect).toHaveValue('GPT-5.5 API'));
+
+    const optionValues = Array.from(modelSelect.options).map((option) => option.value);
+    expect(optionValues).toContain('GPT-5.5 API');
+    expect(optionValues).not.toEqual(expect.arrayContaining(['GPT-5.5 超高', 'GPT-5.5 高', 'GPT-5.5 标准']));
+    expect(modelSelect.querySelector('optgroup[label="订阅模型"]')).not.toBeInTheDocument();
   });
 
   it('prefills the manual automation editor from a template', async () => {
@@ -506,6 +711,24 @@ describe('right feature panel', () => {
     expect(within(sidebar).getByText('4 天')).toBeInTheDocument();
     expect(within(sidebar).getByText('1 周')).toBeInTheDocument();
     expect(within(sidebar).queryByText('4天')).not.toBeInTheDocument();
+  });
+
+  it('shows the activated tenant name in the sidebar title area without an icon', () => {
+    const { container } = render(<App />);
+    const sidebar = container.querySelector('.sidebar') as HTMLElement;
+    const account = within(sidebar).getByText('Demo Fund').closest('.sidebar-account') as HTMLElement;
+
+    expect(account).toBeInTheDocument();
+    expect(account).toHaveAttribute('title', 'Demo Fund · Demo User · user@demo.local');
+    expect(account.querySelector('svg')).not.toBeInTheDocument();
+  });
+
+  it('marks the app shell as fullscreen so the sidebar title can use the left edge', () => {
+    Object.defineProperty(document, 'fullscreenElement', { value: document.body, configurable: true });
+
+    const { container } = render(<App />);
+
+    expect(container.querySelector('.app-shell')).toHaveClass('window-fullscreen');
   });
 
   it('does not show the mobile entry in the sidebar navigation', () => {
@@ -842,6 +1065,7 @@ describe('right feature panel', () => {
       '检查页面控制台',
       [],
       expect.objectContaining({ id: 'chrome', title: 'Chrome' }),
+      [],
     );
   });
 
@@ -1103,10 +1327,11 @@ describe('right feature panel', () => {
     expect(css).toMatch(/\.top-bar-actions\s*{[^}]*position:\s*fixed;[^}]*top:\s*8px;[^}]*right:\s*12px;[^}]*z-index:\s*90;/s);
     expect(css).toMatch(/\.top-bar-env-actions,\s*\.top-bar-panel-actions\s*{[^}]*display:\s*inline-flex;[^}]*gap:\s*4px;/s);
     expect(css).toMatch(/\.app-shell\.right-panel-open\s+\.top-bar-env-actions\s*{[^}]*position:\s*fixed;[^}]*top:\s*8px;[^}]*right:\s*calc\(var\(--right-sidebar-width, 416px\) \+ 16px\);/s);
+    expect(css).toMatch(/\.app-shell\.right-panel-open\s+\.top-bar-actions\s*{[^}]*right:\s*calc\(var\(--right-sidebar-width, 416px\) \+ 16px\);/s);
     expect(css).toMatch(/\.app-shell\.git-panel-open\s+\.top-bar-env-actions\s*{[^}]*right:\s*calc\(var\(--git-panel-width, 430px\) \+ 16px\);/s);
+    expect(css).toMatch(/\.app-shell\.git-panel-open\s+\.top-bar-actions\s*{[^}]*right:\s*calc\(var\(--git-panel-width, 430px\) \+ 16px\);/s);
     expect(css).toMatch(/\.app-shell\.review-panel-open\s+\.top-bar-env-actions\s*{[^}]*right:\s*calc\(var\(--review-panel-width, 704px\) \+ 16px\);/s);
-    expect(css).not.toMatch(/\.app-shell\.review-panel-open\s+\.top-bar-actions\s*{/);
-    expect(css).not.toMatch(/\.app-shell\.git-panel-open\s+\.top-bar-actions\s*{/);
+    expect(css).toMatch(/\.app-shell\.review-panel-open\s+\.top-bar-actions\s*{[^}]*right:\s*calc\(var\(--review-panel-width, 704px\) \+ 16px\);/s);
     expect(css).toMatch(/\.right-dock-tabs\s*{[^}]*padding:\s*0 76px 0 8px;/s);
     expect(css).toMatch(/\.environment-menu\s*{[^}]*position:\s*fixed;[^}]*top:\s*48px;[^}]*right:\s*16px;[^}]*width:\s*304px;/s);
     expect(css).toMatch(/\.app-shell\.right-panel-open\s+\.environment-menu\s*{[^}]*right:\s*calc\(var\(--right-sidebar-width, 416px\) \+ 16px\);/s);
