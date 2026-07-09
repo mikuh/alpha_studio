@@ -45,6 +45,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  ExternalLink,
   File,
   FileCode2,
   FileDiff,
@@ -4118,6 +4119,14 @@ function BrowserDockPanel({ requestedUrl, requestKey }: { requestedUrl?: string;
     setFrameKey((key) => key + 1);
   }, [htmlPreview?.path, openUrl]);
 
+  const externalTarget = useMemo(() => {
+    const candidate = htmlPreview?.path || draft || url;
+    if (!candidate) return null;
+    const displayUrl = browserDockDisplayUrl(candidate);
+    const localPath = localFilePath(displayUrl);
+    return localPath || normalizeBrowserDockUrl(displayUrl);
+  }, [draft, htmlPreview?.path, url]);
+
   useEffect(() => {
     if (!requestedUrl) return;
     openUrl(requestedUrl);
@@ -4128,7 +4137,19 @@ function BrowserDockPanel({ requestedUrl, requestKey }: { requestedUrl?: string;
       <form className="browser-url-row" onSubmit={(event) => { event.preventDefault(); openUrl(draft); }}>
         <button type="button" className="icon-mini" disabled aria-label="后退"><ChevronLeft size={14} /></button>
         <button type="button" className="icon-mini" disabled aria-label="前进"><ChevronRight size={14} /></button>
-        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="输入 URL" spellCheck={false} />
+        <div className="browser-address-field">
+          <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="输入 URL" spellCheck={false} />
+          <button
+            type="button"
+            className="browser-external-open"
+            disabled={!externalTarget}
+            onClick={() => { if (externalTarget) void openExternal(externalTarget); }}
+            aria-label="在外部浏览器打开"
+            title="在外部浏览器打开"
+          >
+            <ExternalLink size={14} />
+          </button>
+        </div>
         <button type="button" className="icon-mini" disabled={!url} onClick={refreshFrame} aria-label="刷新浏览器" title="刷新">
           <RefreshCw size={14} />
         </button>
