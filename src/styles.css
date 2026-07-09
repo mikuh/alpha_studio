@@ -8729,6 +8729,11 @@ button.environment-row:hover {
   border-bottom: 1px solid var(--border);
 }
 
+.browser-address-field {
+  min-width: 0;
+  position: relative;
+}
+
 .browser-url-row input,
 .files-filter input {
   min-width: 0;
@@ -8742,9 +8747,52 @@ button.environment-row:hover {
   font-size: 13px;
 }
 
+.browser-address-field input {
+  width: 100%;
+  padding-right: 34px;
+}
+
 .browser-url-row input:focus,
 .files-filter input:focus {
   border-color: var(--border-strong);
+}
+
+.browser-external-open {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%) scale(0.96);
+  transition: opacity 120ms ease, transform 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.browser-address-field:hover .browser-external-open:not(:disabled),
+.browser-address-field:focus-within .browser-external-open:not(:disabled),
+.browser-external-open:focus-visible:not(:disabled) {
+  opacity: 0.72;
+  pointer-events: auto;
+  transform: translateY(-50%) scale(1);
+}
+
+.browser-external-open:hover:not(:disabled),
+.browser-external-open:focus-visible:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+  opacity: 1;
+}
+
+.browser-external-open:disabled {
+  cursor: default;
 }
 
 .browser-frame {

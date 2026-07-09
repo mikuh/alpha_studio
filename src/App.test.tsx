@@ -2189,6 +2189,38 @@ describe('right feature panel', () => {
     expect(browsers[0].querySelector('.browser-frame')).toHaveAttribute('src', firstUrl);
   });
 
+  it('opens the active browser address externally from the address bar action', async () => {
+    const user = userEvent.setup();
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const url = 'https://www.cls.cn/detail/robotics';
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-link',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [{ type: 'text', content: `来源：[财联社](${url})。` }],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('link', { name: '财联社' }));
+
+    const activeBrowser = container.querySelector('.right-dock-pane.active .browser-dock-panel') as HTMLElement;
+    const externalOpen = within(activeBrowser).getByRole('button', { name: '在外部浏览器打开' });
+    expect(externalOpen).not.toBeDisabled();
+
+    await user.click(externalOpen);
+
+    expect(openSpy).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer');
+  });
+
   it('groups consecutive web search tool rows behind one disclosure', async () => {
     const user = userEvent.setup();
     useChatStore.setState({
@@ -2277,6 +2309,16 @@ describe('right feature panel', () => {
     expect(css).toMatch(/\.right-dock-tab-close\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
     expect(css).toMatch(/\.right-dock-tab:hover\s+\.right-dock-tab-close,\s*\.right-dock-tab:focus-within\s+\.right-dock-tab-close,\s*\.right-dock-tab-close:focus-visible\s*{[^}]*opacity:\s*0\.65;[^}]*pointer-events:\s*auto;/s);
     expect(css).not.toMatch(/\.right-dock-tab\.active\s+\.right-dock-tab-close/);
+  });
+
+  it('shows the browser external-open action on address field hover or focus', () => {
+    const cssPath = `${process.cwd()}/src/styles.css`;
+    const css = readFileSync(cssPath, 'utf8');
+
+    expect(css).toMatch(/\.browser-external-open\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
+    expect(css).toContain('.browser-address-field:hover .browser-external-open:not(:disabled),');
+    expect(css).toContain('.browser-address-field:focus-within .browser-external-open:not(:disabled),');
+    expect(css).toMatch(/\.browser-address-field:hover\s+\.browser-external-open:not\(:disabled\),\s*\.browser-address-field:focus-within\s+\.browser-external-open:not\(:disabled\),\s*\.browser-external-open:focus-visible:not\(:disabled\)\s*{[^}]*opacity:\s*0\.72;[^}]*pointer-events:\s*auto;/s);
   });
 
   it('keeps panel actions fixed while environment actions move beside an open right dock', () => {
