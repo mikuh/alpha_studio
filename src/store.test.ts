@@ -230,6 +230,160 @@ describe('skill selections on user messages', () => {
   });
 });
 
+describe('queued chat turns', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    useChatStore.setState({
+      conversations: [
+        conversation('conv-queue', {
+          status: 'streaming',
+          runId: 'run-current',
+          messages: [
+            textMessage('第一条'),
+            { id: 'assistant-current', role: 'assistant', timestamp: 1, isStreaming: true, blocks: [] },
+          ],
+        }),
+      ],
+      projects: [],
+      currentConversationId: 'conv-queue',
+      selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+      modelProfiles: defaultModelProfiles(),
+      approvalMode: 'auto',
+      projectSort: 'updated',
+      conversationSort: 'updated',
+      error: null,
+    });
+  });
+
+  it('queues messages submitted while the conversation is streaming', async () => {
+    await useChatStore.getState().sendMessage('第二条');
+
+    const current = useChatStore.getState().conversations[0];
+    expect(current.messages).toHaveLength(2);
+    expect(current.queuedMessages).toHaveLength(1);
+    expect(current.queuedMessages?.[0]).toMatchObject({ text: '第二条' });
+  });
+
+  it('starts the next queued message when the current turn completes', () => {
+    useChatStore.setState({
+      conversations: [
+        conversation('conv-queue', {
+          status: 'streaming',
+          runId: 'run-current',
+          messages: [
+            textMessage('第一条'),
+            { id: 'assistant-current', role: 'assistant', timestamp: 1, isStreaming: true, blocks: [] },
+          ],
+          queuedMessages: [
+            {
+              id: 'queue-next',
+              text: '第二条',
+              createdAt: 2,
+            },
+          ],
+        }),
+      ],
+    });
+
+    useChatStore.getState().handleCodexEvent({
+      type: 'completed',
+      runId: 'run-current',
+      conversationId: 'conv-queue',
+    });
+
+    const current = useChatStore.getState().conversations[0];
+    expect(current.status).toBe('streaming');
+    expect(current.queuedMessages ?? []).toHaveLength(0);
+    expect(current.messages).toHaveLength(4);
+    expect(current.messages[1]).toMatchObject({ role: 'assistant', isStreaming: false });
+    expect(current.messages[2]).toMatchObject({ role: 'user', blocks: [{ type: 'text', content: '第二条' }] });
+    expect(current.messages[3]).toMatchObject({ role: 'assistant', isStreaming: true });
+  });
+
+  it('edits and reorders queued messages', () => {
+    useChatStore.setState({
+      conversations: [
+        conversation('conv-queue', {
+          status: 'streaming',
+          runId: 'run-current',
+          messages: [
+            textMessage('第一条'),
+            { id: 'assistant-current', role: 'assistant', timestamp: 1, isStreaming: true, blocks: [] },
+          ],
+          queuedMessages: [
+            { id: 'queue-a', text: '第二条', createdAt: 2 },
+            { id: 'queue-b', text: '第三条', createdAt: 3 },
+            { id: 'queue-c', text: '第四条', createdAt: 4 },
+          ],
+        }),
+      ],
+    });
+
+    useChatStore.getState().updateQueuedMessage('conv-queue', 'queue-c', { text: '第四条编辑后' });
+    useChatStore.getState().reorderQueuedMessage('conv-queue', 'queue-b', 'queue-a');
+    useChatStore.getState().reorderQueuedMessage('conv-queue', 'queue-b', null);
+
+    const current = useChatStore.getState().conversations[0];
+    expect(current.queuedMessages?.map((item) => item.id)).toEqual(['queue-a', 'queue-c', 'queue-b']);
+    expect(current.queuedMessages?.find((item) => item.id === 'queue-c')?.text).toBe('第四条编辑后');
+  });
+
+  it('hides a guided queued message and sends it next while streaming', async () => {
+    useChatStore.setState({
+      conversations: [
+        conversation('conv-queue', {
+          status: 'streaming',
+          runId: 'run-current',
+          messages: [
+            textMessage('第一条'),
+            { id: 'assistant-current', role: 'assistant', timestamp: 1, isStreaming: true, blocks: [] },
+          ],
+          queuedMessages: [
+            { id: 'queue-a', text: '第二条', createdAt: 2 },
+            { id: 'queue-b', text: '第三条', createdAt: 3 },
+          ],
+        }),
+      ],
+    });
+
+    await useChatStore.getState().sendQueuedMessageNow('conv-queue', 'queue-b');
+
+    expect(useChatStore.getState().conversations[0].queuedMessages?.map((item) => item.id)).toEqual(['queue-a']);
+    expect(useChatStore.getState().conversations[0].guidedQueuedMessages?.map((item) => item.id)).toEqual(['queue-b']);
+
+    useChatStore.getState().handleCodexEvent({
+      type: 'completed',
+      runId: 'run-current',
+      conversationId: 'conv-queue',
+    });
+
+    const current = useChatStore.getState().conversations[0];
+    expect(current.status).toBe('streaming');
+    expect(current.guidedQueuedMessages ?? []).toHaveLength(0);
+    expect(current.queuedMessages?.map((item) => item.id)).toEqual(['queue-a']);
+    expect(current.messages[2]).toMatchObject({ role: 'user', blocks: [{ type: 'text', content: '第三条' }] });
+  });
+
+  it('sends a guided queued message immediately when idle', async () => {
+    useChatStore.setState({
+      conversations: [
+        conversation('conv-queue', {
+          status: 'idle',
+          messages: [],
+          queuedMessages: [{ id: 'queue-a', text: '立即发送', createdAt: 2 }],
+        }),
+      ],
+    });
+
+    await useChatStore.getState().sendQueuedMessageNow('conv-queue', 'queue-a');
+
+    const current = useChatStore.getState().conversations[0];
+    expect(current.status).toBe('streaming');
+    expect(current.queuedMessages ?? []).toHaveLength(0);
+    expect(current.messages[0]).toMatchObject({ role: 'user', blocks: [{ type: 'text', content: '立即发送' }] });
+  });
+});
+
 describe('automation turns', () => {
   beforeEach(() => {
     vi.useRealTimers();

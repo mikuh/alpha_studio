@@ -131,6 +131,53 @@ describe('applyCodexEventToConversation', () => {
     });
   });
 
+  it('labels spawned coworker tools with the concrete agent name', () => {
+    const started = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_started',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'spawn-1',
+      title: 'spawnAgent',
+      text: '{"agent_type":"mainline","message":"请写入 mainline.md"}',
+    });
+    const completed = applyCodexEventToConversation(started, {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'spawn-1',
+      title: 'spawnAgent',
+      text: 'Generated file: /tmp/mainline.md',
+    });
+
+    expect(completed.messages[0].blocks[0]).toMatchObject({
+      type: 'tool',
+      id: 'spawn-1',
+      title: 'spawnAgent',
+      status: 'completed',
+      target: 'mainline · ① 市场策略官',
+      input: '{"agent_type":"mainline","message":"请写入 mainline.md"}',
+      output: 'Generated file: /tmp/mainline.md',
+    });
+  });
+
+  it('labels spawned coworker tools from generated coworker file names', () => {
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'spawn-2',
+      title: 'spawnAgent',
+      text: 'Finished /tmp/theme.md',
+    });
+
+    expect(completed.messages[0].blocks[0]).toMatchObject({
+      type: 'tool',
+      id: 'spawn-2',
+      status: 'completed',
+      target: 'theme · ② 行业主题研究员',
+    });
+  });
+
   it('surfaces generated image paths from completed imagegen tools', () => {
     const completed = applyCodexEventToConversation(baseConversation(), {
       type: 'tool_completed',

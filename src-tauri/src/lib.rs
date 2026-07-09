@@ -3,6 +3,7 @@ use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterP
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -10,6 +11,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
@@ -17,6 +19,8 @@ use tokio::io::{
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex};
+
+mod local_store;
 
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
 const TERMINAL_EVENT: &str = "terminal-event";
@@ -153,6 +157,353 @@ pub struct ModelConfigSaveResult {
     path: String,
 }
 
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFolderCreateRequest {
+    name: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFolderRenameRequest {
+    current_path: String,
+    name: String,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFolderCreateResult {
+    path: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct JqDataConfigFile {
+    #[serde(default = "default_jqdata_config_version")]
+    version: u32,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: String,
+    #[serde(default = "default_jqdata_api_url")]
+    api_url: String,
+    #[serde(default)]
+    updated_at: String,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct JqDataConfigLoadResult {
+    version: u32,
+    enabled: bool,
+    username: String,
+    password_configured: bool,
+    api_url: String,
+    updated_at: String,
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct JqDataConfigSaveRequest {
+    enabled: bool,
+    username: String,
+    password: Option<String>,
+    api_url: Option<String>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct JqDataConfigSaveResult {
+    path: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct JqDataProbeResult {
+    ok: bool,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    query_count: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample: Option<Value>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct JqDataQueryRequest {
+    method: String,
+    #[serde(default)]
+    params: Map<String, Value>,
+}
+
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct JqDataQueryResult {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rows: Option<Value>,
+}
+
+#[derive(Default)]
+struct JqDataQueryState;
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EastmoneyRealtimeRequest {
+    #[serde(default)]
+    codes: Vec<String>,
+    #[serde(default)]
+    tick_code: Option<String>,
+    #[serde(default)]
+    tick_count: Option<u32>,
+    #[serde(default)]
+    full_market: bool,
+    #[serde(default)]
+    page_size: Option<u32>,
+}
+
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EastmoneyRealtimeResult {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quote_rows: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tick_rows: Option<Value>,
+}
+
+const JQDATA_SDK_QUERY_SCRIPT: &str = r#"
+import contextlib
+import datetime as _dt
+import io
+import json
+import math
+import sys
+
+def _jsonable(value):
+    try:
+        import pandas as _pd
+        if _pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        import numpy as _np
+        if isinstance(value, _np.generic):
+            value = value.item()
+    except Exception:
+        pass
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, (_dt.datetime, _dt.date)):
+        return value.isoformat()[:10]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(v) for v in value]
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()[:10]
+        except Exception:
+            pass
+    return str(value)
+
+def _date_text(value):
+    converted = _jsonable(value)
+    if converted is None:
+        return ""
+    return str(converted)[:10]
+
+def _df_rows(df):
+    if df is None:
+        return []
+    rows = []
+    for index, row in df.iterrows():
+        item = {str(key): _jsonable(value) for key, value in row.items()}
+        if "date" not in item or item.get("date") in (None, ""):
+            for key in ("time", "day"):
+                if item.get(key) not in (None, ""):
+                    item["date"] = _date_text(item.get(key))
+                    break
+        if ("date" not in item or item.get("date") in (None, "")) and index is not None:
+            item["date"] = _date_text(index)
+        if "index" not in item and index is not None:
+            item["index"] = _jsonable(index)
+        rows.append(item)
+    return rows
+
+def _frequency(value):
+    value = value or "daily"
+    if value == "1d":
+        return "daily"
+    if value == "1m":
+        return "minute"
+    return value
+
+def _security_param(params):
+    return (
+        params.get("codes")
+        or params.get("code")
+        or params.get("security")
+        or params.get("security_list")
+        or params.get("stock_list")
+    )
+
+def _fields(params):
+    fields = params.get("fields")
+    return fields if fields else None
+
+def _security_info_row(info, code):
+    if not info:
+        return []
+    return [{
+        "code": getattr(info, "code", code),
+        "display_name": getattr(info, "display_name", "") or getattr(info, "name", "") or code,
+        "name": getattr(info, "name", ""),
+        "start_date": _jsonable(getattr(info, "start_date", None)),
+        "end_date": _jsonable(getattr(info, "end_date", None)),
+        "type": getattr(info, "type", ""),
+        "parent": getattr(info, "parent", None),
+    }]
+
+def _industry_rows(data):
+    rows = []
+    if not isinstance(data, dict):
+        return rows
+    for code, groups in data.items():
+        if not isinstance(groups, dict):
+            continue
+        for category, info in groups.items():
+            if not isinstance(info, dict):
+                continue
+            name = info.get("industry_name") or info.get("name") or ""
+            rows.append({
+                "code": code,
+                "category": category,
+                "industry_code": info.get("industry_code") or "",
+                "industry_name": name,
+                "name": name,
+            })
+    return rows
+
+def _handle(jq, method, params):
+    if method == "__probe":
+        query_count = _jsonable(jq.get_query_count())
+        price = jq.get_price(
+            "000001.XSHE",
+            count=3,
+            end_date=_dt.date.today().isoformat(),
+            frequency="daily",
+            fields=["open", "close", "high", "low", "volume", "money"],
+        )
+        return {"ok": True, "queryCount": query_count, "rows": _df_rows(price)}
+
+    if method == "get_query_count":
+        return {"ok": True, "rows": [_jsonable(jq.get_query_count())]}
+
+    if method == "get_price":
+        security = _security_param(params)
+        if not security:
+            return {"ok": False, "message": "get_price 缺少 code/codes 参数。"}
+        is_batch = isinstance(security, list)
+        df = jq.get_price(
+            security,
+            start_date=params.get("start_date") or params.get("date"),
+            end_date=params.get("end_date"),
+            frequency=_frequency(params.get("frequency") or params.get("unit")),
+            fields=_fields(params),
+            skip_paused=bool(params.get("skip_paused", False)),
+            fq=params.get("fq", "pre"),
+            count=params.get("count"),
+            panel=False if is_batch else True,
+            fill_paused=bool(params.get("fill_paused", True)),
+        )
+        return {"ok": True, "rows": _df_rows(df)}
+
+    if method == "get_security_info":
+        code = params.get("code") or params.get("security")
+        if not code:
+            return {"ok": False, "message": "get_security_info 缺少 code 参数。"}
+        return {"ok": True, "rows": _security_info_row(jq.get_security_info(code, date=params.get("date")), code)}
+
+    if method == "get_money_flow":
+        security = _security_param(params)
+        if not security:
+            return {"ok": False, "message": "get_money_flow 缺少 code/codes 参数。"}
+        df = jq.get_money_flow(
+            security,
+            start_date=params.get("start_date") or params.get("date"),
+            end_date=params.get("end_date"),
+            fields=_fields(params),
+            count=params.get("count"),
+        )
+        return {"ok": True, "rows": _df_rows(df)}
+
+    if method == "get_mtss":
+        security = _security_param(params)
+        if not security:
+            return {"ok": False, "message": "get_mtss 缺少 code/codes 参数。"}
+        df = jq.get_mtss(
+            security,
+            start_date=params.get("start_date") or params.get("date"),
+            end_date=params.get("end_date"),
+            fields=_fields(params),
+            count=params.get("count"),
+        )
+        return {"ok": True, "rows": _df_rows(df)}
+
+    if method == "get_industry":
+        security = params.get("code") or params.get("security")
+        if not security:
+            return {"ok": False, "message": "get_industry 缺少 code 参数。"}
+        return {"ok": True, "rows": _industry_rows(jq.get_industry(security, date=params.get("date"), df=False))}
+
+    if method == "get_locked_shares":
+        stock_list = params.get("stock_list") or params.get("codes") or params.get("code")
+        if isinstance(stock_list, str):
+            stock_list = [stock_list]
+        df = jq.get_locked_shares(
+            stock_list=stock_list,
+            start_date=params.get("start_date") or params.get("date"),
+            end_date=params.get("end_date"),
+            forward_count=params.get("forward_count"),
+        )
+        return {"ok": True, "rows": _df_rows(df)}
+
+    return {"ok": False, "message": "JQData SDK/RPC 暂不支持方法：" + str(method)}
+
+try:
+    payload = json.load(sys.stdin)
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "").strip()
+    method = str(payload.get("method") or "").strip()
+    params = payload.get("params") or {}
+    import jqdatasdk as jq
+    with contextlib.redirect_stdout(io.StringIO()):
+        jq.auth(username, password)
+    try:
+        authed = bool(jq.is_auth())
+    except Exception:
+        authed = True
+    if not authed:
+        result = {"ok": False, "message": "JQData SDK/RPC 认证失败。"}
+    else:
+        result = _handle(jq, method, params)
+except Exception as exc:
+    result = {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
+
+sys.stdout.write(json.dumps(result, ensure_ascii=False, allow_nan=False))
+"#;
+
 #[derive(Clone, Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexChatStartResult {
@@ -209,6 +560,38 @@ pub struct OpenInAppRequest {
 #[serde(rename_all = "camelCase")]
 pub struct LocalImageDataUrlRequest {
     path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTextFileReadRequest {
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HtmlToPdfRequest {
+    html_path: String,
+    pdf_path: Option<String>,
+    open_when_done: Option<bool>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTextFileReadResult {
+    path: String,
+    content: String,
+    bytes: u64,
+    truncated: bool,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HtmlToPdfResult {
+    pdf_path: String,
+    engine: String,
+    attempts: Vec<String>,
+    warnings: Vec<String>,
 }
 
 #[derive(Clone, Deserialize, Debug)]
@@ -421,16 +804,16 @@ pub struct CodexChatEvent {
 }
 
 #[tauri::command]
-async fn codex_check() -> Result<CodexCheckResult, String> {
-    Ok(check_codex())
+async fn codex_check(app: AppHandle) -> Result<CodexCheckResult, String> {
+    Ok(check_codex(Some(&app)))
 }
 
 #[tauri::command]
-async fn codex_login() -> Result<CodexLoginResult, String> {
+async fn codex_login(app: AppHandle) -> Result<CodexLoginResult, String> {
     let (path, _) = resolve_codex_binary().ok_or_else(|| {
         "No working Codex CLI was found. Install or repair Codex first.".to_string()
     })?;
-    let codex_home = prepare_alpha_studio_codex_home()?;
+    let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
     mark_codex_device_authorized(&codex_home)?;
     launch_codex_login(&path, &codex_home).await?;
     Ok(CodexLoginResult {
@@ -491,13 +874,142 @@ async fn model_config_save(
 }
 
 #[tauri::command]
+fn project_folder_create(
+    request: ProjectFolderCreateRequest,
+) -> Result<ProjectFolderCreateResult, String> {
+    let root = project_folder_root()?;
+    let path = create_unique_project_folder(&root, &request.name)?;
+    Ok(ProjectFolderCreateResult {
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+fn project_folder_rename(
+    request: ProjectFolderRenameRequest,
+) -> Result<ProjectFolderCreateResult, String> {
+    let root = project_folder_root()?;
+    let path = rename_project_folder(&root, &request.current_path, &request.name)?;
+    Ok(ProjectFolderCreateResult {
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+async fn jqdata_config_load() -> Result<JqDataConfigLoadResult, String> {
+    let path = jqdata_config_path()?;
+    if !path.exists() {
+        return Ok(jqdata_config_load_result(JqDataConfigFile::default(), path));
+    }
+
+    let text =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read JQData config: {e}"))?;
+    let config: JqDataConfigFile =
+        serde_json::from_str(&text).map_err(|e| format!("Failed to parse JQData config: {e}"))?;
+    Ok(jqdata_config_load_result(config, path))
+}
+
+#[tauri::command]
+async fn jqdata_config_save(
+    request: JqDataConfigSaveRequest,
+) -> Result<JqDataConfigSaveResult, String> {
+    let path = jqdata_config_path()?;
+    let existing = read_jqdata_config_file(&path).unwrap_or_default();
+    let password = request
+        .password
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or(existing.password);
+    let api_url = request
+        .api_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let existing_url = existing.api_url.trim();
+            if existing_url.is_empty() {
+                None
+            } else {
+                Some(existing_url.to_string())
+            }
+        })
+        .unwrap_or_else(default_jqdata_api_url);
+    let config = JqDataConfigFile {
+        version: 1,
+        enabled: request.enabled,
+        username: request.username.trim().to_string(),
+        password,
+        api_url,
+        updated_at: unix_millis_string(),
+    };
+    write_jqdata_config_file(&path, &config)?;
+    Ok(JqDataConfigSaveResult {
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+async fn jqdata_test_connection() -> Result<JqDataProbeResult, String> {
+    let path = jqdata_config_path()?;
+    let config = read_jqdata_config_file(&path)?;
+    if !config.enabled {
+        return Ok(JqDataProbeResult {
+            ok: false,
+            message: "JQData 数据源尚未启用。".to_string(),
+            query_count: None,
+            sample: None,
+        });
+    }
+    if config.username.trim().is_empty() || config.password.trim().is_empty() {
+        return Ok(JqDataProbeResult {
+            ok: false,
+            message: "请先配置聚宽账号和密码。".to_string(),
+            query_count: None,
+            sample: None,
+        });
+    }
+
+    run_jqdata_probe(config).await
+}
+
+#[tauri::command]
+async fn jqdata_query(
+    _state: State<'_, JqDataQueryState>,
+    request: JqDataQueryRequest,
+) -> Result<JqDataQueryResult, String> {
+    let path = jqdata_config_path()?;
+    let config = match read_jqdata_config_file(&path) {
+        Ok(config) => config,
+        Err(_) => JqDataConfigFile::default(),
+    };
+    if !config.enabled || config.username.trim().is_empty() || config.password.trim().is_empty() {
+        return Ok(JqDataQueryResult {
+            ok: false,
+            message: Some("JQData 数据源尚未配置或未启用。".to_string()),
+            rows: None,
+        });
+    }
+    run_jqdata_sdk_query(&config, &request).await
+}
+
+#[tauri::command]
+async fn eastmoney_realtime_query(
+    request: EastmoneyRealtimeRequest,
+) -> Result<EastmoneyRealtimeResult, String> {
+    run_eastmoney_realtime_query(request).await
+}
+
+#[tauri::command]
 async fn codex_chat_start(
     app: AppHandle,
     state: State<'_, CodexProcessState>,
     request: CodexChatRequest,
 ) -> Result<CodexChatStartResult, String> {
     let mut provider_config = sanitize_model_provider(&request)?;
-    let check = check_codex();
+    let check = check_codex(Some(&app));
     if !check.installed {
         return Err(check
             .error
@@ -512,7 +1024,7 @@ async fn codex_chat_start(
 
     let run_id = generate_run_id();
     let cwd = resolve_cwd(request.cwd.as_deref())?;
-    let codex_home = prepare_alpha_studio_codex_home()?;
+    let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
     let sandbox_mode = sanitize_sandbox_mode(request.sandbox_mode.as_deref());
     let adapter_shutdown = if let Some(provider) = provider_config.as_mut() {
         if let Some(adapter) = provider.adapter.clone() {
@@ -1241,6 +1753,7 @@ async fn list_open_apps() -> Result<Vec<String>, String> {
         let candidates: &[(&str, &[&str])] = &[
             ("vscode", &["Visual Studio Code.app", "VSCode.app"]),
             ("cursor", &["Cursor.app"]),
+            ("xcode", &["Xcode.app"]),
             (
                 "pycharm",
                 &[
@@ -1261,12 +1774,17 @@ async fn list_open_apps() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 async fn open_in_app(request: OpenInAppRequest) -> Result<(), String> {
-    let path = validate_cwd(&request.path)?;
+    let path = validate_open_path(&request.path)?;
     #[cfg(target_os = "macos")]
     {
+        let terminal_path = terminal_open_target(path);
         let args: Vec<String> = match request.app.as_str() {
             "finder" => vec!["-R".to_string(), path.to_string()],
-            "terminal" => vec!["-a".to_string(), "Terminal".to_string(), path.to_string()],
+            "terminal" => vec![
+                "-a".to_string(),
+                "Terminal".to_string(),
+                terminal_path.to_string_lossy().to_string(),
+            ],
             "vscode" => vec![
                 "-a".to_string(),
                 "Visual Studio Code".to_string(),
@@ -1274,6 +1792,7 @@ async fn open_in_app(request: OpenInAppRequest) -> Result<(), String> {
             ],
             "cursor" => vec!["-a".to_string(), "Cursor".to_string(), path.to_string()],
             "pycharm" => vec!["-a".to_string(), "PyCharm".to_string(), path.to_string()],
+            "xcode" => vec!["-a".to_string(), "Xcode".to_string(), path.to_string()],
             other => return Err(format!("Unsupported app: {other}")),
         };
         let output = Command::new("open")
@@ -1336,6 +1855,527 @@ async fn local_image_data_url(request: LocalImageDataUrlRequest) -> Result<Strin
     let bytes = fs::read(path_ref).map_err(|e| format!("Failed to read image: {e}"))?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:{mime};base64,{encoded}"))
+}
+
+#[tauri::command]
+async fn local_text_file_read(
+    request: LocalTextFileReadRequest,
+) -> Result<LocalTextFileReadResult, String> {
+    let path = request.path.trim();
+    if path.is_empty() {
+        return Err("File path is required.".to_string());
+    }
+
+    let path_ref = Path::new(path);
+    let metadata =
+        fs::metadata(path_ref).map_err(|e| format!("Failed to read file metadata: {e}"))?;
+    if !metadata.is_file() {
+        return Err(format!("Path is not a file: {path}"));
+    }
+
+    const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
+    let mut file = fs::File::open(path_ref).map_err(|e| format!("Failed to read file: {e}"))?;
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(MAX_TEXT_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Failed to read file: {e}"))?;
+    let truncated =
+        bytes.len() as u64 > MAX_TEXT_FILE_BYTES || metadata.len() > MAX_TEXT_FILE_BYTES;
+    if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
+        bytes.truncate(MAX_TEXT_FILE_BYTES as usize);
+    }
+
+    Ok(LocalTextFileReadResult {
+        path: path_ref.to_string_lossy().to_string(),
+        content: String::from_utf8_lossy(&bytes).to_string(),
+        bytes: metadata.len(),
+        truncated,
+    })
+}
+
+#[tauri::command]
+async fn html_to_pdf(request: HtmlToPdfRequest) -> Result<HtmlToPdfResult, String> {
+    let html_input = request.html_path.trim();
+    if html_input.is_empty() {
+        return Err("HTML path is required.".to_string());
+    }
+
+    let html_path = PathBuf::from(html_input)
+        .canonicalize()
+        .map_err(|e| format!("Failed to locate HTML file: {e}"))?;
+    let metadata =
+        fs::metadata(&html_path).map_err(|e| format!("Failed to read HTML metadata: {e}"))?;
+    if !metadata.is_file() {
+        return Err(format!("Path is not a file: {}", html_path.display()));
+    }
+    let ext = html_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext != "html" && ext != "htm" {
+        return Err("PDF export expects an .html or .htm file.".to_string());
+    }
+
+    let pdf_path = resolve_pdf_output_path(&html_path, request.pdf_path.as_deref())?;
+    if let Some(parent) = pdf_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create PDF output directory: {e}"))?;
+    }
+
+    let mut attempts = Vec::new();
+    for candidate in chrome_pdf_candidates() {
+        match try_chrome_pdf(&candidate, &html_path, &pdf_path, &mut attempts).await {
+            Ok(()) => {
+                if request.open_when_done.unwrap_or(false) {
+                    let _ = open_path_with_system(&pdf_path).await;
+                }
+                return Ok(HtmlToPdfResult {
+                    pdf_path: pdf_path.to_string_lossy().to_string(),
+                    engine: candidate.to_string_lossy().to_string(),
+                    attempts,
+                    warnings: Vec::new(),
+                });
+            }
+            Err(_) => continue,
+        }
+    }
+
+    for candidate in wkhtmltopdf_candidates() {
+        match try_wkhtmltopdf(&candidate, &html_path, &pdf_path, &mut attempts).await {
+            Ok(()) => {
+                if request.open_when_done.unwrap_or(false) {
+                    let _ = open_path_with_system(&pdf_path).await;
+                }
+                return Ok(HtmlToPdfResult {
+                    pdf_path: pdf_path.to_string_lossy().to_string(),
+                    engine: candidate.to_string_lossy().to_string(),
+                    attempts,
+                    warnings: Vec::new(),
+                });
+            }
+            Err(_) => continue,
+        }
+    }
+
+    if let Some(candidate) = find_in_path("cupsfilter") {
+        if try_cupsfilter_pdf(&candidate, &html_path, &pdf_path, &mut attempts)
+            .await
+            .is_ok()
+        {
+            if request.open_when_done.unwrap_or(false) {
+                let _ = open_path_with_system(&pdf_path).await;
+            }
+            return Ok(HtmlToPdfResult {
+                pdf_path: pdf_path.to_string_lossy().to_string(),
+                engine: candidate.to_string_lossy().to_string(),
+                attempts,
+                warnings: vec![
+                    "Used the system print filter fallback; browser-based output is usually more faithful for complex CSS.".to_string(),
+                ],
+            });
+        }
+    }
+
+    Err(format!(
+        "PDF export failed. Tried: {}. Install Google Chrome, Chromium, Microsoft Edge, Brave, or wkhtmltopdf, then retry.",
+        if attempts.is_empty() {
+            "no supported PDF engines were found".to_string()
+        } else {
+            attempts.join(" | ")
+        }
+    ))
+}
+
+fn resolve_pdf_output_path(html_path: &Path, requested: Option<&str>) -> Result<PathBuf, String> {
+    let trimmed = requested.unwrap_or("").trim();
+    let path = if trimmed.is_empty() {
+        html_path.with_extension("pdf")
+    } else {
+        let candidate = PathBuf::from(trimmed);
+        if candidate.is_absolute() {
+            candidate
+        } else {
+            html_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(candidate)
+        }
+    };
+    if path == html_path {
+        return Err("PDF output path must differ from the HTML input path.".to_string());
+    }
+    Ok(path)
+}
+
+fn chrome_pdf_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for key in ["CHROME", "CHROME_PATH", "CHROMIUM_PATH"] {
+        if let Some(value) = env::var_os(key) {
+            push_unique_path(&mut candidates, PathBuf::from(value));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let bundles = [
+            "Google Chrome.app/Contents/MacOS/Google Chrome",
+            "Chromium.app/Contents/MacOS/Chromium",
+            "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "Brave Browser.app/Contents/MacOS/Brave Browser",
+        ];
+        for bundle in bundles {
+            push_unique_path(&mut candidates, PathBuf::from("/Applications").join(bundle));
+            if let Some(home) = env::var_os("HOME") {
+                push_unique_path(
+                    &mut candidates,
+                    PathBuf::from(home).join("Applications").join(bundle),
+                );
+            }
+        }
+    }
+
+    for command in [
+        "google-chrome",
+        "google-chrome-stable",
+        "chrome",
+        "chromium",
+        "chromium-browser",
+        "msedge",
+        "microsoft-edge",
+        "brave-browser",
+        "brave",
+    ] {
+        if let Some(path) = find_in_path(command) {
+            push_unique_path(&mut candidates, path);
+        }
+    }
+    candidates
+}
+
+fn wkhtmltopdf_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for path in [
+        "/opt/homebrew/bin/wkhtmltopdf",
+        "/usr/local/bin/wkhtmltopdf",
+        "/usr/bin/wkhtmltopdf",
+    ] {
+        push_unique_path(&mut candidates, PathBuf::from(path));
+    }
+    if let Some(path) = find_in_path("wkhtmltopdf") {
+        push_unique_path(&mut candidates, path);
+    }
+    candidates
+}
+
+fn push_unique_path(candidates: &mut Vec<PathBuf>, path: PathBuf) {
+    if !candidates.iter().any(|candidate| candidate == &path) {
+        candidates.push(path);
+    }
+}
+
+fn find_in_path(command: &str) -> Option<PathBuf> {
+    let paths = env::var_os("PATH")?;
+    for dir in env::split_paths(&paths) {
+        let direct = dir.join(command);
+        if executable_exists(&direct) {
+            return Some(direct);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            for ext in ["exe", "cmd", "bat"] {
+                let candidate = dir.join(format!("{command}.{ext}"));
+                if executable_exists(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn executable_exists(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+}
+
+async fn try_chrome_pdf(
+    executable: &Path,
+    html_path: &Path,
+    pdf_path: &Path,
+    attempts: &mut Vec<String>,
+) -> Result<(), String> {
+    if !executable_exists(executable) {
+        attempts.push(format!("{}: not found", executable.display()));
+        return Err("Chrome candidate not found.".to_string());
+    }
+
+    let mut last_error = String::new();
+    for headless_flag in ["--headless=new", "--headless"] {
+        let temp_pdf = temp_pdf_path(pdf_path);
+        let profile_dir = env::temp_dir().join(format!(
+            "alpha-studio-chrome-profile-{}",
+            RUN_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&temp_pdf);
+        let _ = fs::create_dir_all(&profile_dir);
+        let args = vec![
+            headless_flag.to_string(),
+            "--no-first-run".to_string(),
+            "--no-default-browser-check".to_string(),
+            "--disable-background-networking".to_string(),
+            "--disable-component-update".to_string(),
+            "--disable-extensions".to_string(),
+            "--disable-sync".to_string(),
+            "--disable-gpu".to_string(),
+            "--disable-dev-shm-usage".to_string(),
+            "--allow-file-access-from-files".to_string(),
+            "--no-pdf-header-footer".to_string(),
+            "--print-to-pdf-no-header".to_string(),
+            format!("--user-data-dir={}", profile_dir.display()),
+            format!("--print-to-pdf={}", temp_pdf.display()),
+            path_to_file_url(html_path),
+        ];
+        let mut command = Command::new(executable);
+        command
+            .args(&args)
+            .current_dir(html_path.parent().unwrap_or_else(|| Path::new(".")));
+        let output = match command_output_with_timeout(
+            &mut command,
+            &format!("{} {headless_flag}", executable.display()),
+        )
+        .await
+        {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&profile_dir);
+                if ensure_pdf_written(&temp_pdf).is_ok() {
+                    replace_pdf(&temp_pdf, pdf_path)?;
+                    attempts.push(format!(
+                        "{} {headless_flag}: PDF written before timeout",
+                        executable.display()
+                    ));
+                    return Ok(());
+                }
+                let _ = fs::remove_file(&temp_pdf);
+                attempts.push(error.clone());
+                last_error = error;
+                continue;
+            }
+        };
+        let _ = fs::remove_dir_all(&profile_dir);
+        if output.status.success() && ensure_pdf_written(&temp_pdf).is_ok() {
+            replace_pdf(&temp_pdf, pdf_path)?;
+            attempts.push(format!("{} {headless_flag}: ok", executable.display()));
+            return Ok(());
+        }
+        let _ = fs::remove_file(&temp_pdf);
+        last_error = command_failure_summary(&output.stdout, &output.stderr);
+        attempts.push(format!(
+            "{} {headless_flag}: {}",
+            executable.display(),
+            if last_error.is_empty() {
+                format!("exit {}", output.status)
+            } else {
+                last_error.clone()
+            }
+        ));
+    }
+    Err(last_error)
+}
+
+async fn try_wkhtmltopdf(
+    executable: &Path,
+    html_path: &Path,
+    pdf_path: &Path,
+    attempts: &mut Vec<String>,
+) -> Result<(), String> {
+    if !executable_exists(executable) {
+        attempts.push(format!("{}: not found", executable.display()));
+        return Err("wkhtmltopdf candidate not found.".to_string());
+    }
+    let temp_pdf = temp_pdf_path(pdf_path);
+    let _ = fs::remove_file(&temp_pdf);
+    let mut command = Command::new(executable);
+    command
+        .args([
+            "--enable-local-file-access",
+            "--print-media-type",
+            "--page-size",
+            "A4",
+        ])
+        .arg(html_path)
+        .arg(&temp_pdf)
+        .current_dir(html_path.parent().unwrap_or_else(|| Path::new(".")));
+    let output = match command_output_with_timeout(&mut command, &executable.display().to_string()).await {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = fs::remove_file(&temp_pdf);
+            attempts.push(error.clone());
+            return Err(error);
+        }
+    };
+    if output.status.success() && ensure_pdf_written(&temp_pdf).is_ok() {
+        replace_pdf(&temp_pdf, pdf_path)?;
+        attempts.push(format!("{}: ok", executable.display()));
+        return Ok(());
+    }
+    let _ = fs::remove_file(&temp_pdf);
+    let summary = command_failure_summary(&output.stdout, &output.stderr);
+    attempts.push(format!(
+        "{}: {}",
+        executable.display(),
+        if summary.is_empty() {
+            format!("exit {}", output.status)
+        } else {
+            summary.clone()
+        }
+    ));
+    Err(summary)
+}
+
+async fn try_cupsfilter_pdf(
+    executable: &Path,
+    html_path: &Path,
+    pdf_path: &Path,
+    attempts: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut command = Command::new(executable);
+    command
+        .args(["-m", "application/pdf"])
+        .arg(html_path)
+        .current_dir(html_path.parent().unwrap_or_else(|| Path::new(".")));
+    let output = match command_output_with_timeout(&mut command, &executable.display().to_string()).await {
+        Ok(output) => output,
+        Err(error) => {
+            attempts.push(error.clone());
+            return Err(error);
+        }
+    };
+    if output.status.success() && !output.stdout.is_empty() {
+        let temp_pdf = temp_pdf_path(pdf_path);
+        fs::write(&temp_pdf, &output.stdout)
+            .map_err(|e| format!("Failed to write cupsfilter PDF: {e}"))?;
+        ensure_pdf_written(&temp_pdf)?;
+        replace_pdf(&temp_pdf, pdf_path)?;
+        attempts.push(format!("{}: ok", executable.display()));
+        return Ok(());
+    }
+    let summary = command_failure_summary(&output.stdout, &output.stderr);
+    attempts.push(format!(
+        "{}: {}",
+        executable.display(),
+        if summary.is_empty() {
+            format!("exit {}", output.status)
+        } else {
+            summary.clone()
+        }
+    ));
+    Err(summary)
+}
+
+async fn command_output_with_timeout(
+    command: &mut Command,
+    label: &str,
+) -> Result<std::process::Output, String> {
+    command.kill_on_drop(true);
+    match tokio::time::timeout(Duration::from_secs(45), command.output()).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(format!("{label}: {error}")),
+        Err(_) => Err(format!("{label}: timed out after 45s")),
+    }
+}
+
+fn temp_pdf_path(pdf_path: &Path) -> PathBuf {
+    let id = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let name = pdf_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("alpha-studio-report");
+    pdf_path.with_file_name(format!("{name}.tmp-{id}.pdf"))
+}
+
+fn ensure_pdf_written(path: &Path) -> Result<(), String> {
+    let metadata = fs::metadata(path).map_err(|e| format!("PDF was not created: {e}"))?;
+    if metadata.len() == 0 {
+        return Err("PDF output is empty.".to_string());
+    }
+    let bytes = fs::read(path).map_err(|e| format!("Failed to inspect PDF output: {e}"))?;
+    if !bytes.starts_with(b"%PDF-") {
+        return Err("PDF output does not have a valid header.".to_string());
+    }
+    if !bytes.windows(5).any(|window| window == b"%%EOF") {
+        return Err("PDF output does not appear complete.".to_string());
+    }
+    Ok(())
+}
+
+fn replace_pdf(temp_pdf: &Path, pdf_path: &Path) -> Result<(), String> {
+    if pdf_path.exists() {
+        fs::remove_file(pdf_path).map_err(|e| format!("Failed to replace existing PDF: {e}"))?;
+    }
+    fs::rename(temp_pdf, pdf_path).map_err(|e| format!("Failed to move PDF into place: {e}"))
+}
+
+fn path_to_file_url(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let prefixed = if raw.starts_with('/') {
+        raw
+    } else {
+        format!("/{raw}")
+    };
+    format!("file://{}", percent_encode_url_path(&prefixed))
+}
+
+fn percent_encode_url_path(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.as_bytes() {
+        match *byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'/'
+            | b'.'
+            | b'-'
+            | b'_'
+            | b'~'
+            | b':' => out.push(*byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn command_failure_summary(stdout: &[u8], stderr: &[u8]) -> String {
+    let text = [stderr, stdout]
+        .iter()
+        .map(|bytes| String::from_utf8_lossy(bytes).trim().to_string())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    text.chars().take(500).collect()
+}
+
+async fn open_path_with_system(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("open")
+            .arg(path)
+            .output()
+            .await
+            .map_err(|e| format!("Failed to open PDF: {e}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        return Err(command_failure_summary(&output.stdout, &output.stderr));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -1900,6 +2940,122 @@ fn default_model_config_version() -> u32 {
     1
 }
 
+fn default_jqdata_config_version() -> u32 {
+    1
+}
+
+fn default_jqdata_api_url() -> String {
+    "https://dataapi.joinquant.com/v2/apis".to_string()
+}
+
+fn project_folder_root() -> Result<PathBuf, String> {
+    let home = home_dir().ok_or_else(|| "Cannot resolve home directory.".to_string())?;
+    Ok(Path::new(&home).join(".alphastudio").join("projects"))
+}
+
+fn create_unique_project_folder(root: &Path, name: &str) -> Result<PathBuf, String> {
+    fs::create_dir_all(root)
+        .map_err(|e| format!("Failed to create research topics directory: {e}"))?;
+    let base_name = sanitize_project_folder_name(name);
+    for index in 0..1000 {
+        let folder_name = if index == 0 {
+            base_name.clone()
+        } else {
+            format!("{base_name} {}", index + 1)
+        };
+        let path = root.join(folder_name);
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("Failed to create research topic folder: {error}")),
+        }
+    }
+    Err("Failed to create a unique research topic folder.".to_string())
+}
+
+fn rename_project_folder(root: &Path, current_path: &str, name: &str) -> Result<PathBuf, String> {
+    fs::create_dir_all(root)
+        .map_err(|e| format!("Failed to create Alpha Studio project directory: {e}"))?;
+    let current = PathBuf::from(current_path.trim());
+    if current.as_os_str().is_empty() {
+        return create_unique_project_folder(root, name);
+    }
+    let root_canonical = root
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve Alpha Studio project directory: {e}"))?;
+    let current_canonical = match current.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return create_unique_project_folder(root, name),
+    };
+    if !current_canonical.starts_with(&root_canonical) {
+        return Ok(current);
+    }
+
+    let base_name = sanitize_project_folder_name(name);
+    for index in 0..1000 {
+        let folder_name = if index == 0 {
+            base_name.clone()
+        } else {
+            format!("{base_name} {}", index + 1)
+        };
+        let target = root.join(folder_name);
+        if target == current || target.canonicalize().ok().as_ref() == Some(&current_canonical) {
+            return Ok(current);
+        }
+        if target.exists() {
+            continue;
+        }
+        fs::rename(&current, &target)
+            .map_err(|e| format!("Failed to rename Alpha Studio project folder: {e}"))?;
+        return Ok(target);
+    }
+    Err("Failed to find a unique project folder name.".to_string())
+}
+
+fn sanitize_project_folder_name(name: &str) -> String {
+    let mut output = String::new();
+    let mut last_was_space = false;
+    for ch in name.trim().chars() {
+        let next = if ch.is_control()
+            || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        {
+            '-'
+        } else if ch.is_whitespace() {
+            ' '
+        } else {
+            ch
+        };
+        if next == ' ' {
+            if !last_was_space {
+                output.push(next);
+            }
+            last_was_space = true;
+        } else {
+            output.push(next);
+            last_was_space = false;
+        }
+    }
+    let sanitized = output.trim_matches(|ch| matches!(ch, ' ' | '.' | '-'));
+    if sanitized.is_empty() {
+        "Research Topic".to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
+impl Default for JqDataConfigFile {
+    fn default() -> Self {
+        Self {
+            version: default_jqdata_config_version(),
+            enabled: false,
+            username: String::new(),
+            password: String::new(),
+            api_url: default_jqdata_api_url(),
+            updated_at: String::new(),
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -1909,6 +3065,703 @@ fn model_config_path() -> Result<PathBuf, String> {
     Ok(Path::new(&home)
         .join(".alpha-studio")
         .join("model-providers.json"))
+}
+
+fn jqdata_config_path() -> Result<PathBuf, String> {
+    let home = home_dir().ok_or_else(|| "Cannot resolve home directory.".to_string())?;
+    Ok(Path::new(&home)
+        .join(".alpha-studio")
+        .join("jqdata-config.json"))
+}
+
+fn read_jqdata_config_file(path: &Path) -> Result<JqDataConfigFile, String> {
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("Failed to read JQData config: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("Failed to parse JQData config: {e}"))
+}
+
+fn write_jqdata_config_file(path: &Path, config: &JqDataConfigFile) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create JQData config directory: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to encode JQData config: {e}"))?;
+    fs::write(path, format!("{text}\n")).map_err(|e| format!("Failed to write JQData config: {e}"))
+}
+
+fn jqdata_config_load_result(config: JqDataConfigFile, path: PathBuf) -> JqDataConfigLoadResult {
+    JqDataConfigLoadResult {
+        version: config.version,
+        enabled: config.enabled,
+        username: config.username,
+        password_configured: !config.password.trim().is_empty(),
+        api_url: upgrade_legacy_jqdata_api_url(&config.api_url),
+        updated_at: config.updated_at,
+        path: path.to_string_lossy().to_string(),
+    }
+}
+
+fn unix_millis_string() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
+async fn run_jqdata_probe(config: JqDataConfigFile) -> Result<JqDataProbeResult, String> {
+    run_jqdata_sdk_probe(&config).await
+}
+
+async fn run_jqdata_sdk_probe(config: &JqDataConfigFile) -> Result<JqDataProbeResult, String> {
+    let result = run_jqdata_sdk_python(config, "__probe", &Map::new()).await?;
+    if !jqdata_value_ok(&result) {
+        return Ok(JqDataProbeResult {
+            ok: false,
+            message: jqdata_value_message(&result)
+                .unwrap_or_else(|| "JQData SDK/RPC 连接失败。".to_string()),
+            query_count: None,
+            sample: None,
+        });
+    }
+
+    let mut sample = Map::new();
+    sample.insert(
+        "transport".to_string(),
+        Value::String("sdk_rpc".to_string()),
+    );
+    if let Some(rows) = result.get("rows").cloned() {
+        sample.insert("priceRows".to_string(), rows);
+    }
+
+    Ok(JqDataProbeResult {
+        ok: true,
+        message: "JQData SDK/RPC 连接成功，投研工作台将使用 SDK/RPC 读取真实数据。".to_string(),
+        query_count: result.get("queryCount").cloned(),
+        sample: Some(Value::Object(sample)),
+    })
+}
+
+async fn run_jqdata_sdk_query(
+    config: &JqDataConfigFile,
+    request: &JqDataQueryRequest,
+) -> Result<JqDataQueryResult, String> {
+    let result = run_jqdata_sdk_python(config, &request.method, &request.params).await?;
+    if !jqdata_value_ok(&result) {
+        return Ok(JqDataQueryResult {
+            ok: false,
+            message: jqdata_value_message(&result)
+                .or_else(|| Some("JQData SDK/RPC 未返回可用数据。".to_string())),
+            rows: None,
+        });
+    }
+
+    Ok(JqDataQueryResult {
+        ok: true,
+        message: None,
+        rows: Some(
+            result
+                .get("rows")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new())),
+        ),
+    })
+}
+
+async fn run_jqdata_sdk_python(
+    config: &JqDataConfigFile,
+    method: &str,
+    params: &Map<String, Value>,
+) -> Result<Value, String> {
+    let payload = json!({
+        "username": config.username.trim(),
+        "password": config.password.trim(),
+        "method": method,
+        "params": params,
+    });
+    let payload_bytes = serde_json::to_vec(&payload)
+        .map_err(|e| format!("Failed to encode JQData SDK/RPC payload: {e}"))?;
+    let mut errors = Vec::new();
+
+    for python in jqdata_python_candidates() {
+        let mut command = Command::new(&python);
+        command
+            .arg("-c")
+            .arg(JQDATA_SDK_QUERY_SCRIPT)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                errors.push(format!("{python}: {err}"));
+                continue;
+            }
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(err) = stdin.write_all(&payload_bytes).await {
+                errors.push(format!("{python}: JQData SDK/RPC 输入失败：{err}"));
+                continue;
+            }
+        }
+
+        let output = match tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            child.wait_with_output(),
+        )
+        .await
+        {
+            Ok(Ok(output)) => output,
+            Ok(Err(err)) => {
+                errors.push(format!("{python}: JQData SDK/RPC 执行失败：{err}"));
+                continue;
+            }
+            Err(_) => {
+                errors.push(format!("{python}: JQData SDK/RPC 查询超时"));
+                continue;
+            }
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Ok(value) = serde_json::from_str::<Value>(&stdout) {
+            if jqdata_value_missing_sdk_module(&value) {
+                errors.push(format!(
+                    "{python}: {}",
+                    jqdata_value_message(&value).unwrap_or_else(|| "未安装 jqdatasdk".to_string())
+                ));
+                continue;
+            }
+            return Ok(value);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = if stdout.is_empty() {
+            stderr.trim().to_string()
+        } else {
+            stdout
+        };
+        errors.push(format!(
+            "{python}: {}",
+            scrub_jqdata_secret(config, truncate_for_message(&detail).as_str())
+        ));
+    }
+
+    Err(format!(
+        "无法通过 JQData SDK/RPC 查询。{}",
+        errors.join("；")
+    ))
+}
+
+fn jqdata_python_candidates() -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Ok(value) = env::var("ALPHA_STUDIO_JQDATA_PYTHON") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            candidates.push(trimmed.to_string());
+        }
+    }
+    candidates.extend([
+        "/opt/miniconda3/bin/python3".to_string(),
+        "/opt/homebrew/bin/python3".to_string(),
+        "/usr/local/bin/python3".to_string(),
+        "/usr/bin/python3".to_string(),
+        "python3".to_string(),
+        "python".to_string(),
+    ]);
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|candidate| seen.insert(candidate.clone()))
+        .collect()
+}
+
+fn jqdata_value_missing_sdk_module(value: &Value) -> bool {
+    if jqdata_value_ok(value) {
+        return false;
+    }
+    jqdata_value_message(value)
+        .map(|message| {
+            message.contains("No module named 'jqdatasdk'")
+                || message.contains("No module named jqdatasdk")
+                || message.contains("ModuleNotFoundError")
+        })
+        .unwrap_or(false)
+}
+
+fn jqdata_value_ok(value: &Value) -> bool {
+    value.get("ok").and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn jqdata_value_message(value: &Value) -> Option<String> {
+    value
+        .get("message")
+        .and_then(Value::as_str)
+        .map(|message| truncate_for_message(message.trim()))
+}
+
+fn scrub_jqdata_secret(config: &JqDataConfigFile, text: &str) -> String {
+    let mut scrubbed = text.to_string();
+    let username = config.username.trim();
+    if !username.is_empty() {
+        scrubbed = scrubbed.replace(username, "[jqdata-user]");
+    }
+    let password = config.password.trim();
+    if !password.is_empty() {
+        scrubbed = scrubbed.replace(password, "[jqdata-password]");
+    }
+    scrubbed
+}
+
+fn upgrade_legacy_jqdata_api_url(value: &str) -> String {
+    let url = value.trim().trim_end_matches('/');
+    if url == "https://dataapi.joinquant.com/apis" {
+        return default_jqdata_api_url();
+    }
+    if url == "http://dataapi.joinquant.com/apis" {
+        return "http://dataapi.joinquant.com/v2/apis".to_string();
+    }
+    if url.is_empty() {
+        return default_jqdata_api_url();
+    }
+    url.to_string()
+}
+
+fn truncate_for_message(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= 180 {
+        return trimmed.to_string();
+    }
+    let mut short = trimmed.chars().take(180).collect::<String>();
+    short.push_str("...");
+    short
+}
+
+async fn run_eastmoney_realtime_query(
+    request: EastmoneyRealtimeRequest,
+) -> Result<EastmoneyRealtimeResult, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 AlphaStudio/0.1")
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("东方财富实时行情客户端初始化失败：{e}"))?;
+    let mut quote_rows = Vec::new();
+    let mut errors = Vec::new();
+
+    let mut secids = Vec::new();
+    let mut seen = HashSet::new();
+    for code in request.codes.iter().take(220) {
+        if let Some(secid) = eastmoney_secid(code) {
+            if seen.insert(secid.clone()) {
+                secids.push(secid);
+            }
+        }
+    }
+
+    for chunk in secids.chunks(80) {
+        match fetch_eastmoney_quote_chunk(&client, chunk).await {
+            Ok(rows) => quote_rows.extend(rows),
+            Err(error) => errors.push(error),
+        }
+    }
+
+    if request.full_market {
+        match fetch_eastmoney_full_market(&client, request.page_size.unwrap_or(6000)).await {
+            Ok(rows) => quote_rows.extend(rows),
+            Err(error) => errors.push(error),
+        }
+    }
+
+    let mut tick_rows = Vec::new();
+    if let Some(code) = request.tick_code.as_deref() {
+        if let Some(secid) = eastmoney_secid(code) {
+            match fetch_eastmoney_ticks(&client, code, &secid, request.tick_count.unwrap_or(20))
+                .await
+            {
+                Ok(rows) => tick_rows = rows,
+                Err(error) => errors.push(error),
+            }
+        } else {
+            errors.push(format!("东方财富不支持该代码：{code}"));
+        }
+    }
+
+    let ok = !quote_rows.is_empty() || !tick_rows.is_empty();
+    Ok(EastmoneyRealtimeResult {
+        ok,
+        message: if ok {
+            if errors.is_empty() {
+                None
+            } else {
+                Some(truncate_for_message(&errors.join("；")))
+            }
+        } else {
+            Some(if errors.is_empty() {
+                "东方财富实时接口未返回可用数据。".to_string()
+            } else {
+                truncate_for_message(&errors.join("；"))
+            })
+        },
+        quote_rows: if quote_rows.is_empty() {
+            None
+        } else {
+            Some(Value::Array(quote_rows))
+        },
+        tick_rows: if tick_rows.is_empty() {
+            None
+        } else {
+            Some(Value::Array(tick_rows))
+        },
+    })
+}
+
+async fn fetch_eastmoney_quote_chunk(
+    client: &reqwest::Client,
+    secids: &[String],
+) -> Result<Vec<Value>, String> {
+    if secids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fields = "f12,f13,f14,f2,f3,f4,f5,f6,f15,f16,f17,f18,f20,f21,f23,f8,f10,f292";
+    let path = format!(
+        "/api/qt/ulist.np/get?fltt=2&invt=2&fields={fields}&secids={}",
+        secids.join(",")
+    );
+    let value = fetch_eastmoney_json_from_hosts(client, &path).await?;
+    let diff = value
+        .get("data")
+        .and_then(|data| data.get("diff"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "东方财富实时接口未返回 quote diff。".to_string())?;
+    Ok(diff
+        .iter()
+        .filter_map(eastmoney_quote_row)
+        .collect::<Vec<Value>>())
+}
+
+async fn fetch_eastmoney_full_market(
+    client: &reqwest::Client,
+    page_size: u32,
+) -> Result<Vec<Value>, String> {
+    let requested_limit = page_size.clamp(100, 8000) as usize;
+    let market_page_size = 100_u32;
+    let fields = "f12,f13,f14,f2,f3,f4,f5,f6,f15,f16,f17,f18,f20,f21,f23,f8,f10,f100,f292";
+    let first_page = fetch_eastmoney_full_market_page(client, 1, market_page_size, fields).await?;
+    let total = first_page
+        .get("data")
+        .and_then(|data| data.get("total"))
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(requested_limit)
+        .min(requested_limit);
+    let mut rows = eastmoney_full_market_diff(&first_page)?;
+    let page_count =
+        ((total as u32).saturating_add(market_page_size - 1) / market_page_size).max(1);
+
+    for page in 2..=page_count {
+        if rows.len() >= total {
+            break;
+        }
+        let value =
+            fetch_eastmoney_full_market_page(client, page, market_page_size, fields).await?;
+        let page_rows = eastmoney_full_market_diff(&value)?;
+        if page_rows.is_empty() {
+            break;
+        }
+        rows.extend(page_rows);
+    }
+
+    let mut seen = HashSet::new();
+    let mut unique_rows = Vec::new();
+    for row in rows {
+        let key = row
+            .get("code")
+            .and_then(Value::as_str)
+            .or_else(|| row.get("rawCode").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string();
+        if !key.is_empty() && seen.insert(key) {
+            unique_rows.push(row);
+        }
+        if unique_rows.len() >= requested_limit {
+            break;
+        }
+    }
+    Ok(unique_rows)
+}
+
+async fn fetch_eastmoney_full_market_page(
+    client: &reqwest::Client,
+    page: u32,
+    page_size: u32,
+    fields: &str,
+) -> Result<Value, String> {
+    let path = format!(
+        "/api/qt/clist/get?pn={page}&pz={page_size}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields={fields}"
+    );
+    fetch_eastmoney_json_from_hosts(client, &path).await
+}
+
+fn eastmoney_full_market_diff(value: &Value) -> Result<Vec<Value>, String> {
+    let diff = value
+        .get("data")
+        .and_then(|data| data.get("diff"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "东方财富全市场接口未返回 quote diff。".to_string())?;
+    Ok(diff.iter().filter_map(eastmoney_quote_row).collect())
+}
+
+async fn fetch_eastmoney_ticks(
+    client: &reqwest::Client,
+    original_code: &str,
+    secid: &str,
+    count: u32,
+) -> Result<Vec<Value>, String> {
+    let safe_count = count.clamp(1, 80);
+    let path = format!(
+        "/api/qt/stock/details/get?secid={secid}&fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55&pos=-{safe_count}&iscca=1"
+    );
+    let value = fetch_eastmoney_json_from_hosts(client, &path).await?;
+    let details = value
+        .get("data")
+        .and_then(|data| data.get("details"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "东方财富分笔接口未返回 details。".to_string())?;
+    Ok(details
+        .iter()
+        .filter_map(|item| item.as_str())
+        .filter_map(|line| eastmoney_tick_row(original_code, line))
+        .collect::<Vec<Value>>())
+}
+
+async fn fetch_eastmoney_json(client: &reqwest::Client, url: &str) -> Result<Value, String> {
+    let response = client
+        .get(url)
+        .header("Referer", "https://quote.eastmoney.com/")
+        .header("Accept", "application/json,text/plain,*/*")
+        .send()
+        .await
+        .map_err(|e| format!("东方财富实时接口请求失败：{e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("东方财富实时接口响应读取失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!("东方财富实时接口 HTTP {status}。"));
+    }
+    serde_json::from_str::<Value>(&text).map_err(|e| format!("东方财富实时接口返回格式异常：{e}"))
+}
+
+async fn fetch_eastmoney_json_from_hosts(
+    client: &reqwest::Client,
+    path_and_query: &str,
+) -> Result<Value, String> {
+    let mut errors = Vec::new();
+    for host in [
+        "https://push2delay.eastmoney.com",
+        "https://push2.eastmoney.com",
+    ] {
+        let url = format!("{host}{path_and_query}");
+        match fetch_eastmoney_json(client, &url).await {
+            Ok(value) => return Ok(value),
+            Err(error) => errors.push(error),
+        }
+    }
+    Err(truncate_for_message(&errors.join("；")))
+}
+
+fn eastmoney_secid(code: &str) -> Option<String> {
+    let raw = code.trim().to_uppercase();
+    let digits = raw
+        .strip_suffix(".XSHG")
+        .or_else(|| raw.strip_prefix("SH"))
+        .map(|value| ("1", value))
+        .or_else(|| {
+            raw.strip_suffix(".XSHE")
+                .or_else(|| raw.strip_prefix("SZ"))
+                .map(|value| ("0", value))
+        });
+    if let Some((market, value)) = digits {
+        if is_six_digit_code(value) {
+            return Some(format!("{market}.{value}"));
+        }
+    }
+    if is_six_digit_code(&raw) {
+        let market = if raw.starts_with('6') || raw.starts_with('5') || raw.starts_with('9') {
+            "1"
+        } else {
+            "0"
+        };
+        return Some(format!("{market}.{raw}"));
+    }
+    None
+}
+
+fn is_six_digit_code(value: &str) -> bool {
+    value.len() == 6 && value.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn eastmoney_quote_row(row: &Value) -> Option<Value> {
+    let code = eastmoney_string(row, "f12")?;
+    let market = eastmoney_i64(row, "f13").unwrap_or(0);
+    let jq_code = if market == 1 {
+        format!("{code}.XSHG")
+    } else {
+        format!("{code}.XSHE")
+    };
+    let raw_price = eastmoney_f64(row, "f2");
+    let prev_close = eastmoney_f64(row, "f18");
+    let price = raw_price.or(prev_close)?;
+    if price <= 0.0 {
+        return None;
+    }
+    let is_paused = raw_price.is_none();
+    let volume_hands = eastmoney_f64(row, "f5");
+    let mut item = Map::new();
+    item.insert("code".to_string(), Value::String(jq_code));
+    item.insert("rawCode".to_string(), Value::String(code));
+    item.insert(
+        "name".to_string(),
+        Value::String(eastmoney_string(row, "f14").unwrap_or_default()),
+    );
+    item.insert(
+        "sector".to_string(),
+        Value::String(eastmoney_string(row, "f100").unwrap_or_else(|| "未分类".to_string())),
+    );
+    item.insert("source".to_string(), Value::String("eastmoney".to_string()));
+    insert_f64(&mut item, "price", Some(price));
+    insert_f64(&mut item, "prevClose", prev_close.or(Some(price)));
+    insert_f64(
+        &mut item,
+        "changePct",
+        eastmoney_f64(row, "f3").or(if is_paused { Some(0.0) } else { None }),
+    );
+    insert_f64(
+        &mut item,
+        "changeAmt",
+        eastmoney_f64(row, "f4").or(if is_paused { Some(0.0) } else { None }),
+    );
+    insert_f64(
+        &mut item,
+        "volumeShares",
+        volume_hands.map(|value| value * 100.0),
+    );
+    insert_f64(&mut item, "turnoverAmount", eastmoney_f64(row, "f6"));
+    insert_f64(&mut item, "high", eastmoney_f64(row, "f15"));
+    insert_f64(&mut item, "low", eastmoney_f64(row, "f16"));
+    insert_f64(&mut item, "open", eastmoney_f64(row, "f17"));
+    insert_f64(&mut item, "marketCapAmount", eastmoney_f64(row, "f20"));
+    insert_f64(&mut item, "floatMarketCapAmount", eastmoney_f64(row, "f21"));
+    insert_f64(&mut item, "pb", eastmoney_f64(row, "f23"));
+    insert_f64(&mut item, "turnoverRate", eastmoney_f64(row, "f8"));
+    insert_f64(&mut item, "volumeRatio", eastmoney_f64(row, "f10"));
+    let status = if is_paused {
+        Some(0)
+    } else {
+        eastmoney_i64(row, "f292")
+    };
+    if let Some(status) = status {
+        item.insert("status".to_string(), Value::Number(status.into()));
+    }
+    Some(Value::Object(item))
+}
+
+fn eastmoney_tick_row(code: &str, line: &str) -> Option<Value> {
+    let parts = line.split(',').collect::<Vec<&str>>();
+    if parts.len() < 5 {
+        return None;
+    }
+    let time = parts[0].trim();
+    let price = parts[1].trim().parse::<f64>().ok()?;
+    let volume_hands = parts[2].trim().parse::<f64>().ok();
+    let trade_count = parts[3].trim().parse::<f64>().ok();
+    let side_code = parts[4].trim().parse::<i64>().ok();
+    let mut item = Map::new();
+    item.insert(
+        "code".to_string(),
+        Value::String(code.trim().to_uppercase()),
+    );
+    item.insert("time".to_string(), Value::String(time.to_string()));
+    item.insert("source".to_string(), Value::String("eastmoney".to_string()));
+    insert_f64(&mut item, "price", Some(price));
+    insert_f64(&mut item, "volumeHands", volume_hands);
+    insert_f64(
+        &mut item,
+        "volumeShares",
+        volume_hands.map(|value| value * 100.0),
+    );
+    insert_f64(&mut item, "tradeCount", trade_count);
+    insert_f64(
+        &mut item,
+        "turnoverAmount",
+        volume_hands.map(|value| value * price * 100.0),
+    );
+    if let Some(side) = side_code {
+        item.insert("sideCode".to_string(), Value::Number(side.into()));
+        item.insert(
+            "side".to_string(),
+            Value::String(
+                match side {
+                    1 => "卖盘",
+                    2 => "买盘",
+                    _ => "中性",
+                }
+                .to_string(),
+            ),
+        );
+    }
+    Some(Value::Object(item))
+}
+
+fn eastmoney_string(row: &Value, key: &str) -> Option<String> {
+    row.get(key).and_then(|value| match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() || trimmed == "-" {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    })
+}
+
+fn eastmoney_i64(row: &Value, key: &str) -> Option<i64> {
+    row.get(key).and_then(|value| match value {
+        Value::Number(number) => number.as_i64(),
+        Value::String(text) => text.trim().parse::<i64>().ok(),
+        _ => None,
+    })
+}
+
+fn eastmoney_f64(row: &Value, key: &str) -> Option<f64> {
+    row.get(key).and_then(|value| match value {
+        Value::Number(number) => number.as_f64().filter(|value| value.is_finite()),
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() || trimmed == "-" {
+                None
+            } else {
+                trimmed
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite())
+            }
+        }
+        _ => None,
+    })
+}
+
+fn insert_f64(map: &mut Map<String, Value>, key: &str, value: Option<f64>) {
+    if let Some(value) = value {
+        if let Some(number) = serde_json::Number::from_f64(value) {
+            map.insert(key.to_string(), Value::Number(number));
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -3308,10 +5161,10 @@ fn value_to_string(value: &Value) -> String {
     }
 }
 
-fn check_codex() -> CodexCheckResult {
+fn check_codex(app: Option<&AppHandle>) -> CodexCheckResult {
     match resolve_codex_binary() {
         Some((path, version)) => {
-            let codex_home = match prepare_alpha_studio_codex_home() {
+            let codex_home = match prepare_alpha_studio_codex_home(app) {
                 Ok(path) => path,
                 Err(error) => {
                     return CodexCheckResult {
@@ -3386,12 +5239,18 @@ fn home_dir() -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-fn prepare_alpha_studio_codex_home() -> Result<PathBuf, String> {
+fn prepare_alpha_studio_codex_home(app: Option<&AppHandle>) -> Result<PathBuf, String> {
     let home = home_dir().ok_or_else(|| "Failed to resolve HOME for Codex config.".to_string())?;
     let source = PathBuf::from(&home).join(".codex");
     let target = alpha_studio_codex_home_path_from(&home);
     let preserve_authorization = target.join(CODEX_DEVICE_AUTHORIZATION_MARKER).is_file();
-    prepare_alpha_studio_codex_home_from(&source, &target, preserve_authorization)?;
+    let builtin_skills = alpha_studio_builtin_skills_path(app);
+    prepare_alpha_studio_codex_home_from_with_builtin(
+        &source,
+        &target,
+        preserve_authorization,
+        builtin_skills.as_deref(),
+    )?;
     Ok(target)
 }
 
@@ -3409,6 +5268,21 @@ fn prepare_alpha_studio_codex_home_from(
     target: &Path,
     preserve_authorization: bool,
 ) -> Result<(), String> {
+    let builtin_skills = alpha_studio_builtin_skills_path(None);
+    prepare_alpha_studio_codex_home_from_with_builtin(
+        source,
+        target,
+        preserve_authorization,
+        builtin_skills.as_deref(),
+    )
+}
+
+fn prepare_alpha_studio_codex_home_from_with_builtin(
+    source: &Path,
+    target: &Path,
+    preserve_authorization: bool,
+    builtin_skills: Option<&Path>,
+) -> Result<(), String> {
     fs::create_dir_all(target)
         .map_err(|e| format!("Failed to create Alpha Studio Codex home: {e}"))?;
 
@@ -3425,7 +5299,13 @@ fn prepare_alpha_studio_codex_home_from(
         }
     }
 
-    for dir_name in ["skills", "plugins", "vendor_imports", "cache", "rules"] {
+    prepare_alpha_studio_skills_directory(
+        &source.join("skills"),
+        &target.join("skills"),
+        builtin_skills,
+    )?;
+
+    for dir_name in ["plugins", "vendor_imports", "cache", "rules"] {
         let source_path = source.join(dir_name);
         if source_path.is_dir() {
             link_codex_home_directory(&source_path, &target.join(dir_name))?;
@@ -3438,6 +5318,36 @@ fn prepare_alpha_studio_codex_home_from(
     // [agents] section here unless the user already configured one.
     ensure_agents_config_section(&target.join("config.toml"))?;
 
+    Ok(())
+}
+
+fn alpha_studio_builtin_skills_path(app: Option<&AppHandle>) -> Option<PathBuf> {
+    if let Some(app) = app {
+        if let Ok(resource_dir) = app.path().resource_dir() {
+            let resource_skills = resource_dir.join("skills");
+            if resource_skills.is_dir() {
+                return Some(resource_skills);
+            }
+        }
+    }
+    let source_skills = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skills");
+    source_skills.is_dir().then_some(source_skills)
+}
+
+fn prepare_alpha_studio_skills_directory(
+    source: &Path,
+    target: &Path,
+    builtin_skills: Option<&Path>,
+) -> Result<(), String> {
+    remove_existing_path(target)?;
+    fs::create_dir_all(target)
+        .map_err(|e| format!("Failed to create Alpha Studio skills directory: {e}"))?;
+    if source.is_dir() {
+        copy_codex_home_directory_contents(source, target)?;
+    }
+    if let Some(builtin_skills) = builtin_skills.filter(|path| path.is_dir()) {
+        copy_codex_home_directory_contents(builtin_skills, target)?;
+    }
     Ok(())
 }
 
@@ -3469,8 +5379,12 @@ fn ensure_agents_config_section(config_path: &Path) -> Result<(), String> {
     content.push_str(&format!(
         "\n[agents]\n# Added by Alpha Studio: allow all AI coworkers to run in parallel.\nmax_threads = {COWORKER_AGENTS_MAX_THREADS}\n",
     ));
-    fs::write(config_path, content)
-        .map_err(|e| format!("Failed to update Codex config {}: {e}", config_path.display()))
+    fs::write(config_path, content).map_err(|e| {
+        format!(
+            "Failed to update Codex config {}: {e}",
+            config_path.display()
+        )
+    })
 }
 
 /// Materializes the AI coworker catalog into Codex custom agent definitions
@@ -3523,7 +5437,10 @@ fn coworker_agent_toml(definition: &CoworkerAgentDefinition) -> String {
         format!("# {} · generated by Alpha Studio", definition.display_name),
         "# 请勿手工编辑:应用启动时会根据同事目录重写此文件。".to_string(),
         format!("name = {}", toml_basic_string(&definition.id)),
-        format!("description = {}", toml_basic_string(&definition.description)),
+        format!(
+            "description = {}",
+            toml_basic_string(&definition.description)
+        ),
         format!(
             "developer_instructions = {}",
             toml_basic_string(&definition.instructions)
@@ -3632,6 +5549,10 @@ fn link_codex_home_directory(source: &Path, target: &Path) -> Result<(), String>
 
 #[cfg(not(unix))]
 fn copy_codex_home_directory(source: &Path, target: &Path) -> Result<(), String> {
+    copy_codex_home_directory_contents(source, target)
+}
+
+fn copy_codex_home_directory_contents(source: &Path, target: &Path) -> Result<(), String> {
     fs::create_dir_all(target)
         .map_err(|e| format!("Failed to create Codex directory {}: {e}", target.display()))?;
     for entry in fs::read_dir(source)
@@ -3641,7 +5562,7 @@ fn copy_codex_home_directory(source: &Path, target: &Path) -> Result<(), String>
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
         if source_path.is_dir() {
-            copy_codex_home_directory(&source_path, &target_path)?;
+            copy_codex_home_directory_contents(&source_path, &target_path)?;
         } else if source_path.is_file() {
             copy_codex_home_file(&source_path, &target_path)?;
         }
@@ -3688,6 +5609,28 @@ fn validate_cwd(cwd: &str) -> Result<&str, String> {
         return Err(format!("Working directory is not a directory: {cwd}"));
     }
     Ok(cwd)
+}
+
+fn validate_open_path(path: &str) -> Result<&str, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("Path is required.".to_string());
+    }
+    if !Path::new(path).exists() {
+        return Err(format!("Path does not exist: {path}"));
+    }
+    Ok(path)
+}
+
+fn terminal_open_target(path: &str) -> PathBuf {
+    let path_ref = Path::new(path);
+    if path_ref.is_dir() {
+        return path_ref.to_path_buf();
+    }
+    path_ref
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(path))
 }
 
 fn sanitize_paths(paths: &[String]) -> Result<Vec<String>, String> {
@@ -4705,18 +6648,36 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(CodexProcessState::default())
         .manage(TerminalState::default())
+        .manage(JqDataQueryState::default())
         .invoke_handler(tauri::generate_handler![
             codex_check,
             codex_login,
             codex_revoke_authorization,
             model_config_load,
             model_config_save,
+            project_folder_create,
+            project_folder_rename,
+            jqdata_config_load,
+            jqdata_config_save,
+            jqdata_test_connection,
+            jqdata_query,
+            eastmoney_realtime_query,
+            local_store::local_store_info,
+            local_store::local_store_load,
+            local_store::local_store_commit,
+            local_store::local_store_import_legacy,
+            local_store::local_store_export,
+            local_store::local_store_backup_now,
+            local_store::market_cache_get,
+            local_store::market_cache_put,
             codex_chat_start,
             codex_chat_stop,
             coworkers_sync,
             list_open_apps,
             open_in_app,
             local_image_data_url,
+            local_text_file_read,
+            html_to_pdf,
             terminal_start,
             terminal_write,
             terminal_resize,
@@ -5144,6 +7105,57 @@ mod tests {
     }
 
     #[test]
+    fn creates_unique_project_folders_from_sanitized_names() {
+        let root = std::env::temp_dir().join(format!(
+            "alpha-studio-project-folder-test-{}",
+            generate_run_id()
+        ));
+        fs::create_dir_all(root.join("Research Plan")).unwrap();
+
+        let duplicate = create_unique_project_folder(&root, "Research Plan").unwrap();
+        let sanitized = create_unique_project_folder(&root, " /Risk:Plan? ").unwrap();
+        let fallback = create_unique_project_folder(&root, "///").unwrap();
+
+        assert_eq!(duplicate.file_name().unwrap(), "Research Plan 2");
+        assert_eq!(sanitized.file_name().unwrap(), "Risk-Plan");
+        assert_eq!(fallback.file_name().unwrap(), "Research Topic");
+        assert!(duplicate.is_dir());
+        assert!(sanitized.is_dir());
+        assert!(fallback.is_dir());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renames_only_alpha_studio_project_folders() {
+        let root = std::env::temp_dir().join(format!(
+            "alpha-studio-project-folder-rename-test-{}",
+            generate_run_id()
+        ));
+        let external_root = std::env::temp_dir().join(format!(
+            "alpha-studio-external-folder-test-{}",
+            generate_run_id()
+        ));
+        let source = root.join("新研究主题 1");
+        let external = external_root.join("手动资料");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&external).unwrap();
+
+        let renamed = rename_project_folder(&root, &source.to_string_lossy(), "投资研究").unwrap();
+        let unchanged =
+            rename_project_folder(&root, &external.to_string_lossy(), "不应改名").unwrap();
+
+        assert_eq!(renamed.file_name().unwrap(), "投资研究");
+        assert!(renamed.is_dir());
+        assert!(!source.exists());
+        assert_eq!(unchanged, external);
+        assert!(unchanged.is_dir());
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(external_root);
+    }
+
+    #[test]
     fn prepares_private_codex_home_without_copying_user_history_or_authorization() {
         let root = std::env::temp_dir().join(format!(
             "alpha-studio-codex-home-test-{}",
@@ -5152,10 +7164,16 @@ mod tests {
         let source = root.join("source");
         let target = root.join("target");
         fs::create_dir_all(source.join("sessions")).unwrap();
+        fs::create_dir_all(source.join("skills").join("custom-skill")).unwrap();
         fs::write(source.join("auth.json"), "{}").unwrap();
         fs::write(source.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
         fs::write(source.join("installation_id"), "user-installation").unwrap();
         fs::write(source.join("session_index.jsonl"), "{}\n").unwrap();
+        fs::write(
+            source.join("skills").join("custom-skill").join("SKILL.md"),
+            "---\nname: custom-skill\n---\n",
+        )
+        .unwrap();
 
         prepare_alpha_studio_codex_home_from(&source, &target, false).unwrap();
 
@@ -5164,6 +7182,21 @@ mod tests {
         assert!(!target.join("installation_id").exists());
         assert!(!target.join("session_index.jsonl").exists());
         assert!(!target.join("sessions").exists());
+        assert!(target.join("skills").is_dir());
+        assert!(!fs::symlink_metadata(target.join("skills"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(target
+            .join("skills")
+            .join("custom-skill")
+            .join("SKILL.md")
+            .exists());
+        assert!(target
+            .join("skills")
+            .join("alpha-studio-daily-theme-research")
+            .join("SKILL.md")
+            .exists());
 
         let config = fs::read_to_string(target.join("config.toml")).unwrap();
         assert!(config.contains("model = \"gpt-5.5\""));
@@ -5209,7 +7242,8 @@ mod tests {
             id: id.to_string(),
             display_name: format!("① {id}"),
             description: "主线判断与龙头跟踪".to_string(),
-            instructions: "你是「主线交易官」。\n结论先行,附\"关键依据\"与 C:\\path 反斜杠。".to_string(),
+            instructions: "你是「主线交易官」。\n结论先行,附\"关键依据\"与 C:\\path 反斜杠。"
+                .to_string(),
             model: None,
             reasoning_effort: Some("high".to_string()),
             sandbox_mode: Some("read-only".to_string()),

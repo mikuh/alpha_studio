@@ -1,0 +1,85 @@
+{
+  "date": "2026-07-07",
+  "report_mode": "delayed_pre_market",
+  "generated_at": "2026-07-07 14:58:06 CST",
+  "data_cutoff": "2026-07-07 09:30:00 CST",
+  "previous_theme_ledger": [],
+  "market": {
+    "sentiment_score": 32.8,
+    "sentiment_regime": "defensive",
+    "data_window": "previous_close_plus_pre0930_news",
+    "limit_up_count_media_all_market": 71,
+    "limit_up_count_vendor_history": 73,
+    "limit_up_count_vendor_non_st_pool": 64,
+    "limit_down_count_media_all_market": 51,
+    "limit_down_count_vendor_history": 54,
+    "failed_board_rate_pct_vendor_pool": 39,
+    "seal_rate_pct_vendor_pool": 61,
+    "turnover_amount_cny_bn": 3112.66,
+    "turnover_change_pct": -2.9,
+    "emotion_indicators": {
+      "up_count": 1876,
+      "down_count": 3541,
+      "up_down_ratio": 0.53,
+      "max_board_height_media": 5,
+      "max_board_height_natural": 4,
+      "board_promotion_rate_pct": 18.75,
+      "dominant_emotion_line": "半导体存储/国产算力/创新药局部活跃",
+      "negative_feedback_line": "AI硬件、机器人、玻璃基板高位补跌"
+    }
+  },
+  "theme_scores": [
+    {
+      "name": "半导体存储/国产算力/EDA",
+      "grade": "B",
+      "score": 63.5,
+      "lifecycle_stage": "fermentation",
+      "probability_up_1_3d": 51.6,
+      "observation_weight": 18.7,
+      "execution_gate": {
+        "today_verdict": "observe_only"
+      },
+      "holding_window": {
+        "estimated_remaining_trading_days": "1-4",
+        "estimate_basis_label": "模型估计"
+      }
+    },
+    {
+      "name": "创新药/细胞与基因治疗审批优化",
+      "grade": "B",
+      "score": 60.1,
+      "lifecycle_stage": "fermentation",
+      "probability_up_1_3d": 50,
+      "observation_weight": 11.3,
+      "execution_gate": {
+        "today_verdict": "observe_only"
+      },
+      "holding_window": {
+        "estimated_remaining_trading_days": "1-6",
+        "estimate_basis_label": "模型估计"
+      }
+    }
+  ],
+  "stock_relevance": [
+    {
+      "name": "江波龙",
+      "display_name": "江波龙（A）",
+      "theme": "半导体存储/国产算力/EDA"
+    },
+    {
+      "name": "华大九天",
+      "display_name": "华大九天（A）",
+      "theme": "半导体存储/国产算力/EDA"
+    },
+    {
+      "name": "锐捷网络",
+      "display_name": "锐捷网络（B）",
+      "theme": "半导体存储/国产算力/EDA"
+    },
+    {
+      "name": "首药控股",
+      "display_name": "首药控股（A）",
+      "theme": "创新药/细胞与基因治疗审批优化"
+    }
+  ]
+}

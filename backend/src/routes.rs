@@ -4,7 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::Utc;
+use chrono::{Datelike, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -201,6 +201,90 @@ pub async fn device_lease(
         },
         "models": models,
         "codexAccounts": codex_accounts
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientBillingSummaryRequest {
+    tenant_id: String,
+    device_id: String,
+}
+
+pub async fn client_billing_summary(
+    State(state): State<AppState>,
+    Json(request): Json<ClientBillingSummaryRequest>,
+) -> ApiResult<Json<Value>> {
+    ensure_device_lease(&state.db, &request.tenant_id, &request.device_id).await?;
+    let now = Utc::now();
+    let current_month_start = Utc
+        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+        .single()
+        .unwrap_or(now);
+    let next_month_start = if now.month() == 12 {
+        Utc.with_ymd_and_hms(now.year() + 1, 1, 1, 0, 0, 0)
+            .single()
+            .unwrap_or(now)
+    } else {
+        Utc.with_ymd_and_hms(now.year(), now.month() + 1, 1, 0, 0, 0)
+            .single()
+            .unwrap_or(now)
+    };
+
+    let tenant_row = sqlx::query(
+        r#"
+        select
+          t.id, t.name, t.max_devices, t.billing_mode, t.balance_yuan,
+          t.subscription_plan, t.subscription_expires_at,
+          t.codex_subscription_enabled, t.codex_subscription_plan, t.codex_subscription_expires_at,
+          (select count(*) from devices d where d.tenant_id = t.id and d.status = 'active')::bigint as active_devices
+        from tenants t
+        where t.id = $1 and t.status = 'active'
+        "#,
+    )
+    .bind(&request.tenant_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::Forbidden("tenant is not active".to_string()))?;
+    let codex_subscription_expires_at = tenant_row
+        .try_get::<Option<chrono::DateTime<Utc>>, _>("codex_subscription_expires_at")
+        .unwrap_or(None);
+    let subscription_enabled = codex_subscription_available(
+        tenant_row.get::<bool, _>("codex_subscription_enabled"),
+        codex_subscription_expires_at,
+        now,
+    );
+    let current_month =
+        usage_totals_since(&state.db, &request.tenant_id, current_month_start).await?;
+    let all_time = usage_totals_all(&state.db, &request.tenant_id).await?;
+    let model_usage = model_usage_since(&state.db, &request.tenant_id, current_month_start).await?;
+    let recent_ledger = recent_billing_ledger(&state.db, &request.tenant_id).await?;
+
+    Ok(Json(json!({
+        "tenant": {
+            "id": tenant_row.get::<String, _>("id"),
+            "name": tenant_row.get::<String, _>("name"),
+            "maxDevices": tenant_row.get::<i32, _>("max_devices"),
+            "billingMode": tenant_row.get::<String, _>("billing_mode"),
+            "balanceYuan": tenant_row.get::<f64, _>("balance_yuan"),
+            "subscriptionPlan": tenant_row.try_get::<Option<String>, _>("subscription_plan").unwrap_or(None),
+            "subscriptionExpiresAt": tenant_row.try_get::<Option<chrono::DateTime<Utc>>, _>("subscription_expires_at").unwrap_or(None),
+            "codexSubscriptionEnabled": subscription_enabled,
+            "codexSubscriptionPlan": tenant_row.try_get::<Option<String>, _>("codex_subscription_plan").unwrap_or(None),
+            "codexSubscriptionExpiresAt": codex_subscription_expires_at
+        },
+        "activeDevices": tenant_row.get::<i64, _>("active_devices"),
+        "period": {
+            "currentMonthStart": current_month_start,
+            "currentMonthEnd": next_month_start,
+            "generatedAt": now
+        },
+        "usage": {
+            "currentMonth": current_month,
+            "allTime": all_time,
+            "models": model_usage,
+            "recentLedger": recent_ledger
+        }
     })))
 }
 
@@ -1667,6 +1751,151 @@ async fn load_codex_accounts_for_client(pool: &PgPool, tenant_id: &str) -> ApiRe
             })
         })
         .collect())
+}
+
+async fn usage_totals_since(
+    pool: &PgPool,
+    tenant_id: &str,
+    since: chrono::DateTime<Utc>,
+) -> ApiResult<Value> {
+    let row = sqlx::query(
+        r#"
+        select
+          count(*)::bigint as run_count,
+          coalesce(sum(input_tokens), 0)::bigint as input_tokens,
+          coalesce(sum(output_tokens), 0)::bigint as output_tokens,
+          coalesce(sum(reasoning_tokens), 0)::bigint as reasoning_tokens,
+          coalesce(sum(cached_tokens), 0)::bigint as cached_tokens,
+          coalesce(sum(input_tokens + output_tokens + reasoning_tokens + cached_tokens), 0)::bigint as total_tokens,
+          coalesce(sum(cost_yuan), 0)::double precision as cost_yuan,
+          coalesce(sum(billable_yuan), 0)::double precision as billable_yuan,
+          max(created_at) as last_used_at
+        from usage_events
+        where tenant_id = $1 and created_at >= $2
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(since)
+    .fetch_one(pool)
+    .await?;
+    Ok(usage_totals_json(&row))
+}
+
+async fn usage_totals_all(pool: &PgPool, tenant_id: &str) -> ApiResult<Value> {
+    let row = sqlx::query(
+        r#"
+        select
+          count(*)::bigint as run_count,
+          coalesce(sum(input_tokens), 0)::bigint as input_tokens,
+          coalesce(sum(output_tokens), 0)::bigint as output_tokens,
+          coalesce(sum(reasoning_tokens), 0)::bigint as reasoning_tokens,
+          coalesce(sum(cached_tokens), 0)::bigint as cached_tokens,
+          coalesce(sum(input_tokens + output_tokens + reasoning_tokens + cached_tokens), 0)::bigint as total_tokens,
+          coalesce(sum(cost_yuan), 0)::double precision as cost_yuan,
+          coalesce(sum(billable_yuan), 0)::double precision as billable_yuan,
+          max(created_at) as last_used_at
+        from usage_events
+        where tenant_id = $1
+        "#,
+    )
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(usage_totals_json(&row))
+}
+
+async fn model_usage_since(
+    pool: &PgPool,
+    tenant_id: &str,
+    since: chrono::DateTime<Utc>,
+) -> ApiResult<Vec<Value>> {
+    let rows = sqlx::query(
+        r#"
+        select
+          u.model_id,
+          coalesce(m.label, u.model_id) as label,
+          coalesce(m.provider, '') as provider,
+          count(*)::bigint as run_count,
+          coalesce(sum(u.input_tokens), 0)::bigint as input_tokens,
+          coalesce(sum(u.output_tokens), 0)::bigint as output_tokens,
+          coalesce(sum(u.reasoning_tokens), 0)::bigint as reasoning_tokens,
+          coalesce(sum(u.cached_tokens), 0)::bigint as cached_tokens,
+          coalesce(sum(u.input_tokens + u.output_tokens + u.reasoning_tokens + u.cached_tokens), 0)::bigint as total_tokens,
+          coalesce(sum(u.cost_yuan), 0)::double precision as cost_yuan,
+          coalesce(sum(u.billable_yuan), 0)::double precision as billable_yuan,
+          max(u.created_at) as last_used_at
+        from usage_events u
+        left join model_routes m on m.model_id = u.model_id
+        where u.tenant_id = $1 and u.created_at >= $2
+        group by u.model_id, coalesce(m.label, u.model_id), coalesce(m.provider, '')
+        order by coalesce(sum(u.billable_yuan), 0) desc, max(u.created_at) desc
+        limit 8
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(since)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let mut value = usage_totals_json(&row);
+            if let Value::Object(ref mut object) = value {
+                object.insert(
+                    "modelId".to_string(),
+                    json!(row.get::<String, _>("model_id")),
+                );
+                object.insert("label".to_string(), json!(row.get::<String, _>("label")));
+                object.insert(
+                    "provider".to_string(),
+                    json!(row.get::<String, _>("provider")),
+                );
+            }
+            value
+        })
+        .collect())
+}
+
+async fn recent_billing_ledger(pool: &PgPool, tenant_id: &str) -> ApiResult<Vec<Value>> {
+    let rows = sqlx::query(
+        r#"
+        select id, run_id, entry_type, amount_yuan, description, created_at
+        from billing_ledger
+        where tenant_id = $1
+        order by created_at desc
+        limit 8
+        "#,
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "id": row.get::<String, _>("id"),
+                "runId": row.try_get::<Option<String>, _>("run_id").unwrap_or(None),
+                "entryType": row.get::<String, _>("entry_type"),
+                "amountYuan": row.get::<f64, _>("amount_yuan"),
+                "description": row.get::<String, _>("description"),
+                "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at")
+            })
+        })
+        .collect())
+}
+
+fn usage_totals_json(row: &sqlx::postgres::PgRow) -> Value {
+    json!({
+        "runCount": row.get::<i64, _>("run_count"),
+        "inputTokens": row.get::<i64, _>("input_tokens"),
+        "outputTokens": row.get::<i64, _>("output_tokens"),
+        "reasoningTokens": row.get::<i64, _>("reasoning_tokens"),
+        "cachedTokens": row.get::<i64, _>("cached_tokens"),
+        "totalTokens": row.get::<i64, _>("total_tokens"),
+        "costYuan": row.get::<f64, _>("cost_yuan"),
+        "billableYuan": row.get::<f64, _>("billable_yuan"),
+        "lastUsedAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("last_used_at").unwrap_or(None)
+    })
 }
 
 fn require_admin(headers: &HeaderMap) -> ApiResult<()> {

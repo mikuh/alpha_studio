@@ -49,6 +49,19 @@ describe('finance research domain', () => {
     expect(instructions).toContain('不要只回复“已生成”');
   });
 
+  it('keeps Alpha Studio premarket theme turns aligned with Neostream-level output', () => {
+    const instructions = buildCodingInstructions(
+      { selectedSkill: { id: 'alpha-studio-daily-theme-research', title: 'Alpha Studio 盘前主题' } },
+    );
+
+    expect(instructions).toContain('neostream-daily-theme-research');
+    expect(instructions).toContain('今日资金进攻路径');
+    expect(instructions).toContain('隔夜全球线索');
+    expect(instructions).toContain('题材持续时间与持有复核');
+    expect(instructions).toContain('alpha.premarket_theme.v1');
+    expect(instructions).toContain('capitalAttackPath');
+  });
+
   it('keeps automation guidance aligned with Alpha Studio client handling', () => {
     const instructions = buildCodingInstructions();
 
@@ -85,6 +98,10 @@ describe('coworker orchestration protocol', () => {
     expect(instructions).toContain('spawn agent 工具');
     expect(instructions).toContain('转述其交付物');
     expect(instructions).not.toContain('并行 spawn');
+    // Anti-garbling protocol applies even to a single summoned coworker.
+    expect(instructions).toContain('coworker-notes');
+    expect(instructions).toContain('唯一长文出口');
+    expect(instructions).toContain('严禁在聊天区输出长篇分析');
   });
 
   it('asks for parallel spawns and a merged signed report for multiple coworkers', () => {
@@ -98,9 +115,24 @@ describe('coworker orchestration protocol', () => {
     expect(instructions).toContain('agent `mainline`');
     expect(instructions).toContain('agent `risk`');
     expect(instructions).toContain('并行 spawn');
-    expect(instructions).toContain('联合结论');
+    expect(instructions).toContain('合成一份最终《纪要》');
     expect(instructions).toContain('署名');
+    expect(instructions).toContain('独立于同事署名文件');
+    expect(instructions).toContain('`compliance.md`');
+    expect(instructions).toContain('合规文件只能作为来源、归档和表达口径素材');
+    expect(instructions).toContain('不能只停在合规归档或研究计划');
+    expect(instructions).toContain('最终答复必须是面向用户的干净成稿');
+    expect(instructions).toContain('sub-agent 原始输出');
+    expect(instructions).toContain('不要自动扩展成多页正式报告');
+    expect(instructions).toContain('本次 TODO');
+    expect(instructions).toContain('完成核对');
+    expect(instructions).toContain('防止偏离主任务');
     expect(instructions).not.toContain('基金经理副官在场');
+    // File-based handoff keeps the chat text block owned by the dispatcher.
+    expect(instructions).toContain('落盘约定');
+    expect(instructions).toContain('coworker-notes');
+    expect(instructions).toContain('唯一长文出口');
+    expect(instructions).toContain('最终《纪要》文件的路径');
   });
 
   it('lets the PM deputy own the merged conclusion when summoned', () => {

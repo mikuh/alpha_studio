@@ -124,6 +124,47 @@ export async function revealPath(path: string): Promise<boolean> {
   }
 }
 
+export async function openLocalPath(path: string): Promise<boolean> {
+  if (!path || !isTauriRuntime()) return false;
+  try {
+    const { openPath } = await import('@tauri-apps/plugin-opener');
+    await openPath(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface HtmlToPdfRequest {
+  htmlPath: string;
+  pdfPath?: string;
+  openWhenDone?: boolean;
+}
+
+export interface HtmlToPdfResult {
+  pdfPath: string;
+  engine: string;
+  attempts: string[];
+  warnings: string[];
+}
+
+export async function htmlToPdf(request: HtmlToPdfRequest): Promise<HtmlToPdfResult | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<HtmlToPdfResult>('html_to_pdf', { request });
+}
+
+export async function createProjectFolder(name: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const result = await invoke<{ path: string }>('project_folder_create', { request: { name } });
+  return result.path;
+}
+
+export async function renameProjectFolder(currentPath: string, name: string): Promise<string | null> {
+  if (!currentPath || !isTauriRuntime()) return null;
+  const result = await invoke<{ path: string }>('project_folder_rename', { request: { currentPath, name } });
+  return result.path;
+}
+
 export async function localImageDataUrl(path: string): Promise<string | null> {
   if (!path || !isTauriRuntime()) return null;
   try {
@@ -131,6 +172,20 @@ export async function localImageDataUrl(path: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+export interface LocalTextFileResult {
+  path: string;
+  content: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+export async function localTextFileRead(path: string): Promise<LocalTextFileResult> {
+  if (!path || !isTauriRuntime()) {
+    return { path, content: '', bytes: 0, truncated: false };
+  }
+  return invoke<LocalTextFileResult>('local_text_file_read', { request: { path } });
 }
 
 export async function subscribeCodexEvents(

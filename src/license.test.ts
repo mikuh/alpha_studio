@@ -4,6 +4,7 @@ import {
   clearClientLicenseSession,
   createGatewayRun,
   defaultAlphaApiBaseUrl,
+  fetchClientBillingSummary,
   loadClientLicenseSession,
   modelProfilesFromClientLicense,
   renewClientLease,
@@ -135,6 +136,69 @@ describe('client license session', () => {
       'http://localhost:18080/api/runs/create',
       expect.objectContaining({
         body: expect.stringContaining('"budgetYuan":5'),
+      }),
+    );
+  });
+
+  it('loads the client billing summary for the active device', async () => {
+    saveClientLicenseSession({
+      apiBaseUrl: 'http://localhost:18080',
+      activatedAt: 1,
+      ...activationResponse,
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+      tenant: {
+        id: 'tenant_demo',
+        name: 'Demo Fund',
+        maxDevices: 2,
+        billingMode: 'hybrid',
+        balanceYuan: 88,
+        codexSubscriptionEnabled: true,
+        codexSubscriptionPlan: 'monthly',
+      },
+      activeDevices: 1,
+      period: {
+        currentMonthStart: '2026-07-01T00:00:00.000Z',
+        currentMonthEnd: '2026-08-01T00:00:00.000Z',
+        generatedAt: '2026-07-09T00:00:00.000Z',
+      },
+      usage: {
+        currentMonth: {
+          runCount: 2,
+          inputTokens: 100,
+          outputTokens: 50,
+          reasoningTokens: 0,
+          cachedTokens: 10,
+          totalTokens: 160,
+          costYuan: 0.01,
+          billableYuan: 0.02,
+          lastUsedAt: '2026-07-09T00:00:00.000Z',
+        },
+        allTime: {
+          runCount: 3,
+          inputTokens: 200,
+          outputTokens: 70,
+          reasoningTokens: 0,
+          cachedTokens: 10,
+          totalTokens: 280,
+          costYuan: 0.03,
+          billableYuan: 0.04,
+          lastUsedAt: '2026-07-09T00:00:00.000Z',
+        },
+        models: [],
+        recentLedger: [],
+      },
+    }));
+
+    const summary = await fetchClientBillingSummary(loadClientLicenseSession()!);
+
+    expect(summary.tenant.balanceYuan).toBe(88);
+    expect(summary.usage.currentMonth.billableYuan).toBe(0.02);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/client/billing-summary',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"deviceId":"dev_demo"'),
       }),
     );
   });

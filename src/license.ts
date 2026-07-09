@@ -8,6 +8,10 @@ export interface ClientTenant {
   id: string;
   name: string;
   maxDevices: number;
+  billingMode?: string;
+  balanceYuan?: number;
+  subscriptionPlan?: string | null;
+  subscriptionExpiresAt?: string | null;
   codexSubscriptionEnabled: boolean;
   codexSubscriptionPlan?: string | null;
   codexSubscriptionExpiresAt?: string | null;
@@ -68,6 +72,54 @@ export interface GatewayRunConfig {
   providerBaseUrl: string;
   providerApiKey: string;
   providerWireApi: 'responses';
+}
+
+export interface BillingUsageTotals {
+  runCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  costYuan: number;
+  billableYuan: number;
+  lastUsedAt?: string | null;
+}
+
+export interface BillingModelUsage extends BillingUsageTotals {
+  modelId: string;
+  label: string;
+  provider?: string | null;
+}
+
+export interface BillingLedgerEntry {
+  id: string;
+  runId?: string | null;
+  entryType: string;
+  amountYuan: number;
+  description: string;
+  createdAt: string;
+}
+
+export interface ClientBillingSummary {
+  tenant: ClientTenant & {
+    billingMode: string;
+    balanceYuan: number;
+    subscriptionPlan?: string | null;
+    subscriptionExpiresAt?: string | null;
+  };
+  activeDevices: number;
+  period: {
+    currentMonthStart: string;
+    currentMonthEnd: string;
+    generatedAt: string;
+  };
+  usage: {
+    currentMonth: BillingUsageTotals;
+    allTime: BillingUsageTotals;
+    models: BillingModelUsage[];
+    recentLedger: BillingLedgerEntry[];
+  };
 }
 
 export function defaultAlphaApiBaseUrl(): string {
@@ -188,6 +240,16 @@ export async function createGatewayRun(modelId: string, budgetYuan = 5): Promise
     providerApiKey: data.runToken,
     providerWireApi: 'responses',
   };
+}
+
+export async function fetchClientBillingSummary(session: ClientLicenseSession): Promise<ClientBillingSummary> {
+  return alphaFetch<ClientBillingSummary>(session.apiBaseUrl, '/api/client/billing-summary', {
+    method: 'POST',
+    body: JSON.stringify({
+      tenantId: session.tenant.id,
+      deviceId: session.device.id,
+    }),
+  });
 }
 
 export function modelProfilesFromClientLicense(session: ClientLicenseSession): ModelProfile[] {

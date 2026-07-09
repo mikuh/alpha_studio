@@ -164,6 +164,7 @@ export const financeResearchDomain: DomainConfig = {
     ],
     integrations: [
       { id: 'snapshots', label: '资料快照' },
+      { id: 'jqdata', label: '聚宽数据' },
       { id: 'mcp', label: '技能' },
       { id: 'browser', label: '浏览器' },
       { id: 'computer', label: '电脑操控' },

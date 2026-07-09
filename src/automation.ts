@@ -1,3 +1,5 @@
+import { scheduleLocalStoreCommit } from './localStore';
+
 export const AUTOMATION_ENVIRONMENT_OPTIONS = ['工作树', '当前对话', '无代码环境'] as const;
 export const CUSTOM_AUTOMATION_SCHEDULE_VALUE = '自定义';
 export const AUTOMATION_SCHEDULE_OPTIONS = [
@@ -87,6 +89,14 @@ export function loadScheduledAutomationTasks(): ScheduledAutomationTask[] {
 export function saveScheduledAutomationTasks(tasks: ScheduledAutomationTask[]): void {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(AUTOMATION_TASKS_KEY, JSON.stringify(tasks));
+  scheduleLocalStoreCommit('automation', {
+    automationTasks: tasks,
+    audit: {
+      domain: 'automation',
+      action: 'tasks.persist',
+      payload: { count: tasks.length },
+    },
+  });
   window.dispatchEvent(new CustomEvent(AUTOMATION_TASKS_CHANGED_EVENT, { detail: tasks }));
 }
 

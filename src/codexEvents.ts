@@ -1,4 +1,5 @@
 import type { ChatMessage, CodexChatEvent, Conversation, FileResultBlock, ImageResultBlock, MessageBlock, ToolBlock } from './types';
+import { COWORKER_CATALOG, coworkerById } from './coworkers';
 
 export function applyCodexEventToConversation(conversation: Conversation, event: CodexChatEvent): Conversation {
   if (event.conversationId && event.conversationId !== conversation.id) {
@@ -111,6 +112,7 @@ function appendThinkingDelta(conversation: Conversation, now: number, text: stri
 
 function appendToolStart(conversation: Conversation, now: number, event: CodexChatEvent): Conversation {
   const toolId = event.itemId || `tool-${event.runId}`;
+  const target = toolTargetFromEvent(event);
   return updateStreamingAssistant(conversation, now, (message) => {
     const existing = message.blocks.some((block) => block.type === 'tool' && block.id === toolId);
     if (existing) return message;
@@ -123,6 +125,7 @@ function appendToolStart(conversation: Conversation, now: number, event: CodexCh
           id: toolId,
           title: event.title || 'tool',
           status: 'in_progress',
+          ...(target ? { target } : {}),
           input: event.text,
         },
       ],
@@ -132,13 +135,14 @@ function appendToolStart(conversation: Conversation, now: number, event: CodexCh
 
 function appendToolDelta(conversation: Conversation, now: number, event: CodexChatEvent): Conversation {
   const toolId = event.itemId || `tool-${event.runId}`;
+  const target = toolTargetFromEvent(event);
   return updateStreamingAssistant(conversation, now, (message) => {
-    const blocks = ensureToolBlock(message.blocks, toolId, event.title || 'tool');
+    const blocks = ensureToolBlock(message.blocks, toolId, event.title || 'tool', target);
     return {
       ...message,
       blocks: blocks.map((block) => {
         if (block.type !== 'tool' || block.id !== toolId) return block;
-        return { ...block, output: `${block.output || ''}${event.text || ''}` };
+        return { ...block, target: block.target || target, output: `${block.output || ''}${event.text || ''}` };
       }),
     };
   });
@@ -146,13 +150,15 @@ function appendToolDelta(conversation: Conversation, now: number, event: CodexCh
 
 function completeTool(conversation: Conversation, now: number, event: CodexChatEvent): Conversation {
   const toolId = event.itemId || `tool-${event.runId}`;
+  const target = toolTargetFromEvent(event);
   return updateStreamingAssistant(conversation, now, (message) => {
-    const blocks = ensureToolBlock(message.blocks, toolId, event.title || 'tool');
+    const blocks = ensureToolBlock(message.blocks, toolId, event.title || 'tool', target);
     const completedBlocks = blocks.map((block) => {
       if (block.type !== 'tool' || block.id !== toolId) return block;
       return {
         ...block,
         status: 'completed' as const,
+        target: block.target || target,
         output: event.text || block.output,
       };
     });
@@ -174,8 +180,9 @@ function completeTool(conversation: Conversation, now: number, event: CodexChatE
 
 function failTool(conversation: Conversation, now: number, event: CodexChatEvent): Conversation {
   const toolId = event.itemId || `tool-${event.runId}`;
+  const target = toolTargetFromEvent(event);
   return updateStreamingAssistant(conversation, now, (message) => {
-    const blocks = ensureToolBlock(message.blocks, toolId, event.title || 'tool');
+    const blocks = ensureToolBlock(message.blocks, toolId, event.title || 'tool', target);
     return {
       ...message,
       blocks: blocks.map((block) => {
@@ -183,6 +190,7 @@ function failTool(conversation: Conversation, now: number, event: CodexChatEvent
         return {
           ...block,
           status: 'failed',
+          target: block.target || target,
           output: event.message || event.text || block.output,
         };
       }),
@@ -190,12 +198,108 @@ function failTool(conversation: Conversation, now: number, event: CodexChatEvent
   });
 }
 
-function ensureToolBlock(blocks: MessageBlock[], id: string, title: string): MessageBlock[] {
+function ensureToolBlock(blocks: MessageBlock[], id: string, title: string, target?: string): MessageBlock[] {
   if (blocks.some((block) => block.type === 'tool' && block.id === id)) {
     return blocks;
   }
-  const tool: ToolBlock = { type: 'tool', id, title, status: 'in_progress' };
+  const tool: ToolBlock = { type: 'tool', id, title, status: 'in_progress', ...(target ? { target } : {}) };
   return [...blocks, tool];
+}
+
+function toolTargetFromEvent(event: CodexChatEvent): string | undefined {
+  if (!isSpawnAgentToolEvent(event)) return undefined;
+  const agentId = spawnAgentIdFromEvent(event);
+  if (!agentId) return undefined;
+  const coworker = coworkerById(agentId);
+  if (!coworker) return agentId;
+  return `${agentId} · ${coworker.no} ${coworker.name}`;
+}
+
+function isSpawnAgentToolEvent(event: CodexChatEvent): boolean {
+  const identity = [
+    event.title,
+    ...collectToolIdentityStrings(event.raw),
+  ].filter(Boolean).join(' ');
+  return /spawn[\s._-]*agent|multi[\s._-]*agent.*spawn[\s._-]*agent/i.test(identity);
+}
+
+function spawnAgentIdFromEvent(event: CodexChatEvent): string | undefined {
+  const candidates = uniqueStrings([
+    ...extractSpawnAgentIdCandidates(event.text),
+    ...extractSpawnAgentIdCandidates(event.raw),
+  ]);
+  for (const candidate of candidates) {
+    const normalized = normalizeSpawnAgentId(candidate);
+    if (normalized) return normalized;
+  }
+  return undefined;
+}
+
+function extractSpawnAgentIdCandidates(value: unknown): string[] {
+  const candidates: string[] = [];
+  visitUnknown(value, (entry, key) => {
+    if (typeof entry !== 'string') return;
+    if (key && /^(agent_type|agentType|agent_id|agentId|agent|target_agent|targetAgent)$/i.test(key)) {
+      candidates.push(entry);
+    }
+    candidates.push(...extractSpawnAgentIdCandidatesFromText(entry));
+    const parsed = parseJsonUnknown(entry);
+    if (parsed !== undefined && parsed !== entry) {
+      candidates.push(...extractSpawnAgentIdCandidates(parsed));
+    }
+  });
+  return candidates;
+}
+
+function extractSpawnAgentIdCandidatesFromText(text: string): string[] {
+  const candidates: string[] = [];
+  const keyPattern = /["']?(?:agent_type|agentType|agent_id|agentId|agent|target_agent|targetAgent)["']?\s*[:=]\s*["']?([A-Za-z0-9_-]+)["']?/g;
+  for (const match of text.matchAll(keyPattern)) {
+    candidates.push(match[1]);
+  }
+  for (const coworker of COWORKER_CATALOG) {
+    const escaped = escapeRegExp(coworker.id);
+    const filePattern = new RegExp(`(?:^|[/\\\\])${escaped}\\.(?:md|markdown|txt|json)(?=$|[\\s"'<>),.;:])`, 'i');
+    if (filePattern.test(text)) {
+      candidates.push(coworker.id);
+    }
+  }
+  return candidates;
+}
+
+function normalizeSpawnAgentId(value: string | undefined): string | undefined {
+  const trimmed = (value || '').trim().replace(/^["'`]+|["'`]+$/g, '');
+  if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) return undefined;
+  const lower = trimmed.toLowerCase();
+  const coworker = COWORKER_CATALOG.find((item) => item.id.toLowerCase() === lower);
+  if (coworker) return coworker.id;
+  if (['default', 'explorer', 'worker'].includes(lower)) return lower;
+  return trimmed;
+}
+
+function parseJsonUnknown(value: string): unknown | undefined {
+  const trimmed = value.trim();
+  if (!trimmed || !/^[\[{"]/.test(trimmed)) return undefined;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function appendToStreamingAssistant(

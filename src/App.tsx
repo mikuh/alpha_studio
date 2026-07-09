@@ -1,5 +1,6 @@
 import { Fragment, createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
+  AnchorHTMLAttributes,
   ChangeEvent,
   CSSProperties,
   DragEvent as ReactDragEvent,
@@ -11,6 +12,7 @@ import type {
   RefObject,
 } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { createPortal } from 'react-dom';
 import remarkGfm from 'remark-gfm';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm';
@@ -37,7 +39,9 @@ import {
   Code2,
   Columns2,
   Copy,
+  CornerDownRight,
   Cpu,
+  Database,
   Download,
   Eye,
   EyeOff,
@@ -56,12 +60,14 @@ import {
   GitPullRequest,
   Github,
   Globe,
+  GripVertical,
   HardDrive,
   History,
   Image as ImageIcon,
   Info,
   Keyboard,
   Layers,
+  LineChart,
   ListChecks,
   Loader2,
   Lock,
@@ -69,7 +75,8 @@ import {
   MessageCircle,
   MessageSquare,
   MessageSquarePlus,
-  Mic,
+  Maximize2,
+  Minimize2,
   Minus,
   Monitor,
   Moon,
@@ -130,11 +137,15 @@ import {
   gitStage,
   gitStatus,
   gitUnstage,
+  createProjectFolder,
   isTauriRuntime,
   listOpenApps,
   localImageDataUrl,
+  localTextFileRead,
   loginCodex,
   openInApp,
+  openLocalPath,
+  renameProjectFolder,
   revealPath,
   revokeCodexAuthorization,
   subscribeTerminalEvents,
@@ -144,9 +155,12 @@ import {
   terminalStop,
   terminalWrite,
 } from './codexBridge';
+import { contextWindowUsage, formatTokenCount, type ContextWindowUsage } from './contextWindow';
 import {
   COWORKER_CATALOG,
   COWORKER_GROUP_LABELS,
+  COWORKER_WORKFLOW_PRESETS,
+  coworkerSelectionsByIds,
   coworkerAgentDefinitions,
   toCoworkerSelection,
   type CoworkerProfile,
@@ -165,15 +179,21 @@ import {
   type AutomationFormState,
   type ScheduledAutomationTask,
 } from './automation';
+import { loadLocalStoreSnapshot } from './localStore';
 import { activeDomain, type DomainConfig, type DomainSuggestion } from './domain';
 import {
   activateClient,
   ALPHA_GATEWAY_PROVIDER_ID,
   clearClientLicenseSession,
   defaultAlphaApiBaseUrl,
+  fetchClientBillingSummary,
   getOrCreateDeviceFingerprint,
   loadClientLicenseSession,
   renewClientLease,
+  type BillingLedgerEntry,
+  type BillingModelUsage,
+  type BillingUsageTotals,
+  type ClientBillingSummary,
   type ClientLicenseSession,
 } from './license';
 import {
@@ -194,6 +214,15 @@ import {
   type Speed,
 } from './models';
 import {
+  JQDATA_CAPABILITIES,
+  emptyJqDataConfig,
+  loadJqDataConfig,
+  saveJqDataConfig,
+  testJqDataConnection,
+  type JqDataConfig,
+  type JqDataProbeResult,
+} from './jqdata';
+import {
   activeConversations,
   activeProjects,
   archivedConversations,
@@ -203,6 +232,12 @@ import {
   useImageViewer,
   visibleConversations,
 } from './store';
+import { RESEARCH_DRAG_MIME } from './research';
+import { ResearchWorkbenchPanel } from './ResearchWorkbench';
+import {
+  ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
+  ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE,
+} from './themeResearch';
 import type {
   ChatMessage,
   Conversation,
@@ -221,18 +256,21 @@ import type {
   OpenAppId,
   Project,
   ProjectSort,
+  QueuedChatMessage,
   ReviewFinding,
   ReviewReport,
   ReviewRequest,
   SkillSelection,
 } from './types';
 
-type RightPanel = 'none' | 'git' | 'features' | 'coworkers' | 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
-type RightDockKind = 'review' | 'terminal' | 'browser' | 'files' | 'side-chat';
+type RightPanel = 'none' | 'git' | 'features' | 'coworkers' | 'review' | 'terminal' | 'browser' | 'files' | 'side-chat' | 'research-workbench';
+type RightDockKind = 'review' | 'terminal' | 'browser' | 'files' | 'side-chat' | 'research-workbench';
 type MainView = 'chat' | 'skills' | 'automations';
 interface RightDockTab {
   id: string;
   kind: RightDockKind;
+  url?: string;
+  requestKey?: number;
 }
 type Theme = 'light' | 'dark';
 type SettingsSection =
@@ -245,6 +283,7 @@ type SettingsSection =
   | 'keyboard'
   | 'usage'
   | 'snapshots'
+  | 'jqdata'
   | 'mcp'
   | 'browser'
   | 'computer'
@@ -284,8 +323,9 @@ const RIGHT_DOCK_META: Record<RightDockKind, { label: string; shortcut?: string 
   browser: { label: '浏览器', shortcut: '⌘T' },
   files: { label: '文件', shortcut: '⌘P' },
   'side-chat': { label: '侧边聊天', shortcut: '⌥⌘S' },
+  'research-workbench': { label: '投研工作台' },
 };
-const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['browser', 'side-chat'];
+const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['research-workbench', 'browser', 'side-chat'];
 
 type SkillCategory = 'personal' | 'system' | 'recommended';
 type SkillCategoryFilter = SkillCategory | 'all';
@@ -371,6 +411,19 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     installed: true,
     icon: 'pdf',
     detail: detail('Read, create, inspect, render, and verify PDF files. This skill is useful for document conversion, page inspection, and PDF output QA.'),
+  },
+  {
+    id: ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
+    title: ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE,
+    description: '按 Neostream 同级规范生成 A 股盘前主题、资金进攻路径和连续跟踪研究。',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'chart',
+    detail: detail(
+      '生成 Alpha Studio Research 风格的 A 股盘前主题跟踪、盘中更新和收盘复盘报告，规则与 neostream-daily-theme-research 保持一致。',
+      '默认正式日报必须包含今日执行闸门、今日资金进攻路径、隔夜全球线索、连续跟踪、持有复核、角色矩阵、来源与风险提示；可从 Composer 的技能菜单发起结构化 JSON 和完整 Markdown/HTML 报告生成。',
+    ),
   },
   {
     id: 'imagegen',
@@ -683,27 +736,30 @@ const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
 // Drag payload MIME for coworker cards dropped onto the composer.
 const COWORKER_DRAG_MIME = 'application/x-alpha-coworker';
 
-// A coworker (optionally with a preset task prompt) queued from the coworkers
-// panel, waiting for the composer to pick it up.
+// One or more coworkers (optionally with a preset task prompt) queued from the
+// coworkers panel, waiting for the composer to pick them up.
 interface QueuedCoworkerTask {
-  coworker: CoworkerSelection;
+  coworkers: CoworkerSelection[];
   taskPrompt?: string;
 }
 
 interface SkillRuntimeContextValue {
   status: SkillStatusMap;
   queuedSkill: SkillCatalogItem | null;
+  queuedSkillPrompt: string | null;
   queuedCoworkerTask: QueuedCoworkerTask | null;
   setSkillInstalled: (id: string, installed: boolean) => void;
   setSkillEnabled: (id: string, enabled: boolean) => void;
   resetSkillStatus: (id: string) => void;
-  queueSkillForComposer: (skill: SkillCatalogItem) => void;
+  queueSkillForComposer: (skill: SkillCatalogItem, prompt?: string) => void;
   consumeQueuedSkill: () => void;
-  queueCoworkerTask: (coworker: CoworkerSelection, taskPrompt?: string) => void;
+  queueCoworkerTask: (coworker: CoworkerSelection | CoworkerSelection[], taskPrompt?: string) => void;
   consumeQueuedCoworkerTask: () => void;
 }
 
 const SkillRuntimeContext = createContext<SkillRuntimeContextValue | null>(null);
+const BrowserDockContext = createContext<((url: string) => void) | null>(null);
+const FileDockContext = createContext<((path: string) => void) | null>(null);
 
 function defaultSkillStatus(): SkillStatusMap {
   return Object.fromEntries(
@@ -738,6 +794,14 @@ function useSkillRuntime() {
   const value = useContext(SkillRuntimeContext);
   if (!value) throw new Error('Skill runtime context is missing');
   return value;
+}
+
+function useBrowserDockOpener() {
+  return useContext(BrowserDockContext);
+}
+
+function useFileDockOpener() {
+  return useContext(FileDockContext);
 }
 
 const CODEX_SKILLS_CAPABILITY: SkillSelection = {
@@ -1031,6 +1095,7 @@ function AppWorkspace() {
   const [rightPanel, setRightPanel] = useState<RightPanel>('features');
   const [rightPanelVisible, setRightPanelVisible] = useState(false);
   const [rightDockMounted, setRightDockMounted] = useState(false);
+  const [rightDockExpanded, setRightDockExpanded] = useState(false);
   const [rightDockTabs, setRightDockTabs] = useState<RightDockTab[]>([]);
   const [activeRightDockTabId, setActiveRightDockTabId] = useState<string | null>(null);
   const nextRightDockTabRef = useRef(0);
@@ -1051,6 +1116,7 @@ function AppWorkspace() {
   const wasWindowFocusedRef = useRef(true);
   const [skillStatus, setSkillStatus] = useState<SkillStatusMap>(() => readSkillStatus());
   const [queuedSkill, setQueuedSkill] = useState<SkillCatalogItem | null>(null);
+  const [queuedSkillPrompt, setQueuedSkillPrompt] = useState<string | null>(null);
   const [queuedCoworkerTask, setQueuedCoworkerTask] = useState<QueuedCoworkerTask | null>(null);
 
   useEffect(() => {
@@ -1213,20 +1279,25 @@ function AppWorkspace() {
     setSkillStatus((prev) => ({ ...prev, [id]: fallback }));
   }, []);
 
-  const queueSkillForComposer = useCallback((skill: SkillCatalogItem) => {
+  const queueSkillForComposer = useCallback((skill: SkillCatalogItem, prompt?: string) => {
     setSkillStatus((prev) => ({
       ...prev,
       [skill.id]: { installed: true, enabled: true },
     }));
     setQueuedSkill(skill);
+    setQueuedSkillPrompt(prompt?.trim() || null);
     setSettingsOpen(false);
     setMainView('chat');
   }, []);
 
-  const consumeQueuedSkill = useCallback(() => setQueuedSkill(null), []);
+  const consumeQueuedSkill = useCallback(() => {
+    setQueuedSkill(null);
+    setQueuedSkillPrompt(null);
+  }, []);
 
-  const queueCoworkerTask = useCallback((coworker: CoworkerSelection, taskPrompt?: string) => {
-    setQueuedCoworkerTask({ coworker, taskPrompt });
+  const queueCoworkerTask = useCallback((coworker: CoworkerSelection | CoworkerSelection[], taskPrompt?: string) => {
+    const coworkers = Array.isArray(coworker) ? coworker : [coworker];
+    setQueuedCoworkerTask({ coworkers, taskPrompt });
     setSettingsOpen(false);
     setMainView('chat');
   }, []);
@@ -1242,15 +1313,18 @@ function AppWorkspace() {
   const openRightPanel = useCallback((panel: RightPanel = 'features') => {
     setRightPanel(panel);
     if (panel === 'features' || panel === 'coworkers' || panel === 'git') setActiveRightDockTabId(null);
+    if (panel === 'features' || panel === 'coworkers' || panel === 'git') setRightDockExpanded(false);
     setRightDockMounted(true);
     setRightPanelVisible(true);
   }, []);
 
-  const addRightDockTab = useCallback((kind: RightDockKind) => {
+  const addRightDockTab = useCallback((kind: RightDockKind, url?: string) => {
     nextRightDockTabRef.current += 1;
     const tab: RightDockTab = {
       id: `${kind}-${Date.now()}-${nextRightDockTabRef.current}`,
       kind,
+      url,
+      requestKey: url ? 1 : undefined,
     };
     setRightDockTabs((prev) => [...prev, tab]);
     setActiveRightDockTabId(tab.id);
@@ -1258,6 +1332,18 @@ function AppWorkspace() {
     setRightDockMounted(true);
     setRightPanelVisible(true);
   }, []);
+
+  const openBrowserUrl = useCallback((rawUrl: string) => {
+    const displayUrl = browserDockDisplayUrl(rawUrl);
+    if (!normalizeBrowserDockUrl(displayUrl)) return;
+    addRightDockTab('browser', displayUrl);
+  }, [addRightDockTab]);
+
+  const openFileInDock = useCallback((rawPath: string) => {
+    const path = localFilePath(rawPath) || rawPath.trim();
+    if (!path) return;
+    addRightDockTab('files', path);
+  }, [addRightDockTab]);
 
   const selectRightDockTab = useCallback((id: string) => {
     const tab = rightDockTabs.find((item) => item.id === id);
@@ -1277,6 +1363,7 @@ function AppWorkspace() {
       const nextActive = next[Math.min(index, next.length - 1)] ?? null;
       setActiveRightDockTabId(nextActive?.id ?? null);
       setRightPanel(nextActive?.kind ?? 'features');
+      if (!nextActive) setRightDockExpanded(false);
     }
   }, [activeRightDockTabId, rightDockTabs]);
 
@@ -1290,6 +1377,7 @@ function AppWorkspace() {
         openRightPanel('features');
         return;
       }
+      setRightDockExpanded(false);
       setRightPanelVisible(false);
       return;
     }
@@ -1302,6 +1390,7 @@ function AppWorkspace() {
 
   const toggleCoworkersPanel = useCallback(() => {
     if (coworkersPanelOpen) {
+      setRightDockExpanded(false);
       setRightPanelVisible(false);
       return;
     }
@@ -1314,7 +1403,8 @@ function AppWorkspace() {
     currentRightPanel === 'terminal' ||
     currentRightPanel === 'browser' ||
     currentRightPanel === 'files' ||
-    currentRightPanel === 'side-chat';
+    currentRightPanel === 'side-chat' ||
+    currentRightPanel === 'research-workbench';
 
   useEffect(() => {
     const handleKeyDown = (event: WindowEventMap['keydown']) => {
@@ -1328,7 +1418,7 @@ function AppWorkspace() {
   }, [addRightDockTab]);
 
   const rightPanelResizer =
-    !rightPanelVisible
+    !rightPanelVisible || rightDockExpanded
       ? null
       : compactRightPanel
       ? {
@@ -1352,11 +1442,12 @@ function AppWorkspace() {
               onCommit: setReviewPanelWidth,
             }
           : null;
-  const showFloatingRightPanelToggle = rightPanelVisible && (mainView !== 'chat' || settingsOpen);
+  const showFloatingRightPanelToggle = rightPanelVisible && !rightDockExpanded && (mainView !== 'chat' || settingsOpen);
 
   const skillRuntime = useMemo<SkillRuntimeContextValue>(() => ({
     status: skillStatus,
     queuedSkill,
+    queuedSkillPrompt,
     queuedCoworkerTask,
     setSkillInstalled,
     setSkillEnabled,
@@ -1368,6 +1459,7 @@ function AppWorkspace() {
   }), [
     skillStatus,
     queuedSkill,
+    queuedSkillPrompt,
     queuedCoworkerTask,
     setSkillInstalled,
     setSkillEnabled,
@@ -1380,18 +1472,20 @@ function AppWorkspace() {
 
   return (
     <SkillRuntimeContext.Provider value={skillRuntime}>
-      <div
-        className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'features' ? 'features-panel-open' : ''} ${coworkersPanelOpen ? 'coworkers-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'} ${windowFullscreen ? 'window-fullscreen' : ''}`}
-        data-work-mode={domain.id}
-        style={
-          {
-            ['--sidebar-width']: `${sidebarWidth}px`,
-            ['--right-sidebar-width']: `${rightSidebarWidth}px`,
-            ['--git-panel-width']: `${gitPanelWidth}px`,
-            ['--review-panel-width']: `${reviewPanelWidth}px`,
-          } as CSSProperties
-        }
-      >
+      <BrowserDockContext.Provider value={openBrowserUrl}>
+        <FileDockContext.Provider value={openFileInDock}>
+          <div
+            className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && rightDockExpanded ? 'right-dock-expanded' : ''} ${rightPanelVisible && currentRightPanel === 'features' ? 'features-panel-open' : ''} ${coworkersPanelOpen ? 'coworkers-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'} ${windowFullscreen ? 'window-fullscreen' : ''}`}
+            data-work-mode={domain.id}
+            style={
+              {
+                ['--sidebar-width']: `${sidebarWidth}px`,
+                ['--right-sidebar-width']: `${rightSidebarWidth}px`,
+                ['--git-panel-width']: `${gitPanelWidth}px`,
+                ['--review-panel-width']: `${reviewPanelWidth}px`,
+              } as CSSProperties
+            }
+          >
         <Sidebar
           domain={domain}
           collapsed={sidebarCollapsed}
@@ -1461,12 +1555,19 @@ function AppWorkspace() {
                 onSelectTab={selectRightDockTab}
                 onCloseTab={closeRightDockTab}
                 onAddTab={addRightDockTab}
+                expanded={rightDockExpanded}
+                onToggleExpanded={() => setRightDockExpanded((expanded) => !expanded)}
                 onOpenBrowser={() => addRightDockTab('browser')}
                 onOpenSideChat={() => addRightDockTab('side-chat')}
-                onCloseGit={() => setRightPanelVisible(false)}
+                onOpenResearchWorkbench={() => addRightDockTab('research-workbench')}
+                onCloseGit={() => {
+                  setRightDockExpanded(false);
+                  setRightPanelVisible(false);
+                }}
               />
             )}
           </div>
+          {rightPanelVisible && rightDockExpanded && currentRightPanel !== 'side-chat' && <DockOverlayComposer domain={domain} />}
           {showFloatingRightPanelToggle && (
             <div className="top-bar-actions floating-right-panel-actions">
               <div className="top-bar-panel-actions">
@@ -1487,7 +1588,9 @@ function AppWorkspace() {
         />
         <AuthorizationDialog />
         <ImageLightbox />
-      </div>
+          </div>
+        </FileDockContext.Provider>
+      </BrowserDockContext.Provider>
     </SkillRuntimeContext.Provider>
   );
 }
@@ -1800,11 +1903,7 @@ function Sidebar({
           kind: 'item',
           icon: <FolderPlus size={15} />,
           label: '新建空白研究主题',
-          onSelect: () => {
-            const id = createProject();
-            setExpanded((prev) => ({ ...prev, [id]: true }));
-            setEditingProjectId(id);
-          },
+          onSelect: () => void handleCreateBlankProject(),
         },
         {
           kind: 'item',
@@ -1814,6 +1913,33 @@ function Sidebar({
         },
       ],
     });
+  };
+
+  const handleCreateBlankProject = async () => {
+    const name = `新研究主题 ${liveProjects.length + 1}`;
+    let cwd = '';
+    try {
+      cwd = (await createProjectFolder(name)) || '';
+    } catch (error) {
+      console.warn('Failed to create project folder', error);
+    }
+    const id = createProject({ name, cwd });
+    setExpanded((prev) => ({ ...prev, [id]: true }));
+    setEditingProjectId(id);
+  };
+
+  const handleCommitProjectRename = (project: Project, name: string) => {
+    const trimmed = name.trim();
+    renameProject(project.id, trimmed);
+    setEditingProjectId(null);
+    if (!trimmed || !project.cwd) return;
+    void renameProjectFolder(project.cwd, trimmed)
+      .then((cwd) => {
+        if (cwd && cwd !== project.cwd) setProjectCwd(project.id, cwd);
+      })
+      .catch((error) => {
+        console.warn('Failed to rename project folder', error);
+      });
   };
 
   const handleUseExistingFolder = async () => {
@@ -2004,8 +2130,7 @@ function Sidebar({
                   }}
                   onCancelConversationRename={() => setEditingConversationId(null)}
                   onCommitRename={(name) => {
-                    renameProject(project.id, name);
-                    setEditingProjectId(null);
+                    handleCommitProjectRename(project, name);
                   }}
                   onCancelRename={() => setEditingProjectId(null)}
                   onOpenMenu={(anchor) => openProjectMenu(project, anchor)}
@@ -2637,9 +2762,11 @@ const OPEN_APP_META: Record<OpenAppId, { label: string; color: string; glyph: st
   finder: { label: 'Finder', color: '#1f9bff', glyph: '☺' },
   terminal: { label: 'Terminal', color: '#3a3a3a', glyph: '>_' },
   pycharm: { label: 'PyCharm', color: '#21d789', glyph: 'PC' },
+  xcode: { label: 'Xcode', color: '#1688f0', glyph: '⌘' },
 };
 
 const OPEN_APP_ORDER: OpenAppId[] = ['vscode', 'cursor', 'finder', 'terminal', 'pycharm'];
+const FILE_OPEN_APP_ORDER: OpenAppId[] = ['cursor', 'vscode', 'xcode', 'pycharm'];
 
 function OpenInAppMenu({ cwd }: { cwd: string }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -3111,6 +3238,10 @@ function isWebSearchToolTitle(title: string): boolean {
   return ['web_search', 'websearch', 'web.run', 'web.search', 'browse_search'].some((key) => normalized.includes(key));
 }
 
+function isSpawnAgentToolTitle(title: string): boolean {
+  return /spawn[\s._-]*agent/i.test(title);
+}
+
 function extractWebSearchSources(text: string): WebSearchSource[] {
   const sources = new Map<string, WebSearchSource>();
   const add = (rawLabel: string, rawUrl: string) => {
@@ -3158,6 +3289,38 @@ function normalizeHttpUrl(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+function normalizeBrowserDockUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+  const filePath = localFilePath(trimmed);
+  if (filePath) return localFileBrowserUrl(filePath);
+  if (/^asset:\/\//i.test(trimmed)) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^\/\//.test(trimmed)) {
+    const protocol = typeof window !== 'undefined' ? window.location.protocol : 'https:';
+    return `${protocol}${trimmed}`;
+  }
+  if (/^(localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:[/?#]|$)/i.test(trimmed)) {
+    return `http://${trimmed}`;
+  }
+  if (/^[\w.-]+\.[a-z]{2,}(?::\d+)?(?:[/?#]|$)/i.test(trimmed)) {
+    return `https://${trimmed}`;
+  }
+  if (/^\.{0,2}\//.test(trimmed)) {
+    try {
+      return new URL(trimmed, typeof window !== 'undefined' ? window.location.href : 'http://localhost/').href;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function browserDockDisplayUrl(value: string): string {
+  const trimmed = value.trim();
+  return localFilePath(trimmed) || trimmed;
 }
 
 function webSourceTitle(label: string, url: string): string {
@@ -3473,6 +3636,8 @@ function rightDockIcon(kind: RightDockKind, size = 14): ReactNode {
       return <Folder size={size} />;
     case 'side-chat':
       return <MessageSquare size={size} />;
+    case 'research-workbench':
+      return <LineChart size={size} />;
   }
 }
 
@@ -3486,8 +3651,11 @@ function RightDockWorkspace({
   onSelectTab,
   onCloseTab,
   onAddTab,
+  expanded,
+  onToggleExpanded,
   onOpenBrowser,
   onOpenSideChat,
+  onOpenResearchWorkbench,
   onCloseGit,
 }: {
   visible: boolean;
@@ -3499,8 +3667,11 @@ function RightDockWorkspace({
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onAddTab: (kind: RightDockKind) => void;
+  expanded: boolean;
+  onToggleExpanded: () => void;
   onOpenBrowser: () => void;
   onOpenSideChat: () => void;
+  onOpenResearchWorkbench: () => void;
   onCloseGit: () => void;
 }) {
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? null;
@@ -3511,15 +3682,24 @@ function RightDockWorkspace({
     <aside className={`right-dock-workspace right-dock-${dockMode} ${visible ? '' : 'collapsed'}`} aria-label="侧边栏">
       {showTabs ? (
         <>
-          <RightDockTabBar tabs={tabs} activeId={activeId} onSelectTab={onSelectTab} onCloseTab={onCloseTab} onAddTab={onAddTab} />
+          <RightDockTabBar
+            tabs={tabs}
+            activeId={activeId}
+            expanded={expanded}
+            onSelectTab={onSelectTab}
+            onCloseTab={onCloseTab}
+            onAddTab={onAddTab}
+            onToggleExpanded={onToggleExpanded}
+          />
           <div className="right-dock-tab-content">
             {tabs.map((tab) => (
               <div key={tab.id} className={`right-dock-pane ${tab.id === activeId ? 'active' : ''}`} aria-hidden={tab.id !== activeId}>
                 {tab.kind === 'review' && <ReviewChangesPanel />}
                 {tab.kind === 'terminal' && <TerminalPanel theme={theme} dock visible={visible && tab.id === activeId} onClose={() => undefined} />}
-                {tab.kind === 'browser' && <BrowserDockPanel />}
-                {tab.kind === 'files' && <FilesDockPanel />}
-                {tab.kind === 'side-chat' && <SideChatPanel domain={domain} />}
+                {tab.kind === 'browser' && <BrowserDockPanel requestedUrl={tab.url} requestKey={tab.requestKey} />}
+                {tab.kind === 'files' && <FilesDockPanel filePath={tab.url} />}
+                {tab.kind === 'side-chat' && <SideChatPanel domain={domain} sidebarExpanded={expanded} />}
+                {tab.kind === 'research-workbench' && <ResearchWorkbenchPanel />}
               </div>
             ))}
           </div>
@@ -3533,6 +3713,7 @@ function RightDockWorkspace({
           domain={domain}
           onOpenBrowser={onOpenBrowser}
           onOpenSideChat={onOpenSideChat}
+          onOpenResearchWorkbench={onOpenResearchWorkbench}
         />
       )}
     </aside>
@@ -3542,15 +3723,19 @@ function RightDockWorkspace({
 function RightDockTabBar({
   tabs,
   activeId,
+  expanded,
   onSelectTab,
   onCloseTab,
   onAddTab,
+  onToggleExpanded,
 }: {
   tabs: RightDockTab[];
   activeId: string | null;
+  expanded: boolean;
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onAddTab: (kind: RightDockKind) => void;
+  onToggleExpanded: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const add = (kind: RightDockKind) => {
@@ -3624,6 +3809,18 @@ function RightDockTabBar({
           )}
         </div>
       </div>
+      <div className="right-dock-tabbar-actions">
+        <button
+          type="button"
+          className={`right-dock-expand-btn ${expanded ? 'active' : ''}`}
+          aria-label={expanded ? '还原侧边栏' : '展开侧边栏'}
+          title={expanded ? '还原侧边栏' : '展开侧边栏'}
+          aria-pressed={expanded}
+          onClick={onToggleExpanded}
+        >
+          {expanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+        </button>
+      </div>
     </header>
   );
 }
@@ -3632,12 +3829,13 @@ function FeaturesPanel({
   domain,
   onOpenBrowser,
   onOpenSideChat,
+  onOpenResearchWorkbench,
 }: {
   domain: DomainConfig;
   onOpenBrowser: () => void;
   onOpenSideChat: () => void;
+  onOpenResearchWorkbench: () => void;
 }) {
-  const conversation = useCurrentConversation();
   const featureActions: Array<{
     id: string;
     label: string;
@@ -3648,6 +3846,13 @@ function FeaturesPanel({
     title?: string;
     onClick: () => void;
   }> = [
+    {
+      id: 'research-workbench',
+      label: '投研工作台',
+      icon: <LineChart size={14} />,
+      title: '打开基础投研面板',
+      onClick: onOpenResearchWorkbench,
+    },
     {
       id: 'browser',
       label: '浏览器',
@@ -3692,11 +3897,12 @@ function FeaturesPanel({
   );
 }
 
-// Right-side panel listing the nine AI coworkers. Cards can be dragged into
-// the composer (one or more) and preset tasks can be imported with one click.
+// Right-side panel listing workflow presets and the nine AI coworkers. Cards
+// can be dragged into the composer and presets can be imported with one click.
 function CoworkersPanel() {
   const { queueCoworkerTask } = useSkillRuntime();
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [workflowsOpen, setWorkflowsOpen] = useState(false);
 
   const startDrag = (event: ReactDragEvent<HTMLElement>, coworker: CoworkerProfile) => {
     const selection = toCoworkerSelection(coworker);
@@ -3712,10 +3918,56 @@ function CoworkersPanel() {
           <Users size={15} />
           <span>AI 同事</span>
         </div>
-        <span className="coworkers-panel-count">{COWORKER_CATALOG.length} 位在线</span>
       </header>
-      <p className="coworkers-panel-hint">拖动同事到对话框召集他们协同工作,或点开任务一键导入。</p>
+      <p className="coworkers-panel-hint">拖动同事到对话框,或展开协作模板一键导入。</p>
       <div className="coworkers-list">
+        <section className={`coworker-workflows ${workflowsOpen ? 'expanded' : ''}`} aria-label="协作模板">
+          <button
+            type="button"
+            className="coworker-workflows-toggle"
+            onClick={() => setWorkflowsOpen((open) => !open)}
+            aria-expanded={workflowsOpen}
+          >
+            <span className="coworker-workflows-toggle-main">
+              <Workflow size={13} />
+              <span>协作模板</span>
+            </span>
+            <span className="coworker-workflows-toggle-meta">
+              <span>{COWORKER_WORKFLOW_PRESETS.length} 个</span>
+              {workflowsOpen ? <ChevronsDownUp size={13} /> : <ChevronsUpDown size={13} />}
+            </span>
+          </button>
+          {workflowsOpen && (
+            <div className="coworker-workflow-list">
+              {COWORKER_WORKFLOW_PRESETS.map((workflow) => {
+                const workflowCoworkers = coworkerSelectionsByIds(workflow.coworkerIds);
+                return (
+                  <article key={workflow.id} className="coworker-workflow">
+                    <div className="coworker-workflow-copy">
+                      <span className="coworker-workflow-title">{workflow.title}</span>
+                      <span className="coworker-workflow-desc">{workflow.description}</span>
+                      <span className="coworker-workflow-roster" aria-label={`${workflow.title} 参与同事`}>
+                        {workflowCoworkers.map((coworker) => (
+                          <span key={coworker.id} className="coworker-workflow-chip" title={coworker.name}>
+                            {coworker.no}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="coworker-workflow-import"
+                      onClick={() => queueCoworkerTask(workflowCoworkers, workflow.prompt)}
+                      title="导入协作模板到对话框"
+                    >
+                      导入
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
         {COWORKER_CATALOG.map((coworker) => {
           const expanded = expandedId === coworker.id;
           return (
@@ -3810,23 +4062,66 @@ function DockPanelHeader({
   );
 }
 
-function BrowserDockPanel() {
+type LocalHtmlPreview = {
+  path: string;
+  status: 'loading' | 'ready' | 'error';
+  srcDoc?: string;
+  error?: string;
+};
+
+function BrowserDockPanel({ requestedUrl, requestKey }: { requestedUrl?: string; requestKey?: number }) {
   const localUrl = useMemo(() => {
     if (typeof window === 'undefined') return 'http://localhost:1421';
     return window.location.protocol.startsWith('http') ? window.location.origin : 'http://localhost:1421';
   }, []);
   const [draft, setDraft] = useState('');
   const [url, setUrl] = useState('');
+  const [htmlPreview, setHtmlPreview] = useState<LocalHtmlPreview | null>(null);
   const [frameKey, setFrameKey] = useState(0);
+  const htmlPreviewRequestRef = useRef(0);
 
-  const openUrl = (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    const next = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-    setUrl(next);
-    setDraft(next);
+  const openUrl = useCallback((value: string) => {
+    const displayUrl = browserDockDisplayUrl(value);
+    const frameUrl = normalizeBrowserDockUrl(displayUrl);
+    if (!frameUrl) return;
+    const localHtmlPath = localFilePath(displayUrl);
+    const shouldRenderLocalHtml = Boolean(localHtmlPath && isHtmlExt(extOf(localHtmlPath)) && isTauriRuntime());
+    setUrl(frameUrl);
+    setDraft(displayUrl);
     setFrameKey((key) => key + 1);
-  };
+    if (!localHtmlPath || !shouldRenderLocalHtml) {
+      htmlPreviewRequestRef.current += 1;
+      setHtmlPreview(null);
+      return;
+    }
+    const requestId = htmlPreviewRequestRef.current + 1;
+    htmlPreviewRequestRef.current = requestId;
+    setHtmlPreview({ path: localHtmlPath, status: 'loading' });
+    void buildLocalHtmlPreviewDocument(localHtmlPath)
+      .then((srcDoc) => {
+        if (htmlPreviewRequestRef.current === requestId) {
+          setHtmlPreview({ path: localHtmlPath, status: 'ready', srcDoc });
+        }
+      })
+      .catch((error) => {
+        if (htmlPreviewRequestRef.current === requestId) {
+          setHtmlPreview({ path: localHtmlPath, status: 'error', error: stringifyError(error) });
+        }
+      });
+  }, []);
+
+  const refreshFrame = useCallback(() => {
+    if (htmlPreview?.path) {
+      openUrl(htmlPreview.path);
+      return;
+    }
+    setFrameKey((key) => key + 1);
+  }, [htmlPreview?.path, openUrl]);
+
+  useEffect(() => {
+    if (!requestedUrl) return;
+    openUrl(requestedUrl);
+  }, [openUrl, requestedUrl, requestKey]);
 
   return (
     <section className="browser-dock-panel" aria-label="浏览器">
@@ -3834,13 +4129,31 @@ function BrowserDockPanel() {
         <button type="button" className="icon-mini" disabled aria-label="后退"><ChevronLeft size={14} /></button>
         <button type="button" className="icon-mini" disabled aria-label="前进"><ChevronRight size={14} /></button>
         <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="输入 URL" spellCheck={false} />
-        <button type="button" className="icon-mini" disabled={!url} onClick={() => setFrameKey((key) => key + 1)} aria-label="刷新浏览器" title="刷新">
+        <button type="button" className="icon-mini" disabled={!url} onClick={refreshFrame} aria-label="刷新浏览器" title="刷新">
           <RefreshCw size={14} />
         </button>
         <button type="submit" className="icon-mini" aria-label="打开 URL" title="打开"><ArrowUp size={14} /></button>
       </form>
-      {url ? (
-        <iframe key={`${url}-${frameKey}`} className="browser-frame" src={url} title={url} />
+      {htmlPreview?.status === 'loading' ? (
+        <div className="browser-frame-status" role="status">
+          <Loader2 size={18} className="spin" />
+          <strong>正在渲染本地 HTML</strong>
+          <span>{shortenPath(htmlPreview.path)}</span>
+        </div>
+      ) : htmlPreview?.status === 'error' ? (
+        <div className="browser-frame-status error" role="alert">
+          <AlertCircle size={18} />
+          <strong>HTML 预览失败</strong>
+          <span>{htmlPreview.error}</span>
+          <button type="button" className="generated-file-open" onClick={() => void openExternal(htmlPreview.path)}>
+            <span>系统打开</span>
+            <Globe size={13} />
+          </button>
+        </div>
+      ) : htmlPreview?.status === 'ready' ? (
+        <iframe key={`${htmlPreview.path}-${frameKey}`} className="browser-frame" srcDoc={htmlPreview.srcDoc} title={draft || htmlPreview.path} />
+      ) : url ? (
+        <iframe key={`${url}-${frameKey}`} className="browser-frame" src={url} title={draft || url} />
       ) : (
         <div className="browser-start">
           <div className="dock-section-label">本地</div>
@@ -3858,9 +4171,76 @@ function BrowserDockPanel() {
   );
 }
 
-function FilesDockPanel() {
+async function buildLocalHtmlPreviewDocument(path: string): Promise<string> {
+  const html = await localTextFileRead(path);
+  if (!html.content.trim()) throw new Error('HTML 文件为空。');
+  if (html.truncated) throw new Error('HTML 文件过大，无法在侧边浏览器完整预览。');
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html.content, 'text/html');
+  const baseDir = ensureTrailingSlash(directoryName(path));
+
+  const base = doc.createElement('base');
+  base.href = localFileBrowserUrl(baseDir);
+  doc.head.prepend(base);
+
+  const stylesheets = Array.from(doc.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]'));
+  await Promise.all(stylesheets.map(async (link) => {
+    const stylesheetPath = localAssetPath(path, link.getAttribute('href') || '');
+    if (!stylesheetPath || extOf(stylesheetPath) !== 'css') return;
+    const css = await localTextFileRead(stylesheetPath);
+    if (!css.content.trim() || css.truncated) return;
+    const style = doc.createElement('style');
+    const media = link.getAttribute('media');
+    if (media) style.setAttribute('media', media);
+    style.textContent = css.content;
+    link.replaceWith(style);
+  }));
+
+  const images = Array.from(doc.querySelectorAll<HTMLImageElement>('img[src]'));
+  await Promise.all(images.map(async (image) => {
+    const imagePath = localAssetPath(path, image.getAttribute('src') || '');
+    if (!imagePath) return;
+    const dataUrl = await localImageDataUrl(imagePath);
+    if (dataUrl) image.setAttribute('src', dataUrl);
+  }));
+
+  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+}
+
+function localAssetPath(baseFilePath: string, rawReference: string): string | null {
+  const reference = rawReference.trim();
+  if (!reference || reference.startsWith('#')) return null;
+  if (/^(?:data|blob|https?|mailto|tel):/i.test(reference)) return null;
+  const localPath = localFilePath(reference);
+  if (localPath) return localPath;
+  try {
+    const resolved = new URL(reference, pathToFileUrl(ensureTrailingSlash(directoryName(baseFilePath))));
+    if (resolved.protocol !== 'file:') return null;
+    return decodeURIComponent(resolved.pathname);
+  } catch {
+    return null;
+  }
+}
+
+function directoryName(path: string): string {
+  const normalized = path.replace(/\/+$/g, '');
+  const index = normalized.lastIndexOf('/');
+  return index > 0 ? normalized.slice(0, index) : '/';
+}
+
+function ensureTrailingSlash(path: string): string {
+  return path.endsWith('/') ? path : `${path}/`;
+}
+
+function FilesDockPanel({ filePath }: { filePath?: string }) {
   const conversation = useCurrentConversation();
   const cwd = conversation?.cwd || '';
+  if (filePath) return <FilePreviewDockPanel path={filePath} />;
+  return <FilesChangeListDockPanel cwd={cwd} />;
+}
+
+function FilesChangeListDockPanel({ cwd }: { cwd: string }) {
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [filter, setFilter] = useState('');
 
@@ -3922,18 +4302,145 @@ function FilesDockPanel() {
   );
 }
 
-function SideChatPanel({ domain }: { domain: DomainConfig }) {
+function FilePreviewDockPanel({ path }: { path: string }) {
+  const normalizedPath = localFilePath(path) || path;
+  const ext = extOf(normalizedPath);
+  const name = basename(normalizedPath);
+  const image = isImageExt(ext);
+  const browserDocument = isBrowserPreviewExt(ext);
+  const markdown = ['md', 'markdown'].includes(ext);
+  const textPreview = markdown || (!browserDocument && isTextPreviewExt(ext));
+  const openBrowserUrl = useBrowserDockOpener();
+  const [content, setContent] = useState('');
+  const [truncated, setTruncated] = useState(false);
+  const [loading, setLoading] = useState(textPreview);
+  const [error, setError] = useState('');
+  const [imageSrc, setImageSrc] = useState(renderableImageSrc(normalizedPath));
+
+  useEffect(() => {
+    setImageSrc(renderableImageSrc(normalizedPath));
+  }, [normalizedPath]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setContent('');
+    setTruncated(false);
+    setError('');
+    if (!textPreview) {
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+    setLoading(true);
+    void localTextFileRead(normalizedPath)
+      .then((result) => {
+        if (cancelled) return;
+        setContent(result.content);
+        setTruncated(result.truncated);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(stringifyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [normalizedPath, textPreview]);
+
+  const handleImageError = () => {
+    void localImageDataUrl(normalizedPath).then((dataUrl) => {
+      if (dataUrl) setImageSrc(dataUrl);
+      else setError('图片预览不可用');
+    });
+  };
+
+  return (
+    <section className="files-dock-panel file-preview-panel" aria-label={`文件预览 ${name}`}>
+      <div className="file-preview-head">
+        <span className={`generated-file-icon tone-${fileTone(ext)}`}>
+          {image ? <ImageIcon size={18} /> : fileGlyph(ext, 18)}
+        </span>
+        <span className="file-preview-title">
+          <strong>{name}</strong>
+          <span title={normalizedPath}>{shortenPath(normalizedPath)}</span>
+        </span>
+        <span className="spacer" />
+        <button type="button" className="icon-mini" onClick={() => void copyToClipboard(normalizedPath)} aria-label="复制文件路径" title="复制路径">
+          <Copy size={13} />
+        </button>
+        <button type="button" className="icon-mini" onClick={() => void revealPath(normalizedPath)} aria-label="在 Finder 中显示" title="在 Finder 中显示">
+          <FolderOpen size={13} />
+        </button>
+      </div>
+      <div className="file-preview-body">
+        {image ? (
+          <div className="file-preview-image">
+            <img src={imageSrc} alt={name} onError={handleImageError} />
+            {error && <span>{error}</span>}
+          </div>
+        ) : browserDocument ? (
+          <div className="dock-empty">
+            <Globe size={24} />
+            <strong>{isHtmlExt(ext) ? 'HTML 需要浏览器渲染' : 'PDF 需要浏览器渲染'}</strong>
+            <span>这个文件会通过浏览器路径打开，确保同目录 CSS、图片和脚本正常加载。</span>
+            <div className="dock-empty-actions">
+              <button type="button" className="generated-file-open" onClick={() => openBrowserUrl?.(normalizedPath)}>
+                <span>浏览器预览</span>
+                <PanelRight size={13} />
+              </button>
+              <button type="button" className="generated-file-open" onClick={() => void openExternal(normalizedPath)}>
+                <span>系统打开</span>
+                <Globe size={13} />
+              </button>
+            </div>
+          </div>
+        ) : !textPreview ? (
+          <div className="dock-empty">
+            {fileGlyph(ext, 24)}
+            <strong>暂不支持侧栏预览</strong>
+            <span>可以在 Finder 中打开这个文件。</span>
+          </div>
+        ) : loading ? (
+          <div className="dock-empty">
+            <Loader2 size={24} className="spin" />
+            <strong>正在读取文件</strong>
+            <span>{shortenPath(normalizedPath)}</span>
+          </div>
+        ) : error ? (
+          <div className="dock-empty">
+            <AlertCircle size={24} />
+            <strong>文件读取失败</strong>
+            <span>{error}</span>
+          </div>
+        ) : markdown ? (
+          <div className="file-preview-markdown">
+            <MarkdownText content={content} />
+            {truncated && <div className="file-preview-notice">文件较大，已只显示前 2MB。</div>}
+          </div>
+        ) : (
+          <>
+            <pre className="file-preview-pre">{content}</pre>
+            {truncated && <div className="file-preview-notice">文件较大，已只显示前 2MB。</div>}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SideChatPanel({ domain, sidebarExpanded }: { domain: DomainConfig; sidebarExpanded: boolean }) {
   const conversation = useCurrentConversation();
-  const codexStatus = useChatStore((state) => state.codexStatus);
-  const previewRuntime = !isTauriRuntime();
-  const codexReady = previewRuntime || Boolean(codexStatus?.installed && codexStatus.loggedIn);
+  const { codexReady } = useComposerRuntimeState();
 
   return (
     <section className="side-chat-panel" aria-label="侧边聊天">
       <div className="side-chat-body" />
       {conversation ? (
         <div className="side-chat-composer">
-          <Composer domain={domain} conversation={conversation} disabled={!codexReady} />
+          <Composer domain={domain} conversation={conversation} disabled={!codexReady} allowCompact={sidebarExpanded} />
         </div>
       ) : (
         <div className="dock-empty">
@@ -3979,6 +4486,18 @@ function AutomationsPage({
     () => automationModelOptionGroups(modelProfiles, codexStatus, clientLicenseSession, form.model),
     [clientLicenseSession, codexStatus, form.model, modelProfiles],
   );
+  useEffect(() => {
+    let cancelled = false;
+    void loadLocalStoreSnapshot()
+      .then((snapshot) => {
+        if (cancelled || !snapshot?.automationTasks?.length) return;
+        setTasks(snapshot.automationTasks as ScheduledAutomationTask[]);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   useEffect(() => {
     if (!editorOpen || automationSelectGroupsContain(modelOptions, form.model)) return;
     const fallbackModel = firstAutomationSelectValue(modelOptions);
@@ -4892,15 +5411,8 @@ function skillIcon(skill: SkillCatalogItem | SkillSelection, size = 16): ReactNo
 
 function ChatArea({ domain }: { domain: DomainConfig }) {
   const conversation = useCurrentConversation();
-  const codexStatus = useChatStore((state) => state.codexStatus);
-  const clientLicenseSession = useChatStore((state) => state.clientLicenseSession);
-  const modelProfiles = useChatStore((state) => state.modelProfiles);
-  const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
-  const selectedModelProfile = resolveVisibleModelProfile(modelProfiles, selectedModelProfileId, codexStatus, clientLicenseSession);
+  const { codexStatus, previewRuntime, codexReady } = useComposerRuntimeState();
   if (!conversation) return null;
-  const previewRuntime = !isTauriRuntime();
-  const gatewayMode = selectedModelProfile.providerId === ALPHA_GATEWAY_PROVIDER_ID;
-  const codexReady = previewRuntime || Boolean(codexStatus?.installed && (codexStatus.loggedIn || gatewayMode));
   const isEmpty = conversation.messages.length === 0;
   return (
     <div className="chat-area">
@@ -4919,15 +5431,46 @@ function ChatArea({ domain }: { domain: DomainConfig }) {
   );
 }
 
+function DockOverlayComposer({ domain }: { domain: DomainConfig }) {
+  const conversation = useCurrentConversation();
+  const { codexReady } = useComposerRuntimeState();
+  if (!conversation) return null;
+  return (
+    <div className="dock-composer-overlay">
+      <Composer domain={domain} conversation={conversation} disabled={!codexReady} bottom allowCompact />
+    </div>
+  );
+}
+
+function useComposerRuntimeState() {
+  const codexStatus = useChatStore((state) => state.codexStatus);
+  const clientLicenseSession = useChatStore((state) => state.clientLicenseSession);
+  const modelProfiles = useChatStore((state) => state.modelProfiles);
+  const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
+  const selectedModelProfile = resolveVisibleModelProfile(modelProfiles, selectedModelProfileId, codexStatus, clientLicenseSession);
+  const previewRuntime = !isTauriRuntime();
+  const gatewayMode = selectedModelProfile.providerId === ALPHA_GATEWAY_PROVIDER_ID;
+  const codexReady = previewRuntime || Boolean(codexStatus?.installed && (codexStatus.loggedIn || gatewayMode));
+  return { codexStatus, previewRuntime, codexReady };
+}
+
+interface ComposerPrefillRequest {
+  id: number;
+  text: string;
+}
+
 function EmptyState({ domain, conversation, disabled }: { domain: DomainConfig; conversation: Conversation; disabled: boolean }) {
-  const sendMessage = useChatStore((state) => state.sendMessage);
+  const [prefillRequest, setPrefillRequest] = useState<ComposerPrefillRequest | null>(null);
+  const prefillComposer = (text: string) => {
+    setPrefillRequest((prev) => ({ id: (prev?.id ?? 0) + 1, text }));
+  };
   return (
     <div className="empty-state">
       <h1 className="empty-heading">{domain.ui.emptyHeading}</h1>
-      <Composer domain={domain} conversation={conversation} disabled={disabled} />
+      <Composer domain={domain} conversation={conversation} disabled={disabled} prefillRequest={prefillRequest} />
       <div className="suggestion-row">
         {domain.ui.suggestions.map((suggestion) => (
-          <button key={suggestion.id} type="button" className="suggestion-card" onClick={() => void sendMessage(suggestion.prompt)}>
+          <button key={suggestion.id} type="button" className="suggestion-card" onClick={() => prefillComposer(suggestion.prompt)}>
             {domainSuggestionIcon(suggestion)}
             <strong>{suggestion.title}</strong>
             <span>{suggestion.prompt}</span>
@@ -5041,18 +5584,22 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
                     <>
                       {message.coworkers && message.coworkers.length > 0 && <MessageCoworkersLabel coworkers={message.coworkers} />}
                       {message.selectedSkill && <MessageSkillLabel skill={message.selectedSkill} />}
-                      {message.blocks.map((block, index) => block.type === 'text' ? <span key={index}>{block.content}</span> : <BlockRenderer key={index} block={block} />)}
+                      {message.blocks.map((block, index) => block.type === 'text' ? <MarkdownText key={index} content={block.content} variant="user" /> : <BlockRenderer key={index} block={block} />)}
                     </>
                   )
                 : message.review
                   ? <ReviewBody message={message} cwd={conversation.cwd} />
-                  : buildRenderUnits(message.blocks).map((unit) =>
-                      unit.type === 'command-group'
-                        ? (unit.blocks.length === 1
-                            ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
-                            : <CommandGroup key={`cmd-group-${unit.startIndex}`} blocks={unit.blocks} />)
-                        : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={Boolean(message.isStreaming) && unit.index === lastBlockIndex} />,
-                    )}
+	                  : buildRenderUnits(message.blocks).map((unit) =>
+	                      unit.type === 'command-group'
+	                        ? (unit.blocks.length === 1
+	                            ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
+	                            : <CommandGroup key={`cmd-group-${unit.startIndex}`} blocks={unit.blocks} />)
+	                        : unit.type === 'web-search-group'
+	                          ? (unit.blocks.length === 1
+	                              ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
+	                              : <WebSearchGroup key={`web-group-${unit.startIndex}`} blocks={unit.blocks} />)
+	                        : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={Boolean(message.isStreaming) && unit.index === lastBlockIndex} />,
+	                    )}
             </div>
           )}
         </>
@@ -5181,7 +5728,7 @@ function EventDetails({
 
 function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: boolean }) {
   if (block.type === 'text') {
-    return <div className={`markdown-content ${streaming ? 'streaming' : ''}`}><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: MarkdownImage }}>{block.content}</ReactMarkdown></div>;
+    return <MarkdownText content={block.content} streaming={streaming} />;
   }
   if (block.type === 'thinking') {
     return (
@@ -5213,12 +5760,33 @@ function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: 
   return <div className="error-block"><AlertCircle size={16} /><span>{block.content}</span></div>;
 }
 
+function MarkdownText({ content, streaming, variant = 'assistant' }: { content: string; streaming?: boolean; variant?: 'assistant' | 'user' }) {
+  const fileRefs = useMemo(() => variant === 'assistant' ? generatedFilesFromPlainText(content) : [], [content, variant]);
+  return (
+    <div className={`markdown-content markdown-${variant} ${streaming ? 'streaming' : ''}`}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
+      {fileRefs.length > 0 && (
+        <GeneratedFileResultView
+          block={{
+            type: 'file_result',
+            id: `inline-files-${fileRefs.map((file) => file.path).join('|')}`,
+            title: '生成文件',
+            files: fileRefs,
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 function ToolBlockView({ block }: { block: Extract<MessageBlock, { type: 'tool' }> }) {
   const tool = toolPresentation(block.title);
   const running = block.status === 'in_progress';
   const failed = block.status === 'failed';
   const verb = running ? tool.running : failed ? tool.failed : tool.done;
-  const target = firstLine(block.input);
+  const inferredTarget = inferredSpawnAgentToolTarget(block);
+  const target = block.target || inferredTarget || firstLine(block.input);
+  const targetIsRawInput = Boolean(!block.target && !inferredTarget && target);
   const isCommand = tool.kind === 'command';
   const plainBody = isCommand ? '' : cleanCommandOutput(block.output || block.input || '');
   const hasBody = isCommand ? Boolean(block.input || block.output) : Boolean(plainBody) && plainBody !== target;
@@ -5231,7 +5799,7 @@ function ToolBlockView({ block }: { block: Extract<MessageBlock, { type: 'tool' 
         <>
           <span className="event-icon">{tool.icon}</span>
           <span className="event-verb">{verb}</span>
-          <span className={`event-target ${target ? 'mono' : ''}`}>{target}</span>
+          <span className={`event-target ${targetIsRawInput ? 'mono' : ''}`}>{target}</span>
           <span className="event-trailing">
             {running ? <Loader2 size={12} className="spin" /> : failed ? <AlertCircle size={12} className="event-fail" /> : null}
             <ChevronDown size={13} className="event-chevron" />
@@ -5250,6 +5818,43 @@ function ToolBlockView({ block }: { block: Extract<MessageBlock, { type: 'tool' 
       )}
     </EventDetails>
   );
+}
+
+function inferredSpawnAgentToolTarget(block: Extract<MessageBlock, { type: 'tool' }>): string {
+  if (!isSpawnAgentToolTitle(block.title)) return '';
+  const source = [block.input, block.output].filter(Boolean).join('\n');
+  const agentId = spawnAgentIdFromToolText(source);
+  if (!agentId) return '';
+  const coworker = COWORKER_CATALOG.find((item) => item.id === agentId);
+  return coworker ? `${coworker.id} · ${coworker.no} ${coworker.name}` : agentId;
+}
+
+function spawnAgentIdFromToolText(text: string): string {
+  const keyPattern = /["']?(?:agent_type|agentType|agent_id|agentId|agent|target_agent|targetAgent)["']?\s*[:=]\s*["']?([A-Za-z0-9_-]+)["']?/g;
+  for (const match of text.matchAll(keyPattern)) {
+    const normalized = normalizeSpawnAgentDisplayId(match[1]);
+    if (normalized) return normalized;
+  }
+  for (const coworker of COWORKER_CATALOG) {
+    const escaped = escapeRegExp(coworker.id);
+    const filePattern = new RegExp(`(?:^|[/\\\\])${escaped}\\.(?:md|markdown|txt|json)(?=$|[\\s"'<>),.;:])`, 'i');
+    if (filePattern.test(text)) return coworker.id;
+  }
+  return '';
+}
+
+function normalizeSpawnAgentDisplayId(value: string | undefined): string {
+  const trimmed = (value || '').trim().replace(/^["'`]+|["'`]+$/g, '');
+  if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) return '';
+  const lower = trimmed.toLowerCase();
+  const coworker = COWORKER_CATALOG.find((item) => item.id.toLowerCase() === lower);
+  if (coworker) return coworker.id;
+  if (['default', 'explorer', 'worker'].includes(lower)) return lower;
+  return trimmed;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function CommandCard({ command, output, status }: { command?: string; output?: string; status: 'in_progress' | 'completed' | 'failed' }) {
@@ -5305,9 +5910,38 @@ function CommandGroup({ blocks }: { blocks: Array<Extract<MessageBlock, { type: 
   );
 }
 
+function WebSearchGroup({ blocks }: { blocks: Array<Extract<MessageBlock, { type: 'tool' }>> }) {
+  const anyRunning = blocks.some((block) => block.status === 'in_progress');
+  const anyFailed = blocks.some((block) => block.status === 'failed');
+  const state = anyRunning ? 'in_progress' : anyFailed ? 'failed' : 'completed';
+  const verb = anyRunning ? '正在搜索网页' : anyFailed ? '网页搜索失败' : '已搜索网页';
+  return (
+    <EventDetails
+      className={`tool-block event-block web-search-group ${state}`}
+      forceOpen={anyRunning}
+      summary={(
+        <>
+          <span className="event-icon web-search-group-icon"><Globe size={15} /></span>
+          <span className="event-verb">{verb} {blocks.length} 次</span>
+          <span className="event-target" />
+          <span className="event-trailing">
+            {anyRunning ? <Loader2 size={12} className="spin" /> : anyFailed ? <AlertCircle size={12} className="event-fail" /> : null}
+            <ChevronDown size={13} className="event-chevron" />
+          </span>
+        </>
+      )}
+    >
+      <div className="tool-group-items">
+        {blocks.map((block) => <ToolBlockView key={block.id} block={block} />)}
+      </div>
+    </EventDetails>
+  );
+}
+
 type RenderUnit =
   | { type: 'block'; block: MessageBlock; index: number }
-  | { type: 'command-group'; blocks: Array<Extract<MessageBlock, { type: 'tool' }>>; startIndex: number };
+  | { type: 'command-group'; blocks: Array<Extract<MessageBlock, { type: 'tool' }>>; startIndex: number }
+  | { type: 'web-search-group'; blocks: Array<Extract<MessageBlock, { type: 'tool' }>>; startIndex: number };
 
 function buildRenderUnits(blocks: MessageBlock[]): RenderUnit[] {
   const units: RenderUnit[] = [];
@@ -5326,6 +5960,14 @@ function buildRenderUnits(blocks: MessageBlock[]): RenderUnit[] {
         index += 1;
       }
       units.push({ type: 'command-group', blocks: group, startIndex });
+    } else if (isWebSearchBlock(blocks[index])) {
+      const group: Array<Extract<MessageBlock, { type: 'tool' }>> = [];
+      const startIndex = index;
+      while (index < blocks.length && isWebSearchBlock(blocks[index])) {
+        group.push(blocks[index] as Extract<MessageBlock, { type: 'tool' }>);
+        index += 1;
+      }
+      units.push({ type: 'web-search-group', blocks: group, startIndex });
     } else {
       units.push({ type: 'block', block: blocks[index], index });
       index += 1;
@@ -5338,45 +5980,103 @@ function isCommandBlock(block: MessageBlock): boolean {
   return block.type === 'tool' && toolPresentation(block.title).kind === 'command';
 }
 
+function isWebSearchBlock(block: MessageBlock): boolean {
+  return block.type === 'tool' && isWebSearchToolTitle(block.title);
+}
+
 function isReconnectStatusBlock(block: MessageBlock): boolean {
   return block.type === 'error' && /^Reconnecting\.\.\.\s+\d+\/\d+$/i.test(block.content.trim());
 }
 
-function Composer({ domain, conversation, disabled, bottom }: { domain: DomainConfig; conversation: Conversation; disabled?: boolean; bottom?: boolean }) {
+function Composer({
+  domain,
+  conversation,
+  disabled,
+  bottom,
+  prefillRequest,
+  allowCompact,
+}: {
+  domain: DomainConfig;
+  conversation: Conversation;
+  disabled?: boolean;
+  bottom?: boolean;
+  prefillRequest?: ComposerPrefillRequest | null;
+  allowCompact?: boolean;
+}) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<SkillCatalogItem | null>(null);
   const [selectedCoworkers, setSelectedCoworkers] = useState<CoworkerSelection[]>([]);
   const [coworkerDragOver, setCoworkerDragOver] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { queuedSkill, consumeQueuedSkill, queuedCoworkerTask, consumeQueuedCoworkerTask } = useSkillRuntime();
+  const { queuedSkill, queuedSkillPrompt, consumeQueuedSkill, queuedCoworkerTask, consumeQueuedCoworkerTask } = useSkillRuntime();
   const sendMessage = useChatStore((state) => state.sendMessage);
+  const removeQueuedMessage = useChatStore((state) => state.removeQueuedMessage);
+  const updateQueuedMessage = useChatStore((state) => state.updateQueuedMessage);
+  const reorderQueuedMessage = useChatStore((state) => state.reorderQueuedMessage);
+  const sendQueuedMessageNow = useChatStore((state) => state.sendQueuedMessageNow);
   const stopCurrentConversation = useChatStore((state) => state.stopCurrentConversation);
   const isStreaming = conversation.status === 'streaming';
+  const queuedMessages = conversation.queuedMessages ?? [];
+  const contextUsage = useMemo(() => contextWindowUsage(conversation), [conversation]);
+  const compact = Boolean(allowCompact) && !value && attachments.length === 0 && !selectedSkill && selectedCoworkers.length === 0;
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
+    if (compact) {
+      el.style.height = '24px';
+      return;
+    }
     el.style.height = '0px';
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
-  }, [value]);
+  }, [compact, value]);
   useEffect(() => {
     if (!queuedSkill) return;
     setSelectedSkill(queuedSkill);
+    if (queuedSkillPrompt?.trim()) {
+      setValue((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${queuedSkillPrompt.trim()}` : queuedSkillPrompt.trim()));
+    }
     consumeQueuedSkill();
     textareaRef.current?.focus();
-  }, [queuedSkill, consumeQueuedSkill]);
+  }, [queuedSkill, queuedSkillPrompt, consumeQueuedSkill]);
+  useEffect(() => {
+    const text = prefillRequest?.text.trim();
+    if (!text) return;
+    setValue(text);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(text.length, text.length);
+    });
+  }, [prefillRequest]);
   const addCoworker = useCallback((coworker: CoworkerSelection) => {
     setSelectedCoworkers((prev) => (prev.some((item) => item.id === coworker.id) ? prev : [...prev, coworker]));
   }, []);
+  const addCoworkers = useCallback((coworkers: CoworkerSelection[]) => {
+    setSelectedCoworkers((prev) => {
+      const seen = new Set(prev.map((item) => item.id));
+      const next = [...prev];
+      for (const coworker of coworkers) {
+        if (seen.has(coworker.id)) continue;
+        seen.add(coworker.id);
+        next.push(coworker);
+      }
+      return next;
+    });
+  }, []);
+  const appendComposerText = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setValue((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${trimmed}` : trimmed));
+  }, []);
   useEffect(() => {
     if (!queuedCoworkerTask) return;
-    addCoworker(queuedCoworkerTask.coworker);
+    addCoworkers(queuedCoworkerTask.coworkers);
     if (queuedCoworkerTask.taskPrompt) {
-      setValue((prev) => (prev.trim() ? `${prev.trimEnd()}\n${queuedCoworkerTask.taskPrompt}` : queuedCoworkerTask.taskPrompt ?? ''));
+      appendComposerText(queuedCoworkerTask.taskPrompt);
     }
     consumeQueuedCoworkerTask();
     textareaRef.current?.focus();
-  }, [queuedCoworkerTask, consumeQueuedCoworkerTask, addCoworker]);
+  }, [queuedCoworkerTask, consumeQueuedCoworkerTask, addCoworkers, appendComposerText]);
   const removeCoworker = (id: string) => setSelectedCoworkers((prev) => prev.filter((item) => item.id !== id));
   const readCoworkerDrag = (event: ReactDragEvent<HTMLElement>): CoworkerSelection | null => {
     const raw = event.dataTransfer.getData(COWORKER_DRAG_MIME);
@@ -5389,18 +6089,26 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
       return null;
     }
   };
+  const readResearchDrag = (event: ReactDragEvent<HTMLElement>): string => {
+    return event.dataTransfer.getData(RESEARCH_DRAG_MIME) || event.dataTransfer.getData('text/plain') || '';
+  };
   const handleCoworkerDragOver = (event: ReactDragEvent<HTMLElement>) => {
-    if (!event.dataTransfer.types.includes(COWORKER_DRAG_MIME)) return;
+    if (!event.dataTransfer.types.includes(COWORKER_DRAG_MIME) && !event.dataTransfer.types.includes(RESEARCH_DRAG_MIME)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
     setCoworkerDragOver(true);
   };
   const handleCoworkerDrop = (event: ReactDragEvent<HTMLElement>) => {
     const coworker = readCoworkerDrag(event);
+    const researchPrompt = coworker ? '' : readResearchDrag(event);
     setCoworkerDragOver(false);
-    if (!coworker) return;
+    if (!coworker && !researchPrompt.trim()) return;
     event.preventDefault();
-    addCoworker(coworker);
+    if (coworker) {
+      addCoworker(coworker);
+    } else {
+      appendComposerText(researchPrompt);
+    }
     textareaRef.current?.focus();
   };
   const addAttachments = (items: MessageAttachment[]) => {
@@ -5409,7 +6117,7 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
   const removeAttachment = (id: string) => setAttachments((prev) => prev.filter((item) => item.id !== id));
   const canSend = Boolean(value.trim() || attachments.length);
   const submit = () => {
-    if (!canSend || isStreaming || disabled) return;
+    if (!canSend || disabled) return;
     const outgoing = attachments;
     const outgoingSkill = selectedSkill;
     const outgoingCoworkers = selectedCoworkers;
@@ -5420,9 +6128,18 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
     void sendMessage(value.trim(), outgoing, outgoingSkill, outgoingCoworkers);
   };
   return (
-    <div className={`composer-wrap ${bottom ? 'bottom' : ''}`}>
+    <div className={`composer-wrap ${bottom ? 'bottom' : ''} ${queuedMessages.length > 0 ? 'has-queue' : ''}`}>
+      {queuedMessages.length > 0 && (
+        <ComposerQueue
+          queuedMessages={queuedMessages}
+          onRemove={(id) => removeQueuedMessage(conversation.id, id)}
+          onUpdate={(id, text) => updateQueuedMessage(conversation.id, id, { text })}
+          onReorder={(id, beforeId) => reorderQueuedMessage(conversation.id, id, beforeId)}
+          onGuide={(id) => void sendQueuedMessageNow(conversation.id, id)}
+        />
+      )}
       <div
-        className={`composer-card ${coworkerDragOver ? 'coworker-drag-over' : ''}`}
+        className={`composer-card ${compact ? 'compact' : ''} ${coworkerDragOver ? 'coworker-drag-over' : ''}`}
         onDragOver={handleCoworkerDragOver}
         onDragLeave={() => setCoworkerDragOver(false)}
         onDrop={handleCoworkerDrop}
@@ -5472,7 +6189,7 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
           ref={textareaRef}
           className="composer-textarea"
           value={value}
-          disabled={disabled || isStreaming}
+          disabled={disabled}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setValue(event.target.value)}
           onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -5484,12 +6201,25 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
           rows={1}
         />
         <div className="composer-toolbar">
-          <ComposerPlusMenu domain={domain} onAttach={addAttachments} onSelectSkill={setSelectedSkill} disabled={disabled || isStreaming} />
+          <ComposerPlusMenu domain={domain} onAttach={addAttachments} onSelectSkill={setSelectedSkill} disabled={disabled} />
           <ApprovalPicker />
           <span className="spacer" />
+          <ContextWindowIndicator usage={contextUsage} />
           <ModelPicker />
-          <button className="composer-icon-btn" type="button" disabled aria-label="语音"><Mic size={15} /></button>
-          {isStreaming ? <button className="send-button stop" type="button" onClick={() => void stopCurrentConversation()} aria-label="停止"><Square size={12} fill="currentColor" strokeWidth={0} /></button> : <button className="send-button" type="button" onClick={submit} disabled={!canSend || disabled} aria-label="发送"><ArrowUp size={18} /></button>}
+          {isStreaming && canSend && (
+            <button className="send-button queue" type="button" onClick={submit} disabled={disabled} aria-label="加入队列">
+              <CornerDownRight size={17} />
+            </button>
+          )}
+          {isStreaming ? (
+            <button className="send-button stop" type="button" onClick={() => void stopCurrentConversation()} aria-label="停止">
+              <Square size={12} fill="currentColor" strokeWidth={0} />
+            </button>
+          ) : (
+            <button className="send-button" type="button" onClick={submit} disabled={!canSend || disabled} aria-label="发送">
+              <ArrowUp size={18} />
+            </button>
+          )}
         </div>
       </div>
       <ComposerMeta conversation={conversation} />
@@ -5497,7 +6227,232 @@ function Composer({ domain, conversation, disabled, bottom }: { domain: DomainCo
   );
 }
 
+function ContextWindowIndicator({ usage }: { usage: ContextWindowUsage }) {
+  const detail = [
+    `背景信息窗口：${usage.usedPercent}% 已用（剩余 ${usage.remainingPercent}%）`,
+    `已用 ${formatTokenCount(usage.usedTokens)} 标记，共 ${formatTokenCount(usage.totalTokens)}`,
+    `压缩阈值 ${usage.compactThresholdPercent}%（${formatTokenCount(usage.compactThresholdTokens)} 标记）`,
+    usage.compacted ? `已压缩前 ${usage.compactedMessageCount} 条消息` : '尚未压缩',
+  ].join('\n');
+  return (
+    <span
+      className={`context-window-indicator ${usage.shouldCompact ? 'warning' : ''} ${usage.compacted ? 'compacted' : ''}`}
+      title={detail}
+      aria-label={detail}
+    >
+      <Layers size={12} />
+      <span>{usage.usedPercent}% 已用</span>
+    </span>
+  );
+}
+
+function ComposerQueue({
+  queuedMessages,
+  onRemove,
+  onUpdate,
+  onReorder,
+  onGuide,
+}: {
+  queuedMessages: QueuedChatMessage[];
+  onRemove: (id: string) => void;
+  onUpdate: (id: string, text: string) => void;
+  onReorder: (id: string, beforeId: string | null) => void;
+  onGuide: (id: string) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState('');
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
+  const startEdit = (message: QueuedChatMessage) => {
+    setEditingId(message.id);
+    setEditingValue(message.text);
+    setMenuOpenId(null);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditingValue('');
+  };
+
+  const saveEdit = (message: QueuedChatMessage) => {
+    const hasAttachments = Boolean(message.attachments?.length);
+    if (!editingValue.trim() && !hasAttachments) return;
+    onUpdate(message.id, editingValue);
+    cancelEdit();
+  };
+
+  const dragIdFromEvent = (event: ReactDragEvent<HTMLElement>) =>
+    event.dataTransfer.getData('application/x-alpha-queued-message') ||
+    event.dataTransfer.getData('text/plain') ||
+    draggingId;
+
+  const dropQueuedMessage = (event: ReactDragEvent<HTMLElement>, targetId: string, targetIndex: number) => {
+    event.preventDefault();
+    const sourceId = dragIdFromEvent(event);
+    setDragOverId(null);
+    setDraggingId(null);
+    if (!sourceId || sourceId === targetId) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const insertAfterTarget = event.clientY > rect.top + rect.height / 2;
+    const beforeId = insertAfterTarget ? queuedMessages[targetIndex + 1]?.id ?? null : targetId;
+    if (sourceId === beforeId) return;
+    onReorder(sourceId, beforeId);
+  };
+
+  return (
+    <div className="composer-queue" aria-label="待发送队列">
+      <div className="composer-queue-items">
+        {queuedMessages.map((message, index) => {
+          const preview = queuedMessagePreview(message);
+          const meta = queuedMessageMeta(message);
+          const isEditing = editingId === message.id;
+          return (
+            <div
+              key={message.id}
+              className={`composer-queue-item ${draggingId === message.id ? 'dragging' : ''} ${dragOverId === message.id ? 'drag-over' : ''} ${isEditing ? 'editing' : ''}`}
+              draggable={!isEditing}
+              onDragStart={(event) => {
+                setDraggingId(message.id);
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('application/x-alpha-queued-message', message.id);
+                event.dataTransfer.setData('text/plain', message.id);
+              }}
+              onDragEnd={() => {
+                setDraggingId(null);
+                setDragOverId(null);
+              }}
+              onDragOver={(event) => {
+                if (!draggingId || draggingId === message.id) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                setDragOverId(message.id);
+              }}
+              onDragLeave={() => setDragOverId((id) => (id === message.id ? null : id))}
+              onDrop={(event) => dropQueuedMessage(event, message.id, index)}
+            >
+              <span className="composer-queue-grip" aria-hidden="true"><GripVertical size={15} /></span>
+              <span className="composer-queue-icon"><CornerDownRight size={15} /></span>
+              {isEditing ? (
+                <>
+                  <textarea
+                    className="composer-queue-edit"
+                    value={editingValue}
+                    rows={1}
+                    autoFocus
+                    onChange={(event) => setEditingValue(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        cancelEdit();
+                      }
+                      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                        event.preventDefault();
+                        saveEdit(message);
+                      }
+                    }}
+                  />
+                  <div className="composer-queue-edit-actions">
+                    <button
+                      type="button"
+                      onClick={() => saveEdit(message)}
+                      disabled={!editingValue.trim() && !message.attachments?.length}
+                      aria-label="保存队列消息"
+                      title="保存"
+                    >
+                      <Check size={14} />
+                    </button>
+                    <button type="button" onClick={cancelEdit} aria-label="取消编辑队列消息" title="取消">
+                      <X size={14} />
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span className="composer-queue-copy">
+                    <span className="composer-queue-text" title={preview}>{preview}</span>
+                    {meta && <span className="composer-queue-meta">{meta}</span>}
+                  </span>
+                  <div className="composer-queue-actions">
+                    <button
+                      type="button"
+                      className="composer-queue-guide"
+                      onClick={() => onGuide(message.id)}
+                      aria-label={`引导发送队列消息 ${preview}`}
+                      title="优先发送"
+                    >
+                      <CornerDownRight size={15} />
+                      引导
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-queue-remove"
+                      onClick={() => onRemove(message.id)}
+                      aria-label={`删除队列消息 ${preview}`}
+                      title="删除"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                    <span className="composer-queue-more-wrap">
+                      <button
+                        type="button"
+                        className="composer-queue-more"
+                        onClick={() => setMenuOpenId((id) => (id === message.id ? null : message.id))}
+                        aria-label={`更多队列操作 ${preview}`}
+                        aria-haspopup="menu"
+                        aria-expanded={menuOpenId === message.id}
+                        title="更多"
+                      >
+                        <MoreHorizontal size={16} />
+                      </button>
+                      {menuOpenId === message.id && (
+                        <span className="composer-queue-menu" role="menu">
+                          <button type="button" role="menuitem" onClick={() => startEdit(message)}>
+                            <Pencil size={15} />
+                            编辑消息
+                          </button>
+                          <button type="button" role="menuitem" onClick={() => { setMenuOpenId(null); onRemove(message.id); }}>
+                            <CornerDownRight size={15} />
+                            关闭排队
+                          </button>
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function queuedMessagePreview(message: QueuedChatMessage): string {
+  const text = message.text.trim();
+  if (text) return text;
+  const attachments = message.attachments ?? [];
+  if (attachments.length === 1) return attachments[0].name;
+  if (attachments.length > 1) return `${attachments.length} 个附件`;
+  return '待发送消息';
+}
+
+function queuedMessageMeta(message: QueuedChatMessage): string {
+  const parts: string[] = [];
+  if (message.attachments?.length) parts.push(`${message.attachments.length} 附件`);
+  if (message.selectedSkill) parts.push(`$${message.selectedSkill.title}`);
+  if (message.coworkers?.length) parts.push(`${message.coworkers.length} 同事`);
+  return parts.join(' · ');
+}
+
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'avif'];
+const TEXT_PREVIEW_EXTENSIONS = [
+  'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'xml',
+  'html', 'htm', 'css', 'scss', 'js', 'jsx', 'ts', 'tsx', 'py', 'rs', 'go', 'java',
+  'kt', 'swift', 'sql', 'sh', 'zsh', 'bash', 'log',
+];
 
 // Maps a file extension to the badge tone used for its icon (Excel green, Word
 // blue, etc.), echoing the colored file chips in the reference design.
@@ -5517,6 +6472,18 @@ function isImageExt(ext: string): boolean {
   return IMAGE_EXTENSIONS.includes(ext);
 }
 
+function isHtmlExt(ext: string): boolean {
+  return ext === 'html' || ext === 'htm';
+}
+
+function isBrowserPreviewExt(ext: string): boolean {
+  return isHtmlExt(ext) || ext === 'pdf';
+}
+
+function isTextPreviewExt(ext: string): boolean {
+  return TEXT_PREVIEW_EXTENSIONS.includes(ext);
+}
+
 function fileTone(ext: string): string {
   return FILE_TONES[ext] ?? 'gray';
 }
@@ -5527,6 +6494,9 @@ function fileTypeLabel(ext: string): string {
 
 function fileGlyph(ext: string, size: number): ReactNode {
   if (fileTone(ext) === 'green') return <FileSpreadsheet size={size} />;
+  if (['html', 'htm', 'css', 'js', 'jsx', 'ts', 'tsx', 'py', 'rs', 'go', 'java', 'c', 'cpp', 'sh'].includes(ext)) return <FileCode2 size={size} />;
+  if (['json', 'jsonl', 'yaml', 'yml', 'toml'].includes(ext)) return <Braces size={size} />;
+  if (['md', 'markdown', 'txt'].includes(ext)) return <FileText size={size} />;
   if (FILE_TONES[ext]) return <FileText size={size} />;
   return <File size={size} />;
 }
@@ -5717,6 +6687,101 @@ function MarkdownImage({ src, alt, title }: ImgHTMLAttributes<HTMLImageElement>)
   );
 }
 
+function MarkdownLink({
+  href,
+  children,
+  node: _node,
+  className,
+  onClick,
+  ...props
+}: AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) {
+  const openBrowserUrl = useBrowserDockOpener();
+  const openFileInDock = useFileDockOpener();
+  const target = typeof href === 'string' ? href : '';
+  const fileExt = markdownLinkFileExt(target);
+  const localPath = target ? localFilePath(target) || (target.startsWith('/') ? target : null) : null;
+  const fileLink = Boolean(fileExt && isRenderableFileLink(target, fileExt));
+  const browserFileLink = isBrowserPreviewExt(fileExt);
+  const canOpenInDock = Boolean(!localPath && openBrowserUrl && normalizeBrowserDockUrl(target));
+  const linkClassName = [className, fileLink ? 'markdown-file-link' : null].filter(Boolean).join(' ') || undefined;
+  const handleClick = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    onClick?.(event);
+    if (event.defaultPrevented) return;
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (localPath) {
+      event.preventDefault();
+      if (browserFileLink && openBrowserUrl) openBrowserUrl(localPath);
+      else if (openFileInDock) openFileInDock(localPath);
+      else void revealPath(localPath);
+      return;
+    }
+    if (!canOpenInDock || !openBrowserUrl) return;
+    event.preventDefault();
+    openBrowserUrl(target);
+  };
+
+  return (
+    <a {...props} href={href} className={linkClassName} onClick={handleClick}>
+      {fileLink && fileExt ? <span className={`markdown-file-icon tone-${fileTone(fileExt)}`}>{fileGlyph(fileExt, 15)}</span> : null}
+      {fileLink ? <span className="markdown-link-text">{children}</span> : children}
+    </a>
+  );
+}
+
+function markdownLinkFileExt(href: string): string {
+  if (!href) return '';
+  const localPath = localFilePath(href);
+  if (localPath) return extOf(localPath);
+  try {
+    const baseUrl = typeof window !== 'undefined' ? window.location.href : 'http://localhost/';
+    return extOf(decodeURIComponent(new URL(href, baseUrl).pathname));
+  } catch {
+    return extOf(decodeURIComponent(href.split(/[?#]/)[0]));
+  }
+}
+
+function isRenderableFileLink(href: string, ext: string): boolean {
+  if (!ext) return false;
+  const localish = href.startsWith('/') || href.startsWith('file://') || /^\.{1,2}\//.test(href);
+  if (localish) return true;
+  if (/^https?:\/\//i.test(href)) {
+    return ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'zip'].includes(ext);
+  }
+  return ['pdf', 'md', 'markdown', 'html', 'htm', 'json', 'csv', 'xlsx', 'docx', 'png', 'jpg', 'jpeg'].includes(ext);
+}
+
+const LOCAL_FILE_REFERENCE_PATTERN = /(?:^|[\s"'(=：|])((?:file:\/\/\/|~\/|\/)[^\s"'<>`|]+?\.[A-Za-z0-9]{1,10})(?=$|[\s"'<>`|),.;，。])/g;
+
+function generatedFilesFromPlainText(text: string): GeneratedFile[] {
+  const seen = new Set<string>();
+  const files: GeneratedFile[] = [];
+  for (const match of text.matchAll(LOCAL_FILE_REFERENCE_PATTERN)) {
+    const raw = stripTrailingFilePunctuation(match[1] || '');
+    const path = localFilePath(raw) || raw;
+    const ext = extOf(path);
+    if (!path || !isRenderableFileLink(path, ext) || seen.has(path)) continue;
+    seen.add(path);
+    const name = basename(path);
+    files.push({
+      id: `inline-file-${files.length}-${path}`,
+      path,
+      name,
+      ext,
+      kind: isImageExt(ext) ? 'image' : 'file',
+    });
+  }
+  return files;
+}
+
+function stripTrailingFilePunctuation(path: string): string {
+  return path.trim().replace(/[),.;，。]+$/g, '');
+}
+
+const MARKDOWN_COMPONENTS = {
+  img: MarkdownImage,
+  a: MarkdownLink,
+};
+
 const GENERATED_IMAGE_PREVIEW_RETRIES = 3;
 
 function GeneratedImagePreview({ image, markdown }: { image: GeneratedImage; markdown?: boolean }) {
@@ -5806,8 +6871,25 @@ function GeneratedFileResultView({ block }: { block: Extract<MessageBlock, { typ
 }
 
 function GeneratedFileCard({ file }: { file: GeneratedFile }) {
+  const openFileInDock = useFileDockOpener();
+  const openBrowserUrl = useBrowserDockOpener();
+  const openDefault = () => {
+    void openGeneratedFileDefault(file, openFileInDock, openBrowserUrl);
+  };
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openDefault();
+  };
   return (
-    <div className="generated-file-card" role="group" aria-label={file.name}>
+    <div
+      className="generated-file-card clickable"
+      role="button"
+      tabIndex={0}
+      aria-label={`打开 ${file.name}`}
+      onClick={openDefault}
+      onKeyDown={handleKeyDown}
+    >
       <span className={`generated-file-icon tone-${fileTone(file.ext)}`}>
         {file.kind === 'image' ? <ImageIcon size={18} /> : fileGlyph(file.ext, 18)}
       </span>
@@ -5815,31 +6897,207 @@ function GeneratedFileCard({ file }: { file: GeneratedFile }) {
         <strong>{file.name}</strong>
         <span>{generatedFileTypeLabel(file)}</span>
       </span>
-      <button
-        type="button"
-        className="generated-file-open"
-        onClick={() => void openGeneratedFile(file)}
-        title="在 Finder 中显示"
-      >
-        <span>打开方式</span>
-        <ChevronDown size={13} />
-      </button>
+      <GeneratedFileOpenMenu file={file} openFileInDock={openFileInDock} openBrowserUrl={openBrowserUrl} />
     </div>
   );
 }
 
 function generatedFileTypeLabel(file: GeneratedFile): string {
   const type = fileTypeLabel(file.ext);
-  return file.kind === 'image' ? `图像 · ${type}` : type;
+  return file.kind === 'image' ? `图像 · ${type}` : `文档 · ${type}`;
 }
 
-async function openGeneratedFile(file: GeneratedFile): Promise<void> {
-  if (/^https?:\/\//i.test(file.path)) {
+async function openGeneratedFileDefault(
+  file: GeneratedFile,
+  openFileInDock?: ((path: string) => void) | null,
+  openBrowserUrl?: ((url: string) => void) | null,
+): Promise<void> {
+  const remote = /^https?:\/\//i.test(file.path);
+  const path = localFilePath(file.path) || file.path;
+  if (isBrowserPreviewExt(file.ext) && openBrowserUrl) {
+    openBrowserUrl(path);
+    return;
+  }
+  if (remote) {
     await openExternal(file.path);
     return;
   }
-  const path = localFilePath(file.path) || file.path;
+  if (openFileInDock) {
+    openFileInDock(path);
+    return;
+  }
   await revealPath(path);
+}
+
+function GeneratedFileOpenMenu({
+  file,
+  openFileInDock,
+  openBrowserUrl,
+}: {
+  file: GeneratedFile;
+  openFileInDock?: ((path: string) => void) | null;
+  openBrowserUrl?: ((url: string) => void) | null;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<CSSProperties>({ top: 0, left: 0 });
+  const [apps, setApps] = useState<OpenAppId[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const path = localFilePath(file.path) || file.path;
+  const remote = /^https?:\/\//i.test(file.path);
+  const browserPreview = isBrowserPreviewExt(file.ext);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [open]);
+
+  const updateMenuPosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const menu = menuRef.current;
+    const viewportPadding = 12;
+    const gap = 6;
+    const menuWidth = menu?.offsetWidth || 224;
+    const menuHeight = menu?.offsetHeight || 280;
+    const maxLeft = Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding);
+    const left = Math.min(maxLeft, Math.max(viewportPadding, rect.right - menuWidth));
+    const belowTop = rect.bottom + gap;
+    const aboveTop = rect.top - menuHeight - gap;
+    const preferredTop = belowTop + menuHeight <= window.innerHeight - viewportPadding || aboveTop < viewportPadding
+      ? belowTop
+      : aboveTop;
+    const maxTop = Math.max(viewportPadding, window.innerHeight - menuHeight - viewportPadding);
+    const top = Math.min(maxTop, Math.max(viewportPadding, preferredTop));
+    setMenuPosition({ left, top });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updateMenuPosition();
+    const handleUpdate = () => updateMenuPosition();
+    window.addEventListener('resize', handleUpdate);
+    window.addEventListener('scroll', handleUpdate, true);
+    return () => {
+      window.removeEventListener('resize', handleUpdate);
+      window.removeEventListener('scroll', handleUpdate, true);
+    };
+  }, [open, updateMenuPosition]);
+
+  useEffect(() => {
+    if (!open || remote) return;
+    let cancelled = false;
+    void listOpenApps()
+      .then((list) => {
+        if (!cancelled) setApps(list);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [open, remote]);
+
+  const choose = (action: () => void | Promise<void>) => {
+    setOpen(false);
+    void Promise.resolve(action()).catch((err) => {
+      setError(stringifyError(err));
+      window.setTimeout(() => setError(null), 4000);
+    });
+  };
+
+  const appTargets = FILE_OPEN_APP_ORDER.filter((id) => apps.includes(id));
+
+  useLayoutEffect(() => {
+    if (open) updateMenuPosition();
+  }, [open, appTargets.length, error, updateMenuPosition]);
+
+  const menu = open ? createPortal(
+    <div
+      ref={menuRef}
+      className="generated-file-menu"
+      role="menu"
+      style={menuPosition}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      {browserPreview && openBrowserUrl ? (
+        <button type="button" role="menuitem" onClick={() => choose(() => openBrowserUrl(path))}>
+          <span className="generated-file-menu-icon"><Globe size={15} /></span>
+          <span>侧边浏览器</span>
+        </button>
+      ) : !remote && openFileInDock ? (
+        <button type="button" role="menuitem" onClick={() => choose(() => openFileInDock(path))}>
+          <span className="generated-file-menu-icon"><PanelRight size={15} /></span>
+          <span>侧边栏预览</span>
+        </button>
+      ) : null}
+      {!remote && (
+        <>
+          <button type="button" role="menuitem" onClick={() => choose(async () => { if (!(await openLocalPath(path))) await openExternal(path); })}>
+            <span className="generated-file-menu-icon"><AppWindow size={15} /></span>
+            <span>Default app</span>
+          </button>
+          {appTargets.map((id) => (
+            <button key={id} type="button" role="menuitem" aria-label={OPEN_APP_META[id].label} onClick={() => choose(() => openInApp(id, path))}>
+              <span className="open-app-icon" style={{ background: OPEN_APP_META[id].color }}>{OPEN_APP_META[id].glyph}</span>
+              <span>{OPEN_APP_META[id].label}</span>
+            </button>
+          ))}
+          <button type="button" role="menuitem" aria-label="Terminal" onClick={() => choose(() => openInApp('terminal', path))}>
+            <span className="open-app-icon" style={{ background: OPEN_APP_META.terminal.color }}>{OPEN_APP_META.terminal.glyph}</span>
+            <span>Terminal</span>
+          </button>
+          <div className="generated-file-menu-divider" />
+          <button type="button" role="menuitem" aria-label="在 Finder 中显示" onClick={() => choose(async () => { await revealPath(path); })}>
+            <span className="open-app-icon" style={{ background: OPEN_APP_META.finder.color }}>{OPEN_APP_META.finder.glyph}</span>
+            <span>在 Finder 中显示</span>
+          </button>
+        </>
+      )}
+      {remote && (
+        <button type="button" role="menuitem" onClick={() => choose(() => openExternal(file.path))}>
+          <span className="generated-file-menu-icon"><Globe size={15} /></span>
+          <span>浏览器打开</span>
+        </button>
+      )}
+      {error && <div className="generated-file-menu-error"><AlertCircle size={13} />{error}</div>}
+    </div>,
+    document.body,
+  ) : null;
+
+  return (
+    <div
+      ref={rootRef}
+      className="generated-file-actions"
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`generated-file-open ${open ? 'active' : ''}`}
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`${file.name} 打开方式`}
+        title="打开方式"
+      >
+        <span>打开方式</span>
+        <ChevronDown size={13} />
+      </button>
+      {menu}
+    </div>
+  );
 }
 
 // Full-size image preview overlay opened by clicking a thumbnail.
@@ -6891,7 +8149,7 @@ function ReviewBody({ message, cwd }: { message: ChatMessage; cwd: string }) {
   const parsed = useMemo(() => parseReviewOutput(textContent), [textContent]);
   const lastBlockIndex = message.blocks.length - 1;
   const units = buildRenderUnits(message.blocks).filter(
-    (unit) => unit.type === 'command-group' || unit.block.type !== 'text',
+    (unit) => unit.type !== 'block' || unit.block.type !== 'text',
   );
   return (
     <div className="review-body">
@@ -6900,11 +8158,15 @@ function ReviewBody({ message, cwd }: { message: ChatMessage; cwd: string }) {
           ? (unit.blocks.length === 1
               ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
               : <CommandGroup key={`cmd-group-${unit.startIndex}`} blocks={unit.blocks} />)
+          : unit.type === 'web-search-group'
+            ? (unit.blocks.length === 1
+                ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
+                : <WebSearchGroup key={`web-group-${unit.startIndex}`} blocks={unit.blocks} />)
           : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={streaming && unit.index === lastBlockIndex} />,
       )}
       {parsed.prose && (
         <div className={`markdown-content ${streaming && !parsed.report ? 'streaming' : ''}`}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{parsed.prose}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{parsed.prose}</ReactMarkdown>
         </div>
       )}
       {parsed.report && <ReviewReportCard report={parsed.report} cwd={cwd} />}
@@ -6978,7 +8240,7 @@ function ReviewFindingCard({ finding, cwd }: { finding: ReviewFinding; cwd: stri
       )}
       {finding.body && (
         <div className="review-finding-body markdown-content">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{finding.body}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{finding.body}</ReactMarkdown>
         </div>
       )}
       {finding.suggestion && (
@@ -8274,6 +9536,7 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
 
   if (section === 'archived') return <ArchivedSettings />;
   if (section === 'models') return <ModelSettings />;
+  if (section === 'jqdata') return <JqDataSettings />;
   if (section === 'appearance') {
     return (
       <>
@@ -8347,6 +9610,201 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
 	    </SettingsGroup>
 	  );
 	}
+
+function JqDataSettings() {
+  const [config, setConfig] = useState<JqDataConfig>(() => emptyJqDataConfig());
+  const [enabled, setEnabled] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [apiUrl, setApiUrl] = useState('https://dataapi.joinquant.com/v2/apis');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const [probe, setProbe] = useState<JqDataProbeResult | null>(null);
+
+  const hydrate = useCallback((next: JqDataConfig) => {
+    setConfig(next);
+    setEnabled(next.enabled);
+    setUsername(next.username);
+    setApiUrl(next.apiUrl || 'https://dataapi.joinquant.com/v2/apis');
+    setPassword('');
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void loadJqDataConfig()
+      .then((next) => {
+        if (!cancelled) hydrate(next);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(stringifyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrate]);
+
+  const canSave = !enabled || Boolean(username.trim());
+  const canTest = Boolean(enabled && username.trim() && (password.trim() || config.passwordConfigured));
+  const configured = Boolean(config.enabled && config.username && config.passwordConfigured);
+  const status = loading ? 'checking' : configured ? 'ready' : 'missing';
+  const statusText = loading ? '检测中' : configured ? '已配置' : '未配置';
+  const sampleRows = Array.isArray(probe?.sample?.priceRows) ? probe.sample.priceRows.slice(0, 3) : [];
+
+  const save = async () => {
+    setSaving(true);
+    setError('');
+    setNotice('');
+    try {
+      await saveJqDataConfig({
+        enabled,
+        username,
+        password: password.trim() || undefined,
+        apiUrl,
+      });
+      const next = await loadJqDataConfig();
+      hydrate(next);
+      setNotice('聚宽数据配置已保存');
+      return true;
+    } catch (err) {
+      setError(stringifyError(err));
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!canSave || saving) return;
+    void save();
+  };
+
+  const test = async () => {
+    if (!canTest || saving || testing) return;
+    const saved = await save();
+    if (!saved) return;
+    setTesting(true);
+    setError('');
+    setNotice('');
+    setProbe(null);
+    try {
+      const result = await testJqDataConnection();
+      setProbe(result);
+      if (result.ok) {
+        setNotice(result.message);
+      } else {
+        setError(result.message);
+      }
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <>
+      <SettingsGroup>
+        <div className={`settings-status ${status}`}>
+          <span className="settings-status-icon">
+            {status === 'checking' ? <Loader2 size={16} className="spin" /> : <Database size={16} />}
+          </span>
+          <span className="settings-status-main">
+            <strong>JQData SDK/RPC 数据源</strong>
+            <span>{config.path}</span>
+          </span>
+          <span className={`settings-state-pill ${status}`}>
+            {statusText}
+          </span>
+        </div>
+      </SettingsGroup>
+
+      <form className="jqdata-settings-form" onSubmit={submit}>
+        <div className="settings-subtitle">连接配置</div>
+        <div className="jqdata-form-grid">
+          <label>
+            <span>启用数据源</span>
+            <span className="jqdata-toggle-row">
+              <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+              <em>{enabled ? '已启用' : '未启用'}</em>
+            </span>
+          </label>
+          <label>
+            <span>账号</span>
+            <input className="settings-input" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="手机号或聚宽账号" />
+          </label>
+          <label>
+            <span>密码</span>
+            <input className="settings-input" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={config.passwordConfigured ? '已保存，留空则不修改' : '聚宽登录密码'} />
+          </label>
+        </div>
+        <div className="jqdata-form-actions">
+          {notice && <span className="settings-state-pill ready">{notice}</span>}
+          {error && <span className="settings-inline-error">{error}</span>}
+          <button className="settings-btn" type="button" disabled={!canTest || saving || testing} onClick={() => void test()}>
+            {testing ? <Loader2 size={13} className="spin" /> : <Database size={13} />}
+            测试连接
+          </button>
+          <button className="settings-btn primary" type="submit" disabled={!canSave || saving}>
+            {saving ? <Loader2 size={13} className="spin" /> : <Check size={13} />}
+            保存
+          </button>
+        </div>
+      </form>
+
+      <div className="settings-subtitle">数据能力</div>
+      <div className="jqdata-capability-grid">
+        {JQDATA_CAPABILITIES.map((item) => (
+          <article key={item.title} className="jqdata-capability-card">
+            <strong>{item.title}</strong>
+            <span>{item.detail}</span>
+          </article>
+        ))}
+      </div>
+
+      {probe && (
+        <>
+          <div className="settings-subtitle">探针结果</div>
+          <div className="jqdata-probe-card">
+            <div className="jqdata-probe-head">
+              <strong>{probe.ok ? '连接正常' : '连接失败'}</strong>
+              <span>{probe.message}</span>
+            </div>
+            {probe.queryCount !== undefined && (
+              <code>{JSON.stringify(probe.queryCount)}</code>
+            )}
+            {probe.sample?.tradeDays && (
+              <span className="jqdata-sample-line">交易日：{probe.sample.tradeDays.join(' / ')}</span>
+            )}
+            {probe.sample?.permissionNote && (
+              <span className="jqdata-sample-line">{probe.sample.permissionNote}</span>
+            )}
+            {probe.sample?.authMessage && (
+              <span className="jqdata-sample-line">{probe.sample.authMessage}</span>
+            )}
+            {sampleRows.length > 0 && (
+              <div className="jqdata-sample-table">
+                {sampleRows.map((row, index) => (
+                  <span key={index}>
+                    <strong>{String(row.index ?? row.time ?? row.date ?? `样例 ${index + 1}`)}</strong>
+                    <em>收盘 {String(row.close ?? '-')}</em>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </>
+  );
+}
 
 const EMPTY_MODEL_DRAFT: ModelProfileDraft = {
   label: '',
@@ -8853,13 +10311,261 @@ function KeyboardSettings() {
 }
 
 function UsageSettings() {
+  const session = useChatStore((state) => state.clientLicenseSession);
+  const [summary, setSummary] = useState<ClientBillingSummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(async () => {
+    if (!session) return;
+    setLoading(true);
+    setError('');
+    try {
+      setSummary(await fetchClientBillingSummary(session));
+    } catch (err) {
+      setError(stringifyError(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [session]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const tenant = summary?.tenant ?? session?.tenant;
+  const billingMode = tenant?.billingMode || defaultBillingModeForSession(session);
+  const currentMonth = summary?.usage?.currentMonth ?? EMPTY_BILLING_USAGE;
+  const allTime = summary?.usage?.allTime ?? EMPTY_BILLING_USAGE;
+  const models = summary?.usage?.models ?? [];
+  const recentLedger = summary?.usage?.recentLedger ?? [];
+  const generatedAt = summary?.period?.generatedAt ? formatLicenseDate(summary.period.generatedAt) : loading ? '同步中' : '尚未同步';
+  const monthLabel = summary?.period?.currentMonthStart
+    ? `${formatMonthLabel(summary.period.currentMonthStart)}账期`
+    : '当前账期';
+  const codexSubscriptionEnabled = Boolean(tenant?.codexSubscriptionEnabled);
+  const apiSubscriptionEnabled = Boolean(tenant?.subscriptionPlan);
+
   return (
-    <SettingsGroup>
-      <SettingsRow title="当前版本" description="公开源码非商业版。"><span className="settings-static">0.1.0</span></SettingsRow>
-      <SettingsRow title="许可证" description="PolyForm Noncommercial License 1.0.0。"><span className="settings-static">Noncommercial</span></SettingsRow>
-      <SettingsRow title="商业授权" description="垂直领域商业包需要单独授权。"><span className="settings-static">未启用</span></SettingsRow>
-    </SettingsGroup>
+    <>
+      <section className="billing-overview" aria-label="账单总览">
+        <div className="billing-overview-head">
+          <div>
+            <strong>{monthLabel}</strong>
+            <span>数据更新时间：{generatedAt}</span>
+          </div>
+          <button className="settings-btn" type="button" onClick={() => void refresh()} disabled={!session || loading} aria-label="刷新账单">
+            <RefreshCw size={13} className={loading ? 'spin' : ''} />
+            <span>刷新</span>
+          </button>
+        </div>
+        <div className="billing-metrics">
+          <BillingMetric label="本月按量费用" value={formatYuan(currentMonth.billableYuan)} meta={`${formatWholeNumber(currentMonth.runCount)} 次调用`} />
+          <BillingMetric label="账户余额" value={formatYuan(tenant?.balanceYuan ?? 0)} meta="API 网关预付余额" tone={(tenant?.balanceYuan ?? 0) <= 0 ? 'warning' : 'default'} />
+          <BillingMetric label="本月 Tokens" value={formatWholeNumber(currentMonth.totalTokens)} meta={formatUsageBreakdown(currentMonth)} />
+        </div>
+        {error && <div className="billing-alert"><AlertCircle size={14} />{error}</div>}
+      </section>
+
+      <SettingsGroup>
+        <SettingsRow title="计费模式" description="订阅模型按席位或套餐授权，API 网关按真实 token 用量结算。">
+          <span className="settings-static">{formatBillingMode(billingMode)}</span>
+        </SettingsRow>
+        <SettingsRow title="客户" description="当前设备激活的计费主体。">
+          <span className="settings-static">{tenant?.name || '未激活'}</span>
+        </SettingsRow>
+        <SettingsRow title="活跃设备" description="该客户当前处于激活状态的设备数量。">
+          <span className="settings-static">{summary?.activeDevices ?? tenant?.maxDevices ?? 0} / {tenant?.maxDevices ?? '-'}</span>
+        </SettingsRow>
+      </SettingsGroup>
+
+      <div className="settings-subtitle">订阅</div>
+      <SettingsGroup>
+        <SettingsRow title="Codex 订阅" description={codexSubscriptionEnabled ? `套餐 ${formatPlanLabel(tenant?.codexSubscriptionPlan)} · ${formatExpiryLabel(tenant?.codexSubscriptionExpiresAt)}` : '未启用 Codex 订阅模型。'}>
+          <BillingStatusPill enabled={codexSubscriptionEnabled} label={codexSubscriptionEnabled ? '已启用' : '未启用'} />
+        </SettingsRow>
+        <SettingsRow title="API 套餐" description={apiSubscriptionEnabled ? `${formatPlanLabel(tenant?.subscriptionPlan)} · ${formatExpiryLabel(tenant?.subscriptionExpiresAt)}` : '未配置固定 API 套餐，API 网关按量扣费。'}>
+          <BillingStatusPill enabled={apiSubscriptionEnabled} label={apiSubscriptionEnabled ? '已订阅' : '按量'} />
+        </SettingsRow>
+      </SettingsGroup>
+
+      <div className="settings-subtitle">按量使用</div>
+      <SettingsGroup>
+        <SettingsRow title="本月费用" description={formatUsageBreakdown(currentMonth)}>
+          <span className="settings-static">{formatYuan(currentMonth.billableYuan)}</span>
+        </SettingsRow>
+        <SettingsRow title="累计费用" description={`累计 ${formatWholeNumber(allTime.runCount)} 次调用 · ${formatWholeNumber(allTime.totalTokens)} tokens`}>
+          <span className="settings-static">{formatYuan(allTime.billableYuan)}</span>
+        </SettingsRow>
+        <SettingsRow title="最近使用" description="最近一笔按量调用产生的时间。">
+          <span className="settings-static">{formatLicenseDate(currentMonth.lastUsedAt || allTime.lastUsedAt)}</span>
+        </SettingsRow>
+      </SettingsGroup>
+
+      <BillingModelTable models={models} />
+      <BillingLedgerList entries={recentLedger} />
+    </>
   );
+}
+
+const EMPTY_BILLING_USAGE: BillingUsageTotals = {
+  runCount: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  reasoningTokens: 0,
+  cachedTokens: 0,
+  totalTokens: 0,
+  costYuan: 0,
+  billableYuan: 0,
+  lastUsedAt: null,
+};
+
+function BillingMetric({ label, value, meta, tone = 'default' }: { label: string; value: string; meta: string; tone?: 'default' | 'warning' }) {
+  return (
+    <span className={`billing-metric ${tone}`}>
+      <strong>{value}</strong>
+      <em>{label}</em>
+      <small>{meta}</small>
+    </span>
+  );
+}
+
+function BillingStatusPill({ enabled, label }: { enabled: boolean; label: string }) {
+  return <span className={`billing-status-pill ${enabled ? 'active' : 'muted'}`}>{label}</span>;
+}
+
+function BillingModelTable({ models }: { models: BillingModelUsage[] }) {
+  return (
+    <section className="billing-table-section" aria-label="模型用量">
+      <div className="billing-section-title">
+        <strong>模型用量</strong>
+        <span>按本月按量费用排序</span>
+      </div>
+      {models.length === 0 ? (
+        <div className="billing-empty">本月还没有按量 API 消耗。</div>
+      ) : (
+        <div className="billing-table-wrap">
+          <table className="billing-table">
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th>调用</th>
+                <th>Tokens</th>
+                <th>费用</th>
+              </tr>
+            </thead>
+            <tbody>
+              {models.map((model) => (
+                <tr key={model.modelId}>
+                  <td>
+                    <strong>{model.label || model.modelId}</strong>
+                    <span>{model.provider || model.modelId}</span>
+                  </td>
+                  <td>{formatWholeNumber(model.runCount)}</td>
+                  <td title={formatUsageBreakdown(model)}>{formatWholeNumber(model.totalTokens)}</td>
+                  <td>{formatYuan(model.billableYuan)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function BillingLedgerList({ entries }: { entries: BillingLedgerEntry[] }) {
+  return (
+    <section className="billing-ledger" aria-label="最近账单流水">
+      <div className="billing-section-title">
+        <strong>最近账单流水</strong>
+        <span>网关扣费和余额变动</span>
+      </div>
+      {entries.length === 0 ? (
+        <div className="billing-empty">暂无账单流水。</div>
+      ) : (
+        <div className="billing-ledger-list">
+          {entries.map((entry) => (
+            <div className="billing-ledger-row" key={entry.id}>
+              <div>
+                <strong>{entry.description || formatLedgerEntryType(entry.entryType)}</strong>
+                <span>{formatLicenseDate(entry.createdAt)}{entry.runId ? ` · ${entry.runId}` : ''}</span>
+              </div>
+              <em className={entry.amountYuan < 0 ? 'charge' : 'credit'}>{formatSignedYuan(entry.amountYuan)}</em>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function defaultBillingModeForSession(session: ClientLicenseSession | null): string {
+  const hasSubscription = Boolean(session?.tenant.codexSubscriptionEnabled || session?.tenant.subscriptionPlan);
+  const hasGatewayModels = Boolean(session?.models.some((model) => model.mode === 'gateway_api' && model.enabled));
+  if (hasSubscription && hasGatewayModels) return 'hybrid';
+  if (hasSubscription) return 'subscription';
+  return 'gateway_api';
+}
+
+function formatBillingMode(mode?: string | null): string {
+  if (mode === 'hybrid') return '订阅 + 按量';
+  if (mode === 'subscription') return '订阅';
+  if (mode === 'gateway_api') return '按量付费';
+  return mode || '未设置';
+}
+
+function formatPlanLabel(plan?: string | null): string {
+  if (!plan) return '未设置';
+  const labels: Record<string, string> = {
+    monthly: '月付',
+    yearly: '年付',
+    pro: '专业版',
+    team: '团队版',
+    enterprise: '企业版',
+  };
+  return labels[plan] || plan;
+}
+
+function formatExpiryLabel(value?: string | null): string {
+  return value ? `到期 ${formatLicenseDate(value)}` : '持续有效';
+}
+
+function formatUsageBreakdown(usage: BillingUsageTotals): string {
+  return `输入 ${formatWholeNumber(usage.inputTokens)} · 输出 ${formatWholeNumber(usage.outputTokens)} · 推理 ${formatWholeNumber(usage.reasoningTokens)} · 缓存 ${formatWholeNumber(usage.cachedTokens)}`;
+}
+
+function formatLedgerEntryType(type: string): string {
+  if (type === 'usage_charge') return '按量扣费';
+  if (type === 'topup') return '余额充值';
+  if (type === 'adjustment') return '账务调整';
+  return type;
+}
+
+function formatWholeNumber(value: number | undefined): string {
+  const safe = Number.isFinite(value) ? Math.max(0, Math.round(value ?? 0)) : 0;
+  return new Intl.NumberFormat('zh-CN').format(safe);
+}
+
+function formatYuan(value: number | undefined): string {
+  const safe = Number.isFinite(value) ? value ?? 0 : 0;
+  const abs = Math.abs(safe);
+  return new Intl.NumberFormat('zh-CN', {
+    style: 'currency',
+    currency: 'CNY',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: abs > 0 && abs < 1 ? 4 : 2,
+  }).format(safe);
+}
+
+function formatSignedYuan(value: number): string {
+  return `${value > 0 ? '+' : ''}${formatYuan(value)}`;
+}
+
+function formatMonthLabel(value: string): string {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return value;
+  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long' }).format(time);
 }
 
 function PluginSettings() {
@@ -8874,7 +10580,7 @@ function PluginSettings() {
       </SettingsGroup>
       <SettingsGroup>
         <SettingsRow title="技能目录" description="Alpha Studio 会从本地技能目录加载可用技能。">
-          <span className="settings-static">~/.codex/skills</span>
+          <span className="settings-static">~/.alpha-studio/codex-home/skills</span>
         </SettingsRow>
       </SettingsGroup>
     </>
@@ -8970,6 +10676,7 @@ function settingsIcon(section: SettingsSection): ReactNode {
     keyboard: <Keyboard size={15} />,
     usage: <History size={15} />,
     snapshots: <Layers size={15} />,
+    jqdata: <Database size={15} />,
     mcp: <Plug size={15} />,
     browser: <Globe size={15} />,
     computer: <Monitor size={15} />,
@@ -9032,7 +10739,8 @@ function toolPresentation(title: string): { kind: ToolKind; icon: ReactNode; run
     return { kind: 'image', icon: <ImageIcon size={14} />, running: '正在生成图片', done: '已生成图片', failed: '图片生成失败' };
   }
   if (has('exec', 'shell', 'command', 'bash', 'execute', 'terminal')) return { kind: 'command', icon: <Terminal size={14} />, running: '正在运行', done: '已运行', failed: '运行失败' };
-  if (has('web_search', 'websearch', 'web.run', 'web.search', 'browse_search')) return { kind: 'web', icon: <Globe size={14} />, running: '正在搜索网页', done: '已搜索网页', failed: '网页搜索失败' };
+  if (isWebSearchToolTitle(title)) return { kind: 'web', icon: <Globe size={14} />, running: '正在搜索网页', done: '已搜索网页', failed: '网页搜索失败' };
+  if (isSpawnAgentToolTitle(title)) return { kind: 'generic', icon: <Users size={14} />, running: '正在调用同事', done: '已调用同事', failed: '同事调用失败' };
   if (has('search', 'grep', 'glob', 'ripgrep', 'find', 'query')) return { kind: 'search', icon: <Search size={14} />, running: '正在搜索', done: '已搜索', failed: '搜索失败' };
   if (has('write', 'edit', 'patch', 'apply', 'filechange', 'file_change', 'diff', 'create', 'update')) return { kind: 'file-edit', icon: <FileCode2 size={14} />, running: '正在编辑', done: '已编辑', failed: '编辑失败' };
   if (has('read', 'open', 'cat', 'file', 'view')) return { kind: 'file-read', icon: <FileText size={14} />, running: '正在读取', done: '已读取', failed: '读取失败' };
@@ -9099,16 +10807,18 @@ async function copyToClipboard(text: string): Promise<void> {
 }
 
 async function openExternal(url: string): Promise<void> {
+  const localPath = localFilePath(url);
   if (isTauriRuntime()) {
     try {
-      const { openUrl } = await import('@tauri-apps/plugin-opener');
-      await openUrl(url);
+      const { openPath, openUrl } = await import('@tauri-apps/plugin-opener');
+      if (localPath) await openPath(localPath);
+      else await openUrl(url);
       return;
     } catch {
       // Fall back to the web behavior below.
     }
   }
-  window.open(url, '_blank', 'noopener,noreferrer');
+  window.open(localPath ? localFileBrowserUrl(localPath) : url, '_blank', 'noopener,noreferrer');
 }
 
 async function pickFolder(): Promise<string | null> {
@@ -9203,6 +10913,22 @@ function renderableImageSrc(src: string): string {
   } catch {
     return src;
   }
+}
+
+function localFileBrowserUrl(path: string): string {
+  if (isTauriRuntime()) {
+    try {
+      return convertFileSrc(path);
+    } catch {
+      // Fall through to a file URL for degraded runtimes.
+    }
+  }
+  return pathToFileUrl(path);
+}
+
+function pathToFileUrl(path: string): string {
+  if (path.startsWith('file://')) return path;
+  return `file://${path.split('/').map((part) => encodeURIComponent(part)).join('/')}`;
 }
 
 function localFilePath(src: string): string | null {

@@ -19,20 +19,43 @@ export function buildCoworkerOrchestrationLines(coworkers: CoworkerSelection[]):
     const duty = profile ? profile.description : '';
     return `- agent \`${coworker.id}\`(${coworker.no} ${coworker.name}${duty ? `,职责:${duty}` : ''})`;
   });
+  const multi = coworkers.length > 1;
   const hasPmDeputy = coworkers.some((coworker) => coworker.id === 'pm_deputy');
   const lines = [
     '用户为本次任务召集了以下 AI 同事(它们已在 agents 目录中定义为可 spawn 的 sub-agent):',
     ...roster,
     '协作规则:',
     '- 你是调度者(主 agent),不要亲自替同事完成研究;必须使用 spawn agent 工具启动上面列出的每一位同事的 sub-agent(按 agent 名称精确匹配),把与其职责匹配的子任务分派给它。',
-    coworkers.length > 1
-      ? '- 多位同事的子任务应并行 spawn;等全部同事返回结果后,再汇总输出一份联合结论,联合结论按同事分小节呈现,每个小节以「编号 + 姓名」署名,最后给出综合判断。'
-      : '- 等该同事返回结果后,转述其交付物并以「编号 + 姓名」署名,再补充你作为调度者的简短结论。',
+    // Root cause of the "garbled" transcript: multiple sub-agents streaming
+    // long prose concurrently gets flattened into one text block. Fix it at the
+    // source by giving every sub-agent a file outlet and keeping the chat text
+    // block owned by the dispatcher alone.
+    '- 关键(避免多代理并发把正文冲乱):每位被 spawn 的同事只做两件事——(1)把自己的完整署名意见写入一个独立文件;(2)向你(调度者)返回一段简短的结构化要点。子代理在聊天区最多只回一行状态(例如「① 市场策略官:已完成」),严禁在聊天区输出长篇分析、逐字草稿或思考过程,否则多位同事同时输出会把最终成稿冲成乱码。',
+    '- 落盘约定:先在当前工作目录建立本次协作目录 `./coworker-notes/<任务或模板简称>-<YYYY-MM-DD>/`;每位同事把意见写到该目录下 `<agent-id>.md`;你把最终整合《纪要》写到该目录下 `<纪要名>-<YYYY-MM-DD>.md`。',
+    '- 最终纪要必须是独立于同事署名文件的用户可读成稿;不得把 `compliance.md`、`research_plan.md`、`shared_inputs.md` 或任一单个同事文件当作最终《纪要》交付。合规文件只能作为来源、归档和表达口径素材。',
   ];
+  if (multi) {
+    lines.push(
+      '- 多位同事的子任务应并行 spawn;等同事返回要点并写完各自文件后,你必须读取这些文件,再合成一份最终《纪要》。最终《纪要》先给综合判断和行动清单,再保留必要的同事署名意见或归档摘要。',
+      '- 若某些同事文件缺失或只生成了合规/计划/共享输入文件,也要基于已有输入生成最终《纪要》,并在「完成核对」中标注缺失的同事、缺口和后续补充项;不能只停在合规归档或研究计划。',
+    );
+  } else {
+    lines.push(
+      '- 等该同事返回要点并写完文件后,你读取其文件,转述其交付物并以「编号 + 姓名」署名,再补充你作为调度者的简短结论。',
+    );
+  }
+  lines.push(
+    '- 唯一长文出口:整个对话里只有你(调度者)输出这份最终《纪要》长文;其余同事一律不在聊天区写长文,以保证正文不被并发输出打断或串行错乱。',
+    '- 最终答复必须是面向用户的干净成稿:不要把技能说明全文、工具日志、检索过程、spawn 过程、sub-agent 原始输出或半句草稿粘贴进正文;先收集各同事文件里的要点,再一次性整合。',
+    '- 最终成稿必须让用户直接读懂结论、机会、风险和下一步动作;归档、合规、来源和缺口只能作为正文后部或附录,不得替代结论与行动清单。',
+    '- 如果用户导入的是协作模板,优先遵守模板中的输出结构;除非用户明确要求正式报告/HTML/PDF,不要自动扩展成多页正式报告。',
+    '- 对复杂协作任务,先在最终答复开头给出「本次 TODO」清单,再按 TODO 顺序整合各同事结论;结尾用「完成核对」逐项标注已完成/未完成和缺口,防止偏离主任务。',
+    '- 交付方式:先在聊天区给出①一句话结论 + 行动清单摘要、②最终《纪要》文件的路径,再附上完整《纪要》正文供直接阅读;若当前为只读沙箱、无法写文件,则说明无法落盘,并把完整《纪要》直接输出在聊天区。',
+  );
   if (hasPmDeputy) {
     lines.push('- ⑧ 基金经理副官在场:最终汇总部分由它的口吻执笔,给出带立场的综合判断(「我会怎么做、为什么」)。');
   }
-  lines.push('- 如果当前环境不支持 spawn agent 工具,则退化为:你在同一回复中依次扮演每位同事,产出同样按署名小节组织的结论,并说明是在单会话内模拟的协作。');
+  lines.push('- 如果当前环境不支持 spawn agent 工具,则退化为:你在同一回复中依次扮演每位同事(串行,一位写完再写下一位,避免交叉输出),产出同样按署名小节组织的结论,并说明是在单会话内模拟的协作;仍按上面的要求给出干净《纪要》并落盘为文件(若可写)。');
   return lines;
 }
 
@@ -56,6 +79,13 @@ export function buildCodingInstructions(
     modeLines.push(
       `当前指定 Skill：${skill.title} (${skill.id})。必须优先使用这个 Skill 的说明、工作流和工具路线来完成任务；如果任务明显不适合该 Skill，先简短说明原因，再用最合适的方式继续。`,
     );
+    if (skill.id === 'alpha-studio-daily-theme-research') {
+      modeLines.push(
+        'Alpha Studio 盘前主题协议：这个 Skill 的研究规则、报告结构、输出深度、评分、连续跟踪、产业链真实性、执行闸门和校验要求必须与 `neostream-daily-theme-research` 保持一致；仅将名称/品牌/Logo 替换为 Alpha Studio / Alpha Studio Research。',
+        '默认生成正式日报而不是简版。除非用户明确要求快报或 9:25 集合竞价确认，报告必须包含 `今日执行闸门`、`今日资金进攻路径`、`今日进攻概率`、`情绪指标仪表盘`、`隔夜全球线索`、`全球线索到A股题材映射`、`上一期主题连续跟踪`、`题材分级与生命周期`、`题材持续时间与持有复核`、`龙头 / 中军 / 趋势核心 / 补涨矩阵`、`来源与风险提示`。',
+        '输出先给 `alpha.premarket_theme.v1` fenced JSON，再给完整 Markdown/HTML 报告。JSON 也必须包含全局 `capitalAttackPath`，并为每个 S/A/B 主题写出今日进攻概率、研究概率、观察权重、持有窗口和触发/失效条件。',
+      );
+    }
     if (skill.id === 'imagegen') {
       modeLines.push(
         '图片生成展示要求：在对话中简短说明正在生成或处理的关键步骤；最终必须把每张生成图片用可渲染的 Markdown 图片语法 `![说明](绝对路径或URL)` 或明确的本地绝对路径/URL 展示出来，并说明保存位置。不要只回复“已生成”；如果没有实际得到图片文件、URL 或可展示结果，必须说明未完成和原因。',

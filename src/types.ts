@@ -27,6 +27,7 @@ export interface ToolBlock {
   id: string;
   title: string;
   status: 'in_progress' | 'completed' | 'failed';
+  target?: string;
   input?: string;
   output?: string;
 }
@@ -146,11 +147,32 @@ export interface ChatMessage {
   reviewRequest?: ReviewRequest;
 }
 
+export interface QueuedChatMessage {
+  id: string;
+  text: string;
+  createdAt: number;
+  attachments?: MessageAttachment[];
+  selectedSkill?: SkillSelection;
+  coworkers?: CoworkerSelection[];
+}
+
+export interface BackgroundContextSummary {
+  summary: string;
+  sourceMessageCount: number;
+  sourceTokenEstimate: number;
+  summaryTokenEstimate: number;
+  compactedAt: number;
+  updatedAt: number;
+}
+
 export interface Conversation {
   id: string;
   title: string;
   messages: ChatMessage[];
+  queuedMessages?: QueuedChatMessage[];
+  guidedQueuedMessages?: QueuedChatMessage[];
   codexThreadId?: string;
+  backgroundContext?: BackgroundContextSummary;
   cwd: string;
   projectId?: string;
   createdAt: number;
@@ -277,7 +299,7 @@ export interface GhAuthStatus {
   account?: string;
 }
 
-export type OpenAppId = 'finder' | 'terminal' | 'vscode' | 'cursor' | 'pycharm';
+export type OpenAppId = 'finder' | 'terminal' | 'vscode' | 'cursor' | 'pycharm' | 'xcode';
 
 export interface TerminalEvent {
   type: 'output' | 'exit';

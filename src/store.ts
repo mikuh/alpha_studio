@@ -1,10 +1,16 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import { addScheduledAutomationTask, automationCreatedReply, detectAutomationIntent } from './automation';
+import {
+  addBackgroundContextToPrompt,
+  messagesForActiveBackground,
+  prepareConversationForOutgoingTurn,
+} from './contextWindow';
 import { applyCodexEventToConversation } from './codexEvents';
 import { buildCodingInstructions, buildReviewPrompt } from './prompt';
 import { checkCodex, isTauriRuntime, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
+import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
 import {
   ALPHA_GATEWAY_PROVIDER_ID,
   createGatewayRun,
@@ -45,6 +51,7 @@ import type {
   MessageBlock,
   Project,
   ProjectSort,
+  QueuedChatMessage,
   ReviewRequest,
   SandboxMode,
   SkillSelection,
@@ -112,13 +119,17 @@ interface ChatState {
   resolveAuthorization: (id: string, decision: ApprovalDecision) => void;
   refreshCodexStatus: () => Promise<void>;
   sendMessage: (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null, coworkers?: CoworkerSelection[] | null) => Promise<void>;
+  removeQueuedMessage: (conversationId: string, queuedMessageId: string) => void;
+  updateQueuedMessage: (conversationId: string, queuedMessageId: string, patch: Pick<QueuedChatMessage, 'text'>) => void;
+  reorderQueuedMessage: (conversationId: string, queuedMessageId: string, beforeQueuedMessageId: string | null) => void;
+  sendQueuedMessageNow: (conversationId: string, queuedMessageId: string) => Promise<void>;
   startReview: (request: ReviewRequest) => Promise<void>;
   editUserMessageAndResend: (conversationId: string, messageId: string, message: string, attachments?: MessageAttachment[]) => Promise<void>;
   stopCurrentConversation: () => Promise<void>;
   handleCodexEvent: (event: CodexChatEvent) => void;
 }
 
-interface PersistedChatState {
+export interface PersistedChatState {
   conversations: Conversation[];
   projects: Project[];
   currentConversationId: string | null;
@@ -132,6 +143,30 @@ interface PersistedChatState {
   pursueGoal: boolean;
   projectSort: ProjectSort;
   conversationSort: ProjectSort;
+}
+
+const tauriNoopStorage = {
+  getItem: () => null,
+  setItem: () => undefined,
+  removeItem: () => undefined,
+};
+
+function persistedChatState(state: ChatState): PersistedChatState {
+  return {
+    conversations: state.conversations,
+    projects: state.projects,
+    currentConversationId: state.currentConversationId,
+    selectedModelProfileId: state.selectedModelProfileId,
+    modelProfiles: stripModelProfileSecrets(state.modelProfiles),
+    reasoningEffort: state.reasoningEffort,
+    speed: state.speed,
+    workModeId: state.workModeId,
+    approvalMode: state.approvalMode,
+    planMode: state.planMode,
+    pursueGoal: state.pursueGoal,
+    projectSort: state.projectSort,
+    conversationSort: state.conversationSort,
+  };
 }
 
 export const useChatStore = create<ChatState>()(
@@ -203,6 +238,202 @@ export const useChatStore = create<ChatState>()(
             if (path) set({ modelConfigPath: path });
           })
           .catch((error) => set({ error: stringifyError(error) }));
+      };
+
+      const enqueueMessage = (conversationId: string, queuedMessage: QueuedChatMessage) => {
+        set((state) => ({
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === conversationId
+              ? {
+                  ...conversation,
+                  queuedMessages: [...(conversation.queuedMessages ?? []), queuedMessage],
+                  updatedAt: Date.now(),
+                }
+              : conversation
+          ),
+          error: null,
+        }));
+      };
+
+      const removeQueuedMessageFromConversation = (conversation: Conversation, queuedMessageId?: string): Conversation => {
+        if (!queuedMessageId) return conversation;
+        return {
+          ...conversation,
+          queuedMessages: (conversation.queuedMessages ?? []).filter((item) => item.id !== queuedMessageId),
+          guidedQueuedMessages: (conversation.guidedQueuedMessages ?? []).filter((item) => item.id !== queuedMessageId),
+        };
+      };
+
+      const reorderQueuedMessageInConversation = (
+        conversation: Conversation,
+        queuedMessageId: string,
+        beforeQueuedMessageId: string | null,
+      ): Conversation => {
+        const queuedMessages = conversation.queuedMessages ?? [];
+        const moving = queuedMessages.find((item) => item.id === queuedMessageId);
+        if (!moving) return conversation;
+        const rest = queuedMessages.filter((item) => item.id !== queuedMessageId);
+        const beforeIndex = beforeQueuedMessageId ? rest.findIndex((item) => item.id === beforeQueuedMessageId) : -1;
+        const insertIndex = beforeIndex >= 0 ? beforeIndex : rest.length;
+        return {
+          ...conversation,
+          queuedMessages: [
+            ...rest.slice(0, insertIndex),
+            moving,
+            ...rest.slice(insertIndex),
+          ],
+          updatedAt: Date.now(),
+        };
+      };
+
+      const startNextQueuedMessage = (conversationId: string) => {
+        const conversation = get().conversations.find((item) => item.id === conversationId);
+        if (!conversation || conversation.archivedAt || conversation.status === 'streaming') return;
+        const next = conversation.guidedQueuedMessages?.[0] ?? conversation.queuedMessages?.[0];
+        if (!next) return;
+        void startPreparedMessage(conversationId, next, next.id);
+      };
+
+      const startPreparedMessage = async (
+        conversationId: string,
+        queuedMessage: QueuedChatMessage,
+        queuedMessageId?: string,
+      ) => {
+        const conversation = get().conversations.find((item) => item.id === conversationId);
+        if (!conversation || conversation.status === 'streaming' || conversation.archivedAt) return;
+
+        const trimmed = queuedMessage.text.trim();
+        const attachmentList = queuedMessage.attachments && queuedMessage.attachments.length
+          ? queuedMessage.attachments
+          : undefined;
+        const selectedSkill = queuedMessage.selectedSkill;
+        const coworkerList = queuedMessage.coworkers && queuedMessage.coworkers.length
+          ? queuedMessage.coworkers
+          : undefined;
+        if (!trimmed && !attachmentList) {
+          if (queuedMessageId) {
+            set((state) => ({
+              conversations: state.conversations.map((item) =>
+                item.id === conversationId ? removeQueuedMessageFromConversation(item, queuedMessageId) : item
+              ),
+            }));
+            startNextQueuedMessage(conversationId);
+          }
+          return;
+        }
+
+        const userMessage: ChatMessage = {
+          id: createId('user'),
+          role: 'user',
+          timestamp: Date.now(),
+          blocks: trimmed ? [{ type: 'text', content: trimmed }] : [],
+          attachments: attachmentList,
+          selectedSkill,
+          coworkers: coworkerList,
+        };
+        const assistantMessage: ChatMessage = {
+          id: createId('assistant'),
+          role: 'assistant',
+          timestamp: Date.now(),
+          isStreaming: true,
+          blocks: [],
+        };
+        const nextTitle = conversation.messages.length === 0
+          ? buildConversationTitle(trimmed || attachmentList?.[0]?.name || '')
+          : conversation.title;
+        const automationIntent = !attachmentList && !selectedSkill && !coworkerList ? detectAutomationIntent(trimmed) : null;
+
+        if (automationIntent) {
+          const task = addScheduledAutomationTask({ ...automationIntent, conversationId });
+          set((state) => ({
+            conversations: state.conversations.map((item) =>
+              item.id === conversationId
+                ? {
+                    ...removeQueuedMessageFromConversation(item, queuedMessageId),
+                    title: nextTitle,
+                    messages: [
+                      ...item.messages,
+                      userMessage,
+                      {
+                        ...assistantMessage,
+                        isStreaming: false,
+                        blocks: [{ type: 'text', content: automationCreatedReply(task) }],
+                      },
+                    ],
+                    status: 'idle',
+                    updatedAt: Date.now(),
+                    runId: undefined,
+                  }
+                : item
+            ),
+            error: null,
+          }));
+          if (queuedMessageId) startNextQueuedMessage(conversationId);
+          return;
+        }
+
+        const preparedContext = prepareConversationForOutgoingTurn(conversation);
+        const baseConversation = removeQueuedMessageFromConversation(preparedContext.conversation, queuedMessageId);
+
+        set((state) => ({
+          conversations: state.conversations.map((item) =>
+            item.id === conversationId
+              ? {
+                  ...baseConversation,
+                  title: nextTitle,
+                  messages: [...baseConversation.messages, userMessage, assistantMessage],
+                  status: 'streaming',
+                  updatedAt: Date.now(),
+                  runId: undefined,
+                }
+              : item
+          ),
+          error: null,
+        }));
+
+        const sandboxMode = await runApprovalGate(conversationId);
+        if (sandboxMode === null) return;
+
+        if (!isTauriRuntime()) {
+          simulateBrowserReply(conversationId, get().handleCodexEvent);
+          return;
+        }
+
+        try {
+          const latest = get().conversations.find((item) => item.id === conversationId);
+          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+          const domain = activeDomain(get().workModeId);
+          const promptOptions = {
+            planMode: get().planMode,
+            pursueGoal: get().pursueGoal,
+            selectedSkill: userMessage.selectedSkill,
+            coworkers: userMessage.coworkers,
+          };
+          const result = await startCodexChat({
+            conversationId,
+            prompt: addBackgroundContextToPrompt(
+              promptWithAttachments(trimmed, attachmentList),
+              preparedContext.promptContext,
+            ),
+            developerInstructions: buildCodingInstructions(promptOptions, domain),
+            codexThreadId: latest?.codexThreadId,
+            cwd: latest?.cwd || undefined,
+            ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
+            sandboxMode,
+          });
+          set((state) => ({
+            conversations: state.conversations.map((item) =>
+              item.id === conversationId ? { ...item, runId: result.runId } : item
+            ),
+          }));
+        } catch (error) {
+          get().handleCodexEvent({
+            type: 'error',
+            runId: '',
+            conversationId,
+            message: stringifyError(error),
+          });
+        }
       };
 
       return {
@@ -340,6 +571,8 @@ export const useChatStore = create<ChatState>()(
             isStreaming: false,
           })),
           codexThreadId: undefined,
+          queuedMessages: undefined,
+          guidedQueuedMessages: undefined,
           status: 'idle',
           runId: undefined,
           pinned: false,
@@ -633,10 +866,10 @@ export const useChatStore = create<ChatState>()(
       },
 
       sendMessage: async (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null, coworkers?: CoworkerSelection[] | null) => {
-        const trimmed = message.trim();
+        const text = message.trim();
         const attachmentList = attachments && attachments.length ? attachments : undefined;
         const coworkerList = coworkers && coworkers.length ? coworkers.map(normalizeCoworkerSelection) : undefined;
-        if (!trimmed && !attachmentList) return;
+        if (!text && !attachmentList) return;
 
         let conversationId = get().currentConversationId;
         const activeIds = new Set(activeConversations(get().conversations).map((item) => item.id));
@@ -644,113 +877,87 @@ export const useChatStore = create<ChatState>()(
           conversationId = get().createConversation();
         }
         const conversation = get().conversations.find((item) => item.id === conversationId);
-        if (!conversation || conversation.status === 'streaming' || conversation.archivedAt) return;
+        if (!conversation || conversation.archivedAt) return;
 
-        const userMessage: ChatMessage = {
-          id: createId('user'),
-          role: 'user',
-          timestamp: Date.now(),
-          blocks: trimmed ? [{ type: 'text', content: trimmed }] : [],
+        const queuedMessage: QueuedChatMessage = {
+          id: createId('queue'),
+          text,
+          createdAt: Date.now(),
           attachments: attachmentList,
           selectedSkill: selectedSkill ? normalizeSelectedSkill(selectedSkill) : undefined,
           coworkers: coworkerList,
         };
-        const assistantMessage: ChatMessage = {
-          id: createId('assistant'),
-          role: 'assistant',
-          timestamp: Date.now(),
-          isStreaming: true,
-          blocks: [],
-        };
-        const nextTitle = conversation.messages.length === 0
-          ? buildConversationTitle(trimmed || attachmentList?.[0]?.name || '')
-          : conversation.title;
-        const automationIntent = !attachmentList && !selectedSkill && !coworkerList ? detectAutomationIntent(trimmed) : null;
 
-        if (automationIntent) {
-          const task = addScheduledAutomationTask({ ...automationIntent, conversationId });
-          set((state) => ({
-            conversations: state.conversations.map((item) =>
-              item.id === conversationId
-                ? {
-                    ...item,
-                    title: nextTitle,
-                    messages: [
-                      ...item.messages,
-                      userMessage,
-                      {
-                        ...assistantMessage,
-                        isStreaming: false,
-                        blocks: [{ type: 'text', content: automationCreatedReply(task) }],
-                      },
-                    ],
-                    status: 'idle',
-                    updatedAt: Date.now(),
-                    runId: undefined,
-                  }
-                : item
-            ),
-            error: null,
-          }));
+        if (conversation.status === 'streaming') {
+          enqueueMessage(conversationId, queuedMessage);
           return;
         }
 
+        await startPreparedMessage(conversationId, queuedMessage);
+      },
+
+      removeQueuedMessage: (conversationId: string, queuedMessageId: string) => {
         set((state) => ({
-          conversations: state.conversations.map((item) =>
-            item.id === conversationId
-              ? {
-                  ...item,
-                  title: nextTitle,
-                  messages: [...item.messages, userMessage, assistantMessage],
-                  status: 'streaming',
-                  updatedAt: Date.now(),
-                  runId: undefined,
-                }
-              : item
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === conversationId
+              ? removeQueuedMessageFromConversation(conversation, queuedMessageId)
+              : conversation
           ),
-          error: null,
         }));
+      },
 
-        const sandboxMode = await runApprovalGate(conversationId);
-        if (sandboxMode === null) return;
+      updateQueuedMessage: (conversationId: string, queuedMessageId: string, patch: Pick<QueuedChatMessage, 'text'>) => {
+        const text = patch.text.trim();
+        set((state) => ({
+          conversations: state.conversations.map((conversation) => {
+            if (conversation.id !== conversationId) return conversation;
+            return {
+              ...conversation,
+              queuedMessages: (conversation.queuedMessages ?? []).map((item) => {
+                if (item.id !== queuedMessageId) return item;
+                const hasAttachments = Boolean(item.attachments?.length);
+                return { ...item, text: text || hasAttachments ? text : item.text };
+              }),
+              updatedAt: Date.now(),
+            };
+          }),
+        }));
+      },
 
-        if (!isTauriRuntime()) {
-          simulateBrowserReply(conversationId, get().handleCodexEvent);
+      reorderQueuedMessage: (conversationId: string, queuedMessageId: string, beforeQueuedMessageId: string | null) => {
+        if (queuedMessageId === beforeQueuedMessageId) return;
+        set((state) => ({
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === conversationId
+              ? reorderQueuedMessageInConversation(conversation, queuedMessageId, beforeQueuedMessageId)
+              : conversation
+          ),
+        }));
+      },
+
+      sendQueuedMessageNow: async (conversationId: string, queuedMessageId: string) => {
+        const conversation = get().conversations.find((item) => item.id === conversationId);
+        if (!conversation || conversation.archivedAt) return;
+        const queuedMessage = conversation.queuedMessages?.find((item) => item.id === queuedMessageId);
+        if (!queuedMessage) return;
+        if (conversation.status === 'streaming') {
+          set((state) => ({
+            conversations: state.conversations.map((item) => {
+              if (item.id !== conversationId) return item;
+              return {
+                ...item,
+                queuedMessages: (item.queuedMessages ?? []).filter((queued) => queued.id !== queuedMessageId),
+                guidedQueuedMessages: [
+                  ...(item.guidedQueuedMessages ?? []),
+                  queuedMessage,
+                ],
+                updatedAt: Date.now(),
+              };
+            }),
+          }));
           return;
         }
-
-        try {
-          const latest = get().conversations.find((item) => item.id === conversationId);
-          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
-          const domain = activeDomain(get().workModeId);
-          const promptOptions = {
-            planMode: get().planMode,
-            pursueGoal: get().pursueGoal,
-            selectedSkill: userMessage.selectedSkill,
-            coworkers: userMessage.coworkers,
-          };
-          const result = await startCodexChat({
-            conversationId,
-            prompt: promptWithAttachments(trimmed, attachmentList),
-            developerInstructions: buildCodingInstructions(promptOptions, domain),
-            codexThreadId: latest?.codexThreadId,
-            cwd: latest?.cwd || undefined,
-            ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
-            sandboxMode,
-          });
-          set((state) => ({
-            conversations: state.conversations.map((item) =>
-              item.id === conversationId ? { ...item, runId: result.runId } : item
-            ),
-          }));
-        } catch (error) {
-          get().handleCodexEvent({
-            type: 'error',
-            runId: '',
-            conversationId,
-            message: stringifyError(error),
-          });
-        }
+        await startPreparedMessage(conversationId, queuedMessage, queuedMessageId);
       },
 
       startReview: async (request: ReviewRequest) => {
@@ -779,13 +986,15 @@ export const useChatStore = create<ChatState>()(
         };
         const nextTitle = conversation.messages.length === 0 ? request.label : conversation.title;
 
+        const preparedContext = prepareConversationForOutgoingTurn(conversation);
+
         set((state) => ({
           conversations: state.conversations.map((item) =>
             item.id === conversationId
               ? {
-                  ...item,
+                  ...preparedContext.conversation,
                   title: nextTitle,
-                  messages: [...item.messages, userMessage, assistantMessage],
+                  messages: [...preparedContext.conversation.messages, userMessage, assistantMessage],
                   status: 'streaming',
                   updatedAt: Date.now(),
                   runId: undefined,
@@ -807,7 +1016,7 @@ export const useChatStore = create<ChatState>()(
 	          // matching Codex's dedicated reviewer (no approval prompt needed).
 	          const result = await startCodexChat({
 	            conversationId,
-	            prompt: buildReviewPrompt(request),
+	            prompt: addBackgroundContextToPrompt(buildReviewPrompt(request), preparedContext.promptContext),
 	            codexThreadId: latest?.codexThreadId,
 	            cwd: latest?.cwd || undefined,
 	            ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
@@ -856,6 +1065,19 @@ export const useChatStore = create<ChatState>()(
 
         const now = Date.now();
         const previousMessages = conversation.messages.slice(0, messageIndex);
+        const retainedBackgroundContext =
+          conversation.backgroundContext && messageIndex >= conversation.backgroundContext.sourceMessageCount
+            ? conversation.backgroundContext
+            : undefined;
+        const preparedContext = prepareConversationForOutgoingTurn({
+          ...conversation,
+          messages: previousMessages,
+          status: 'idle',
+          runId: undefined,
+          codexThreadId: undefined,
+          backgroundContext: retainedBackgroundContext,
+        });
+        const activePreviousMessages = messagesForActiveBackground(preparedContext.conversation);
         const editedUserMessage: ChatMessage = {
           ...original,
           timestamp: now,
@@ -877,7 +1099,7 @@ export const useChatStore = create<ChatState>()(
           conversations: state.conversations.map((item) =>
             item.id === conversationId
               ? {
-                  ...item,
+                  ...preparedContext.conversation,
                   title: nextTitle,
                   messages: [...previousMessages, editedUserMessage, assistantMessage],
                   status: 'streaming',
@@ -909,11 +1131,17 @@ export const useChatStore = create<ChatState>()(
             selectedSkill: original.selectedSkill,
             coworkers: original.coworkers,
           };
-          const result = await startCodexChat({
-            conversationId,
-            prompt: promptWithAttachments(buildEditedPrompt(trimmed, previousMessages), nextAttachments),
-            developerInstructions: buildCodingInstructions(promptOptions, domain),
-            cwd: latest?.cwd || undefined,
+	          const result = await startCodexChat({
+	            conversationId,
+	            prompt: promptWithAttachments(
+	              addBackgroundContextToPrompt(
+	                buildEditedPrompt(trimmed, activePreviousMessages),
+	                preparedContext.promptContext,
+	              ),
+	              nextAttachments,
+	            ),
+	            developerInstructions: buildCodingInstructions(promptOptions, domain),
+	            cwd: latest?.cwd || undefined,
             ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
             sandboxMode,
           });
@@ -956,32 +1184,35 @@ export const useChatStore = create<ChatState>()(
       },
 
       handleCodexEvent: (event: CodexChatEvent) => {
+        const shouldStartQueuedMessage = event.type === 'completed' || event.type === 'stopped';
+        const readyConversationIds: string[] = [];
         set((state) => ({
-          conversations: state.conversations.map((conversation) =>
-            applyCodexEventToConversation(conversation, event)
-          ),
+          conversations: state.conversations.map((conversation) => {
+            const wasStreaming = conversation.status === 'streaming';
+            const next = applyCodexEventToConversation(conversation, event);
+            if (
+              shouldStartQueuedMessage &&
+              wasStreaming &&
+              next.status !== 'streaming' &&
+              !next.archivedAt &&
+              ((next.guidedQueuedMessages?.length ?? 0) > 0 || (next.queuedMessages?.length ?? 0) > 0)
+            ) {
+              readyConversationIds.push(next.id);
+            }
+            return next;
+          }),
         }));
+        for (const conversationId of Array.from(new Set(readyConversationIds))) {
+          startNextQueuedMessage(conversationId);
+        }
       },
       };
     },
     {
       name: 'alpha-studio.chat.v2',
       version: 6,
-      partialize: (state) => ({
-        conversations: state.conversations,
-        projects: state.projects,
-        currentConversationId: state.currentConversationId,
-        selectedModelProfileId: state.selectedModelProfileId,
-        modelProfiles: stripModelProfileSecrets(state.modelProfiles),
-        reasoningEffort: state.reasoningEffort,
-        speed: state.speed,
-        workModeId: state.workModeId,
-        approvalMode: state.approvalMode,
-        planMode: state.planMode,
-        pursueGoal: state.pursueGoal,
-        projectSort: state.projectSort,
-        conversationSort: state.conversationSort,
-      }),
+      partialize: persistedChatState,
+      storage: isTauriRuntime() ? createJSONStorage(() => tauriNoopStorage) : undefined,
       migrate: (persistedState) => migratePersistedState(persistedState),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
@@ -998,6 +1229,48 @@ export const useChatStore = create<ChatState>()(
     },
   ),
 );
+
+let localStoreChatHydrated = !isTauriRuntime();
+
+if (isTauriRuntime()) {
+  void hydrateChatFromLocalStore();
+  useChatStore.subscribe((state) => {
+    if (!localStoreChatHydrated) return;
+    scheduleLocalStoreCommit('chat', {
+      chat: persistedChatState(state),
+      audit: {
+        domain: 'chat',
+        action: 'state.persist',
+        entityId: state.currentConversationId ?? undefined,
+        payload: { conversationCount: state.conversations.length, projectCount: state.projects.length },
+      },
+    });
+  });
+}
+
+async function hydrateChatFromLocalStore(): Promise<void> {
+  try {
+    const snapshot = await loadLocalStoreSnapshot();
+    if (snapshot?.chat) {
+      const migrated = migratePersistedState(snapshot.chat);
+      const conversations = migrated.conversations.map(recoverInterruptedConversation);
+      const active = activeConversations(conversations);
+      useChatStore.setState({
+        ...migrated,
+        conversations,
+        currentConversationId:
+          migrated.currentConversationId && active.some((item) => item.id === migrated.currentConversationId)
+            ? migrated.currentConversationId
+            : active[0]?.id ?? null,
+        error: null,
+      });
+    }
+  } catch (error) {
+    useChatStore.setState({ error: stringifyError(error) });
+  } finally {
+    localStoreChatHydrated = true;
+  }
+}
 
 interface ImageViewerState {
   src: string | null;
@@ -1102,7 +1375,17 @@ function recoverInterruptedConversation(conversation: Conversation): Conversatio
     };
   });
 
-  return { ...conversation, status: 'idle', runId: undefined, messages };
+  return {
+    ...conversation,
+    status: 'idle',
+    runId: undefined,
+    messages,
+    queuedMessages: [
+      ...(conversation.guidedQueuedMessages ?? []),
+      ...(conversation.queuedMessages ?? []),
+    ],
+    guidedQueuedMessages: undefined,
+  };
 }
 
 function createId(prefix: string): string {

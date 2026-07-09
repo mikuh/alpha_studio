@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{REPORT_TITLE}}</title>
+  <link rel="stylesheet" href="./report-style.css">
+</head>
+<body>
+  <!--
+    Alpha Studio Research 报告模板 · 使用说明
+    - 导出时与 report-style.css、alpha-studio-logo.png 放在同一目录，封面 ./alpha-studio-logo.png 才能正确显示。
+    - 保持每个 page 区块（section.page）与底部 footer 不变，validate_report.py 依此统计页数。
+    - 默认商务版式：白底/浅灰底、深色文字、克制蓝色强调、低饱和标签，避免装饰性大色块。
+    - 表格 / 仪表盘 / 名单等占位符请用真实内容替换，沿用下列样式类：
+      · 评级药丸: <span class="tag grade-s|grade-a|grade-b|grade-c">S</span>
+      · 生命周期: <span class="tag stage stage-startup|stage-fermentation|stage-climax|stage-retreat">发酵</span>
+      · 涨/跌(A股口径 红涨绿跌): <td class="positive">+3.2%</td> / <td class="negative">-2.1%</td>
+      · 重点提示: <div class="callout teal|gold"><span class="callout-label">口径说明</span>...</div>
+      · 指标卡强调色: <div class="metric accent-rust|accent-gold">...</div>
+    - 行文顺序：结论 -> 证据 -> 触发/失效 -> 风险；段落短，表格短句化。
+    - 内容要写满每一页(标准日报通常 8-10 页)，避免大面积留白；内容增加时加页，不删原模块。
+    - 必填决策占位符：EXECUTION_GATE_TABLE / CAPITAL_ATTACK_PATH_TABLE / OVERNIGHT_GLOBAL_LEAD_TABLE / THEME_CONTINUITY_TABLE / THEME_DURATION_TABLE / STOCK_ROLE_TABLE / HOLDING_REVIEW_TABLE。
+      其中 EXECUTION_GATE_TABLE 必须包含“今日只做”“今日不做”；THEME_DURATION_TABLE 必须包含“预计剩余窗口”和复核/退出条件。
+      CAPITAL_ATTACK_PATH_TABLE 必须包含“今日进攻概率”“资金进攻路径”；OVERNIGHT_GLOBAL_LEAD_TABLE 必须包含“隔夜全球线索”。
+      STOCK_ROLE_TABLE 必须保留“龙头 / 中军 / 趋势核心 / 补涨矩阵”。
+      标的列恢复一格多股，产业链真实性只放在股票名后的评级括号里：
+      金海通（A）、多氟多（A-）、海南海药（C+）、华亚智能（D）。
+      表后用一句“评级说明”解释 A/B/C/D，不要在标的格里写“产业链相关 / 证据等级 / 可作核心”等长描述。
+  -->
+  <section class="page cover">
+    <div class="cover-inner">
+      <div class="cover-top">
+        <div class="brand"><img class="brand-mark" src="./alpha-studio-logo.png" alt="Alpha Studio Research logo"><span>Alpha Studio Research</span></div>
+        <div class="doc-meta">Report ID: {{REPORT_ID}}<br>Confidentiality: Research Use<br>Generated: {{REPORT_DATE}}</div>
+      </div>
+      <div class="cover-main">
+        <div class="cover-eyebrow">Daily Theme Research · A-Share</div>
+        <div class="cover-title">{{REPORT_TITLE}}</div>
+        <div class="cover-rule"></div>
+        <p class="cover-subtitle">{{REPORT_SUBTITLE}}</p>
+        <div class="cover-grid">
+          <div class="cover-cell">Coverage<b>{{MARKET}}</b></div>
+          <div class="cover-cell">Window<b>{{PROBABILITY_WINDOW}}</b></div>
+          <div class="cover-cell">Depth<b>标准日报 8-10页</b></div>
+          <div class="cover-cell">Method<b>隔夜全球 + 盘面 + 概率</b></div>
+        </div>
+      </div>
+      <div class="cover-bottom">
+        <div class="signature">Prepared by<b>Alpha Studio Research 团队</b><p class="small muted">Alpha Studio · 主题策略、事件驱动与短线资金行为研究</p></div>
+        <div class="cover-contents">
+          <div class="cover-contents-title">本期内容 · In This Report</div>
+          <ol>
+            <li>执行闸门与资金进攻路径</li>
+            <li>隔夜全球线索与国内映射</li>
+            <li>连续跟踪与新闻催化</li>
+            <li>题材生命周期与持有窗口</li>
+            <li>核心标的与产业链真实性</li>
+            <li>盘中触发与风险纪律</li>
+            <li>来源与风险提示</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">Alpha Studio Research 团队</span><span class="footer-page">1 / 8</span></div>
+  </section>
+
+  <section class="page">
+    <div class="page-head"><div class="eyebrow">Market Timing</div><div class="page-kicker">市场情绪 / 今日策略</div></div>
+    <div class="page-body">
+      <h1>{{MAIN_HEADLINE}}</h1>
+      <p>{{ONE_LINE_STRATEGY}}</p>
+      <div class="grid grid-3">
+        <div class="metric"><div class="num">{{SENTIMENT_SCORE}}</div><div class="label">市场情绪分</div></div>
+        <div class="metric accent-rust"><div class="num">{{SENTIMENT_REGIME}}</div><div class="label">今日操作状态</div></div>
+        <div class="metric accent-gold"><div class="num">{{PRIMARY_THEME}}</div><div class="label">主线候选</div></div>
+      </div>
+      <h2>今日执行闸门</h2>
+      {{EXECUTION_GATE_TABLE}}
+      <h2>今日资金进攻路径</h2>
+      {{CAPITAL_ATTACK_PATH_TABLE}}
+      <h2>情绪指标仪表盘</h2>
+      {{SENTIMENT_INDICATOR_DASHBOARD}}
+    </div>
+    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">市场情绪、执行闸门与进攻路径</span><span class="footer-page">2 / 8</span></div>
+  </section>
+
+  <section class="page">
+    <div class="page-head"><div class="eyebrow">Overnight Global</div><div class="page-kicker">隔夜全球 / 国内映射</div></div>
+    <div class="page-body">
+      <h2>隔夜全球线索</h2>
+      {{OVERNIGHT_GLOBAL_SUMMARY}}
+      {{OVERNIGHT_GLOBAL_LEAD_TABLE}}
+      <h2>宏观日历与风险事件</h2>
+      {{MACRO_EVENT_TABLE}}
+      <h2>全球线索到A股题材映射</h2>
+      {{GLOBAL_TO_A_SHARE_MAP}}
+    </div>
+    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">隔夜全球线索与A股传导</span><span class="footer-page">3 / 8</span></div>
+  </section>
+
+  <section class="page">
+    <div class="page-head"><div class="eyebrow">Data Quality &amp; Catalysts</div><div class="page-kicker">数据口径 / 新闻催化</div></div>
+    <div class="page-body">
+      <h2>数据口径与新闻催化</h2>
+      {{DATA_QUALITY_NOTE}}
+      <h2>上一期主题连续跟踪</h2>
+      {{THEME_CONTINUITY_TABLE}}
+      <h2>昨日赚钱效应与亏钱效应</h2>
+      {{MARKET_FEEDBACK_TABLE}}
+      <div class="grid grid-2">
+        <div class="panel">{{NATIONAL_CATALYSTS}}</div>
+        <div class="panel">{{INDUSTRY_CATALYSTS}}</div>
+      </div>
+      <h2>题材全景图</h2>
+      {{THEME_PANORAMA_TABLE}}
+    </div>
+    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">数据质量、新闻催化与题材全景</span><span class="footer-page">4 / 8</span></div>
+  </section>
+
+  <section class="page">
+    <div class="page-head"><div class="eyebrow">Theme Lifecycle</div><div class="page-kicker">题材分级 / 生命周期</div></div>
+    <div class="page-body">
+      <h2>题材分级与生命周期</h2>
+      {{THEME_RANKING_TABLE}}
+      <h2>题材持续时间与持有复核</h2>
+      {{THEME_DURATION_TABLE}}
+      <h2>生命周期操作映射</h2>
+      {{LIFECYCLE_ACTION_TABLE}}
+    </div>
+    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">题材分级、生命周期与资金类型</span><span class="footer-page">5 / 8</span></div>
+  </section>
+
+  <section class="page">
+    <div class="page-head"><div class="eyebrow">Stock Role Matrix</div><div class="page-kicker">核心标的 / 角色矩阵</div></div>
+    <div class="page-body">
+      <h2>龙头 / 中军 / 趋势核心 / 补涨矩阵</h2>
+      {{STOCK_ROLE_TABLE}}
+      <div class="callout teal"><span class="callout-label">角色逻辑</span>{{ROLE_LOGIC_SUMMARY}}</div>
+      <div class="callout"><span class="callout-label">持有复核</span>{{ROLE_HOLDING_REVIEW}}</div>
+    </div>
+    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">核心标的角色与底层叙事</span><span class="footer-page">6 / 8</span></div>
+  </section>
+
+  <section class="page">
+    <div class="page-head"><div class="eyebrow">Execution Plan</div><div class="page-kicker">盘中触发 / 风险纪律</div></div>
+    <div class="page-body">
+      <h2>今日盘中触发条件</h2>
+      {{INTRADAY_TRIGGER_TABLE}}
+      <h2>禁止交易区与失效条件</h2>
+      {{FORBIDDEN_TRADES_TABLE}}
+      <h2>隔夜持有与复核纪律</h2>
+      {{HOLDING_REVIEW_TABLE}}
+      <div class="callout"><span class="callout-label">仓位纪律</span>{{POSITION_DISCIPLINE}}</div>
+    </div>
+    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">盘中触发、建仓加仓与风险纪律</span><span class="footer-page">7 / 8</span></div>
+  </section>
+
+  <section class="page compact-page">
+    <div class="page-head"><div class="eyebrow">Sources &amp; Disclaimer</div><div class="page-kicker">来源 / 风险提示</div></div>
+    <div class="page-body">
+      <h2>来源与风险提示</h2>
+      {{SOURCE_LIST}}
+      <div class="callout gold"><span class="callout-label">风险提示</span>本报告为公开信息整理和模型化研究，不构成证券投资咨询、个性化投资建议或收益承诺。研究概率与观察权重仅用于决策框架，不代表确定收益。</div>
+    </div>
+    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">Alpha Studio Research 团队</span><span class="footer-page">8 / 8</span></div>
+  </section>
+</body>
+</html>

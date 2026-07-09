@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alpha Studio 盘前主题"
+  short_description: "预测A股资金进攻题材并支持9:25竞价确认"
+  default_prompt: "Use $alpha-studio-daily-theme-research to generate an A-share capital-attack theme report or 9:25 auction-confirmation brief with overnight leads, market sentiment, attack probability, stock roles, execution gates, and intraday triggers."

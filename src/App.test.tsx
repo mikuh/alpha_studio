@@ -16,7 +16,7 @@ const windowMockState = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
-  invoke: vi.fn((command: string) => {
+  invoke: vi.fn((command: string, args?: { request?: { method?: string; name?: string; currentPath?: string; path?: string; params?: Record<string, unknown>; codes?: string[]; tickCode?: string; tickCount?: number; fullMarket?: boolean; pageSize?: number } }) => {
     if (command === 'plugin:window|is_fullscreen') return Promise.resolve(windowMockState.fullscreen);
     if (command === 'codex_check') {
       return Promise.resolve({
@@ -29,8 +29,165 @@ vi.mock('@tauri-apps/api/core', () => ({
     }
     if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
     if (command === 'codex_revoke_authorization') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
+    if (command === 'project_folder_create') {
+      return Promise.resolve({
+        path: `/Users/demo/.alphastudio/projects/${args?.request?.name || 'Research Topic'}`,
+      });
+    }
+    if (command === 'project_folder_rename') {
+      return Promise.resolve({
+        path: `/Users/demo/.alphastudio/projects/${args?.request?.name || 'Research Topic'}`,
+      });
+    }
+    if (command === 'jqdata_config_load') {
+      return Promise.resolve({
+        version: 1,
+        enabled: true,
+        username: 'demo-user',
+        passwordConfigured: true,
+        apiUrl: 'https://dataapi.joinquant.com/v2/apis',
+        updatedAt: '1',
+        path: '/Users/demo/.alpha-studio/jqdata-config.json',
+      });
+    }
+    if (command === 'jqdata_config_save') return Promise.resolve({ path: '/Users/demo/.alpha-studio/jqdata-config.json' });
+    if (command === 'jqdata_test_connection') {
+      return Promise.resolve({
+        ok: true,
+        message: 'JQData 连接成功。',
+        queryCount: { total: 1000 },
+        sample: { tradeDays: ['2024-01-02'], priceRows: [{ index: '2024-01-02', close: 9.1 }] },
+      });
+    }
+    if (command === 'eastmoney_realtime_query') {
+      const request = args?.request;
+      const codes = Array.isArray(request?.codes) ? request.codes : [];
+      if (request?.fullMarket) {
+        const fullRows = [
+          ['600519.XSHG', '贵州茅台', '白酒', 1190, 1200, 9_000_000_000],
+          ['000001.XSHE', '平安银行', '银行', 10.4, 10.5, 310_000_000],
+          ['300750.XSHE', '宁德时代', '电池', 210, 205, 1_500_000_000],
+          ['688981.XSHG', '中芯国际', '半导体', 58, 56, 2_100_000_000],
+          ['600036.XSHG', '招商银行', '银行', 35.5, 35.1, 980_000_000],
+          ['601127.XSHG', '赛力斯', '汽车', 88.8, 86.4, 1_280_000_000],
+        ].map(([code, name, sector, price, prevClose, turnoverAmount]) => ({
+          code,
+          name,
+          sector,
+          source: 'eastmoney',
+          price,
+          prevClose,
+          changeAmt: Number(price) - Number(prevClose),
+          changePct: ((Number(price) - Number(prevClose)) / Number(prevClose)) * 100,
+          high: Number(price) * 1.01,
+          low: Number(price) * 0.99,
+          volumeShares: 1_000_000,
+          turnoverAmount,
+          marketCapAmount: Number(price) * 100_000_000,
+          status: 2,
+        }));
+        return Promise.resolve({ ok: true, quoteRows: fullRows, tickRows: [] });
+      }
+      const quoteRows = codes.map((code) => {
+        const seed = Array.from(code).reduce((sum, char) => sum + char.charCodeAt(0), 0);
+        const prevClose = 10 + (seed % 80);
+        const price = Number((prevClose * (1 + (((seed % 7) - 3) / 100))).toFixed(2));
+        return {
+          code,
+          name: '测试标的',
+          source: 'eastmoney',
+          price,
+          prevClose,
+          changeAmt: Number((price - prevClose).toFixed(2)),
+          changePct: Number((((price - prevClose) / prevClose) * 100).toFixed(2)),
+          high: Math.max(prevClose, price) * 1.01,
+          low: Math.min(prevClose, price) * 0.99,
+          volumeShares: 1_200_000 + seed * 100,
+          turnoverAmount: price * 1_200_000,
+          marketCapAmount: price * 100_000_000,
+          status: 2,
+        };
+      });
+      const tickRows = request?.tickCode
+        ? [
+            { code: request.tickCode, time: '10:29:54', price: 11.2, volumeHands: 12, volumeShares: 1200, side: '买盘', sideCode: 2 },
+            { code: request.tickCode, time: '10:29:57', price: 11.19, volumeHands: 8, volumeShares: 800, side: '卖盘', sideCode: 1 },
+          ]
+        : [];
+      return Promise.resolve({ ok: quoteRows.length > 0 || tickRows.length > 0, quoteRows, tickRows });
+    }
+    if (command === 'jqdata_query') {
+      const request = args?.request;
+      if (request?.method === 'get_price') {
+        const codes = Array.isArray(request.params?.codes)
+          ? request.params.codes.filter((item): item is string => typeof item === 'string')
+          : [typeof request.params?.code === 'string' ? request.params.code : '000001.XSHE'];
+        const rows = codes.flatMap((code) => {
+          const seed = Array.from(code).reduce((sum, char) => sum + char.charCodeAt(0), 0);
+          const prevClose = 10 + (seed % 80);
+          const close = Number((prevClose * (1 + (((seed % 7) - 3) / 100))).toFixed(2));
+          return [
+            {
+              code,
+              date: '2026-07-06',
+              open: prevClose * 0.99,
+              close: prevClose,
+              high: prevClose * 1.01,
+              low: prevClose * 0.98,
+              volume: 1_000_000 + seed * 100,
+              money: prevClose * 1_000_000,
+            },
+            {
+              code,
+              date: '2026-07-07',
+              open: prevClose,
+              close,
+              high: Math.max(prevClose, close) * 1.01,
+              low: Math.min(prevClose, close) * 0.99,
+              volume: 1_200_000 + seed * 100,
+              money: close * 1_200_000,
+              pre_close: prevClose,
+            },
+          ];
+        });
+        return Promise.resolve({
+          ok: true,
+          rows,
+        });
+      }
+      if (request?.method === 'get_security_info') {
+        const code = typeof request.params?.code === 'string' ? request.params.code : '000001.XSHE';
+        return Promise.resolve({ ok: true, rows: [{ code, display_name: '测试标的', name: '测试标的' }] });
+      }
+      return Promise.resolve({ ok: true, rows: [] });
+    }
     if (command === 'list_open_apps') return Promise.resolve(['finder']);
     if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
+    if (command === 'local_text_file_read') {
+      const path = args?.request?.path || '/tmp/file.md';
+      if (path.endsWith('.html')) {
+        return Promise.resolve({
+          path,
+          content: '<!doctype html><html><head><title>报告</title><link rel="stylesheet" href="./report-style.css"></head><body><img src="./alpha-studio-logo.png" alt="Alpha Studio Research logo"><main>HTML 报告内容</main></body></html>',
+          bytes: 206,
+          truncated: false,
+        });
+      }
+      if (path.endsWith('.css')) {
+        return Promise.resolve({
+          path,
+          content: 'body { color: rgb(31, 31, 31); } main { min-height: 24px; }',
+          bytes: 61,
+          truncated: false,
+        });
+      }
+      return Promise.resolve({
+        path,
+        content: '# 合规意见\n\n文件预览内容',
+        bytes: 18,
+        truncated: false,
+      });
+    }
     if (command === 'git_status') {
       return Promise.resolve({
         cwd: '/tmp/alpha-studio',
@@ -124,6 +281,36 @@ function jsonResponse(body: unknown) {
     json: () => Promise.resolve(body),
     text: () => Promise.resolve(JSON.stringify(body)),
   } as Response;
+}
+
+function mockLocalHtmlPreviewFiles() {
+  vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
+    const request = args && typeof args === 'object' && 'request' in args
+      ? (args as { request?: { path?: string } }).request
+      : undefined;
+    if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
+    if (command === 'local_text_file_read') {
+      const path = request?.path || '/tmp/file.md';
+      if (path.endsWith('.html')) {
+        return Promise.resolve({
+          path,
+          content: '<!doctype html><html><head><title>报告</title><link rel="stylesheet" href="./report-style.css"></head><body><img src="./alpha-studio-logo.png" alt="Alpha Studio Research logo"><main>HTML 报告内容</main></body></html>',
+          bytes: 206,
+          truncated: false,
+        });
+      }
+      if (path.endsWith('.css')) {
+        return Promise.resolve({
+          path,
+          content: 'body { color: rgb(31, 31, 31); } main { min-height: 24px; }',
+          bytes: 61,
+          truncated: false,
+        });
+      }
+    }
+    if (command === 'list_open_apps') return Promise.resolve(['finder']);
+    return Promise.resolve(undefined);
+  });
 }
 
 describe('right feature panel', () => {
@@ -233,6 +420,156 @@ describe('right feature panel', () => {
     expect(screen.getAllByLabelText('关闭侧边栏')[0].querySelector('svg')).toHaveClass('lucide-panel-right-close');
   });
 
+  it('keeps the side-chat composer multiline before the sidebar is expanded', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
+    await user.click(within(featuresPanel).getByRole('button', { name: /侧边聊天/ }));
+
+    expect(container.querySelector('.app-shell')).not.toHaveClass('right-dock-expanded');
+    expect(screen.getByLabelText('展开侧边栏')).toHaveAttribute('aria-pressed', 'false');
+    const composerCard = container.querySelector('.side-chat-composer .composer-card') as HTMLElement;
+    expect(composerCard).toBeInTheDocument();
+    expect(composerCard).not.toHaveClass('compact');
+  });
+
+  it('creates blank research topic folders under .alphastudio and syncs the folder name on rename', async () => {
+    const user = userEvent.setup();
+    (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    render(<App />);
+
+    await user.click(screen.getByLabelText('新建研究主题'));
+    const menu = document.querySelector('.cmenu') as HTMLElement;
+    await user.click(within(menu).getByRole('menuitem', { name: '新建空白研究主题' }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('project_folder_create', {
+        request: { name: '新研究主题 1' },
+      });
+    });
+    await waitFor(() => {
+      expect(useChatStore.getState().projects[0]).toMatchObject({
+        name: '新研究主题 1',
+        cwd: '/Users/demo/.alphastudio/projects/新研究主题 1',
+      });
+    });
+    const nameInput = screen.getByDisplayValue('新研究主题 1');
+    await user.clear(nameInput);
+    await user.type(nameInput, '投资研究{Enter}');
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('project_folder_rename', {
+        request: {
+          currentPath: '/Users/demo/.alphastudio/projects/新研究主题 1',
+          name: '投资研究',
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(useChatStore.getState().projects[0]).toMatchObject({
+        name: '投资研究',
+        cwd: '/Users/demo/.alphastudio/projects/投资研究',
+      });
+    });
+  });
+
+  it('opens the research workbench from the finance right sidebar', async () => {
+    const user = userEvent.setup();
+    (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
+    await user.click(within(featuresPanel).getByRole('button', { name: /投研工作台/ }));
+
+    const workbench = await screen.findByLabelText('投研工作台');
+    expect(workbench).toBeInTheDocument();
+    expect(within(workbench).getByRole('heading', { name: '投研工作台' })).toBeInTheDocument();
+    await waitFor(() => expect(within(workbench).getAllByText(/实时/).length).toBeGreaterThan(0));
+    expect(within(workbench).getByText('总资产')).toBeInTheDocument();
+    expect(within(workbench).queryByText('聚宽数据雷达')).not.toBeInTheDocument();
+    expect(within(workbench).queryByText('财务基本面')).not.toBeInTheDocument();
+    expect(within(workbench).getByRole('tab', { name: '市场' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(workbench).getByText('股票排行')).toBeInTheDocument();
+    expect(within(workbench).getByText('上证指数')).toBeInTheDocument();
+    expect(within(workbench).queryByRole('tab', { name: '盘前主题' })).not.toBeInTheDocument();
+    expect(within(workbench).queryByText('盘前主题')).not.toBeInTheDocument();
+    expect(workbench.querySelector('.rw-data-pill')).toHaveTextContent(/实时 \d{1,2}:\d{2}:\d{2}/);
+    await user.click(within(workbench).getByRole('tab', { name: /行情/ }));
+    await waitFor(() => expect(within(workbench).getByText('行情仪表盘')).toBeInTheDocument());
+    expect(within(workbench).getByText('市场宽度')).toBeInTheDocument();
+    expect(within(workbench).getByText('成交额结构')).toBeInTheDocument();
+    expect(within(workbench).getByText('市场分层')).toBeInTheDocument();
+    expect(within(workbench).getByText('板块强弱')).toBeInTheDocument();
+    expect(within(workbench).getByText('活跃度排行')).toBeInTheDocument();
+    await waitFor(() => expect(within(workbench).getByText('市场快照')).toBeInTheDocument());
+    expect(within(workbench).getByText('行业热力图')).toBeInTheDocument();
+    expect(within(workbench).getByText('涨跌分布')).toBeInTheDocument();
+    expect(within(workbench).getByText(/D3 treemap · 行情池 6 只/)).toBeInTheDocument();
+    expect(workbench.querySelector('.rw-treemap-canvas')).toBeInTheDocument();
+    const treemapMode = within(workbench).getByRole('group', { name: '热力图显示模式' });
+    expect(within(treemapMode).getByRole('button', { name: '核心' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(treemapMode).getByRole('button', { name: '板块' })).toBeInTheDocument();
+    expect(within(treemapMode).getByRole('button', { name: '细节' })).toBeInTheDocument();
+    expect(within(workbench).getByLabelText('强弱行业')).toBeInTheDocument();
+    expect(workbench.querySelector('.rw-data-pill')).toHaveTextContent(/实时 \d{1,2}:\d{2}:\d{2}/);
+    expect(within(workbench).queryByRole('tab', { name: '盘前主题' })).not.toBeInTheDocument();
+  });
+
+  it('searches full-market-only stocks when creating a research portfolio', async () => {
+    const user = userEvent.setup();
+    (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
+    await user.click(within(featuresPanel).getByRole('button', { name: /投研工作台/ }));
+
+    const workbench = await screen.findByLabelText('投研工作台');
+    await waitFor(() => expect(within(workbench).getByText('赛力斯')).toBeInTheDocument());
+
+    await user.click(within(workbench).getByRole('tab', { name: /组合/ }));
+    await user.click(within(workbench).getByRole('button', { name: /新建组合/ }));
+    await user.type(within(workbench).getByPlaceholderText('组合名称，如：AI 算力观察'), '智能车观察');
+    await user.type(within(workbench).getByPlaceholderText('搜索加入成分股（默认展示自选与持仓）'), '赛力斯');
+    await user.click(await within(workbench).findByRole('button', { name: /赛力斯/ }));
+    await user.click(within(workbench).getByRole('button', { name: /创建组合（1 只）/ }));
+
+    expect(within(workbench).getByText('智能车观察')).toBeInTheDocument();
+    expect(within(workbench).getByText('赛力斯')).toBeInTheDocument();
+    const persisted = JSON.parse(window.localStorage.getItem('alpha-studio.research-state.v2') || '{}');
+    expect(persisted.customSecurities?.['601127.XSHG']?.name).toBe('赛力斯');
+    expect(persisted.portfolios?.some((portfolio: { codes?: string[] }) => portfolio.codes?.includes('601127.XSHG'))).toBe(true);
+  });
+
+  it('supports simulated funding and trading inside the research workbench', async () => {
+    const user = userEvent.setup();
+    (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
+    await user.click(within(featuresPanel).getByRole('button', { name: /投研工作台/ }));
+
+    const workbench = await screen.findByLabelText('投研工作台');
+    await user.click(within(workbench).getByRole('tab', { name: /交易/ }));
+
+    expect(within(workbench).getByLabelText('入金出金金额')).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: /入金/ })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: /出金/ })).toBeInTheDocument();
+    expect(within(workbench).getByText('模拟下单')).toBeInTheDocument();
+
+    await user.click(within(workbench).getByRole('button', { name: /入金/ }));
+    expect(within(workbench).getByText(/入金 10\.00万 成功/)).toBeInTheDocument();
+
+    await user.click(within(workbench).getByRole('tab', { name: /组合/ }));
+    expect(within(workbench).getByText('股票组合')).toBeInTheDocument();
+    expect(within(workbench).getByText('核心资产观察')).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: /新建组合/ })).toBeInTheDocument();
+  });
+
   it('keeps the right sidebar close button visible after opening the skills page', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
@@ -282,9 +619,12 @@ describe('right feature panel', () => {
     const panel = container.querySelector('.coworkers-panel') as HTMLElement;
     expect(panel).toBeInTheDocument();
     expect(within(panel).getByText('AI 同事')).toBeInTheDocument();
-    expect(within(panel).getByText('9 位在线')).toBeInTheDocument();
+    expect(within(panel).queryByText('9 位在线')).not.toBeInTheDocument();
     expect(container.querySelectorAll('.coworker-card')).toHaveLength(9);
-    expect(within(panel).getByText('主线交易官')).toBeInTheDocument();
+    const workflowsToggle = within(panel).getByRole('button', { name: /协作模板/ });
+    expect(workflowsToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(within(panel).queryByText('盘前投资委员会')).not.toBeInTheDocument();
+    expect(within(panel).getByText('市场策略官')).toBeInTheDocument();
     expect(within(panel).getByText('基金经理副官')).toBeInTheDocument();
     expect(screen.getByLabelText('关闭 AI 同事面板')).toHaveAttribute('aria-pressed', 'true');
 
@@ -312,19 +652,108 @@ describe('right feature panel', () => {
     expect(screen.getByLabelText('打开 AI 同事面板')).toHaveAttribute('aria-pressed', 'false');
   });
 
+  it('prefills the composer from an empty-state suggestion without sending', async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({
+      conversations: [conversation({ messages: [] })],
+      currentConversationId: 'conv-right-panel',
+      sendMessage,
+    });
+    const { container } = render(<App />);
+
+    const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
+    expect(composerCard).not.toHaveClass('compact');
+    const textbox = within(composerCard).getByRole('textbox');
+    const suggestions = [
+      ['分析市场异动', '帮我梳理今天市场主要异动、可能驱动因素和需要继续跟踪的信号。'],
+      ['整理公司研究', '基于我提供的材料，整理一家公司基本面、催化剂、风险和待验证问题。'],
+      ['评估组合风险', '帮我复盘一个持仓组合的行业暴露、主要风险和后续观察指标。'],
+    ];
+
+    for (const [title, prompt] of suggestions) {
+      await user.click(screen.getByRole('button', { name: new RegExp(title) }));
+      expect(textbox).toHaveValue(prompt);
+    }
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('shows the background context window usage in the composer', () => {
+    const { container } = render(<App />);
+    const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
+    const indicator = composerCard.querySelector('.context-window-indicator') as HTMLElement;
+
+    expect(indicator).toBeInTheDocument();
+    expect(indicator).toHaveTextContent('% 已用');
+    expect(indicator).toHaveAttribute('title', expect.stringContaining('背景信息窗口'));
+    expect(indicator).toHaveAttribute('title', expect.stringContaining('共 258k'));
+  });
+
   it('imports a coworker preset task into the composer with one click', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
     await user.click(screen.getByLabelText('打开 AI 同事面板'));
     const panel = container.querySelector('.coworkers-panel') as HTMLElement;
-    await user.click(within(panel).getByRole('button', { name: /主线交易官/ }));
-    await user.click(within(panel).getAllByRole('button', { name: '导入' })[0]);
+    const head = within(panel).getByRole('button', { name: /市场策略官/ });
+    await user.click(head);
+    const card = head.closest('.coworker-card') as HTMLElement;
+    await user.click(within(card).getAllByRole('button', { name: '导入' })[0]);
 
     const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
-    expect(within(composerCard).getByText('主线交易官')).toBeInTheDocument();
+    expect(within(composerCard).getByText('市场策略官')).toBeInTheDocument();
     const textarea = within(composerCard).getByRole('textbox') as HTMLTextAreaElement;
     expect(textarea.value).toContain('梳理今天市场的主线');
+  });
+
+  it('imports a coworker workflow preset into the composer with one click', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开 AI 同事面板'));
+    const panel = container.querySelector('.coworkers-panel') as HTMLElement;
+    await user.click(within(panel).getByRole('button', { name: /协作模板/ }));
+    const workflow = within(panel).getByText('盘前投资委员会').closest('.coworker-workflow') as HTMLElement;
+    await user.click(within(workflow).getByRole('button', { name: '导入' }));
+
+    const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
+    expect(composerCard.querySelectorAll('.composer-coworker-chip')).toHaveLength(6);
+    expect(within(composerCard).getByText('市场策略官')).toBeInTheDocument();
+    expect(within(composerCard).getByText('行业主题研究员')).toBeInTheDocument();
+    expect(within(composerCard).getByText('风险控制官')).toBeInTheDocument();
+    const textarea = within(composerCard).getByRole('textbox') as HTMLTextAreaElement;
+    expect(textarea.value).toContain('请召开一次盘前投资委员会');
+  });
+
+  it('deduplicates coworkers when importing a workflow preset', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开 AI 同事面板'));
+    const panel = container.querySelector('.coworkers-panel') as HTMLElement;
+    const riskHead = within(panel).getByRole('button', { name: /风险控制官/ });
+    await user.click(riskHead);
+    const riskCard = riskHead.closest('.coworker-card') as HTMLElement;
+    await user.click(within(riskCard).getByRole('button', { name: '召集到对话框' }));
+
+    await user.click(within(panel).getByRole('button', { name: /协作模板/ }));
+    const workflow = within(panel).getByText('盘前投资委员会').closest('.coworker-workflow') as HTMLElement;
+    await user.click(within(workflow).getByRole('button', { name: '导入' }));
+
+    const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
+    expect(composerCard.querySelectorAll('.composer-coworker-chip')).toHaveLength(6);
+    expect(within(composerCard).getAllByText('风险控制官')).toHaveLength(1);
+  });
+
+  it('shows the Alpha Studio premarket skill in the composer skills menu', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
+
+    await user.click(within(composerCard).getByLabelText('添加内容'));
+    fireEvent.mouseEnter(composerCard.querySelector('.plus-flyout-row') as HTMLElement);
+
+    expect(await screen.findByRole('menuitem', { name: /Alpha Studio 盘前主题/ })).toBeInTheDocument();
   });
 
   it('collects multiple coworkers dropped onto the composer without duplicates', async () => {
@@ -363,6 +792,29 @@ describe('right feature panel', () => {
     expect(within(composerCard).getByText('召集同事')).toBeInTheDocument();
   });
 
+  it('drops research context into the composer as a natural-language prompt', () => {
+    const { container } = render(<App />);
+    const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
+    const dataTransfer = {
+      types: ['application/x-alpha-research-context'],
+      getData: (type: string) =>
+        type === 'application/x-alpha-research-context'
+          ? '请分析股票 平安银行（000001.XSHE）。\n当前价格 11.42。'
+          : '',
+      setData: vi.fn(),
+      dropEffect: 'none',
+      effectAllowed: 'all',
+    };
+
+    fireEvent.dragOver(composerCard, { dataTransfer });
+    expect(composerCard).toHaveClass('coworker-drag-over');
+    fireEvent.drop(composerCard, { dataTransfer });
+
+    const textarea = within(composerCard).getByRole('textbox') as HTMLTextAreaElement;
+    expect(textarea.value).toContain('请分析股票 平安银行');
+    expect(textarea.value).toContain('000001.XSHE');
+  });
+
   it('keeps coding tabs out of the right sidebar add menu', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
@@ -397,6 +849,7 @@ describe('right feature panel', () => {
     expect(within(skillsPage).getByText('个人')).toBeInTheDocument();
     expect(within(skillsPage).getByText('系统')).toBeInTheDocument();
     expect(within(skillsPage).getByText('Browser')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('Alpha Studio 盘前主题')).toBeInTheDocument();
     expect(within(skillsPage).queryByText('iOS App Intents')).not.toBeInTheDocument();
     expect(within(skillsPage).queryByText('SwiftUI Performance Audit')).not.toBeInTheDocument();
     expect(within(skillsPage).getByText('Skill Installer')).toBeInTheDocument();
@@ -750,6 +1203,107 @@ describe('right feature panel', () => {
     expect(within(sidebar).getByRole('button', { name: '设置' })).toBeInTheDocument();
   });
 
+  it('shows subscription and pay-as-you-go billing in usage settings', async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith('/api/client/billing-summary')) {
+        return Promise.resolve(jsonResponse({
+          tenant: {
+            id: 'tenant_demo',
+            name: 'Demo Fund',
+            maxDevices: 5,
+            billingMode: 'hybrid',
+            balanceYuan: 96.75,
+            subscriptionPlan: 'pro',
+            subscriptionExpiresAt: '2026-08-01T00:00:00.000Z',
+            codexSubscriptionEnabled: true,
+            codexSubscriptionPlan: 'monthly',
+            codexSubscriptionExpiresAt: '2026-08-01T00:00:00.000Z',
+          },
+          activeDevices: 2,
+          period: {
+            currentMonthStart: '2026-07-01T00:00:00.000Z',
+            currentMonthEnd: '2026-08-01T00:00:00.000Z',
+            generatedAt: '2026-07-09T08:30:00.000Z',
+          },
+          usage: {
+            currentMonth: {
+              runCount: 8,
+              inputTokens: 12000,
+              outputTokens: 4200,
+              reasoningTokens: 1600,
+              cachedTokens: 3200,
+              totalTokens: 21000,
+              costYuan: 2.6,
+              billableYuan: 3.25,
+              lastUsedAt: '2026-07-09T08:00:00.000Z',
+            },
+            allTime: {
+              runCount: 32,
+              inputTokens: 48000,
+              outputTokens: 16800,
+              reasoningTokens: 6400,
+              cachedTokens: 12800,
+              totalTokens: 84000,
+              costYuan: 10.4,
+              billableYuan: 13,
+              lastUsedAt: '2026-07-09T08:00:00.000Z',
+            },
+            models: [
+              {
+                modelId: 'gpt-5.5',
+                label: 'GPT-5.5 API',
+                provider: 'openai',
+                runCount: 8,
+                inputTokens: 12000,
+                outputTokens: 4200,
+                reasoningTokens: 1600,
+                cachedTokens: 3200,
+                totalTokens: 21000,
+                costYuan: 2.6,
+                billableYuan: 3.25,
+                lastUsedAt: '2026-07-09T08:00:00.000Z',
+              },
+            ],
+            recentLedger: [
+              {
+                id: 'ledger_1',
+                runId: 'run_1',
+                entryType: 'usage_charge',
+                amountYuan: -3.25,
+                description: 'gpt-5.5 usage charge',
+                createdAt: '2026-07-09T08:00:00.000Z',
+              },
+            ],
+          },
+        }));
+      }
+      return Promise.resolve(jsonResponse({ leaseExpiresAt: futureIso() }));
+    });
+    const { container } = render(<App />);
+
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+    const settings = screen.getByRole('dialog', { name: '设置' });
+    await user.click(within(settings).getByRole('button', { name: '使用情况和计费' }));
+
+    expect(await within(settings).findByText('订阅 + 按量')).toBeInTheDocument();
+    expect(within(settings).getByText('Codex 订阅')).toBeInTheDocument();
+    expect(within(settings).getByText('API 套餐')).toBeInTheDocument();
+    expect(within(settings).getByText(/96\.75/)).toBeInTheDocument();
+    expect(within(settings).getAllByText(/3\.25/).length).toBeGreaterThan(0);
+    expect(within(settings).getByText('GPT-5.5 API')).toBeInTheDocument();
+    expect(within(settings).getByText('gpt-5.5 usage charge')).toBeInTheDocument();
+    expect(within(settings).queryByText('PolyForm Noncommercial License 1.0.0。')).not.toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/client/billing-summary',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"tenantId":"tenant_demo"'),
+      }),
+    );
+  });
+
   it('labels model picker groups as subscription and usage-based models', async () => {
     const user = userEvent.setup();
     useChatStore.setState({
@@ -1069,6 +1623,108 @@ describe('right feature panel', () => {
     );
   });
 
+  it('queues follow-up messages from the composer while a response is streaming', async () => {
+    const user = userEvent.setup();
+    const initialStore = useChatStore.getInitialState();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          status: 'streaming',
+          runId: 'run-current',
+          messages: [
+            { id: 'user-current', role: 'user', timestamp: 1, blocks: [{ type: 'text', content: '第一条' }] },
+            { id: 'assistant-current', role: 'assistant', timestamp: 1, isStreaming: true, blocks: [] },
+          ],
+        }),
+      ],
+      currentConversationId: 'conv-right-panel',
+      sendMessage: initialStore.sendMessage,
+      removeQueuedMessage: initialStore.removeQueuedMessage,
+      updateQueuedMessage: initialStore.updateQueuedMessage,
+      reorderQueuedMessage: initialStore.reorderQueuedMessage,
+      sendQueuedMessageNow: initialStore.sendQueuedMessageNow,
+    });
+    const { container } = render(<App />);
+
+    const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
+    const textbox = within(composerCard).getByRole('textbox') as HTMLTextAreaElement;
+    expect(textbox).not.toBeDisabled();
+
+    await user.type(textbox, '第二条');
+    await user.click(within(composerCard).getByLabelText('加入队列'));
+
+    const queue = container.querySelector('.composer-queue') as HTMLElement;
+    expect(queue).toBeInTheDocument();
+    expect(within(queue).getByText('第二条')).toBeInTheDocument();
+    expect(queue.querySelector('.composer-queue-no')).not.toBeInTheDocument();
+    expect(textbox).toHaveValue('');
+    expect(useChatStore.getState().conversations[0].messages).toHaveLength(2);
+    expect(useChatStore.getState().conversations[0].queuedMessages?.[0]).toMatchObject({ text: '第二条' });
+
+    await user.click(within(queue).getByLabelText('删除队列消息 第二条'));
+
+    expect(container.querySelector('.composer-queue')).not.toBeInTheDocument();
+    expect(useChatStore.getState().conversations[0].queuedMessages ?? []).toHaveLength(0);
+  });
+
+  it('edits, guides, and reorders queued composer messages', async () => {
+    const user = userEvent.setup();
+    const initialStore = useChatStore.getInitialState();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          status: 'streaming',
+          runId: 'run-current',
+          messages: [
+            { id: 'user-current', role: 'user', timestamp: 1, blocks: [{ type: 'text', content: '第一条' }] },
+            { id: 'assistant-current', role: 'assistant', timestamp: 1, isStreaming: true, blocks: [] },
+          ],
+          queuedMessages: [
+            { id: 'queue-a', text: '第二条', createdAt: 2 },
+            { id: 'queue-b', text: '第三条', createdAt: 3 },
+          ],
+        }),
+      ],
+      currentConversationId: 'conv-right-panel',
+      sendMessage: initialStore.sendMessage,
+      removeQueuedMessage: initialStore.removeQueuedMessage,
+      updateQueuedMessage: initialStore.updateQueuedMessage,
+      reorderQueuedMessage: initialStore.reorderQueuedMessage,
+      sendQueuedMessageNow: initialStore.sendQueuedMessageNow,
+    });
+    const { container } = render(<App />);
+    const queue = container.querySelector('.composer-queue') as HTMLElement;
+
+    await user.click(within(queue).getByLabelText('更多队列操作 第二条'));
+    await user.click(within(queue).getByRole('menuitem', { name: '编辑消息' }));
+    const editBox = queue.querySelector('.composer-queue-edit') as HTMLTextAreaElement;
+    await user.clear(editBox);
+    await user.type(editBox, '第二条修改');
+    await user.click(within(queue).getByLabelText('保存队列消息'));
+
+    expect(useChatStore.getState().conversations[0].queuedMessages?.[0].text).toBe('第二条修改');
+
+    const items = Array.from(queue.querySelectorAll('.composer-queue-item')) as HTMLElement[];
+    const data = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: 'move',
+      dropEffect: 'move',
+      setData: vi.fn((type: string, value: string) => data.set(type, value)),
+      getData: vi.fn((type: string) => data.get(type) || ''),
+    };
+    fireEvent.dragStart(items[1], { dataTransfer });
+    fireEvent.dragOver(items[0], { dataTransfer, clientY: 0 });
+    fireEvent.drop(items[0], { dataTransfer, clientY: 0 });
+
+    expect(useChatStore.getState().conversations[0].queuedMessages?.map((item) => item.id)).toEqual(['queue-b', 'queue-a']);
+
+    await user.click(within(queue).getByLabelText('引导发送队列消息 第二条修改'));
+
+    expect(useChatStore.getState().conversations[0].queuedMessages?.map((item) => item.id)).toEqual(['queue-b']);
+    expect(useChatStore.getState().conversations[0].guidedQueuedMessages?.map((item) => item.id)).toEqual(['queue-a']);
+    expect(within(queue).queryByText('第二条修改')).not.toBeInTheDocument();
+  });
+
   it('renders the selected skill as a dollar-prefixed label in the user message', () => {
     useChatStore.setState({
       conversations: [
@@ -1179,7 +1835,8 @@ describe('right feature panel', () => {
     expect(within(preview).queryByText('图片预览不可用')).not.toBeInTheDocument();
   });
 
-  it('renders generated files as Codex-style result cards', () => {
+  it('renders generated files as Codex-style result cards with an open menu', async () => {
+    const user = userEvent.setup();
     useChatStore.setState({
       conversations: [
         conversation({
@@ -1211,11 +1868,191 @@ describe('right feature panel', () => {
     });
 
     const { container } = render(<App />);
-    const card = within(container.querySelector('.message-list') as HTMLElement).getByRole('group', { name: 'cat-illustration.png' });
+    const card = within(container.querySelector('.message-list') as HTMLElement).getByRole('button', { name: '打开 cat-illustration.png' });
 
     expect(within(card).getByText('cat-illustration.png')).toBeInTheDocument();
     expect(within(card).getByText('图像 · PNG')).toBeInTheDocument();
-    expect(within(card).getByRole('button', { name: '打开方式' })).toBeInTheDocument();
+    await user.click(within(card).getByRole('button', { name: 'cat-illustration.png 打开方式' }));
+
+    expect(await screen.findByRole('menuitem', { name: '侧边栏预览' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Default app' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Cursor' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Terminal' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '在 Finder 中显示' })).toBeInTheDocument();
+  });
+
+  it('opens generated HTML files in the browser dock instead of raw source preview', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    mockLocalHtmlPreviewFiles();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-file',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'file_result',
+                  id: 'file-result',
+                  title: '生成文件',
+                  files: [
+                    {
+                      id: 'report-html',
+                      path: '/Users/geb/reports/daily-theme/index.html',
+                      name: 'index.html',
+                      ext: 'html',
+                      kind: 'file',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const card = within(container.querySelector('.message-list') as HTMLElement).getByRole('button', { name: '打开 index.html' });
+
+    expect(within(card).getByRole('button', { name: 'index.html 打开方式' })).toBeInTheDocument();
+    await user.click(card);
+
+    await waitFor(() => expect(convertFileSrc).toHaveBeenCalledWith('/Users/geb/reports/daily-theme/index.html'));
+    await waitFor(() => expect(container.querySelector('.browser-frame')).not.toBeNull());
+    expect(screen.getByPlaceholderText('输入 URL')).toHaveValue('/Users/geb/reports/daily-theme/index.html');
+    const frame = container.querySelector('.browser-frame') as HTMLIFrameElement;
+    await waitFor(() => expect(frame?.getAttribute('srcdoc')).toContain('HTML 报告内容'));
+    expect(frame?.getAttribute('srcdoc')).toContain('<style>');
+    expect(frame?.getAttribute('srcdoc')).toContain('data:image/png;base64,preview');
+    expect(screen.queryByText('<!doctype html>')).not.toBeInTheDocument();
+  });
+
+  it('opens local HTML markdown links in the browser dock', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    mockLocalHtmlPreviewFiles();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-link',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'text',
+                  content: '已生成今日报告：[index.html](/Users/geb/reports/daily-theme/index.html)',
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    await user.click(screen.getByRole('link', { name: /index\.html/ }));
+
+    await waitFor(() => expect(convertFileSrc).toHaveBeenCalledWith('/Users/geb/reports/daily-theme/index.html'));
+    await waitFor(() => expect(container.querySelector('.browser-frame')).not.toBeNull());
+    expect(screen.getByPlaceholderText('输入 URL')).toHaveValue('/Users/geb/reports/daily-theme/index.html');
+    const frame = container.querySelector('.browser-frame') as HTMLIFrameElement;
+    await waitFor(() => expect(frame?.getAttribute('srcdoc')).toContain('HTML 报告内容'));
+    expect(frame?.getAttribute('srcdoc')).toContain('<style>');
+    expect(frame?.getAttribute('srcdoc')).toContain('data:image/png;base64,preview');
+  });
+
+  it('renders inline generated file menus outside clipped markdown content', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-inline-html',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'text',
+                  content: 'PDF 未导出：本机 Playwright 浏览器二进制未安装；HTML 已包含样式和 logo，可直接打开或用浏览器打印为 PDF。\n\n[index.html](/Users/geb/reports/daily-theme/index.html)',
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const markdown = container.querySelector('.markdown-content') as HTMLElement;
+    const card = within(markdown).getByRole('button', { name: '打开 index.html' });
+
+    await user.click(within(card).getByRole('button', { name: 'index.html 打开方式' }));
+
+    const menu = await screen.findByRole('menu');
+    expect(menu.parentElement).toBe(document.body);
+    expect(markdown.contains(menu)).toBe(false);
+    expect(within(menu).getByRole('menuitem', { name: '侧边浏览器' })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitem', { name: 'Default app' })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitem', { name: 'Terminal' })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitem', { name: '在 Finder 中显示' })).toBeInTheDocument();
+  });
+
+  it('renders local file paths in assistant text as previewable file cards', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
+      const request = args && typeof args === 'object' && 'request' in args
+        ? (args as { request?: { path?: string } }).request
+        : undefined;
+      if (command === 'local_text_file_read') {
+        return Promise.resolve({
+          path: request?.path || '/tmp/file.md',
+          content: '# 合规意见\n\n文件预览内容',
+          bytes: 18,
+          truncated: false,
+        });
+      }
+      if (command === 'list_open_apps') return Promise.resolve(['finder']);
+      if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
+      return Promise.resolve(undefined);
+    });
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            { id: 'msg-1', role: 'user', timestamp: 1, blocks: [{ type: 'text', content: '请生成纪要' }] },
+            {
+              id: 'msg-2',
+              role: 'assistant',
+              timestamp: 2,
+              blocks: [
+                {
+                  type: 'text',
+                  content: '⑨ 合规与档案管家:已完成 | 文件=/Users/geb/codes/alpha_studio/src-tauri/coworker-notes/pre-market-committee-2026-07-07/compliance.md',
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const card = within(container.querySelector('.message-list') as HTMLElement).getByRole('button', { name: '打开 compliance.md' });
+
+    expect(within(card).getByText('compliance.md')).toBeInTheDocument();
+    expect(within(card).getByText('文档 · MD')).toBeInTheDocument();
+    await user.click(card);
+
+    await screen.findByRole('heading', { name: '合规意见' });
+    expect(screen.getByText('文件预览内容')).toBeInTheDocument();
   });
 
   it('does not mount a bottom terminal in the finance workspace', () => {
@@ -1265,6 +2102,128 @@ describe('right feature panel', () => {
     expect(within(tabMenu).queryByRole('button', { name: /审查/ })).not.toBeInTheDocument();
     expect(within(tabMenu).queryByRole('button', { name: /^终端$/ })).not.toBeInTheDocument();
     expect(within(tabMenu).queryByRole('button', { name: /文件/ })).not.toBeInTheDocument();
+  });
+
+  it('expands and restores the right dock from the tab bar action', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    const launcher = container.querySelector('.features-panel') as HTMLElement;
+    await user.click(within(launcher).getByRole('button', { name: /浏览器/ }));
+
+    const shell = container.querySelector('.app-shell') as HTMLElement;
+    const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
+    expect(container.querySelector('.right-panel-resizer')).toBeInTheDocument();
+    expect(within(dock).getByRole('button', { name: '展开侧边栏' })).toHaveAttribute('aria-pressed', 'false');
+
+    await user.click(within(dock).getByRole('button', { name: '展开侧边栏' }));
+
+    expect(shell).toHaveClass('right-dock-expanded');
+    expect(container.querySelector('.right-panel-resizer')).not.toBeInTheDocument();
+    expect(within(dock).getByRole('button', { name: '还原侧边栏' })).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(within(dock).getByRole('button', { name: '还原侧边栏' }));
+
+    expect(shell).not.toHaveClass('right-dock-expanded');
+    expect(container.querySelector('.right-panel-resizer')).toBeInTheDocument();
+    expect(within(dock).getByRole('button', { name: '展开侧边栏' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps the current chat composer available while the right dock is expanded', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    const launcher = container.querySelector('.features-panel') as HTMLElement;
+    await user.click(within(launcher).getByRole('button', { name: /浏览器/ }));
+
+    const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
+    await user.click(within(dock).getByRole('button', { name: '展开侧边栏' }));
+
+    expect(container.querySelector('.app-shell')).toHaveClass('right-dock-expanded');
+    const overlay = container.querySelector('.dock-composer-overlay') as HTMLElement;
+    expect(overlay).toBeInTheDocument();
+    expect(container.querySelector('.side-chat-composer')).not.toBeInTheDocument();
+    const card = within(overlay).getByRole('textbox').closest('.composer-card') as HTMLElement;
+    expect(card).toHaveClass('compact');
+
+    const textarea = within(overlay).getByPlaceholderText('继续追问投研问题');
+    await user.type(textarea, '继续检查');
+
+    expect(textarea).toHaveValue('继续检查');
+    expect(card).not.toHaveClass('compact');
+  });
+
+  it('opens assistant markdown links in new right dock browser tabs', async () => {
+    const user = userEvent.setup();
+    const firstUrl = 'https://finance.sina.com.cn/stock/robotics';
+    const secondUrl = 'https://www.cls.cn/detail/robotics';
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-link',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [{ type: 'text', content: `来源：[新浪财经](${firstUrl})、[财联社](${secondUrl})。` }],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('link', { name: '新浪财经' }));
+    await user.click(screen.getByRole('link', { name: '财联社' }));
+
+    const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
+    const browsers = Array.from(container.querySelectorAll('.browser-dock-panel'));
+    const activeBrowser = container.querySelector('.right-dock-pane.active .browser-dock-panel') as HTMLElement;
+    expect(browsers).toHaveLength(2);
+    expect(within(dock).getAllByRole('tab', { name: '浏览器' })).toHaveLength(2);
+    expect(within(activeBrowser).getByPlaceholderText('输入 URL')).toHaveValue(secondUrl);
+    expect(activeBrowser.querySelector('.browser-frame')).toHaveAttribute('src', secondUrl);
+    expect(browsers[0].querySelector('.browser-frame')).toHaveAttribute('src', firstUrl);
+  });
+
+  it('groups consecutive web search tool rows behind one disclosure', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-web-searches',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                { type: 'tool', id: 'web-1', title: 'web.run search_query', status: 'completed', input: '机器人 产业链 最新政策', output: '搜索结果 1' },
+                { type: 'tool', id: 'web-2', title: 'web.run search_query', status: 'completed', input: '国产算力 交换机 订单', output: '搜索结果 2' },
+                { type: 'tool', id: 'web-3', title: 'web.search', status: 'completed', input: 'CGT 征求意见 国家药监局', output: '搜索结果 3' },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const messageList = container.querySelector('.message-list') as HTMLElement;
+    const groupLabel = within(messageList).getByText('已搜索网页 3 次');
+    const group = groupLabel.closest('details') as HTMLElement;
+
+    expect(group).toHaveClass('web-search-group');
+    expect(within(messageList).queryByText('机器人 产业链 最新政策')).not.toBeInTheDocument();
+
+    await user.click(groupLabel);
+
+    expect(within(group).getAllByText('已搜索网页')).toHaveLength(3);
+    expect(within(group).getByText('机器人 产业链 最新政策')).toBeInTheDocument();
+    expect(within(group).getByText('国产算力 交换机 订单')).toBeInTheDocument();
+    expect(within(group).getByText('CGT 征求意见 国家药监局')).toBeInTheDocument();
   });
 
   it('collapses and reopens the right sidebar without unmounting dock tabs', async () => {
@@ -1320,19 +2279,23 @@ describe('right feature panel', () => {
     expect(css).not.toMatch(/\.right-dock-tab\.active\s+\.right-dock-tab-close/);
   });
 
-  it('moves environment actions to the left edge of an open right dock', () => {
+  it('keeps panel actions fixed while environment actions move beside an open right dock', () => {
     const cssPath = `${process.cwd()}/src/styles.css`;
     const css = readFileSync(cssPath, 'utf8');
 
     expect(css).toMatch(/\.top-bar-actions\s*{[^}]*position:\s*fixed;[^}]*top:\s*8px;[^}]*right:\s*12px;[^}]*z-index:\s*90;/s);
     expect(css).toMatch(/\.top-bar-env-actions,\s*\.top-bar-panel-actions\s*{[^}]*display:\s*inline-flex;[^}]*gap:\s*4px;/s);
     expect(css).toMatch(/\.app-shell\.right-panel-open\s+\.top-bar-env-actions\s*{[^}]*position:\s*fixed;[^}]*top:\s*8px;[^}]*right:\s*calc\(var\(--right-sidebar-width, 416px\) \+ 16px\);/s);
-    expect(css).toMatch(/\.app-shell\.right-panel-open\s+\.top-bar-actions\s*{[^}]*right:\s*calc\(var\(--right-sidebar-width, 416px\) \+ 16px\);/s);
     expect(css).toMatch(/\.app-shell\.git-panel-open\s+\.top-bar-env-actions\s*{[^}]*right:\s*calc\(var\(--git-panel-width, 430px\) \+ 16px\);/s);
-    expect(css).toMatch(/\.app-shell\.git-panel-open\s+\.top-bar-actions\s*{[^}]*right:\s*calc\(var\(--git-panel-width, 430px\) \+ 16px\);/s);
     expect(css).toMatch(/\.app-shell\.review-panel-open\s+\.top-bar-env-actions\s*{[^}]*right:\s*calc\(var\(--review-panel-width, 704px\) \+ 16px\);/s);
-    expect(css).toMatch(/\.app-shell\.review-panel-open\s+\.top-bar-actions\s*{[^}]*right:\s*calc\(var\(--review-panel-width, 704px\) \+ 16px\);/s);
-    expect(css).toMatch(/\.right-dock-tabs\s*{[^}]*padding:\s*0 76px 0 8px;/s);
+    expect(css).not.toMatch(/\.app-shell\.right-panel-open\s+\.top-bar-actions\s*{/);
+    expect(css).not.toMatch(/\.app-shell\.git-panel-open\s+\.top-bar-actions\s*{/);
+    expect(css).not.toMatch(/\.app-shell\.review-panel-open\s+\.top-bar-actions\s*{/);
+    expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.main-stage\s*{[^}]*display:\s*none;/s);
+    expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.right-dock-workspace\s*{[^}]*width:\s*auto;[^}]*flex:\s*1 1 auto;/s);
+    expect(css).toMatch(/\.right-dock-expand-btn\s*{[^}]*width:\s*30px;[^}]*height:\s*30px;/s);
+    expect(css).toMatch(/\.right-dock-tabs\s*{[^}]*padding:\s*0 120px 0 8px;/s);
+    expect(css).toMatch(/\.right-dock-tabbar-actions\s*{[^}]*right:\s*84px;/s);
     expect(css).toMatch(/\.environment-menu\s*{[^}]*position:\s*fixed;[^}]*top:\s*48px;[^}]*right:\s*16px;[^}]*width:\s*304px;/s);
     expect(css).toMatch(/\.app-shell\.right-panel-open\s+\.environment-menu\s*{[^}]*right:\s*calc\(var\(--right-sidebar-width, 416px\) \+ 16px\);/s);
     expect(css).toMatch(/\.top-bar-actions\s+button:focus\s*{[^}]*outline:\s*none;/s);
