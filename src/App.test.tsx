@@ -1407,7 +1407,7 @@ describe('right feature panel', () => {
     render(<App />);
     await waitFor(() => expect(useChatStore.getState().codexModelCatalogError).toBe('catalog offline'));
     await user.click(screen.getByTitle('选择模型与推理强度'));
-    await user.hover(screen.getByText('GPT-5.5 API'));
+    await user.hover(screen.getByRole('button', { name: /5\.5/ }));
     expect(screen.getByRole('menuitemradio', { name: 'GPT-5.5' })).toBeInTheDocument();
   });
 
