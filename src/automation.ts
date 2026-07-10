@@ -1,4 +1,5 @@
 import { scheduleLocalStoreCommit } from './localStore';
+import { DEFAULT_EFFORT, DEFAULT_MODEL_PROFILE_ID, isReasoningEffort, type ReasoningEffort } from './models';
 
 export const AUTOMATION_ENVIRONMENT_OPTIONS = ['工作树', '当前对话', '无代码环境'] as const;
 export const CUSTOM_AUTOMATION_SCHEDULE_VALUE = '自定义';
@@ -33,8 +34,7 @@ export const AUTOMATION_SCHEDULE_OPTIONS = [
   CUSTOM_AUTOMATION_SCHEDULE_VALUE,
 ] as const;
 export const DEFAULT_AUTOMATION_SCHEDULE = '每天 9:00';
-export const AUTOMATION_MODEL_OPTIONS = ['GPT-5.5 超高', 'GPT-5.5 高', 'GPT-5.5 标准', 'GPT-5'] as const;
-export const DEFAULT_AUTOMATION_MODEL = AUTOMATION_MODEL_OPTIONS[0];
+export const DEFAULT_AUTOMATION_MODEL = 'GPT-5.5';
 export const AUTOMATION_TASKS_KEY = 'alpha:automation-tasks-v1';
 export const AUTOMATION_TASKS_CHANGED_EVENT = 'alpha:automation-tasks-changed';
 
@@ -45,6 +45,8 @@ export interface AutomationFormState {
   project: string;
   schedule: string;
   model: string;
+  modelProfileId?: string;
+  reasoningEffort?: ReasoningEffort;
   conversationId?: string;
 }
 
@@ -61,6 +63,8 @@ export function blankAutomationForm(): AutomationFormState {
     project: '选择项目',
     schedule: DEFAULT_AUTOMATION_SCHEDULE,
     model: DEFAULT_AUTOMATION_MODEL,
+    modelProfileId: DEFAULT_MODEL_PROFILE_ID,
+    reasoningEffort: DEFAULT_EFFORT,
   };
 }
 
@@ -136,6 +140,8 @@ export function detectAutomationIntent(message: string): AutomationFormState | n
     project: '选择项目',
     schedule,
     model: DEFAULT_AUTOMATION_MODEL,
+    modelProfileId: DEFAULT_MODEL_PROFILE_ID,
+    reasoningEffort: DEFAULT_EFFORT,
   };
 }
 
@@ -159,6 +165,8 @@ function isScheduledAutomationTask(task: Partial<ScheduledAutomationTask>): task
     typeof task.project === 'string' &&
     typeof task.schedule === 'string' &&
     typeof task.model === 'string' &&
+    (task.modelProfileId === undefined || typeof task.modelProfileId === 'string') &&
+    (task.reasoningEffort === undefined || isReasoningEffort(task.reasoningEffort)) &&
     typeof task.createdAt === 'number' &&
     (task.conversationId === undefined || typeof task.conversationId === 'string'),
   );

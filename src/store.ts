@@ -356,7 +356,14 @@ export const useChatStore = create<ChatState>()(
         const automationIntent = !attachmentList && !selectedSkill && !coworkerList ? detectAutomationIntent(trimmed) : null;
 
         if (automationIntent) {
-          const task = addScheduledAutomationTask({ ...automationIntent, conversationId });
+          const profile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+          const task = addScheduledAutomationTask({
+            ...automationIntent,
+            model: profile.label,
+            modelProfileId: profile.id,
+            reasoningEffort: resolveReasoningEffortForProfile(profile, get().reasoningEffort),
+            conversationId,
+          });
           set((state) => ({
             conversations: state.conversations.map((item) =>
               item.id === conversationId
