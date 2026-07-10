@@ -870,7 +870,14 @@ export const useChatStore = create<ChatState>()(
             const modelProfiles = modelProfilesForCurrentLicense(state.clientLicenseSession, state.modelProfiles, catalog);
             return { codexModelCatalog: catalog, codexModelCatalogError: null, isRefreshingCodexModels: false, modelProfiles, ...reconcileModelSelection({ profiles: modelProfiles, selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort, previousSelectedProfile: previous }) };
           });
-        } catch (error) { set({ codexModelCatalogError: stringifyError(error), isRefreshingCodexModels: false }); }
+        } catch (error) {
+          set((state) => {
+            if (state.codexModelCatalog) return { codexModelCatalogError: stringifyError(error), isRefreshingCodexModels: false };
+            const profiles = modelProfilesForCurrentLicense(state.clientLicenseSession, state.modelProfiles, null);
+            const selectable = profiles.some((p) => !p.builtIn) ? profiles.filter((p) => !p.builtIn) : profiles;
+            return { codexModelCatalogError: stringifyError(error), isRefreshingCodexModels: false, modelProfiles: profiles, ...reconcileModelSelection({ profiles: selectable, selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort }) };
+          });
+        }
       },
 
       refreshCodexStatus: async (options = {}) => {
