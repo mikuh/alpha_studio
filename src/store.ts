@@ -36,6 +36,7 @@ import {
   modelProfilesFromCodexCatalog,
   reconcileModelSelection,
   resolveReasoningEffortForProfile,
+  isReasoningEffort,
   selectedModelProfileId as resolveSelectedModelProfileId,
   sandboxToApproval,
   stripModelProfileSecrets,
@@ -1842,10 +1843,6 @@ export function migratePersistedState(persistedState: unknown): PersistedChatSta
     projectSort: isProjectSort(source.projectSort) ? source.projectSort : 'updated',
     conversationSort: isProjectSort(source.conversationSort) ? source.conversationSort : 'updated',
   };
-}
-
-function isReasoningEffort(value: unknown): value is ReasoningEffort {
-  return value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh';
 }
 
 function isProjectSort(value: unknown): value is ProjectSort {

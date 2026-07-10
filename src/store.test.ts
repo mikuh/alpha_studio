@@ -125,6 +125,15 @@ describe('archive semantics', () => {
     });
   });
 
+  it.each(['max', 'ultra'] as const)('preserves dynamic reasoning effort %s during migration', (effort) => {
+    const migrated = migratePersistedState({
+      conversations: [conversation('dynamic')],
+      reasoningEffort: effort,
+    });
+
+    expect(migrated.reasoningEffort).toBe(effort);
+  });
+
   it('adds, updates, disables, and deletes custom model profiles', () => {
     const id = useChatStore.getState().addModelProfile({
       label: 'DeepSeek V4',
@@ -227,6 +236,48 @@ describe('skill selections on user messages', () => {
     // Automation intents short-circuit into an instant reply; coworker turns
     // must instead go through the normal (streaming) chat pipeline.
     expect(useChatStore.getState().conversations[0].status).not.toBe('idle');
+  });
+});
+
+describe('context compaction turns', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    useChatStore.setState({
+      conversations: [conversation('conv-compact')],
+      projects: [],
+      currentConversationId: 'conv-compact',
+      selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+      modelProfiles: defaultModelProfiles(),
+      approvalMode: 'auto',
+      projectSort: 'updated',
+      conversationSort: 'updated',
+      error: null,
+    });
+  });
+
+  it('renders local context compaction before the next assistant answer', async () => {
+    const longText = '主题延续、成交放量、风险提示。'.repeat(9_000);
+    const messages = Array.from({ length: 12 }, (_, index): ChatMessage => ({
+      id: `ctx-${index}`,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      timestamp: index,
+      blocks: [{ type: 'text', content: `消息-${index + 1} ${longText}` }],
+    }));
+    useChatStore.setState({
+      conversations: [conversation('conv-compact', { messages })],
+    });
+
+    await useChatStore.getState().sendMessage('继续跟踪主题。');
+
+    const current = useChatStore.getState().conversations[0];
+    const assistant = current.messages[current.messages.length - 1];
+    expect(assistant.role).toBe('assistant');
+    expect(assistant.blocks[0]).toMatchObject({
+      type: 'tool',
+      title: 'context_compaction',
+      status: 'completed',
+      target: '已压缩前 4 条历史上下文',
+    });
   });
 });
 
