@@ -1389,7 +1389,7 @@ describe('right feature panel', () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
     codexCatalogMockState.status.loggedIn = true;
     codexCatalogMockState.models = CODEX_MODEL_CATALOG;
-    useChatStore.setState({ modelProfiles: modelProfilesFromCodexCatalog(CODEX_MODEL_CATALOG), selectedModelProfileId: 'gpt-5.6-sol', reasoningEffort: 'ultra' });
+    useChatStore.setState({ codexModelCatalog: CODEX_MODEL_CATALOG, modelProfiles: modelProfilesFromCodexCatalog(CODEX_MODEL_CATALOG), selectedModelProfileId: 'gpt-5.6-sol', reasoningEffort: 'ultra' });
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByTitle('选择模型与推理强度'));
@@ -1411,7 +1411,8 @@ describe('right feature panel', () => {
     render(<App />);
     await waitFor(() => expect(useChatStore.getState().codexModelCatalogError).toBe('catalog offline'));
     await user.click(screen.getByTitle('选择模型与推理强度'));
-    await user.hover(screen.getByRole('button', { name: /5\.5/ }));
+    const pickerMenu = screen.getByRole('menu');
+    await user.hover(within(pickerMenu).getByRole('button', { name: /GPT-5\.5 API|5\.5 API/ }));
     expect(screen.getByRole('menuitemradio', { name: 'GPT-5.5' })).toBeInTheDocument();
   });
 
