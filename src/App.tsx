@@ -168,7 +168,6 @@ import {
 } from './coworkers';
 import {
   AUTOMATION_ENVIRONMENT_OPTIONS,
-  AUTOMATION_MODEL_OPTIONS,
   AUTOMATION_SCHEDULE_OPTIONS,
   AUTOMATION_TASKS_CHANGED_EVENT,
   CUSTOM_AUTOMATION_SCHEDULE_VALUE,
@@ -207,6 +206,7 @@ import {
   effortLabel,
   normalizeModelProfileDraft,
   resolveModelProfile,
+  resolveReasoningEffortForProfile,
   shortModelProfileLabel,
   type ApprovalMode,
   type ModelProfile,
@@ -4496,6 +4496,8 @@ function AutomationsPage({
   const unarchiveConversation = useChatStore((state) => state.unarchiveConversation);
   const sendMessage = useChatStore((state) => state.sendMessage);
   const modelProfiles = useChatStore((state) => state.modelProfiles);
+  const selectedModelProfileId = useChatStore((state) => state.selectedModelProfileId);
+  const currentReasoningEffort = useChatStore((state) => state.reasoningEffort);
   const codexStatus = useChatStore((state) => state.codexStatus);
   const clientLicenseSession = useChatStore((state) => state.clientLicenseSession);
   const projects = useMemo(() => activeProjects(allProjects), [allProjects]);
@@ -4504,10 +4506,10 @@ function AutomationsPage({
     const names = projects.map((project) => project.name).filter(Boolean);
     return ['选择项目', ...Array.from(new Set(names))];
   }, [projects]);
-  const modelOptions = useMemo(
-    () => automationModelOptionGroups(modelProfiles, codexStatus, clientLicenseSession, form.model),
-    [clientLicenseSession, codexStatus, form.model, modelProfiles],
-  );
+  const visibleAutomationProfiles = useMemo(() => visibleModelProfilesForCodexStatus(modelProfiles.filter((profile) => profile.enabled), codexStatus, clientLicenseSession), [clientLicenseSession, codexStatus, modelProfiles]);
+  const automationSelection = useMemo(() => resolveAutomationSelection(form, visibleAutomationProfiles, selectedModelProfileId, currentReasoningEffort), [currentReasoningEffort, form, selectedModelProfileId, visibleAutomationProfiles]);
+  const modelOptions = useMemo(() => automationModelOptionGroups(modelProfiles, codexStatus, clientLicenseSession), [clientLicenseSession, codexStatus, modelProfiles]);
+  const effortOptions = useMemo(() => reasoningEffortOptionsForProfile(automationSelection.profile), [automationSelection.profile]);
   useEffect(() => {
     let cancelled = false;
     void loadLocalStoreSnapshot()
@@ -4521,13 +4523,13 @@ function AutomationsPage({
     };
   }, []);
   useEffect(() => {
-    if (!editorOpen || automationSelectGroupsContain(modelOptions, form.model)) return;
+    if (!editorOpen || automationSelectGroupsContain(modelOptions, automationSelection.profile.id)) return;
     const fallbackModel = firstAutomationSelectValue(modelOptions);
     if (!fallbackModel) return;
     setForm((current) => (
-      automationSelectGroupsContain(modelOptions, current.model)
+      automationSelectGroupsContain(modelOptions, current.modelProfileId ?? '')
         ? current
-        : { ...current, model: fallbackModel }
+        : { ...current, model: visibleAutomationProfiles.find((profile) => profile.id === fallbackModel)?.label ?? fallbackModel, modelProfileId: fallbackModel }
     ));
   }, [editorOpen, form.model, modelOptions]);
   const normalizedQuery = query.trim().toLowerCase();
@@ -4577,6 +4579,8 @@ function AutomationsPage({
       project: task.project,
       schedule: task.schedule,
       model: task.model,
+      modelProfileId: task.modelProfileId,
+      reasoningEffort: task.reasoningEffort,
     });
     setEditorOpen(true);
   };
@@ -4610,7 +4614,9 @@ function AutomationsPage({
     setEditorOpen(false);
     setTab('tasks');
     onOpenChat();
-    void sendMessage(automationRunPrompt(task));
+    const selection = resolveAutomationSelection(task, state.modelProfiles, state.selectedModelProfileId, state.reasoningEffort);
+    state.setModelSelection(selection.profile.id, selection.reasoningEffort);
+    void sendMessage(automationRunPrompt(task, selection.profile.label, selection.profile.supportsReasoningEffort ? selection.reasoningEffort : undefined));
   };
 
   const deleteTask = (taskId: string) => {
@@ -4627,8 +4633,12 @@ function AutomationsPage({
     const prompt = form.prompt.trim();
     if (!prompt) return;
 
+    const selection = resolveAutomationSelection(form, visibleAutomationProfiles, selectedModelProfileId, currentReasoningEffort);
     const task: ScheduledAutomationTask = {
       ...form,
+      model: selection.profile.label,
+      modelProfileId: selection.profile.id,
+      reasoningEffort: selection.reasoningEffort,
       id: selectedTaskId ?? createScheduledAutomationId(),
       title: form.title.trim() || automationTitleFromPrompt(prompt),
       prompt,
@@ -4762,11 +4772,16 @@ function AutomationsPage({
           <AutomationManualEditor
             form={form}
             modelOptions={modelOptions}
+            modelValue={automationSelection.profile.id}
+            effortValue={automationSelection.reasoningEffort}
+            effortOptions={effortOptions}
             projectOptions={projectOptions}
             selectedTaskId={selectedTaskId}
             titleInputRef={titleInputRef}
             onCancel={() => setEditorOpen(false)}
             onChange={updateForm}
+            onModelChange={(id) => { const profile = visibleAutomationProfiles.find((item) => item.id === id); if (profile) setForm((current) => ({ ...current, model: profile.label, modelProfileId: profile.id, reasoningEffort: resolveReasoningEffortForProfile(profile, current.reasoningEffort ?? currentReasoningEffort) })); }}
+            onEffortChange={(effort) => updateForm('reasoningEffort', effort)}
             onSubmit={submitManualTask}
           />
         )}
@@ -4782,7 +4797,9 @@ function automationFormFromTemplate(template: AutomationTemplate): AutomationFor
     environment: AUTOMATION_ENVIRONMENT_OPTIONS[0],
     project: '选择项目',
     schedule: normalizeAutomationSchedule(template.schedule),
-    model: AUTOMATION_MODEL_OPTIONS[0],
+    model: blankAutomationForm().model,
+    modelProfileId: blankAutomationForm().modelProfileId,
+    reasoningEffort: blankAutomationForm().reasoningEffort,
   };
 }
 
@@ -4812,22 +4829,14 @@ function automationModelOptionGroups(
   modelProfiles: ModelProfile[],
   codexStatus: { loggedIn: boolean } | null,
   session: ClientLicenseSession | null,
-  currentValue: string,
 ): AutomationSelectGroup[] {
   const enabledProfiles = modelProfiles.filter((profile) => profile.enabled);
   const visibleProfiles = visibleModelProfilesForCodexStatus(enabledProfiles, codexStatus, session);
-  const visibleSubscriptionLabels = new Set(
-    visibleProfiles
-      .filter((profile) => profile.builtIn)
-      .map((profile) => profile.label),
-  );
-  const subscriptionOptions = automationSelectOptions(
-    AUTOMATION_MODEL_OPTIONS.filter((option) => visibleSubscriptionLabels.has(automationSubscriptionModelLabel(option))),
-  );
+  const subscriptionOptions = uniqueAutomationSelectOptions(visibleProfiles.filter((profile) => profile.builtIn).map((profile) => ({ value: profile.id, label: profile.label })));
   const usageBasedOptions = uniqueAutomationSelectOptions(
     visibleProfiles
       .filter((profile) => !profile.builtIn)
-      .map((profile) => ({ value: profile.label, label: profile.label })),
+      .map((profile) => ({ value: profile.id, label: profile.label })),
   );
   const groups: AutomationSelectGroup[] = [];
 
@@ -4839,23 +4848,14 @@ function automationModelOptionGroups(
     groups.push({ label: '按量付费模型', options: usageBasedOptions });
   }
 
-  if (
-    currentValue &&
-    !automationSelectGroupsContain(groups, currentValue) &&
-    !isAutomationSubscriptionModelOption(currentValue)
-  ) {
-    groups.push({ label: '当前任务', options: [{ value: currentValue, label: currentValue }] });
-  }
-
   return groups;
 }
 
-function automationSubscriptionModelLabel(option: string): string {
-  return option.replace(/\s+(超高|高|标准)$/, '');
-}
-
-function isAutomationSubscriptionModelOption(value: string): boolean {
-  return AUTOMATION_MODEL_OPTIONS.some((option) => option === value);
+function resolveAutomationSelection(form: Pick<AutomationFormState, 'model' | 'modelProfileId' | 'reasoningEffort'>, profiles: ModelProfile[], fallbackProfileId: string, fallbackEffort: ReasoningEffort) {
+  const legacyEffort: ReasoningEffort | undefined = form.model.endsWith(' 超高') ? 'xhigh' : form.model.endsWith(' 高') ? 'high' : form.model.endsWith(' 标准') ? 'medium' : undefined;
+  const legacyLabel = form.model.replace(/\s+(超高|高|标准)$/, '');
+  const profile = profiles.find((item) => item.id === form.modelProfileId) ?? profiles.find((item) => item.label === legacyLabel) ?? resolveModelProfile(profiles, fallbackProfileId);
+  return { profile, reasoningEffort: resolveReasoningEffortForProfile(profile, form.reasoningEffort ?? legacyEffort ?? fallbackEffort) };
 }
 
 function uniqueAutomationSelectOptions(options: AutomationSelectOption[]): AutomationSelectOption[] {
@@ -4877,13 +4877,14 @@ function firstAutomationSelectValue(groups: readonly AutomationSelectGroup[]): s
   return groups[0]?.options[0]?.value ?? '';
 }
 
-function automationRunPrompt(task: ScheduledAutomationTask): string {
+function automationRunPrompt(task: ScheduledAutomationTask, modelLabel = task.model, reasoningEffort?: ReasoningEffort): string {
   const lines = [
     `请立即执行已安排任务「${task.title}」。`,
     `运行环境：${task.environment}`,
     task.project === '选择项目' ? null : `项目：${task.project}`,
     `原计划：${task.schedule}`,
-    `模型：${task.model}`,
+    `模型：${modelLabel}`,
+    reasoningEffort ? `推理强度：${effortLabel(reasoningEffort)}` : null,
     '',
     task.prompt,
   ];
@@ -4893,20 +4894,30 @@ function automationRunPrompt(task: ScheduledAutomationTask): string {
 function AutomationManualEditor({
   form,
   modelOptions,
+  modelValue,
+  effortValue,
+  effortOptions,
   projectOptions,
   selectedTaskId,
   titleInputRef,
   onCancel,
   onChange,
+  onModelChange,
+  onEffortChange,
   onSubmit,
 }: {
   form: AutomationFormState;
   modelOptions: readonly AutomationSelectGroup[];
+  modelValue: string;
+  effortValue: ReasoningEffort;
+  effortOptions: ReturnType<typeof reasoningEffortOptionsForProfile>;
   projectOptions: string[];
   selectedTaskId: string | null;
   titleInputRef: RefObject<HTMLInputElement | null>;
   onCancel: () => void;
   onChange: <Field extends keyof AutomationFormState>(field: Field, value: AutomationFormState[Field]) => void;
+  onModelChange: (value: string) => void;
+  onEffortChange: (value: ReasoningEffort) => void;
   onSubmit: (event: FormEvent) => void;
 }) {
   const customSchedule = isCustomAutomationSchedule(form.schedule);
@@ -4976,10 +4987,11 @@ function AutomationManualEditor({
           )}
           <AutomationEditorSelect
             label="模型"
-            value={form.model}
+            value={modelValue}
             options={modelOptions}
-            onChange={(value) => onChange('model', value)}
+            onChange={onModelChange}
           />
+          {effortOptions.length > 0 && <AutomationEditorSelect label="推理强度" value={effortValue} options={effortOptions.map((option) => ({ value: option.id, label: option.label }))} onChange={(value) => onEffortChange(value as ReasoningEffort)} />}
         </div>
         <div className="automation-editor-actions">
           <button type="button" className="automation-editor-secondary" onClick={onCancel}>取消</button>
