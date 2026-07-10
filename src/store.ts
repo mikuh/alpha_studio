@@ -6,9 +6,12 @@ import {
   messagesForActiveBackground,
   prepareConversationForOutgoingTurn,
 } from './contextWindow';
-import { applyCodexEventToConversation } from './codexEvents';
+import {
+  applyCodexEventToConversation,
+  CONTEXT_COMPACTION_TOOL_TITLE,
+} from './codexEvents';
 import { buildCodingInstructions, buildReviewPrompt } from './prompt';
-import { checkCodex, isTauriRuntime, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
+import { checkCodex, isTauriRuntime, listCodexModels, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
 import {
@@ -30,6 +33,9 @@ import {
   normalizeModelProfileDraft,
   normalizeModelProfiles,
   resolveModelProfile,
+  modelProfilesFromCodexCatalog,
+  reconcileModelSelection,
+  resolveReasoningEffortForProfile,
   selectedModelProfileId as resolveSelectedModelProfileId,
   sandboxToApproval,
   stripModelProfileSecrets,
@@ -45,6 +51,7 @@ import type {
   ChatMessage,
   CodexChatEvent,
   CodexStatus,
+  CodexModelCatalogItem,
   Conversation,
   CoworkerSelection,
   MessageAttachment,
@@ -76,6 +83,9 @@ interface ChatState {
   workModeId: WorkModeId;
   clientLicenseSession: ClientLicenseSession | null;
   codexStatus: CodexStatus | null;
+  codexModelCatalog: CodexModelCatalogItem[] | null;
+  codexModelCatalogError: string | null;
+  isRefreshingCodexModels: boolean;
   approvalMode: ApprovalMode;
   planMode: boolean;
   pursueGoal: boolean;
@@ -104,6 +114,7 @@ interface ChatState {
   permanentlyDeleteProject: (id: string) => void;
   setProjectSort: (sort: ProjectSort) => void;
   setModelProfile: (id: string) => void;
+  setModelSelection: (id: string, requestedEffort?: ReasoningEffort) => void;
   addModelProfile: (profile: ModelProfileDraft) => string | null;
   updateModelProfile: (id: string, patch: Partial<ModelProfileDraft>) => void;
   deleteModelProfile: (id: string) => void;
@@ -117,7 +128,8 @@ interface ChatState {
   setPlanMode: (planMode: boolean) => void;
   setPursueGoal: (pursueGoal: boolean) => void;
   resolveAuthorization: (id: string, decision: ApprovalDecision) => void;
-  refreshCodexStatus: () => Promise<void>;
+  refreshCodexStatus: (options?: { forceModelRefetch?: boolean }) => Promise<void>;
+  refreshCodexModels: (forceRefetch: boolean) => Promise<void>;
   sendMessage: (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null, coworkers?: CoworkerSelection[] | null) => Promise<void>;
   removeQueuedMessage: (conversationId: string, queuedMessageId: string) => void;
   updateQueuedMessage: (conversationId: string, queuedMessageId: string, patch: Pick<QueuedChatMessage, 'text'>) => void;
@@ -157,7 +169,7 @@ function persistedChatState(state: ChatState): PersistedChatState {
     projects: state.projects,
     currentConversationId: state.currentConversationId,
     selectedModelProfileId: state.selectedModelProfileId,
-    modelProfiles: stripModelProfileSecrets(state.modelProfiles),
+    modelProfiles: stripModelProfileSecrets(state.modelProfiles.filter((profile) => !profile.builtIn)),
     reasoningEffort: state.reasoningEffort,
     speed: state.speed,
     workModeId: state.workModeId,
@@ -381,7 +393,11 @@ export const useChatStore = create<ChatState>()(
               ? {
                   ...baseConversation,
                   title: nextTitle,
-                  messages: [...baseConversation.messages, userMessage, assistantMessage],
+                  messages: [
+                    ...baseConversation.messages,
+                    userMessage,
+                    withLocalContextCompactionBlock(assistantMessage, preparedContext.conversation),
+                  ],
                   status: 'streaming',
                   updatedAt: Date.now(),
                   runId: undefined,
@@ -412,10 +428,15 @@ export const useChatStore = create<ChatState>()(
           const result = await startCodexChat({
             conversationId,
             prompt: addBackgroundContextToPrompt(
-              promptWithAttachments(trimmed, attachmentList),
+              trimmed,
               preparedContext.promptContext,
             ),
-            developerInstructions: buildCodingInstructions(promptOptions, domain),
+            developerInstructions: buildCodingInstructions(
+              { ...promptOptions, nativeSkillInput: Boolean(userMessage.selectedSkill) },
+              domain,
+            ),
+            selectedSkill: userMessage.selectedSkill,
+            attachments: attachmentList,
             codexThreadId: latest?.codexThreadId,
             cwd: latest?.cwd || undefined,
             ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
@@ -449,6 +470,9 @@ export const useChatStore = create<ChatState>()(
       workModeId: DEFAULT_WORK_MODE_ID,
       clientLicenseSession: loadClientLicenseSession(),
       codexStatus: null,
+      codexModelCatalog: null,
+      codexModelCatalogError: null,
+      isRefreshingCodexModels: false,
       approvalMode: DEFAULT_APPROVAL,
       planMode: false,
       pursueGoal: false,
@@ -571,6 +595,8 @@ export const useChatStore = create<ChatState>()(
             isStreaming: false,
           })),
           codexThreadId: undefined,
+          codexTokenUsage: undefined,
+          codexCompactedAt: undefined,
           queuedMessages: undefined,
           guidedQueuedMessages: undefined,
           status: 'idle',
@@ -708,11 +734,15 @@ export const useChatStore = create<ChatState>()(
       setProjectSort: (sort: ProjectSort) => set({ projectSort: sort }),
 
       setModelProfile: (id: string) => {
-        const selected = get().modelProfiles.find((profile) => profile.id === id && profile.enabled);
-        if (selected) {
-          set({ selectedModelProfileId: selected.id });
-          persistModelConfig();
-        }
+        get().setModelSelection(id, get().reasoningEffort);
+      },
+      setModelSelection: (id, requestedEffort) => {
+        set((state) => {
+          const profile = state.modelProfiles.find((item) => item.id === id && item.enabled);
+          if (!profile) return {};
+          return { selectedModelProfileId: profile.id, reasoningEffort: resolveReasoningEffortForProfile(profile, requestedEffort ?? state.reasoningEffort) };
+        });
+        persistModelConfig();
       },
 
       addModelProfile: (profile) => {
@@ -798,7 +828,7 @@ export const useChatStore = create<ChatState>()(
         }
       },
 
-      setReasoningEffort: (effort: ReasoningEffort) => set({ reasoningEffort: effort }),
+      setReasoningEffort: (effort: ReasoningEffort) => set((state) => ({ reasoningEffort: resolveReasoningEffortForProfile(resolveModelProfile(state.modelProfiles, state.selectedModelProfileId), effort) })),
 
       setSpeed: (speed: Speed) => set({ speed }),
 
@@ -846,11 +876,31 @@ export const useChatStore = create<ChatState>()(
         set((state) => (state.pendingAuthorization?.id === id ? { pendingAuthorization: null } : {}));
       },
 
-      refreshCodexStatus: async () => {
+      refreshCodexModels: async (forceRefetch) => {
+        if (get().isRefreshingCodexModels) return;
+        set({ isRefreshingCodexModels: true, codexModelCatalogError: null });
+        try {
+          const catalog = await listCodexModels(forceRefetch);
+          if (!catalog.length) throw new Error('Codex app-server returned no visible valid models.');
+          set((state) => {
+            const previous = state.modelProfiles.find((p) => p.id === state.selectedModelProfileId);
+            const modelProfiles = modelProfilesForCurrentLicense(state.clientLicenseSession, state.modelProfiles, catalog);
+            return { codexModelCatalog: catalog, codexModelCatalogError: null, isRefreshingCodexModels: false, modelProfiles, ...reconcileModelSelection({ profiles: modelProfiles, selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort, previousSelectedProfile: previous }) };
+          });
+        } catch (error) { set({ codexModelCatalogError: stringifyError(error), isRefreshingCodexModels: false }); }
+      },
+
+      refreshCodexStatus: async (options = {}) => {
+        const previous = get().codexStatus;
         set({ isCheckingCodex: true, error: null });
         try {
           const status = await checkCodex();
+          if (!status.loggedIn) {
+            set((state) => { const profiles = modelProfilesForCurrentLicense(state.clientLicenseSession, state.modelProfiles, null); return { codexStatus: status, isCheckingCodex: false, codexModelCatalog: null, modelProfiles: profiles, ...reconcileModelSelection({ profiles, selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort }) }; });
+            return;
+          }
           set({ codexStatus: status, isCheckingCodex: false });
+          if (previous === null || previous?.loggedIn === false || options.forceModelRefetch === true) await get().refreshCodexModels(previous?.loggedIn === false || options.forceModelRefetch === true);
         } catch (error) {
           set({
             codexStatus: {
@@ -1075,6 +1125,8 @@ export const useChatStore = create<ChatState>()(
           status: 'idle',
           runId: undefined,
           codexThreadId: undefined,
+          codexTokenUsage: undefined,
+          codexCompactedAt: undefined,
           backgroundContext: retainedBackgroundContext,
         });
         const activePreviousMessages = messagesForActiveBackground(preparedContext.conversation);
@@ -1101,11 +1153,17 @@ export const useChatStore = create<ChatState>()(
               ? {
                   ...preparedContext.conversation,
                   title: nextTitle,
-                  messages: [...previousMessages, editedUserMessage, assistantMessage],
+                  messages: [
+                    ...previousMessages,
+                    editedUserMessage,
+                    withLocalContextCompactionBlock(assistantMessage, preparedContext.conversation),
+                  ],
                   status: 'streaming',
                   updatedAt: now,
                   runId: undefined,
                   codexThreadId: undefined,
+                  codexTokenUsage: undefined,
+                  codexCompactedAt: undefined,
                 }
               : item
           ),
@@ -1131,17 +1189,19 @@ export const useChatStore = create<ChatState>()(
             selectedSkill: original.selectedSkill,
             coworkers: original.coworkers,
           };
-	          const result = await startCodexChat({
-	            conversationId,
-	            prompt: promptWithAttachments(
-	              addBackgroundContextToPrompt(
-	                buildEditedPrompt(trimmed, activePreviousMessages),
-	                preparedContext.promptContext,
-	              ),
-	              nextAttachments,
-	            ),
-	            developerInstructions: buildCodingInstructions(promptOptions, domain),
-	            cwd: latest?.cwd || undefined,
+          const result = await startCodexChat({
+            conversationId,
+            prompt: addBackgroundContextToPrompt(
+              buildEditedPrompt(trimmed, activePreviousMessages),
+              preparedContext.promptContext,
+            ),
+            developerInstructions: buildCodingInstructions(
+              { ...promptOptions, nativeSkillInput: Boolean(original.selectedSkill) },
+              domain,
+            ),
+            selectedSkill: original.selectedSkill,
+            attachments: nextAttachments,
+            cwd: latest?.cwd || undefined,
             ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
             sandboxMode,
           });
@@ -1506,13 +1566,15 @@ function isLocalModelProfile(profile: ModelProfile): boolean {
   return !profile.builtIn && profile.providerId !== ALPHA_GATEWAY_PROVIDER_ID;
 }
 
-function modelProfilesForCurrentLicense(
+export function modelProfilesForCurrentLicense(
   session: ClientLicenseSession | null,
-  configuredProfiles: ModelProfile[],
+  configuredProfiles: readonly ModelProfile[],
+  catalog: readonly CodexModelCatalogItem[] | null = null,
 ): ModelProfile[] {
-  if (!session) return configuredProfiles;
+  const subscriptionProfiles = modelProfilesFromCodexCatalog(catalog);
+  if (!session) return mergeUniqueModelProfiles(subscriptionProfiles, configuredProfiles.filter((profile) => !profile.builtIn));
   return mergeUniqueModelProfiles(
-    modelProfilesFromClientLicense(session),
+    modelProfilesFromClientLicense(session, subscriptionProfiles),
     configuredProfiles.filter(isLocalModelProfile),
   );
 }
@@ -1529,6 +1591,7 @@ function mergeUniqueModelProfiles(baseProfiles: ModelProfile[], extraProfiles: M
 }
 
 async function codexModelRequest(profile: ModelProfile, reasoningEffort: ReasoningEffort) {
+  const validatedEffort = resolveReasoningEffortForProfile(profile, reasoningEffort);
   if (profile.providerId === ALPHA_GATEWAY_PROVIDER_ID) {
     const gateway = await createGatewayRun(profile.model);
     return {
@@ -1537,7 +1600,7 @@ async function codexModelRequest(profile: ModelProfile, reasoningEffort: Reasoni
       providerBaseUrl: gateway.providerBaseUrl,
       providerApiKey: gateway.providerApiKey,
       providerWireApi: gateway.providerWireApi,
-      reasoningEffort: profile.supportsReasoningEffort ? reasoningEffort : undefined,
+      reasoningEffort: profile.supportsReasoningEffort ? validatedEffort : undefined,
     };
   }
   return {
@@ -1547,7 +1610,7 @@ async function codexModelRequest(profile: ModelProfile, reasoningEffort: Reasoni
     providerApiKey: profile.apiKey,
     providerWireApi: profile.wireApi,
     providerThinkingEnabled: profile.wireApi === 'chat' ? profile.supportsReasoningEffort : undefined,
-    reasoningEffort: profile.supportsReasoningEffort ? reasoningEffort : undefined,
+    reasoningEffort: profile.supportsReasoningEffort ? validatedEffort : undefined,
   };
 }
 
@@ -1558,6 +1621,28 @@ function promptWithAttachments(text: string, attachments?: MessageAttachment[]):
   const lines = attachments.map((item) => `- ${item.path || item.name}${item.kind === 'image' ? '（图片）' : ''}`);
   const section = ['附带文件：', ...lines].join('\n');
   return text ? `${text}\n\n${section}` : section;
+}
+
+function withLocalContextCompactionBlock(message: ChatMessage, conversation: Conversation): ChatMessage {
+  const block = localContextCompactionBlock(conversation);
+  if (!block) return message;
+  return {
+    ...message,
+    blocks: [block, ...message.blocks],
+  };
+}
+
+function localContextCompactionBlock(conversation: Conversation): MessageBlock | null {
+  const background = conversation.backgroundContext;
+  if (!background) return null;
+  return {
+    type: 'tool',
+    id: `local-context-compaction-${background.compactedAt}`,
+    title: CONTEXT_COMPACTION_TOOL_TITLE,
+    status: 'completed',
+    target: `已压缩前 ${background.sourceMessageCount} 条历史上下文`,
+    output: 'Alpha Studio 已将较早的可见对话整理为背景摘要，并随本轮消息交给 Codex 继续使用。',
+  };
 }
 
 function buildEditedPrompt(message: string, previousMessages: ChatMessage[]): string {
@@ -1720,6 +1805,8 @@ export function migratePersistedState(persistedState: unknown): PersistedChatSta
     ? (source.conversations as Conversation[]).map((conversation) => ({
         ...conversation,
         codexThreadId: undefined,
+        codexTokenUsage: undefined,
+        codexCompactedAt: undefined,
         title: conversation.title === LEGACY_DEFAULT_CONVERSATION_TITLE ? '新对话' : conversation.title,
       }))
     : [createEmptyConversation()];

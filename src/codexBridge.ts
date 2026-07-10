@@ -5,6 +5,7 @@ import type { ModelProfile } from './models';
 import type {
   CodexChatEvent,
   CodexStatus,
+  CodexModelCatalogItem,
   GhAuthStatus,
   GitBranch,
   GitCommandResult,
@@ -12,8 +13,10 @@ import type {
   GitDiffStat,
   GitRemote,
   GitStatus,
+  MessageAttachment,
   OpenAppId,
   SandboxMode,
+  SkillSelection,
   TerminalEvent,
 } from './types';
 
@@ -34,6 +37,8 @@ export interface CodexChatStartRequest {
   reasoningEffort?: string;
   sandboxMode?: SandboxMode;
   developerInstructions?: string;
+  selectedSkill?: SkillSelection;
+  attachments?: MessageAttachment[];
 }
 
 export interface CodexChatStartResult {
@@ -45,6 +50,36 @@ export interface CodexAuthorizationResult {
 }
 
 export type CodexLoginResult = CodexAuthorizationResult;
+
+export interface CodexRateLimitWindow {
+  usedPercent: number;
+  windowDurationMins?: number | null;
+  resetsAt?: number | null;
+}
+
+export interface CodexRateLimitSnapshot {
+  limitId?: string | null;
+  limitName?: string | null;
+  primary?: CodexRateLimitWindow | null;
+  secondary?: CodexRateLimitWindow | null;
+  credits?: {
+    hasCredits?: boolean;
+    unlimited?: boolean;
+    balance?: string | number | null;
+  } | null;
+  planType?: string | null;
+  rateLimitReachedType?: string | null;
+}
+
+export interface CodexSubscriptionUsage {
+  source: 'codex-cli';
+  generatedAt: string;
+  rateLimits: CodexRateLimitSnapshot;
+  rateLimitsByLimitId?: Record<string, CodexRateLimitSnapshot> | null;
+  rateLimitResetCredits?: {
+    availableCount?: number | string | null;
+  } | null;
+}
 
 export interface ModelConfigFile {
   selectedModelProfileId?: string;
@@ -69,6 +104,11 @@ export async function checkCodex(): Promise<CodexStatus> {
   return invoke<CodexStatus>('codex_check');
 }
 
+export async function listCodexModels(forceRefetch: boolean): Promise<CodexModelCatalogItem[]> {
+  if (!isTauriRuntime()) return [];
+  return invoke<CodexModelCatalogItem[]>('codex_models', { request: { forceRefetch } });
+}
+
 export async function loginCodex(): Promise<CodexLoginResult | null> {
   if (!isTauriRuntime()) return null;
   return invoke<CodexLoginResult>('codex_login');
@@ -77,6 +117,11 @@ export async function loginCodex(): Promise<CodexLoginResult | null> {
 export async function revokeCodexAuthorization(): Promise<CodexAuthorizationResult | null> {
   if (!isTauriRuntime()) return null;
   return invoke<CodexAuthorizationResult>('codex_revoke_authorization');
+}
+
+export async function fetchCodexSubscriptionUsage(): Promise<CodexSubscriptionUsage | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<CodexSubscriptionUsage>('codex_subscription_usage');
 }
 
 export async function startCodexChat(request: CodexChatStartRequest): Promise<CodexChatStartResult> {
