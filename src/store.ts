@@ -885,7 +885,10 @@ export const useChatStore = create<ChatState>()(
           set({ codexStatus: status, isCheckingCodex: false });
           if (previous === null || previous?.loggedIn === false || options.forceModelRefetch === true) await get().refreshCodexModels(previous?.loggedIn === false || options.forceModelRefetch === true);
         } catch (error) {
-          set({
+          set((state) => {
+            const profiles = modelProfilesForCurrentLicense(state.clientLicenseSession, state.modelProfiles, null);
+            const selectable = profiles.some((p) => !p.builtIn) ? profiles.filter((p) => !p.builtIn) : profiles;
+            return {
             codexStatus: {
               installed: false,
               version: '',
@@ -894,7 +897,11 @@ export const useChatStore = create<ChatState>()(
               error: stringifyError(error),
             },
             isCheckingCodex: false,
-          });
+            codexModelCatalog: null,
+            codexModelCatalogError: null,
+            modelProfiles: profiles,
+            ...reconcileModelSelection({ profiles: selectable, selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort }),
+          }; });
         }
       },
 
