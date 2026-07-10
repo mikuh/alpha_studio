@@ -1,6 +1,6 @@
 # Codex Model Catalog Sync Design
 
-Status: approved concept, pending written-spec review
+Status: approved
 Date: 2026-07-10
 
 ## Context
