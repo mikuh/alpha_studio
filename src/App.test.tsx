@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { App } from './App';
 import { ALPHA_GATEWAY_PROVIDER_ID, clearClientLicenseSession, loadClientLicenseSession, saveClientLicenseSession } from './license';
-import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles } from './models';
+import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles, modelProfilesFromCodexCatalog } from './models';
+import type { CodexModelCatalogItem } from './types';
 import { useChatStore } from './store';
 import type { Conversation } from './types';
 
@@ -2366,5 +2367,12 @@ describe('right feature panel', () => {
     expect(css).toMatch(/\.review-tree-head input\s*{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*10px;/s);
     expect(css).toMatch(/\.review-scroll\s*{[^}]*padding-bottom:\s*76px;/s);
     expect(css).toMatch(/\.review-floating\s*{[^}]*bottom:\s*42px;[^}]*z-index:\s*24;/s);
+  });
+
+  it('maps catalog models to model-specific reasoning options', () => {
+    const catalog: CodexModelCatalogItem[] = [{ id: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', isDefault: true, hidden: false, defaultReasoningEffort: 'max', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'Thorough' }, { reasoningEffort: 'max', description: 'Maximum' }, { reasoningEffort: 'ultra', description: 'Ultra' }] }];
+    const [profile] = modelProfilesFromCodexCatalog(catalog);
+    expect(profile.label).toBe('GPT-5.6 Sol');
+    expect(profile.supportedReasoningEfforts?.map((item) => item.reasoningEffort)).toEqual(['high', 'max', 'ultra']);
   });
 });

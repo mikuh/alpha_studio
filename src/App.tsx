@@ -200,6 +200,7 @@ import {
 import {
   APPROVAL_OPTIONS,
   EFFORT_OPTIONS,
+  reasoningEffortOptionsForProfile,
   SPEED_OPTIONS,
   approvalDescription,
   approvalLabel,
@@ -7601,11 +7602,11 @@ function ModelPicker() {
   const selectedModelProfile = visibleEnabledProfiles.find((profile) => profile.id === selectedModelProfileId) ?? visibleEnabledProfiles[0] ?? resolveModelProfile(modelProfiles, selectedModelProfileId);
   const builtInProfiles = visibleEnabledProfiles.filter((profile) => profile.builtIn);
   const customProfiles = visibleEnabledProfiles.filter((profile) => !profile.builtIn);
+  const effortOptions = useMemo(
+    () => reasoningEffortOptionsForProfile(selectedModelProfile),
+    [selectedModelProfile],
+  );
   const close = () => { setOpen(false); setSubmenu(null); };
-  useEffect(() => {
-    if (visibleEnabledProfiles.length === 0 || selectedModelProfile.id === selectedModelProfileId) return;
-    setModelProfile(selectedModelProfile.id);
-  }, [selectedModelProfile.id, selectedModelProfileId, setModelProfile, visibleEnabledProfiles.length]);
   useLayoutEffect(() => {
     if (!open) {
       setMenuStyle(HIDDEN_FLOATING_STYLE);
@@ -7638,7 +7639,7 @@ function ModelPicker() {
       window.removeEventListener('resize', updateMenuPosition);
       window.removeEventListener('scroll', updateMenuPosition, true);
     };
-  }, [open, visibleEnabledProfiles.length, reasoningEffort, selectedModelProfile.id, speed]);
+  }, [open, visibleEnabledProfiles.length, reasoningEffort, selectedModelProfile.id, speed, effortOptions]);
   useLayoutEffect(() => {
     if (!open || !submenu) {
       setFlyoutStyle(HIDDEN_FLOATING_STYLE);
@@ -7682,15 +7683,13 @@ function ModelPicker() {
   return (
     <div className="model-picker">
       <button ref={triggerRef} type="button" className={`composer-pill model-pill ${open ? 'active' : ''}`} onClick={() => setOpen((value) => !value)} title="选择模型与推理强度">
-        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelProfileLabel([selectedModelProfile], selectedModelProfile.id)}</span><span className="model-pill-effort">{effortLabel(reasoningEffort)}</span><ChevronDown size={12} />
+        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelProfileLabel([selectedModelProfile], selectedModelProfile.id)}</span>{effortOptions.length > 0 && <span className="model-pill-effort">{effortLabel(reasoningEffort)}</span>}<ChevronDown size={12} />
       </button>
       {open && (
         <>
           <button className="menu-backdrop" type="button" aria-label="关闭模型菜单" onClick={close} />
           <div ref={menuRef} className="model-menu model-choice-menu" role="menu" style={menuStyle} onMouseLeave={() => setSubmenu(null)}>
-            <div className="model-menu-label">智能</div>
-            {EFFORT_OPTIONS.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === reasoningEffort} className="model-menu-item" onMouseEnter={() => setSubmenu(null)} onClick={() => { setReasoningEffort(option.id as ReasoningEffort); close(); }}><span>{option.label}</span>{option.id === reasoningEffort && <Check size={14} className="model-menu-check" />}</button>)}
-            <div className="model-menu-divider" />
+            {effortOptions.length > 0 && <><div className="model-menu-label">智能</div>{effortOptions.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === reasoningEffort} className="model-menu-item" onMouseEnter={() => setSubmenu(null)} onClick={() => { setReasoningEffort(option.id); close(); }}><span>{option.label}</span>{option.id === reasoningEffort && <Check size={14} className="model-menu-check" />}</button>)}<div className="model-menu-divider" /></>}
             <div ref={modelRowRef} className="model-flyout-row" onMouseEnter={() => setSubmenu('model')}>
               <button type="button" className="model-menu-item submenu-trigger" aria-haspopup="menu" aria-expanded={submenu === 'model'} onClick={() => setSubmenu((current) => (current === 'model' ? null : 'model'))}><span>{selectedModelProfile.label}</span><ChevronRight size={14} className="model-menu-chevron" /></button>
               {submenu === 'model' && (
@@ -9866,6 +9865,7 @@ function ModelSettings() {
     visibleEnabledProfiles[0] ??
     modelProfiles.find((profile) => profile.id === selectedModelProfileId);
   const selectedProfileId = selectedProfile?.id ?? '';
+  const effortOptions = selectedProfile ? reasoningEffortOptionsForProfile(selectedProfile) : [];
   const selectedUsesGateway = selectedProfile?.providerId === ALPHA_GATEWAY_PROVIDER_ID;
   const codexRuntimeReady = Boolean(codexStatus?.installed && (codexStatus.loggedIn || selectedUsesGateway));
   const normalizedDraft = normalizeModelProfileDraft(draft);
@@ -9908,11 +9908,6 @@ function ModelSettings() {
       if (ok) deleteModelProfile(profile.id);
     });
   };
-  useEffect(() => {
-    if (visibleEnabledProfiles.length === 0 || visibleEnabledProfiles.some((profile) => profile.id === selectedModelProfileId)) return;
-    setModelProfile(visibleEnabledProfiles[0].id);
-  }, [selectedModelProfileId, setModelProfile, visibleEnabledProfiles]);
-
   return (
     <>
       <SettingsGroup>
@@ -9921,9 +9916,9 @@ function ModelSettings() {
             {visibleEnabledProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
           </select>
         </SettingsRow>
-        <SettingsRow title="推理强度" description="更高的强度更细致，但响应更慢；不支持的自定义模型会自动跳过。">
-          <SettingsSegment value={reasoningEffort} onChange={(id) => setReasoningEffort(id as ReasoningEffort)} options={EFFORT_OPTIONS.map((option) => ({ id: option.id, label: option.label }))} />
-        </SettingsRow>
+        {effortOptions.length > 0 && <SettingsRow title="推理强度" description="更高的强度更细致，但响应更慢；这里只显示当前模型支持的档位。">
+          <SettingsSegment value={reasoningEffort} onChange={(id) => setReasoningEffort(id as ReasoningEffort)} options={effortOptions} />
+        </SettingsRow>}
         <SettingsRow title="配置文件" description="自定义模型和 API Key 会保存到本地 JSON 文件，其他工具可以直接修改。">
           <span className="settings-static model-config-path">{isLoadingModelConfig ? '正在加载...' : modelConfigPath || '~/.alpha-studio/model-providers.json'}</span>
         </SettingsRow>
@@ -9945,7 +9940,7 @@ function ModelSettings() {
           <span className="settings-status-actions">
             {codexStatus?.installed && !codexStatus.loggedIn && codexSubscriptionModelsVisible(codexStatus, clientLicenseSession) && <CodexLoginButton compact />}
             {codexStatus?.installed && codexStatus.loggedIn && <CodexRevokeButton compact />}
-            <button className="settings-btn" type="button" onClick={() => void refreshCodexStatus()} disabled={isCheckingCodex}>重新检测</button>
+            <button className="settings-btn" type="button" onClick={() => void refreshCodexStatus({ forceModelRefetch: true })} disabled={isCheckingCodex}>重新检测</button>
           </span>
         </div>
       </SettingsGroup>
