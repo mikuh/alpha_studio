@@ -14,7 +14,7 @@ import type {
 import ReactMarkdown from 'react-markdown';
 import { createPortal } from 'react-dom';
 import remarkGfm from 'remark-gfm';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import {
@@ -149,12 +149,16 @@ import {
   renameProjectFolder,
   revealPath,
   revokeCodexAuthorization,
+  fetchCodexSubscriptionUsage,
   subscribeTerminalEvents,
   syncCoworkerAgents,
   terminalResize,
   terminalStart,
   terminalStop,
   terminalWrite,
+  type CodexRateLimitSnapshot,
+  type CodexRateLimitWindow,
+  type CodexSubscriptionUsage,
 } from './codexBridge';
 import { contextWindowUsage, formatTokenCount, type ContextWindowUsage } from './contextWindow';
 import {
@@ -4144,7 +4148,11 @@ function BrowserDockPanel({ requestedUrl, requestKey }: { requestedUrl?: string;
             type="button"
             className="browser-external-open"
             disabled={!externalTarget}
-            onClick={() => { if (externalTarget) void openExternal(externalTarget); }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (externalTarget) void openExternal(externalTarget);
+            }}
             aria-label="在外部浏览器打开"
             title="在外部浏览器打开"
           >
@@ -4614,7 +4622,8 @@ function AutomationsPage({
     setEditorOpen(false);
     setTab('tasks');
     onOpenChat();
-    const selection = resolveAutomationSelection(task, state.modelProfiles, state.selectedModelProfileId, state.reasoningEffort);
+    const availableProfiles = visibleModelProfilesForCodexStatus(state.modelProfiles.filter((profile) => profile.enabled), state.codexStatus, state.clientLicenseSession);
+    const selection = resolveAutomationSelection(task, availableProfiles, state.selectedModelProfileId, state.reasoningEffort);
     state.setModelSelection(selection.profile.id, selection.reasoningEffort);
     void sendMessage(automationRunPrompt(task, selection.profile.label, selection.profile.supportsReasoningEffort ? selection.reasoningEffort : undefined));
   };
@@ -6262,11 +6271,14 @@ function Composer({
 }
 
 function ContextWindowIndicator({ usage }: { usage: ContextWindowUsage }) {
+  const label = usage.source === 'codex' ? 'Codex 实际上下文窗口' : '本地估算背景信息窗口';
   const detail = [
-    `背景信息窗口：${usage.usedPercent}% 已用（剩余 ${usage.remainingPercent}%）`,
+    `${label}：${usage.usedPercent}% 已用（剩余 ${usage.remainingPercent}%）`,
     `已用 ${formatTokenCount(usage.usedTokens)} 标记，共 ${formatTokenCount(usage.totalTokens)}`,
     `压缩阈值 ${usage.compactThresholdPercent}%（${formatTokenCount(usage.compactThresholdTokens)} 标记）`,
-    usage.compacted ? `已压缩前 ${usage.compactedMessageCount} 条消息` : '尚未压缩',
+    usage.source === 'codex'
+      ? (usage.compacted ? 'Codex 已执行上下文压缩' : '尚未收到 Codex 压缩事件')
+      : (usage.compacted ? `已压缩前 ${usage.compactedMessageCount} 条消息` : '尚未压缩'),
   ].join('\n');
   return (
     <span
@@ -10341,20 +10353,39 @@ function KeyboardSettings() {
 function UsageSettings() {
   const session = useChatStore((state) => state.clientLicenseSession);
   const [summary, setSummary] = useState<ClientBillingSummary | null>(null);
+  const [codexUsage, setCodexUsage] = useState<CodexSubscriptionUsage | null>(null);
   const [loading, setLoading] = useState(false);
+  const [codexUsageLoading, setCodexUsageLoading] = useState(false);
   const [error, setError] = useState('');
+  const [codexUsageError, setCodexUsageError] = useState('');
 
   const refresh = useCallback(async () => {
     if (!session) return;
     setLoading(true);
+    setCodexUsageLoading(true);
     setError('');
-    try {
-      setSummary(await fetchClientBillingSummary(session));
-    } catch (err) {
-      setError(stringifyError(err));
-    } finally {
-      setLoading(false);
+    setCodexUsageError('');
+
+    const shouldLoadCodexUsage = Boolean(session.tenant.codexSubscriptionEnabled || session.codexAccounts.length > 0);
+    const [billingResult, codexResult] = await Promise.allSettled([
+      fetchClientBillingSummary(session),
+      shouldLoadCodexUsage ? fetchCodexSubscriptionUsage() : Promise.resolve(null),
+    ]);
+
+    if (billingResult.status === 'fulfilled') {
+      setSummary(billingResult.value);
+    } else {
+      setError(stringifyError(billingResult.reason));
     }
+
+    if (codexResult.status === 'fulfilled') {
+      setCodexUsage(codexResult.value);
+    } else {
+      setCodexUsageError(stringifyError(codexResult.reason));
+    }
+
+    setLoading(false);
+    setCodexUsageLoading(false);
   }, [session]);
 
   useEffect(() => {
@@ -10412,6 +10443,11 @@ function UsageSettings() {
         <SettingsRow title="Codex 订阅" description={codexSubscriptionEnabled ? `套餐 ${formatPlanLabel(tenant?.codexSubscriptionPlan)} · ${formatExpiryLabel(tenant?.codexSubscriptionExpiresAt)}` : '未启用 Codex 订阅模型。'}>
           <BillingStatusPill enabled={codexSubscriptionEnabled} label={codexSubscriptionEnabled ? '已启用' : '未启用'} />
         </SettingsRow>
+        {codexSubscriptionEnabled && (
+          <SettingsRow title="剩余用量" description={codexUsageDescription(codexUsage, codexUsageLoading, codexUsageError)}>
+            <CodexSubscriptionUsageView usage={codexUsage} loading={codexUsageLoading} error={codexUsageError} />
+          </SettingsRow>
+        )}
         <SettingsRow title="API 套餐" description={apiSubscriptionEnabled ? `${formatPlanLabel(tenant?.subscriptionPlan)} · ${formatExpiryLabel(tenant?.subscriptionExpiresAt)}` : '未配置固定 API 套餐，API 网关按量扣费。'}>
           <BillingStatusPill enabled={apiSubscriptionEnabled} label={apiSubscriptionEnabled ? '已订阅' : '按量'} />
         </SettingsRow>
@@ -10462,6 +10498,33 @@ function BillingStatusPill({ enabled, label }: { enabled: boolean; label: string
   return <span className={`billing-status-pill ${enabled ? 'active' : 'muted'}`}>{label}</span>;
 }
 
+function CodexSubscriptionUsageView({ usage, loading, error }: { usage: CodexSubscriptionUsage | null; loading: boolean; error: string }) {
+  const snapshot = codexRateLimitSnapshot(usage);
+  const rows = codexUsageRows(snapshot);
+
+  if (rows.length === 0) {
+    if (loading) {
+      return <span className="codex-usage-state"><Loader2 size={13} className="spin" />同步中</span>;
+    }
+    if (error) {
+      return <span className="codex-usage-state error"><AlertCircle size={13} />读取失败</span>;
+    }
+    return <span className="codex-usage-state muted">暂无数据</span>;
+  }
+
+  return (
+    <span className="codex-usage-windows">
+      {rows.map((row) => (
+        <span className="codex-usage-window" key={row.key}>
+          <strong>{row.label}</strong>
+          <em>{row.remainingPercent}%</em>
+          <small>{row.resetsAtLabel}</small>
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function BillingModelTable({ models }: { models: BillingModelUsage[] }) {
   return (
     <section className="billing-table-section" aria-label="模型用量">
@@ -10500,6 +10563,76 @@ function BillingModelTable({ models }: { models: BillingModelUsage[] }) {
       )}
     </section>
   );
+}
+
+function codexUsageDescription(usage: CodexSubscriptionUsage | null, loading: boolean, error: string): string {
+  if (loading && !usage) return '正在从 Codex CLI 同步。';
+  if (error && !usage) return `Codex CLI 读取失败：${error}`;
+  if (usage?.generatedAt) return `来自 Codex CLI · 更新 ${formatLicenseDate(usage.generatedAt)}`;
+  return '来自 Codex CLI。';
+}
+
+function codexRateLimitSnapshot(usage: CodexSubscriptionUsage | null): CodexRateLimitSnapshot | null {
+  if (!usage) return null;
+  const byId = usage.rateLimitsByLimitId || {};
+  return byId.codex
+    || Object.values(byId).find((entry) => entry?.limitId === 'codex')
+    || Object.values(byId).find((entry) => entry?.limitId?.startsWith('codex'))
+    || usage.rateLimits
+    || null;
+}
+
+function codexUsageRows(snapshot: CodexRateLimitSnapshot | null): Array<{ key: string; label: string; remainingPercent: number; resetsAtLabel: string }> {
+  if (!snapshot) return [];
+  return [
+    ['primary', snapshot.primary],
+    ['secondary', snapshot.secondary],
+  ].flatMap(([key, window]) => {
+    const row = codexUsageRow(key as string, window as CodexRateLimitWindow | null | undefined);
+    return row ? [row] : [];
+  });
+}
+
+function codexUsageRow(key: string, window: CodexRateLimitWindow | null | undefined): { key: string; label: string; remainingPercent: number; resetsAtLabel: string } | null {
+  const usedPercent = Number(window?.usedPercent);
+  if (!Number.isFinite(usedPercent)) return null;
+  return {
+    key,
+    label: formatCodexWindowDuration(window?.windowDurationMins),
+    remainingPercent: clampPercent(100 - usedPercent),
+    resetsAtLabel: formatCodexRateLimitReset(window?.resetsAt),
+  };
+}
+
+function formatCodexWindowDuration(minutes?: number | null): string {
+  const raw = Number(minutes);
+  const safe = Number.isFinite(raw) ? Math.max(0, Math.round(raw)) : 0;
+  if (safe === 300) return '5 小时';
+  if (safe === 10080) return '1 周';
+  if (safe > 0 && safe % 10080 === 0) return `${safe / 10080} 周`;
+  if (safe > 0 && safe % 1440 === 0) return `${safe / 1440} 天`;
+  if (safe > 0 && safe % 60 === 0) return `${safe / 60} 小时`;
+  return safe > 0 ? `${safe} 分钟` : '窗口';
+}
+
+function formatCodexRateLimitReset(value?: number | null): string {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return '待同步';
+  const date = new Date(seconds * 1000);
+  if (Number.isNaN(date.getTime())) return '待同步';
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${date.getMonth() + 1}月${date.getDate()}日`;
+  }
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function BillingLedgerList({ entries }: { entries: BillingLedgerEntry[] }) {
@@ -10762,6 +10895,9 @@ type ToolKind = 'command' | 'file-read' | 'file-edit' | 'search' | 'web' | 'log'
 function toolPresentation(title: string): { kind: ToolKind; icon: ReactNode; running: string; done: string; failed: string } {
   const normalized = title.trim().toLowerCase();
   const has = (...keys: string[]) => keys.some((key) => normalized.includes(key));
+  if (has('context_compaction', 'contextcompaction', 'context compaction')) {
+    return { kind: 'generic', icon: <Workflow size={14} />, running: '正在压缩上下文', done: '已压缩上下文', failed: '上下文压缩失败' };
+  }
   if (has('stderr')) return { kind: 'log', icon: <FileText size={14} />, running: 'Codex 日志', done: 'Codex 日志', failed: 'Codex 日志' };
   if (/image[\s._-]*gen|generate[\s._-]*image|image[\s._-]*generation|text[\s._-]*to[\s._-]*image/.test(normalized)) {
     return { kind: 'image', icon: <ImageIcon size={14} />, running: '正在生成图片', done: '已生成图片', failed: '图片生成失败' };
@@ -10837,6 +10973,12 @@ async function copyToClipboard(text: string): Promise<void> {
 async function openExternal(url: string): Promise<void> {
   const localPath = localFilePath(url);
   if (isTauriRuntime()) {
+    try {
+      await invoke('open_external_target', { request: { target: localPath || url } });
+      return;
+    } catch {
+      // Fall back to the plugin opener below for older desktop builds.
+    }
     try {
       const { openPath, openUrl } = await import('@tauri-apps/plugin-opener');
       if (localPath) await openPath(localPath);

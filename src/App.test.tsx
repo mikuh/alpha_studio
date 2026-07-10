@@ -1010,6 +1010,40 @@ describe('right feature panel', () => {
     expect(modelSelect.querySelector('optgroup[label="订阅模型"]')).not.toBeInTheDocument();
   });
 
+  it('offers dynamic catalog profiles and model-specific efforts in automation editor', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    codexCatalogMockState.status.loggedIn = true;
+    useChatStore.setState({ codexStatus: { installed: true, version: 'test', path: '/usr/bin/codex', loggedIn: true }, codexModelCatalog: CODEX_MODEL_CATALOG, modelProfiles: modelProfilesFromCodexCatalog(CODEX_MODEL_CATALOG), selectedModelProfileId: 'gpt-5.6-sol', reasoningEffort: 'ultra' });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const page = container.querySelector('.automation-page') as HTMLElement;
+    await user.click(within(page).getByRole('button', { name: '手动创建' }));
+    const editor = within(page).getByRole('complementary', { name: '手动创建自动化任务' });
+    const model = within(editor).getByLabelText('模型') as HTMLSelectElement;
+    const effort = within(editor).getByLabelText('推理强度') as HTMLSelectElement;
+    expect(Array.from(model.options).map((option) => option.value)).toEqual(expect.arrayContaining(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']));
+    await user.selectOptions(model, 'gpt-5.6-sol');
+    expect(Array.from(effort.options).map((option) => option.value)).toEqual(expect.arrayContaining(['high', 'max', 'ultra']));
+    await user.selectOptions(model, 'gpt-5.6-terra');
+    expect(effort).toHaveValue('max');
+    expect(Array.from(effort.options).map((option) => option.value)).not.toContain('ultra');
+  });
+
+  it('migrates a legacy automation model string before running', async () => {
+    window.localStorage.setItem('alpha:automation-tasks-v1', JSON.stringify([{ id: 'legacy', title: '旧任务', prompt: '执行旧任务', environment: '当前对话', project: '选择项目', schedule: '每天 9:00', model: 'GPT-5.5 超高', createdAt: 1 }]));
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ modelProfiles: defaultModelProfiles(), selectedModelProfileId: 'gpt-5.4', reasoningEffort: 'low', sendMessage });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const page = container.querySelector('.automation-page') as HTMLElement;
+    const row = within(page).getByRole('button', { name: /旧任务/ }).closest('.automation-task-row') as HTMLElement;
+    await user.click(within(row).getByRole('button', { name: '立即执行' }));
+    expect(useChatStore.getState()).toMatchObject({ selectedModelProfileId: 'gpt-5.5', reasoningEffort: 'xhigh' });
+    expect(sendMessage).toHaveBeenCalledWith(expect.stringContaining('模型：GPT-5.5'));
+  });
+
   it('prefills the manual automation editor from a template', async () => {
     const user = userEvent.setup();
     const sendMessage = vi.fn().mockResolvedValue(undefined);

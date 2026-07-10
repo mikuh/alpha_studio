@@ -23,6 +23,16 @@ describe('automation intent detection', () => {
     });
   });
 
+  it('stores stable model metadata for new tasks', () => {
+    const task = addScheduledAutomationTask({ title: '', prompt: '提醒我喝水。', environment: '当前对话', project: '选择项目', schedule: '每 5 分钟', model: 'GPT-5.5', modelProfileId: 'gpt-5.5', reasoningEffort: 'xhigh' });
+    expect(task).toMatchObject({ model: 'GPT-5.5', modelProfileId: 'gpt-5.5', reasoningEffort: 'xhigh' });
+  });
+
+  it('keeps legacy model-only tasks loadable', () => {
+    window.localStorage.setItem(AUTOMATION_TASKS_KEY, JSON.stringify([{ id: 'legacy', title: '旧任务', prompt: '执行旧任务', environment: '当前对话', project: '选择项目', schedule: '每天 9:00', model: 'GPT-5.5 超高', createdAt: 1 }]));
+    expect(loadScheduledAutomationTasks()).toEqual([expect.objectContaining({ id: 'legacy', model: 'GPT-5.5 超高' })]);
+  });
+
   it('parses richer recurring schedules with times', () => {
     expect(detectAutomationIntent('每天下午6点提醒我吃饭')).toMatchObject({
       prompt: '提醒我吃饭。',
