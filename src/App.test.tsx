@@ -1369,7 +1369,7 @@ describe('right feature panel', () => {
     codexCatalogMockState.status.loggedIn = true;
     codexCatalogMockState.models = CODEX_MODEL_CATALOG;
     seedClientLicenseSession(true);
-    useChatStore.setState({ codexStatus: { installed: true, loggedIn: false, path: '/usr/bin/codex', version: 'test' } });
+    useChatStore.setState({ codexStatus: null });
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('codex_models', { request: { forceRefetch: false } }));
@@ -1382,6 +1382,7 @@ describe('right feature panel', () => {
   });
 
   it('clamps reasoning effort when switching catalog models', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
     codexCatalogMockState.status.loggedIn = true;
     codexCatalogMockState.models = CODEX_MODEL_CATALOG;
     useChatStore.setState({ modelProfiles: modelProfilesFromCodexCatalog(CODEX_MODEL_CATALOG), selectedModelProfileId: 'gpt-5.6-sol', reasoningEffort: 'ultra' });
@@ -1391,7 +1392,7 @@ describe('right feature panel', () => {
     expect(screen.getByRole('menuitemradio', { name: 'Ultra' })).toBeInTheDocument();
     await user.hover(screen.getByRole('button', { name: /GPT-5.6 Sol/ }));
     await user.click(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Terra' }));
-    expect(useChatStore.getState().reasoningEffort).toBe('high');
+    await waitFor(() => expect(useChatStore.getState().reasoningEffort).toBe('high'));
     await user.click(screen.getByTitle('选择模型与推理强度'));
     expect(screen.queryByRole('menuitemradio', { name: 'Ultra' })).not.toBeInTheDocument();
     expect(screen.getAllByRole('menuitemradio').map((item) => item.textContent)).toEqual(expect.arrayContaining(['低', '中', '高', 'Max']));
@@ -1406,7 +1407,7 @@ describe('right feature panel', () => {
     render(<App />);
     await waitFor(() => expect(useChatStore.getState().codexModelCatalogError).toBe('catalog offline'));
     await user.click(screen.getByTitle('选择模型与推理强度'));
-    await user.hover(screen.getByRole('button', { name: /GPT-5.5/ }));
+    await user.hover(screen.getByText('GPT-5.5'));
     expect(screen.getByRole('menuitemradio', { name: 'GPT-5.5' })).toBeInTheDocument();
   });
 
