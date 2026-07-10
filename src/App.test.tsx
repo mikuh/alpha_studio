@@ -930,7 +930,7 @@ describe('right feature panel', () => {
     expect(within(editor).getByPlaceholderText('添加提示词，例如：在 $sentry 中查找崩溃')).toBeInTheDocument();
     expect(within(editor).getByLabelText('运行环境')).toHaveValue('工作树');
     expect(within(editor).getByLabelText('重复次数')).toHaveValue('每天 9:00');
-    expect(within(editor).getByLabelText('模型')).toHaveValue('GPT-5.5 超高');
+    expect(within(editor).getByLabelText('模型')).toHaveValue('gpt-5.5');
   });
 
   it('does not show the left sidebar collapse button in the automation page', async () => {
@@ -986,9 +986,9 @@ describe('right feature panel', () => {
     expect(customSchedule).toHaveValue('每 2 天 9:00');
 
     const modelSelect = within(editor).getByLabelText('模型') as HTMLSelectElement;
-    expect(Array.from(modelSelect.options).map((option) => option.value)).toContain('GPT-5.5 API');
-    await user.selectOptions(modelSelect, 'GPT-5.5 API');
-    expect(modelSelect).toHaveValue('GPT-5.5 API');
+    expect(Array.from(modelSelect.options).map((option) => option.value)).toContain('gateway:gpt-5.5');
+    await user.selectOptions(modelSelect, 'gateway:gpt-5.5');
+    expect(modelSelect).toHaveValue('gateway:gpt-5.5');
   });
 
   it('hides unavailable subscription models in the manual automation editor', async () => {
@@ -1002,10 +1002,10 @@ describe('right feature panel', () => {
 
     const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
     const modelSelect = within(editor).getByLabelText('模型') as HTMLSelectElement;
-    await waitFor(() => expect(modelSelect).toHaveValue('GPT-5.5 API'));
+    await waitFor(() => expect(modelSelect).toHaveValue('gpt-5.5'));
 
     const optionValues = Array.from(modelSelect.options).map((option) => option.value);
-    expect(optionValues).toContain('GPT-5.5 API');
+    expect(optionValues).toContain('gpt-5.5');
     expect(optionValues).not.toEqual(expect.arrayContaining(['GPT-5.5 超高', 'GPT-5.5 高', 'GPT-5.5 标准']));
     expect(modelSelect.querySelector('optgroup[label="订阅模型"]')).not.toBeInTheDocument();
   });
