@@ -812,11 +812,9 @@ export const useChatStore = create<ChatState>()(
           const modelProfiles = modelProfilesForCurrentLicense(
             get().clientLicenseSession,
             normalizeModelProfiles(config.modelProfiles),
+            get().codexModelCatalog,
           );
-          const selectedModelProfileId = resolveSelectedModelProfileId(
-            config.selectedModelProfileId,
-            modelProfiles,
-          );
+          const selectedModelProfileId = config.selectedModelProfileId?.trim() || get().selectedModelProfileId;
           set({
             modelProfiles,
             selectedModelProfileId,
@@ -835,29 +833,14 @@ export const useChatStore = create<ChatState>()(
       setWorkModeId: (workModeId: WorkModeId) => set({ workModeId }),
 
       setClientLicenseSession: (session) => {
-        if (!session) {
-          const modelProfiles = defaultModelProfiles();
-          set({
-            clientLicenseSession: null,
-            modelProfiles,
-            selectedModelProfileId: resolveSelectedModelProfileId(
-              get().selectedModelProfileId,
-              modelProfiles,
-            ),
-          });
-          return;
-        }
-        const modelProfiles = modelProfilesFromClientLicense(session);
-        const existingCustomProfiles = get().modelProfiles.filter(isLocalModelProfile);
-        const mergedModelProfiles = mergeUniqueModelProfiles(modelProfiles, existingCustomProfiles);
-        const selectedModelProfileId = resolveSelectedModelProfileId(
-          get().selectedModelProfileId,
-          mergedModelProfiles,
-        );
+        const state = get();
+        const modelProfiles = modelProfilesForCurrentLicense(session, state.modelProfiles, state.codexModelCatalog);
+        const preserve = state.codexModelCatalog === null && session?.tenant.codexSubscriptionEnabled !== false && state.selectedModelProfileId.trim().length > 0 && !modelProfiles.some((p) => p.id === state.selectedModelProfileId);
+        const selection = preserve ? { selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort } : reconcileModelSelection({ profiles: modelProfiles, selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort, previousSelectedProfile: state.modelProfiles.find((p) => p.id === state.selectedModelProfileId) });
         set({
           clientLicenseSession: session,
-          modelProfiles: mergedModelProfiles,
-          selectedModelProfileId,
+          modelProfiles,
+          ...selection,
         });
       },
 
@@ -896,7 +879,7 @@ export const useChatStore = create<ChatState>()(
         try {
           const status = await checkCodex();
           if (!status.loggedIn) {
-            set((state) => { const profiles = modelProfilesForCurrentLicense(state.clientLicenseSession, state.modelProfiles, null); return { codexStatus: status, isCheckingCodex: false, codexModelCatalog: null, modelProfiles: profiles, ...reconcileModelSelection({ profiles, selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort }) }; });
+            set((state) => { const profiles = modelProfilesForCurrentLicense(state.clientLicenseSession, state.modelProfiles, null); const selectable = profiles.some(p => !p.builtIn) ? profiles.filter(p => !p.builtIn) : profiles; return { codexStatus: status, isCheckingCodex: false, codexModelCatalog: null, modelProfiles: profiles, ...reconcileModelSelection({ profiles: selectable, selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort }) }; });
             return;
           }
           set({ codexStatus: status, isCheckingCodex: false });
