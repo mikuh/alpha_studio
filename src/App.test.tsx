@@ -1391,7 +1391,7 @@ describe('right feature panel', () => {
     await user.click(screen.getByTitle('选择模型与推理强度'));
     expect(screen.getByRole('menuitemradio', { name: 'Ultra' })).toBeInTheDocument();
     await user.hover(screen.getByRole('button', { name: /GPT-5.6 Sol/ }));
-    await user.click(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Terra' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Terra' }));
     await waitFor(() => expect(useChatStore.getState().reasoningEffort).toBe('high'));
     await user.click(screen.getByTitle('选择模型与推理强度'));
     expect(screen.queryByRole('menuitemradio', { name: 'Ultra' })).not.toBeInTheDocument();
@@ -1407,7 +1407,7 @@ describe('right feature panel', () => {
     render(<App />);
     await waitFor(() => expect(useChatStore.getState().codexModelCatalogError).toBe('catalog offline'));
     await user.click(screen.getByTitle('选择模型与推理强度'));
-    await user.hover(screen.getByText('GPT-5.5'));
+    await user.hover(screen.getByText('GPT-5.5 API'));
     expect(screen.getByRole('menuitemradio', { name: 'GPT-5.5' })).toBeInTheDocument();
   });
 
