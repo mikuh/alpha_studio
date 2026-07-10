@@ -1359,7 +1359,7 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByTitle('选择模型与推理强度'));
     const modelMenu = document.querySelector('.model-choice-menu') as HTMLElement;
-    const modelRow = within(modelMenu).getByText('GPT-5.5').closest('.model-flyout-row') as HTMLElement;
+    const modelRow = within(modelMenu).getByText(/GPT-5\.5 API|5\.5 API/).closest('.model-flyout-row') as HTMLElement;
     fireEvent.mouseEnter(modelRow);
 
     expect(await screen.findByText('订阅模型')).toBeInTheDocument();
