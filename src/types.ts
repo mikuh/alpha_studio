@@ -205,6 +205,22 @@ export interface CodexStatus {
   error?: string;
 }
 
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+
+export interface CodexModelReasoningEffort {
+  reasoningEffort: ReasoningEffort;
+  description: string;
+}
+
+export interface CodexModelCatalogItem {
+  id: string;
+  displayName: string;
+  isDefault: boolean;
+  hidden: boolean;
+  defaultReasoningEffort?: ReasoningEffort;
+  supportedReasoningEfforts: CodexModelReasoningEffort[];
+}
+
 export interface CodexChatEvent {
   type:
     | 'started'

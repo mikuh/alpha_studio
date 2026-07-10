@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ALPHA_GATEWAY_PROVIDER_ID,
   activateClient,
   clearClientLicenseSession,
   createGatewayRun,
@@ -10,6 +11,8 @@ import {
   renewClientLease,
   saveClientLicenseSession,
 } from './license';
+import { modelProfilesFromCodexCatalog } from './models';
+import type { CodexModelCatalogItem } from './types';
 
 const activationResponse = {
   tenant: {
@@ -38,6 +41,33 @@ const activationResponse = {
   ],
   codexAccounts: [],
 };
+
+const catalog: CodexModelCatalogItem[] = [
+  {
+    id: 'gpt-5.6-sol',
+    displayName: 'GPT-5.6 Sol',
+    isDefault: true,
+    hidden: false,
+    defaultReasoningEffort: 'max',
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'high', description: 'Thorough' },
+      { reasoningEffort: 'max', description: 'Maximum' },
+      { reasoningEffort: 'ultra', description: 'Ultra' },
+    ],
+  },
+  {
+    id: 'gpt-5.6-terra',
+    displayName: 'GPT-5.6 Terra',
+    isDefault: false,
+    hidden: false,
+    defaultReasoningEffort: 'high',
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'low', description: 'Fast' },
+      { reasoningEffort: 'high', description: 'Thorough' },
+      { reasoningEffort: 'max', description: 'Maximum' },
+    ],
+  },
+];
 
 describe('client license session', () => {
   beforeEach(() => {
@@ -107,6 +137,71 @@ describe('client license session', () => {
 
     expect(profiles.some((profile) => profile.providerId === 'openai' && profile.builtIn)).toBe(true);
     expect(profiles.some((profile) => profile.providerId === 'alpha-gateway')).toBe(true);
+  });
+
+  it('uses the supplied Codex subscription catalog without changing gateway order', () => {
+    saveClientLicenseSession({
+      apiBaseUrl: defaultAlphaApiBaseUrl(),
+      activatedAt: 1,
+      ...activationResponse,
+      tenant: {
+        ...activationResponse.tenant,
+        codexSubscriptionEnabled: true,
+      },
+    });
+    const session = loadClientLicenseSession()!;
+    const dynamic = modelProfilesFromCodexCatalog(catalog);
+
+    const profiles = modelProfilesFromClientLicense(session, dynamic);
+
+    expect(profiles.slice(0, 2).map((profile) => profile.id)).toEqual([
+      'gpt-5.6-sol', 'gpt-5.6-terra',
+    ]);
+    expect(profiles.filter((profile) => profile.providerId === ALPHA_GATEWAY_PROVIDER_ID).map((profile) => profile.model))
+      .toEqual(session.models.filter((model) => model.enabled && model.mode === 'gateway_api').map((model) => model.id));
+  });
+
+  it('prefixes a gateway id that collides with the dynamic subscription catalog', () => {
+    saveClientLicenseSession({
+      apiBaseUrl: defaultAlphaApiBaseUrl(),
+      activatedAt: 1,
+      ...activationResponse,
+      tenant: {
+        ...activationResponse.tenant,
+        codexSubscriptionEnabled: true,
+      },
+    });
+    const session = loadClientLicenseSession()!;
+    session.models = [{
+      id: 'gpt-5.6-sol',
+      label: 'GPT-5.6 Sol API',
+      provider: 'openai',
+      mode: 'gateway_api',
+      enabled: true,
+    }];
+
+    const profiles = modelProfilesFromClientLicense(session, modelProfilesFromCodexCatalog(catalog));
+
+    expect(profiles.map((profile) => profile.id)).toContain('gateway:gpt-5.6-sol');
+  });
+
+  it('ignores supplied subscription profiles when the tenant lacks subscription access', () => {
+    saveClientLicenseSession({
+      apiBaseUrl: defaultAlphaApiBaseUrl(),
+      activatedAt: 1,
+      ...activationResponse,
+      tenant: {
+        ...activationResponse.tenant,
+        codexSubscriptionEnabled: true,
+      },
+    });
+    const session = loadClientLicenseSession()!;
+    session.tenant.codexSubscriptionEnabled = false;
+
+    const profiles = modelProfilesFromClientLicense(session, modelProfilesFromCodexCatalog(catalog));
+
+    expect(profiles.some((profile) => profile.builtIn)).toBe(false);
+    expect(profiles.some((profile) => profile.providerId === ALPHA_GATEWAY_PROVIDER_ID)).toBe(true);
   });
 
   it('creates a gateway run token for the current tenant device and selected model', async () => {

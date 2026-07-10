@@ -252,8 +252,13 @@ export async function fetchClientBillingSummary(session: ClientLicenseSession): 
   });
 }
 
-export function modelProfilesFromClientLicense(session: ClientLicenseSession): ModelProfile[] {
-  const subscriptionProfiles = session.tenant.codexSubscriptionEnabled ? defaultModelProfiles() : [];
+export function modelProfilesFromClientLicense(
+  session: ClientLicenseSession,
+  availableSubscriptionProfiles: readonly ModelProfile[] = defaultModelProfiles(),
+): ModelProfile[] {
+  const subscriptionProfiles = session.tenant.codexSubscriptionEnabled
+    ? availableSubscriptionProfiles.map((profile) => ({ ...profile }))
+    : [];
   const occupied = new Set(subscriptionProfiles.map((profile) => profile.id));
   const gatewayProfiles = session.models
     .filter((model) => model.enabled && model.mode === 'gateway_api')

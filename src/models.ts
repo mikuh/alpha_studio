@@ -1,4 +1,11 @@
-import type { SandboxMode } from './types';
+import type {
+  CodexModelCatalogItem,
+  CodexModelReasoningEffort,
+  ReasoningEffort,
+  SandboxMode,
+} from './types';
+
+export type { ReasoningEffort } from './types';
 
 export interface ModelOption {
   id: string;
@@ -18,9 +25,15 @@ export interface ModelProfile {
   enabled: boolean;
   supportsReasoningEffort: boolean;
   builtIn?: boolean;
+  isDefault?: boolean;
+  defaultReasoningEffort?: ReasoningEffort;
+  supportedReasoningEfforts?: CodexModelReasoningEffort[];
 }
 
-export type ModelProfileDraft = Omit<ModelProfile, 'id' | 'builtIn'>;
+export type ModelProfileDraft = Omit<
+  ModelProfile,
+  'id' | 'builtIn' | 'isDefault' | 'defaultReasoningEffort' | 'supportedReasoningEfforts'
+>;
 
 export const BUILTIN_MODEL_PROFILES: ModelProfile[] = [
   { id: 'gpt-5.5', label: 'GPT-5.5', providerId: 'openai', model: 'gpt-5.5', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
@@ -38,6 +51,66 @@ export const DEFAULT_MODEL = DEFAULT_MODEL_PROFILE_ID;
 
 export function defaultModelProfiles(): ModelProfile[] {
   return BUILTIN_MODEL_PROFILES.map((profile) => ({ ...profile }));
+}
+
+export function modelProfilesFromCodexCatalog(
+  catalog: readonly CodexModelCatalogItem[] | null | undefined,
+): ModelProfile[] {
+  const dynamic = (catalog ?? [])
+    .filter((item) => !item.hidden && item.id.trim() && item.displayName.trim())
+    .map((item) => ({
+      id: item.id.trim(),
+      label: item.displayName.trim(),
+      providerId: 'openai',
+      model: item.id.trim(),
+      wireApi: 'responses' as const,
+      enabled: true,
+      supportsReasoningEffort: item.supportedReasoningEfforts.length > 0,
+      builtIn: true,
+      isDefault: item.isDefault,
+      defaultReasoningEffort: item.defaultReasoningEffort,
+      supportedReasoningEfforts: item.supportedReasoningEfforts.map((effort) => ({ ...effort })),
+    }));
+  return dynamic.length > 0 ? dynamic : defaultModelProfiles();
+}
+
+export interface ReconciledModelSelection {
+  selectedModelProfileId: string;
+  reasoningEffort: ReasoningEffort;
+}
+
+export function reconcileModelSelection(input: {
+  profiles: readonly ModelProfile[];
+  selectedModelProfileId: string;
+  reasoningEffort: ReasoningEffort;
+  previousSelectedProfile?: ModelProfile;
+}): ReconciledModelSelection {
+  const enabled = input.profiles.filter((profile) => profile.enabled);
+  const previous = input.previousSelectedProfile;
+  const identityMatch = previous
+    ? enabled.find((profile) => (
+        profile.providerId === previous.providerId
+        && profile.model === previous.model
+        && profile.wireApi === previous.wireApi
+      ))
+    : undefined;
+  const idMatch = enabled.find((profile) => profile.id === input.selectedModelProfileId);
+  const idStillHasSameIdentity = !previous || Boolean(
+    idMatch
+    && idMatch.providerId === previous.providerId
+    && idMatch.model === previous.model
+    && idMatch.wireApi === previous.wireApi,
+  );
+  const selected = identityMatch
+    ?? (idStillHasSameIdentity ? idMatch : undefined)
+    ?? enabled.find((profile) => profile.isDefault)
+    ?? enabled.find((profile) => profile.builtIn)
+    ?? enabled[0]
+    ?? BUILTIN_MODEL_PROFILES[0];
+  return {
+    selectedModelProfileId: selected.id,
+    reasoningEffort: resolveReasoningEffortForProfile(selected, input.reasoningEffort),
+  };
 }
 
 export function normalizeModelProfiles(source: unknown, legacyModel?: unknown): ModelProfile[] {
@@ -71,7 +144,11 @@ export function selectedModelProfileId(source: unknown, profiles: ModelProfile[]
     const match = profiles.find((profile) => (profile.id === legacy || profile.model === legacy) && profile.enabled);
     if (match) return match.id;
   }
-  return profiles.find((profile) => profile.enabled)?.id ?? DEFAULT_MODEL_PROFILE_ID;
+  return (
+    profiles.find((profile) => profile.enabled && profile.isDefault) ??
+    profiles.find((profile) => profile.enabled && profile.builtIn) ??
+    profiles.find((profile) => profile.enabled)
+  )?.id ?? DEFAULT_MODEL_PROFILE_ID;
 }
 
 export function resolveModelProfile(profiles: ModelProfile[], id: string): ModelProfile {
@@ -169,8 +246,6 @@ function modelProfileIdFromLegacyModel(model: string): string {
   return `legacy-${slug || 'model'}`;
 }
 
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
-
 export interface EffortOption {
   id: ReasoningEffort;
   label: string;
@@ -183,7 +258,45 @@ export const EFFORT_OPTIONS: EffortOption[] = [
   { id: 'xhigh', label: '超高' },
 ];
 
+export const ALL_EFFORT_OPTIONS: EffortOption[] = [
+  ...EFFORT_OPTIONS,
+  { id: 'max', label: 'Max' },
+  { id: 'ultra', label: 'Ultra' },
+];
+
 export const DEFAULT_EFFORT: ReasoningEffort = 'xhigh';
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return ALL_EFFORT_OPTIONS.some((option) => option.id === value);
+}
+
+export function reasoningEffortOptionsForProfile(profile: ModelProfile): EffortOption[] {
+  if (!profile.supportsReasoningEffort) return [];
+  if (profile.supportedReasoningEfforts !== undefined) {
+    const seen = new Set<ReasoningEffort>();
+    return profile.supportedReasoningEfforts.flatMap(({ reasoningEffort }) => {
+      if (seen.has(reasoningEffort) || !isReasoningEffort(reasoningEffort)) return [];
+      seen.add(reasoningEffort);
+      return [{ id: reasoningEffort, label: effortLabel(reasoningEffort) }];
+    });
+  }
+  return EFFORT_OPTIONS.map((option) => ({ ...option }));
+}
+
+export function resolveReasoningEffortForProfile(
+  profile: ModelProfile,
+  requested: ReasoningEffort,
+): ReasoningEffort {
+  const options = reasoningEffortOptionsForProfile(profile);
+  if (options.some((option) => option.id === requested)) return requested;
+  if (
+    profile.defaultReasoningEffort
+    && options.some((option) => option.id === profile.defaultReasoningEffort)
+  ) {
+    return profile.defaultReasoningEffort;
+  }
+  return options[0]?.id ?? DEFAULT_EFFORT;
+}
 
 export type Speed = 'standard' | 'fast';
 
@@ -210,7 +323,7 @@ export function shortModelLabel(id: string): string {
 }
 
 export function effortLabel(id: string): string {
-  return EFFORT_OPTIONS.find((effort) => effort.id === id)?.label ?? id;
+  return ALL_EFFORT_OPTIONS.find((effort) => effort.id === id)?.label ?? id;
 }
 
 export type ApprovalMode = 'request' | 'auto' | 'full-access';
