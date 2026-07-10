@@ -70,7 +70,6 @@ pub struct CodexLoginResult {
 
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // Remove once Task 2 consumes force_refetch.
 pub struct CodexModelsRequest {
     #[serde(default)]
     force_refetch: bool,
@@ -857,6 +856,60 @@ async fn codex_revoke_authorization() -> Result<CodexLoginResult, String> {
 }
 
 #[tauri::command]
+async fn codex_subscription_usage(app: AppHandle) -> Result<Value, String> {
+    let check = check_codex(Some(&app));
+    if !check.installed {
+        return Err(check
+            .error
+            .unwrap_or_else(|| "Codex CLI is not installed or cannot be executed.".to_string()));
+    }
+    let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
+    if !codex_logged_in(&check.path, &codex_home) {
+        return Err(check.error.unwrap_or_else(|| {
+            "Codex CLI is installed but Alpha Studio has not completed device authorization."
+                .to_string()
+        }));
+    }
+
+    let mut result = tokio::time::timeout(
+        Duration::from_secs(30),
+        read_codex_account_rate_limits(&check.path, &codex_home),
+    )
+    .await
+    .map_err(|_| "Timed out reading Codex subscription usage from Codex CLI.".to_string())??;
+
+    if let Value::Object(object) = &mut result {
+        object.insert("source".to_string(), json!("codex-cli"));
+        object.insert(
+            "generatedAt".to_string(),
+            json!(chrono::Utc::now().to_rfc3339()),
+        );
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn codex_models(
+    app: AppHandle,
+    request: CodexModelsRequest,
+) -> Result<Vec<CodexModelCatalogItem>, String> {
+    let check = check_codex(Some(&app));
+    if !check.installed {
+        return Err(check
+            .error
+            .unwrap_or_else(|| "Codex CLI is not installed or cannot be executed.".to_string()));
+    }
+    let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
+    if !codex_logged_in(&check.path, &codex_home) {
+        return Err(check.error.unwrap_or_else(|| {
+            "Codex CLI is installed but Alpha Studio has not completed device authorization."
+                .to_string()
+        }));
+    }
+    read_codex_models(&check.path, &codex_home, request.force_refetch).await
+}
+
+#[tauri::command]
 async fn model_config_load() -> Result<ModelConfigLoadResult, String> {
     let path = model_config_path()?;
     if !path.exists() {
@@ -1297,32 +1350,7 @@ impl CodexDriver {
         reader: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     ) -> Result<(), String> {
         // 1. Handshake.
-        send_jsonrpc(
-            stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "clientInfo": {
-                        "name": "alpha-studio",
-                        "title": "Alpha Studio",
-                        "version": env!("CARGO_PKG_VERSION"),
-                    },
-                    "capabilities": {
-                        "experimentalApi": true,
-                        "requestAttestation": false,
-                    },
-                },
-            }),
-        )
-        .await?;
-        await_response(stdin, reader, 1).await?;
-        send_jsonrpc(
-            stdin,
-            &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
-        )
-        .await?;
+        initialize_codex_app_server(stdin, reader).await?;
 
         // 2. Start a fresh thread, or resume the conversation's existing one.
         let mut thread_params = Map::new();
@@ -1526,6 +1554,98 @@ fn sanitize_catalog_reasoning_effort(value: Option<&str>) -> Option<String> {
             "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
         )
     })
+}
+
+async fn initialize_codex_app_server<W, R>(
+    stdin: &mut W,
+    reader: &mut tokio::io::Lines<R>,
+) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncBufRead + Unpin,
+{
+    send_jsonrpc(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "clientInfo": {
+                    "name": "alpha-studio",
+                    "title": "Alpha Studio",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "capabilities": {
+                    "experimentalApi": true,
+                    "requestAttestation": false
+                }
+            }
+        }),
+    )
+    .await?;
+    await_response(stdin, reader, 1).await?;
+    send_jsonrpc(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    )
+    .await
+}
+
+async fn fetch_codex_model_catalog<W, R>(
+    stdin: &mut W,
+    reader: &mut tokio::io::Lines<R>,
+    force_refetch: bool,
+) -> Result<Vec<CodexModelCatalogItem>, String>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncBufRead + Unpin,
+{
+    initialize_codex_app_server(stdin, reader).await?;
+    let mut request_id = 2_i64;
+    let mut cursor: Option<String> = None;
+    let mut seen_ids = HashSet::new();
+    let mut seen_cursors = HashSet::new();
+    let mut catalog = Vec::new();
+
+    loop {
+        let mut params = Map::new();
+        params.insert("limit".to_string(), json!(100));
+        params.insert("forceRefetch".to_string(), json!(force_refetch));
+        if let Some(cursor) = &cursor {
+            params.insert("cursor".to_string(), json!(cursor));
+        }
+        send_jsonrpc(
+            stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "model/list",
+                "params": Value::Object(params)
+            }),
+        )
+        .await?;
+        let response = await_response(stdin, reader, request_id).await?;
+        cursor = normalize_codex_model_page(&response, &mut seen_ids, &mut catalog)?;
+        let Some(next_cursor) = cursor.as_ref() else {
+            break;
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err(
+                "Codex app-server returned a repeated model pagination cursor.".to_string(),
+            );
+        }
+        request_id += 1;
+    }
+
+    if catalog.is_empty() {
+        return Err("Codex app-server returned no visible valid models.".to_string());
+    }
+    Ok(catalog)
 }
 
 async fn send_jsonrpc<W>(stdin: &mut W, message: &Value) -> Result<(), String>
@@ -5308,6 +5428,134 @@ fn check_codex(app: Option<&AppHandle>) -> CodexCheckResult {
     }
 }
 
+async fn read_codex_account_rate_limits(path: &str, codex_home: &Path) -> Result<Value, String> {
+    let mut command = Command::new(path);
+    for arg in codex_app_server_args(None) {
+        command.arg(arg);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.env("TERM", "xterm-256color");
+    command.env("NO_COLOR", "1");
+    command.env("CODEX_HOME", codex_home);
+    command.kill_on_drop(true);
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Codex app-server: {e}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to open Codex stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to open Codex stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to open Codex stderr".to_string())?;
+
+    let stderr_buffer = Arc::new(Mutex::new(String::new()));
+    let stderr_buffer_reader = stderr_buffer.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let mut buffer = stderr_buffer_reader.lock().await;
+            if buffer.len() < 4096 {
+                if !buffer.is_empty() {
+                    buffer.push('\n');
+                }
+                buffer.push_str(trimmed);
+            }
+        }
+    });
+
+    let mut reader = BufReader::new(stdout).lines();
+    let request_result = async {
+        initialize_codex_app_server(&mut stdin, &mut reader).await?;
+        send_jsonrpc(
+            &mut stdin,
+            &json!({ "jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read" }),
+        )
+        .await?;
+        let response = await_response(&mut stdin, &mut reader, 2).await?;
+        response
+            .get("result")
+            .cloned()
+            .ok_or_else(|| "Codex app-server did not return rate limit data".to_string())
+    }
+    .await;
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+
+    match request_result {
+        Ok(value) => Ok(value),
+        Err(message) => {
+            let stderr_text = stderr_buffer.lock().await.clone();
+            if stderr_text.is_empty() {
+                Err(message)
+            } else {
+                Err(format!("{message}: {stderr_text}"))
+            }
+        }
+    }
+}
+
+async fn read_codex_models(
+    path: &str,
+    codex_home: &Path,
+    force_refetch: bool,
+) -> Result<Vec<CodexModelCatalogItem>, String> {
+    let mut command = Command::new(path);
+    for arg in codex_app_server_args(None) {
+        command.arg(arg);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.env("TERM", "xterm-256color");
+    command.env("NO_COLOR", "1");
+    command.env("CODEX_HOME", codex_home);
+    command.kill_on_drop(true);
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Failed to spawn Codex app-server: {error}"))?;
+    let request_result = match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
+        (Some(mut stdin), Some(stdout), Some(stderr)) => {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(_line)) = lines.next_line().await {}
+            });
+            let mut reader = BufReader::new(stdout).lines();
+            match tokio::time::timeout(
+                Duration::from_secs(30),
+                fetch_codex_model_catalog(&mut stdin, &mut reader, force_refetch),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err("Timed out reading Codex model catalog from Codex CLI.".to_string()),
+            }
+        }
+        _ => Err("Failed to open Codex app-server stdio.".to_string()),
+    };
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+
+    request_result
+}
+
 fn resolve_codex_binary() -> Option<(String, String)> {
     for candidate in codex_binary_candidates() {
         if let Some(version) = codex_version(&candidate) {
@@ -5319,6 +5567,7 @@ fn resolve_codex_binary() -> Option<(String, String)> {
 
 fn codex_binary_candidates() -> Vec<String> {
     let mut candidates = Vec::new();
+    candidates.push("/Applications/ChatGPT.app/Contents/Resources/codex".to_string());
     candidates.push("/Applications/Codex.app/Contents/Resources/codex".to_string());
 
     if let Some(home) = home_dir() {
@@ -6760,6 +7009,8 @@ pub fn run() {
             codex_check,
             codex_login,
             codex_revoke_authorization,
+            codex_subscription_usage,
+            codex_models,
             model_config_load,
             model_config_save,
             project_folder_create,
@@ -6954,6 +7205,250 @@ mod tests {
             sanitize_catalog_reasoning_effort(Some("ultra")).as_deref(),
             Some("ultra")
         );
+    }
+
+    #[tokio::test]
+    async fn codex_model_catalog_paginates_and_preserves_force_refetch() {
+        let (client, server) = tokio::io::duplex(32 * 1024);
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let (server_read, mut server_write) = tokio::io::split(server);
+        let server_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+
+            let initialize: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(
+                initialize.get("method").and_then(Value::as_str),
+                Some("initialize")
+            );
+            server_write
+                .write_all(
+                    format!("{}\n", json!({ "jsonrpc": "2.0", "id": 1, "result": {} })).as_bytes(),
+                )
+                .await
+                .unwrap();
+
+            let initialized: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(
+                initialized.get("method").and_then(Value::as_str),
+                Some("initialized")
+            );
+
+            let first: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(
+                first.get("method").and_then(Value::as_str),
+                Some("model/list")
+            );
+            assert_eq!(
+                first.pointer("/params/limit").and_then(Value::as_i64),
+                Some(100)
+            );
+            assert_eq!(
+                first
+                    .pointer("/params/forceRefetch")
+                    .and_then(Value::as_bool),
+                Some(true)
+            );
+            assert!(first.pointer("/params/cursor").is_none());
+            server_write
+                .write_all(
+                    format!(
+                        "{}\n",
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "result": {
+                                "data": [{
+                                    "id": "gpt-5.6-sol",
+                                    "displayName": "GPT-5.6 Sol",
+                                    "isDefault": true,
+                                    "hidden": false,
+                                    "supportedReasoningEfforts": []
+                                }],
+                                "nextCursor": "next-page"
+                            }
+                        })
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+
+            let second: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(
+                second.pointer("/params/cursor").and_then(Value::as_str),
+                Some("next-page")
+            );
+            assert_eq!(
+                second
+                    .pointer("/params/forceRefetch")
+                    .and_then(Value::as_bool),
+                Some(true)
+            );
+            server_write
+                .write_all(
+                    format!(
+                        "{}\n",
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": 3,
+                            "result": {
+                                "data": [{
+                                    "id": "gpt-5.6-terra",
+                                    "displayName": "GPT-5.6 Terra",
+                                    "isDefault": false,
+                                    "hidden": false,
+                                    "supportedReasoningEfforts": []
+                                }],
+                                "nextCursor": null
+                            }
+                        })
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let mut reader = BufReader::new(client_read).lines();
+        let catalog = fetch_codex_model_catalog(&mut client_write, &mut reader, true)
+            .await
+            .unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(
+            catalog
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gpt-5.6-sol", "gpt-5.6-terra"]
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_model_catalog_rejects_repeated_pagination_cursor() {
+        let (client, server) = tokio::io::duplex(32 * 1024);
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let (server_read, mut server_write) = tokio::io::split(server);
+        let server_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            let _initialize = lines.next_line().await.unwrap().unwrap();
+            server_write
+                .write_all(
+                    format!("{}\n", json!({ "jsonrpc": "2.0", "id": 1, "result": {} })).as_bytes(),
+                )
+                .await
+                .unwrap();
+            let _initialized = lines.next_line().await.unwrap().unwrap();
+            for id in [2, 3] {
+                let _request = lines.next_line().await.unwrap().unwrap();
+                server_write
+                    .write_all(
+                        format!(
+                            "{}\n",
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {
+                                    "data": [{
+                                        "id": format!("model-{id}"),
+                                        "displayName": format!("Model {id}"),
+                                        "isDefault": false,
+                                        "hidden": false,
+                                        "supportedReasoningEfforts": []
+                                    }],
+                                    "nextCursor": "same-cursor"
+                                }
+                            })
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut reader = BufReader::new(client_read).lines();
+
+        let error = fetch_codex_model_catalog(&mut client_write, &mut reader, false)
+            .await
+            .unwrap_err();
+        server_task.await.unwrap();
+
+        assert_eq!(
+            error,
+            "Codex app-server returned a repeated model pagination cursor."
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_model_catalog_rejects_empty_visible_results() {
+        let (client, server) = tokio::io::duplex(8192);
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let (server_read, mut server_write) = tokio::io::split(server);
+        let server_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            let _initialize = lines.next_line().await.unwrap().unwrap();
+            server_write
+                .write_all(
+                    format!("{}\n", json!({ "jsonrpc": "2.0", "id": 1, "result": {} })).as_bytes(),
+                )
+                .await
+                .unwrap();
+            let _initialized = lines.next_line().await.unwrap().unwrap();
+            let _request = lines.next_line().await.unwrap().unwrap();
+            server_write
+                .write_all(
+                    format!(
+                        "{}\n",
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "result": {
+                                "data": [{
+                                    "id": "hidden",
+                                    "displayName": "Hidden",
+                                    "isDefault": false,
+                                    "hidden": true,
+                                    "supportedReasoningEfforts": []
+                                }],
+                                "nextCursor": null
+                            }
+                        })
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let mut reader = BufReader::new(client_read).lines();
+
+        let error = fetch_codex_model_catalog(&mut client_write, &mut reader, false)
+            .await
+            .unwrap_err();
+        server_task.await.unwrap();
+
+        assert_eq!(error, "Codex app-server returned no visible valid models.");
+    }
+
+    #[test]
+    fn includes_current_chatgpt_bundled_codex_before_legacy_app_path() {
+        let candidates = codex_binary_candidates();
+        let current = "/Applications/ChatGPT.app/Contents/Resources/codex";
+        let legacy = "/Applications/Codex.app/Contents/Resources/codex";
+
+        let current_index = candidates
+            .iter()
+            .position(|candidate| candidate == current)
+            .expect("current ChatGPT bundled Codex candidate");
+        let legacy_index = candidates
+            .iter()
+            .position(|candidate| candidate == legacy)
+            .expect("legacy Codex app candidate");
+
+        assert!(current_index < legacy_index);
     }
 
     #[test]
