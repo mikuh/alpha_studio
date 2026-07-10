@@ -14,22 +14,36 @@ const windowMockState = vi.hoisted(() => ({
   fullscreen: false,
   resizeHandler: null as (() => void) | null,
 }));
+const codexCatalogMockState = vi.hoisted(() => ({
+  status: { installed: true, version: 'test', path: '/usr/bin/codex', loggedIn: false, error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。' },
+  models: [] as CodexModelCatalogItem[],
+  error: null as Error | null,
+}));
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
   invoke: vi.fn((command: string, args?: { request?: { method?: string; name?: string; currentPath?: string; path?: string; params?: Record<string, unknown>; codes?: string[]; tickCode?: string; tickCount?: number; fullMarket?: boolean; pageSize?: number } }) => {
     if (command === 'plugin:window|is_fullscreen') return Promise.resolve(windowMockState.fullscreen);
     if (command === 'codex_check') {
-      return Promise.resolve({
-        installed: true,
-        version: 'test',
-        path: '/usr/bin/codex',
-        loggedIn: false,
-        error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。',
-      });
+      return Promise.resolve({ ...codexCatalogMockState.status });
     }
+    if (command === 'codex_models') return codexCatalogMockState.error ? Promise.reject(codexCatalogMockState.error) : Promise.resolve(codexCatalogMockState.models);
     if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
     if (command === 'codex_revoke_authorization') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
+    if (command === 'codex_subscription_usage') {
+      return Promise.resolve({
+        source: 'codex-cli',
+        generatedAt: '2026-07-09T08:30:00.000Z',
+        rateLimits: {
+          limitId: 'codex',
+          primary: { usedPercent: 37, windowDurationMins: 300, resetsAt: 1783596585 },
+          secondary: { usedPercent: 77, windowDurationMins: 10080, resetsAt: 1783927546 },
+          planType: 'pro',
+        },
+        rateLimitsByLimitId: null,
+        rateLimitResetCredits: { availableCount: 2 },
+      });
+    }
     if (command === 'project_folder_create') {
       return Promise.resolve({
         path: `/Users/demo/.alphastudio/projects/${args?.request?.name || 'Research Topic'}`,
@@ -327,6 +341,9 @@ describe('right feature panel', () => {
     windowMockState.resizeHandler = null;
     Object.defineProperty(document, 'fullscreenElement', { value: null, configurable: true });
     window.localStorage.clear();
+    codexCatalogMockState.status.loggedIn = false;
+    codexCatalogMockState.models = [];
+    codexCatalogMockState.error = null;
     seedClientLicenseSession();
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse({
       leaseExpiresAt: futureIso(),
@@ -345,6 +362,12 @@ describe('right feature panel', () => {
       conversationSort: 'updated',
     });
   });
+
+  const CODEX_MODEL_CATALOG: CodexModelCatalogItem[] = [
+    { id: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', isDefault: true, hidden: false, defaultReasoningEffort: 'max', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'Thorough' }, { reasoningEffort: 'max', description: 'Maximum' }, { reasoningEffort: 'ultra', description: 'Ultra' }] },
+    { id: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', isDefault: false, hidden: false, defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Fast' }, { reasoningEffort: 'medium', description: 'Balanced' }, { reasoningEffort: 'high', description: 'Thorough' }, { reasoningEffort: 'max', description: 'Maximum' }] },
+    { id: 'gpt-5.6-luna', displayName: 'GPT-5.6 Luna', isDefault: false, hidden: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Fast' }, { reasoningEffort: 'medium', description: 'Balanced' }] },
+  ];
 
   it('blocks the workspace until the client is activated', () => {
     clearClientLicenseSession();
@@ -1206,6 +1229,7 @@ describe('right feature panel', () => {
 
   it('shows subscription and pay-as-you-go billing in usage settings', async () => {
     const user = userEvent.setup();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
     vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith('/api/client/billing-summary')) {
@@ -1290,6 +1314,11 @@ describe('right feature panel', () => {
 
     expect(await within(settings).findByText('订阅 + 按量')).toBeInTheDocument();
     expect(within(settings).getByText('Codex 订阅')).toBeInTheDocument();
+    expect(within(settings).getByText('剩余用量')).toBeInTheDocument();
+    expect(within(settings).getByText('5 小时')).toBeInTheDocument();
+    expect(within(settings).getByText('1 周')).toBeInTheDocument();
+    expect(within(settings).getByText('63%')).toBeInTheDocument();
+    expect(within(settings).getByText('23%')).toBeInTheDocument();
     expect(within(settings).getByText('API 套餐')).toBeInTheDocument();
     expect(within(settings).getByText(/96\.75/)).toBeInTheDocument();
     expect(within(settings).getAllByText(/3\.25/).length).toBeGreaterThan(0);
@@ -1303,6 +1332,7 @@ describe('right feature panel', () => {
         body: expect.stringContaining('"tenantId":"tenant_demo"'),
       }),
     );
+    expect(invoke).toHaveBeenCalledWith('codex_subscription_usage');
   });
 
   it('labels model picker groups as subscription and usage-based models', async () => {
@@ -1332,6 +1362,52 @@ describe('right feature panel', () => {
     expect(screen.getByText('按量模型')).toBeInTheDocument();
     expect(screen.queryByText('内置模型')).not.toBeInTheDocument();
     expect(screen.queryByText('自定义模型')).not.toBeInTheDocument();
+  });
+
+  it('loads authorized Codex catalog models into the picker', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    codexCatalogMockState.status.loggedIn = true;
+    codexCatalogMockState.models = CODEX_MODEL_CATALOG;
+    seedClientLicenseSession(true);
+    useChatStore.setState({ codexStatus: { installed: true, loggedIn: false, path: '/usr/bin/codex', version: 'test' } });
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('codex_models', { request: { forceRefetch: false } }));
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    await user.hover(screen.getByRole('button', { name: /GPT-5.6 Sol/ }));
+    expect(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Sol' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Terra' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Luna' })).toBeInTheDocument();
+    expect(screen.getByText('GPT-5.5 API')).toBeInTheDocument();
+  });
+
+  it('clamps reasoning effort when switching catalog models', async () => {
+    codexCatalogMockState.status.loggedIn = true;
+    codexCatalogMockState.models = CODEX_MODEL_CATALOG;
+    useChatStore.setState({ modelProfiles: modelProfilesFromCodexCatalog(CODEX_MODEL_CATALOG), selectedModelProfileId: 'gpt-5.6-sol', reasoningEffort: 'ultra' });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    expect(screen.getByRole('menuitemradio', { name: 'Ultra' })).toBeInTheDocument();
+    await user.hover(screen.getByRole('button', { name: /GPT-5.6 Sol/ }));
+    await user.click(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Terra' }));
+    expect(useChatStore.getState().reasoningEffort).toBe('high');
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    expect(screen.queryByRole('menuitemradio', { name: 'Ultra' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('menuitemradio').map((item) => item.textContent)).toEqual(expect.arrayContaining(['低', '中', '高', 'Max']));
+  });
+
+  it('keeps fallback picker usable when catalog refresh fails', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    codexCatalogMockState.status.loggedIn = true;
+    codexCatalogMockState.error = new Error('catalog offline');
+    useChatStore.setState({ codexStatus: { installed: true, loggedIn: false, path: '/usr/bin/codex', version: 'test' } });
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(useChatStore.getState().codexModelCatalogError).toBe('catalog offline'));
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    await user.hover(screen.getByRole('button', { name: /GPT-5.5/ }));
+    expect(screen.getByRole('menuitemradio', { name: 'GPT-5.5' })).toBeInTheDocument();
   });
 
   it('hides subscription models and the unavailable engine notice when Codex is not authorized', async () => {
@@ -2220,6 +2296,38 @@ describe('right feature panel', () => {
     await user.click(externalOpen);
 
     expect(openSpy).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer');
+  });
+
+  it('opens local browser addresses through the desktop external-open command', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    mockLocalHtmlPreviewFiles();
+    const htmlPath = '/Users/geb/reports/daily-theme/index.html';
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-link',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [{ type: 'text', content: `已生成今日报告：[index.html](${htmlPath})` }],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('link', { name: /index\.html/ }));
+    await waitFor(() => expect(container.querySelector('.browser-frame')).not.toBeNull());
+
+    vi.mocked(invoke).mockClear();
+    const activeBrowser = container.querySelector('.right-dock-pane.active .browser-dock-panel') as HTMLElement;
+    await user.click(within(activeBrowser).getByRole('button', { name: '在外部浏览器打开' }));
+
+    expect(invoke).toHaveBeenCalledWith('open_external_target', { request: { target: htmlPath } });
   });
 
   it('groups consecutive web search tool rows behind one disclosure', async () => {
