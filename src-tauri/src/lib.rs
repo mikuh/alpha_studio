@@ -70,6 +70,33 @@ pub struct CodexLoginResult {
 
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Remove once Task 2 consumes force_refetch.
+pub struct CodexModelsRequest {
+    #[serde(default)]
+    force_refetch: bool,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexModelReasoningEffort {
+    reasoning_effort: String,
+    description: String,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexModelCatalogItem {
+    id: String,
+    display_name: String,
+    is_default: bool,
+    hidden: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_reasoning_effort: Option<String>,
+    supported_reasoning_efforts: Vec<CodexModelReasoningEffort>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct CodexChatRequest {
     conversation_id: String,
     prompt: String,
@@ -1421,6 +1448,84 @@ impl CodexDriver {
             }
         }
     }
+}
+
+fn normalize_codex_model_page(
+    response: &Value,
+    seen_ids: &mut HashSet<String>,
+    catalog: &mut Vec<CodexModelCatalogItem>,
+) -> Result<Option<String>, String> {
+    let result = response
+        .get("result")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "Codex app-server returned malformed model list data.".to_string())?;
+    let data = result
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Codex app-server returned malformed model list data.".to_string())?;
+
+    for raw in data {
+        if let Some(model) = normalize_codex_model(raw) {
+            if seen_ids.insert(model.id.clone()) {
+                catalog.push(model);
+            }
+        }
+    }
+
+    match result.get("nextCursor") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(cursor)) if !cursor.trim().is_empty() => {
+            Ok(Some(cursor.trim().to_string()))
+        }
+        Some(_) => Err("Codex app-server returned an invalid model pagination cursor.".to_string()),
+    }
+}
+
+fn normalize_codex_model(value: &Value) -> Option<CodexModelCatalogItem> {
+    let object = value.as_object()?;
+    let id = object.get("id")?.as_str()?.trim();
+    let display_name = object.get("displayName")?.as_str()?.trim();
+    let is_default = object.get("isDefault")?.as_bool()?;
+    let hidden = object.get("hidden")?.as_bool()?;
+    let supported = object.get("supportedReasoningEfforts")?.as_array()?;
+    if id.is_empty() || display_name.is_empty() || hidden {
+        return None;
+    }
+
+    let supported_reasoning_efforts = supported
+        .iter()
+        .filter_map(|item| {
+            let object = item.as_object()?;
+            let reasoning_effort = sanitize_catalog_reasoning_effort(
+                object.get("reasoningEffort").and_then(Value::as_str),
+            )?;
+            let description = object.get("description")?.as_str()?.trim().to_string();
+            Some(CodexModelReasoningEffort {
+                reasoning_effort,
+                description,
+            })
+        })
+        .collect();
+
+    Some(CodexModelCatalogItem {
+        id: id.to_string(),
+        display_name: display_name.to_string(),
+        is_default,
+        hidden,
+        default_reasoning_effort: sanitize_catalog_reasoning_effort(
+            object.get("defaultReasoningEffort").and_then(Value::as_str),
+        ),
+        supported_reasoning_efforts,
+    })
+}
+
+fn sanitize_catalog_reasoning_effort(value: Option<&str>) -> Option<String> {
+    sanitize_reasoning_effort(value).filter(|effort| {
+        matches!(
+            effort.as_str(),
+            "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+        )
+    })
 }
 
 async fn send_jsonrpc<W>(stdin: &mut W, message: &Value) -> Result<(), String>
@@ -3831,6 +3936,8 @@ fn sanitize_reasoning_effort(value: Option<&str>) -> Option<String> {
         "medium" => Some("medium".to_string()),
         "high" => Some("high".to_string()),
         "xhigh" => Some("xhigh".to_string()),
+        "max" => Some("max".to_string()),
+        "ultra" => Some("ultra".to_string()),
         _ => None,
     }
 }
@@ -6725,6 +6832,129 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_model_catalog_preserves_renderer_safe_fields() {
+        let response = json!({
+            "result": {
+                "data": [{
+                    "id": "gpt-5.6-sol",
+                    "displayName": "GPT-5.6 Sol",
+                    "isDefault": true,
+                    "hidden": false,
+                    "defaultReasoningEffort": "max",
+                    "supportedReasoningEfforts": [
+                        { "reasoningEffort": "high", "description": "Thorough" },
+                        { "reasoningEffort": "max", "description": "Maximum" },
+                        { "reasoningEffort": "ultra", "description": "Ultra" }
+                    ],
+                    "instructions": "must not cross the Tauri boundary",
+                    "authToken": "must not cross the Tauri boundary"
+                }],
+                "nextCursor": null
+            }
+        });
+        let mut seen_ids = HashSet::new();
+        let mut catalog = Vec::new();
+
+        let cursor = normalize_codex_model_page(&response, &mut seen_ids, &mut catalog).unwrap();
+
+        assert_eq!(cursor, None);
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].id, "gpt-5.6-sol");
+        assert_eq!(catalog[0].display_name, "GPT-5.6 Sol");
+        assert!(catalog[0].is_default);
+        assert_eq!(catalog[0].default_reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(
+            catalog[0]
+                .supported_reasoning_efforts
+                .iter()
+                .map(|item| (item.reasoning_effort.as_str(), item.description.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("high", "Thorough"), ("max", "Maximum"), ("ultra", "Ultra")]
+        );
+        let serialized = serde_json::to_value(&catalog[0]).unwrap();
+        assert!(serialized.get("instructions").is_none());
+        assert!(serialized.get("authToken").is_none());
+    }
+
+    #[test]
+    fn codex_model_catalog_filters_hidden_malformed_and_duplicate_models() {
+        let response = json!({
+            "result": {
+                "data": [
+                    {
+                        "id": "hidden-model",
+                        "displayName": "Hidden",
+                        "isDefault": false,
+                        "hidden": true,
+                        "supportedReasoningEfforts": []
+                    },
+                    {
+                        "id": "",
+                        "displayName": "Missing id",
+                        "isDefault": false,
+                        "hidden": false,
+                        "supportedReasoningEfforts": []
+                    },
+                    {
+                        "id": "gpt-5.6-terra",
+                        "displayName": "GPT-5.6 Terra",
+                        "isDefault": false,
+                        "hidden": false,
+                        "supportedReasoningEfforts": [
+                            { "reasoningEffort": "low", "description": "Fast" },
+                            { "reasoningEffort": "future", "description": "Unknown" },
+                            { "reasoningEffort": "max", "description": 7 }
+                        ]
+                    },
+                    {
+                        "id": "gpt-5.6-terra",
+                        "displayName": "Duplicate",
+                        "isDefault": true,
+                        "hidden": false,
+                        "supportedReasoningEfforts": []
+                    }
+                ],
+                "nextCursor": "page-2"
+            }
+        });
+        let mut seen_ids = HashSet::new();
+        let mut catalog = Vec::new();
+
+        let cursor = normalize_codex_model_page(&response, &mut seen_ids, &mut catalog).unwrap();
+
+        assert_eq!(cursor.as_deref(), Some("page-2"));
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].display_name, "GPT-5.6 Terra");
+        assert_eq!(catalog[0].supported_reasoning_efforts.len(), 1);
+        assert_eq!(
+            catalog[0].supported_reasoning_efforts[0].reasoning_effort,
+            "low"
+        );
+    }
+
+    #[test]
+    fn sanitize_reasoning_effort_accepts_max_and_ultra() {
+        assert_eq!(
+            sanitize_reasoning_effort(Some("max")).as_deref(),
+            Some("max")
+        );
+        assert_eq!(
+            sanitize_reasoning_effort(Some("ultra")).as_deref(),
+            Some("ultra")
+        );
+        assert_eq!(
+            sanitize_reasoning_effort(Some("minimal")).as_deref(),
+            Some("minimal")
+        );
+        assert_eq!(sanitize_reasoning_effort(Some("future")), None);
+        assert_eq!(sanitize_catalog_reasoning_effort(Some("minimal")), None);
+        assert_eq!(
+            sanitize_catalog_reasoning_effort(Some("ultra")).as_deref(),
+            Some("ultra")
+        );
+    }
 
     #[test]
     fn parses_thread_started() {
