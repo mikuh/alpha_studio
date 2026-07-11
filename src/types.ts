@@ -165,6 +165,21 @@ export interface BackgroundContextSummary {
   updatedAt: number;
 }
 
+export interface CodexTokenUsageBreakdown {
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+}
+
+export interface CodexTokenUsage {
+  total: CodexTokenUsageBreakdown;
+  last: CodexTokenUsageBreakdown;
+  modelContextWindow: number | null;
+  updatedAt: number;
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -173,6 +188,8 @@ export interface Conversation {
   guidedQueuedMessages?: QueuedChatMessage[];
   codexThreadId?: string;
   backgroundContext?: BackgroundContextSummary;
+  codexTokenUsage?: CodexTokenUsage;
+  codexCompactedAt?: number;
   cwd: string;
   projectId?: string;
   createdAt: number;
@@ -231,6 +248,8 @@ export interface CodexChatEvent {
     | 'tool_delta'
     | 'tool_completed'
     | 'tool_failed'
+    | 'token_usage'
+    | 'context_compacted'
     | 'status'
     | 'completed'
     | 'error'

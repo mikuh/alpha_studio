@@ -53,8 +53,9 @@ Use this default order for the standard daily report:
    - Leader, central-capacity, trend core, emotion core, laggard, arbitrage.
    - Explain why each stock has that role.
    - Include role-level holding distinction when relevant: central-capacity/trend core may hold longer than emotion leader; laggard/arbitrage usually requires T+1 or intraday review.
-   - Preserve the original `龙头 / 中军 / 趋势核心 / 补涨矩阵` table. Required columns remain: `题材`, `角色`, `标的`, `角色逻辑`, `确认/失效`, and holding/review notes when available.
-   - Keep the `标的` cell compact and allow multiple stocks in one cell as before, separated by `、` or `；`. Merge stocks with the same theme-role, role logic, confirmation/failure condition, and holding review into one row. Do not split every stock into one row unless each stock has materially different role logic or invalidation conditions.
+   - Preserve the original `龙头 / 中军 / 趋势核心 / 补涨矩阵` table as one compact table whenever possible. Required columns are exactly: `题材`, `角色`, `标的`, `角色逻辑`, `确认/失效`. Do not add `持有复核`, `今日处理`, `今日结论`, `评级说明`, or other optional columns to the role matrix.
+   - Put holding/review notes, role limits, and today's treatment in the callout or a separate compact `角色限制` table below the matrix, not as role-matrix columns.
+   - Keep the `标的` cell compact and allow multiple stocks in one cell as before, separated by `、` or `；`. Merge stocks with the same theme-role, role logic, and confirmation/failure condition into one row. Do not split every stock into one row unless each stock has materially different role logic or invalidation conditions.
    - Show 产业链真实性 as a rating-only parenthetical suffix after each stock name, e.g. `金海通（A）`、`多氟多（A-）`、`海南海药（C+）`、`华亚智能（D）`. Do not use large pill badges, big colored blocks, a separate authenticity table, or extra lines in the `标的` cell.
    - Required inline authenticity details are limited to the rating in parentheses. Put a short `评级说明` note below the table, e.g. `A/A-为官方证据强且链条清晰；B为产业链相关但收入/订单仍需确认；C为概念映射；D为弱相关或待验证，不能作为中军/趋势核心依据。`
    - Do not label a stock as 中军/趋势核心 unless it is `产业链核心` or strong `产业链相关`. If it is `概念映射`, `蹭概念/弱相关`, or `待验证`, mark it as emotion/arbitrage/observation and state the risk.
@@ -143,7 +144,7 @@ Structure rules:
 - Separate cover page; one A4 page per `section.page`.
 - Use compact print styles (`compact-page`) for the source/disclaimer page and for dense execution/risk tables that have been checked by the validator.
 - Keep the report business-like: no decorative gradients, oversized empty hero areas, warm/gold-dominant color blocks, or marketing copy. Use tables, metric grids, and callouts to organize decisions and evidence.
-- Never delete a required module to fit the page. If `龙头 / 中军 / 趋势核心 / 补涨矩阵` is long, split it into `角色矩阵（续）` pages and update footers/page counts.
+- Never delete a required module to fit the page. For `龙头 / 中军 / 趋势核心 / 补涨矩阵`, first use the compact five-column matrix, merge same-role rows, keep rating notes outside the table, and remove optional columns. Split into `角色矩阵（续）` pages only when the compact five-column matrix would still be clipped.
 
 Fill the page — avoid large empty bottoms:
 - Each A4 page should be visually full. If a page (e.g. stock-role or sources) looks thin, add substantive analysis (extra rows, a short narrative paragraph, methodology/口径 notes, more sources) rather than leaving the lower half blank.

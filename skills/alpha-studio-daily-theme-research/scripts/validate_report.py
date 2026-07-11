@@ -129,6 +129,42 @@ def has_verbose_authenticity_cell_text(text: str) -> bool:
     )
 
 
+def role_matrix_column_issues(html_text: str) -> list[str]:
+    issues: list[str] = []
+    role_headings = ["龙头 / 中军 / 趋势核心 / 补涨矩阵", "补涨矩阵"]
+    start = -1
+    for heading in role_headings:
+        start = html_text.find(heading)
+        if start >= 0:
+            break
+    if start < 0:
+        return issues
+    table_start = html_text.find("<table", start)
+    table_end = html_text.find("</table>", table_start)
+    if table_start < 0 or table_end < 0:
+        return issues
+    table = html_text[table_start : table_end + len("</table>")]
+    headers = [
+        re.sub(r"\s+", "", strip_html(match))
+        for match in re.findall(r"<th\b[^>]*>(.*?)</th>", table, flags=re.S | re.I)
+    ]
+    if not headers:
+        return issues
+    expected = ["题材", "角色", "标的", "角色逻辑", "确认/失效"]
+    if headers[:5] != expected or len(headers) != 5:
+        issues.append(
+            "role matrix must use exactly five columns: 题材 / 角色 / 标的 / 角色逻辑 / 确认/失效; "
+            f"found {' / '.join(headers)}"
+        )
+    forbidden = [header for header in headers if header in {"持有复核", "今日处理", "今日结论", "评级说明"}]
+    if forbidden:
+        issues.append(
+            "role matrix has optional columns "
+            f"{'、'.join(forbidden)}; move those notes below the matrix"
+        )
+    return issues
+
+
 def validate_extended(
     html: Path,
     markdown: Path | None,
@@ -178,6 +214,7 @@ def validate_extended(
         issues.append("stock authenticity text is too verbose; use stock（A/B/C/D） in 标的 cell and move explanations below the table")
     if not any(label in check_text for label in ["龙头 / 中军 / 趋势核心 / 补涨矩阵", "补涨矩阵"]):
         issues.append("missing original stock role matrix title")
+    issues.extend(role_matrix_column_issues(html_text))
     if "确认/失效" not in check_text and "确认失效" not in check_text:
         issues.append("missing stock role confirmation/failure column")
     if "风险提示" not in check_text:

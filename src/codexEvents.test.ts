@@ -34,6 +34,60 @@ describe('applyCodexEventToConversation', () => {
     expect(next.codexThreadId).toBe('thread-1');
   });
 
+  it('stores Codex app-server token usage for context window display', () => {
+    const next = applyCodexEventToConversation(baseConversation(), {
+      type: 'token_usage',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      raw: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        tokenUsage: {
+          total: {
+            totalTokens: 34498,
+            inputTokens: 34000,
+            cachedInputTokens: 14720,
+            outputTokens: 498,
+            reasoningOutputTokens: 120,
+          },
+          last: {
+            totalTokens: 20429,
+            inputTokens: 19770,
+            cachedInputTokens: 14720,
+            outputTokens: 659,
+            reasoningOutputTokens: 288,
+          },
+          modelContextWindow: 258400,
+        },
+      },
+    });
+
+    expect(next.codexTokenUsage?.last.totalTokens).toBe(20429);
+    expect(next.codexTokenUsage?.modelContextWindow).toBe(258400);
+  });
+
+  it('renders Codex context compaction as a visible assistant event block', () => {
+    const next = applyCodexEventToConversation(baseConversation(), {
+      type: 'context_compacted',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      threadId: 'thread-1',
+      itemId: 'compact-1',
+    });
+
+    expect(next.codexCompactedAt).toBeTypeOf('number');
+    expect(next.messages[0].blocks).toEqual([
+      {
+        type: 'tool',
+        id: 'compact-1',
+        title: 'context_compaction',
+        status: 'completed',
+        target: 'Codex 已压缩历史上下文',
+        output: '已收到 Codex 原生上下文压缩事件，后续回复会基于压缩后的线程继续。',
+      },
+    ]);
+  });
+
   it('appends streamed text to the active assistant message', () => {
     const first = applyCodexEventToConversation(baseConversation(), {
       type: 'text_delta',

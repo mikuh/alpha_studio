@@ -100,6 +100,8 @@ pub struct CodexChatRequest {
     conversation_id: String,
     prompt: String,
     developer_instructions: Option<String>,
+    selected_skill: Option<CodexSelectedSkill>,
+    attachments: Option<Vec<CodexChatAttachment>>,
     codex_thread_id: Option<String>,
     cwd: Option<String>,
     model: Option<String>,
@@ -110,6 +112,29 @@ pub struct CodexChatRequest {
     provider_thinking_enabled: Option<bool>,
     reasoning_effort: Option<String>,
     sandbox_mode: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CodexSelectedSkill {
+    id: String,
+    title: String,
+    #[serde(rename = "description")]
+    _description: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CodexChatAttachment {
+    name: String,
+    kind: String,
+    path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct NativeSkillInput {
+    name: String,
+    path: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -580,6 +605,12 @@ pub struct CoworkersSyncResult {
 pub struct OpenInAppRequest {
     app: String,
     path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenExternalTargetRequest {
+    target: String,
 }
 
 #[derive(Clone, Deserialize, Debug)]
@@ -1232,6 +1263,8 @@ async fn codex_chat_start(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
+        selected_skill: request.selected_skill.clone(),
+        attachments: request.attachments.clone().unwrap_or_default(),
         reasoning_effort: sanitize_reasoning_effort(request.reasoning_effort.as_deref()),
         prompt: request.prompt.clone(),
         stderr_buffer,
@@ -1256,6 +1289,8 @@ struct CodexDriver {
     sandbox_mode: String,
     model: Option<String>,
     developer_instructions: Option<String>,
+    selected_skill: Option<CodexSelectedSkill>,
+    attachments: Vec<CodexChatAttachment>,
     reasoning_effort: Option<String>,
     prompt: String,
     stderr_buffer: Arc<Mutex<String>>,
@@ -1344,6 +1379,67 @@ impl CodexDriver {
         }
     }
 
+    async fn resolve_selected_skill<W, R>(
+        &self,
+        stdin: &mut W,
+        reader: &mut tokio::io::Lines<R>,
+    ) -> Result<Option<NativeSkillInput>, String>
+    where
+        W: AsyncWrite + Unpin,
+        R: AsyncBufRead + Unpin,
+    {
+        let Some(selection) = self.selected_skill.as_ref() else {
+            return Ok(None);
+        };
+        self.register_workspace_skill_roots(stdin, reader).await;
+        send_jsonrpc(
+            stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 20,
+                "method": "skills/list",
+                "params": {
+                    "cwds": [self.cwd.clone()],
+                    "forceReload": false,
+                },
+            }),
+        )
+        .await?;
+        let response = await_response(stdin, reader, 20).await?;
+        Ok(response
+            .get("result")
+            .and_then(|result| find_native_skill_input(result, selection)))
+    }
+
+    async fn register_workspace_skill_roots<W, R>(
+        &self,
+        stdin: &mut W,
+        reader: &mut tokio::io::Lines<R>,
+    ) where
+        W: AsyncWrite + Unpin,
+        R: AsyncBufRead + Unpin,
+    {
+        let Some(extra_root) = workspace_skills_extra_root(&self.cwd) else {
+            return;
+        };
+        if send_jsonrpc(
+            stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 19,
+                "method": "skills/extraRoots/set",
+                "params": {
+                    "extraRoots": [extra_root],
+                },
+            }),
+        )
+        .await
+        .is_ok()
+        {
+            let _ = await_response(stdin, reader, 19).await;
+        }
+    }
+
     async fn drive(
         &self,
         stdin: &mut tokio::process::ChildStdin,
@@ -1351,6 +1447,10 @@ impl CodexDriver {
     ) -> Result<(), String> {
         // 1. Handshake.
         initialize_codex_app_server(stdin, reader).await?;
+        let native_skill = match self.resolve_selected_skill(stdin, reader).await {
+            Ok(skill) => skill,
+            Err(_) => None,
+        };
 
         // 2. Start a fresh thread, or resume the conversation's existing one.
         let mut thread_params = Map::new();
@@ -1408,7 +1508,11 @@ impl CodexDriver {
         turn_params.insert("threadId".to_string(), json!(thread_id));
         turn_params.insert(
             "input".to_string(),
-            json!([{ "type": "text", "text": self.prompt, "text_elements": [] }]),
+            Value::Array(build_turn_input(
+                &self.prompt,
+                &self.attachments,
+                native_skill.as_ref(),
+            )),
         );
         if let Some(model) = &self.model {
             turn_params.insert("model".to_string(), json!(model));
@@ -1476,6 +1580,152 @@ impl CodexDriver {
             }
         }
     }
+}
+
+fn build_turn_input(
+    prompt: &str,
+    attachments: &[CodexChatAttachment],
+    native_skill: Option<&NativeSkillInput>,
+) -> Vec<Value> {
+    let mut input = Vec::new();
+    if let Some(skill) = native_skill {
+        input.push(json!({
+            "type": "skill",
+            "name": &skill.name,
+            "path": &skill.path,
+        }));
+    }
+    if !prompt.trim().is_empty() {
+        input.push(json!({
+            "type": "text",
+            "text": prompt,
+            "text_elements": [],
+        }));
+    }
+    for attachment in attachments {
+        if let Some(item) = native_attachment_input(attachment) {
+            input.push(item);
+        }
+    }
+    if input.is_empty() {
+        input.push(json!({
+            "type": "text",
+            "text": prompt,
+            "text_elements": [],
+        }));
+    }
+    input
+}
+
+fn native_attachment_input(attachment: &CodexChatAttachment) -> Option<Value> {
+    let path = attachment
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    if attachment.kind.trim().eq_ignore_ascii_case("image") {
+        return Some(json!({
+            "type": "localImage",
+            "path": path,
+        }));
+    }
+    let name = attachment.name.trim();
+    Some(json!({
+        "type": "mention",
+        "name": if name.is_empty() { path } else { name },
+        "path": path,
+    }))
+}
+
+fn workspace_skills_extra_root(cwd: &str) -> Option<String> {
+    let root = Path::new(cwd).join("skills");
+    if root.is_dir() {
+        return Some(root.to_string_lossy().into_owned());
+    }
+    None
+}
+
+fn find_native_skill_input(
+    result: &Value,
+    selection: &CodexSelectedSkill,
+) -> Option<NativeSkillInput> {
+    let mut best: Option<(i32, NativeSkillInput)> = None;
+    for entry in result.get("data").and_then(Value::as_array)? {
+        let Some(skills) = entry.get("skills").and_then(Value::as_array) else {
+            continue;
+        };
+        for skill in skills {
+            if skill.get("enabled").and_then(Value::as_bool) == Some(false) {
+                continue;
+            }
+            let Some(name) = skill.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(path) = skill.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            let score = native_skill_match_score(selection, name, path);
+            if score <= 0 {
+                continue;
+            }
+            let candidate = NativeSkillInput {
+                name: name.to_string(),
+                path: path.to_string(),
+            };
+            match best {
+                Some((best_score, _)) if best_score >= score => {}
+                _ => best = Some((score, candidate)),
+            }
+        }
+    }
+    best.map(|(_, skill)| skill)
+}
+
+fn native_skill_match_score(selection: &CodexSelectedSkill, name: &str, path: &str) -> i32 {
+    let id = selection.id.trim();
+    if id.is_empty() {
+        return 0;
+    }
+    let title = selection.title.trim();
+    let id_lower = id.to_ascii_lowercase();
+    let name_lower = name.to_ascii_lowercase();
+    let path_lower = path.replace('\\', "/").to_ascii_lowercase();
+    let title_key = normalized_skill_key(title);
+    let id_key = normalized_skill_key(id);
+    let name_key = normalized_skill_key(name);
+    let first_name_part = name_lower.split(':').next().unwrap_or_default();
+    let last_name_part = name_lower.rsplit(':').next().unwrap_or_default();
+
+    if name_lower == id_lower {
+        return 100;
+    }
+    if name_key == id_key {
+        return 95;
+    }
+    if name_lower.starts_with(&format!("{id_lower}:")) {
+        return 90;
+    }
+    if path_lower.ends_with(&format!("/{id_lower}/skill.md")) {
+        return 85;
+    }
+    if first_name_part == id_lower || last_name_part == id_lower {
+        return 80;
+    }
+    if !title_key.is_empty() && title_key == name_key {
+        return 70;
+    }
+    if !title_key.is_empty() && name_key.starts_with(&title_key) {
+        return 60;
+    }
+    0
+}
+
+fn normalized_skill_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
 }
 
 fn normalize_codex_model_page(
@@ -1825,6 +2075,22 @@ fn map_app_server_notification(
                 return Vec::new();
             };
             let item_type = normalized_item_type(item);
+            if is_context_compaction_item(&item_type) {
+                return vec![event(
+                    "tool_started",
+                    run_id,
+                    conversation_id,
+                    params
+                        .get("threadId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    first_string(item, &["id", "item_id", "itemId"]),
+                    Some("context_compaction".to_string()),
+                    None,
+                    None,
+                    Some(params.clone()),
+                )];
+            }
             if !is_tool_item(&item_type) {
                 return Vec::new();
             }
@@ -1839,6 +2105,23 @@ fn map_app_server_notification(
             };
             let item_type = normalized_item_type(item);
             let item_id = first_string(item, &["id", "item_id", "itemId"]);
+
+            if is_context_compaction_item(&item_type) {
+                return vec![event(
+                    "context_compacted",
+                    run_id,
+                    conversation_id,
+                    params
+                        .get("threadId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    item_id,
+                    Some("context_compaction".to_string()),
+                    None,
+                    None,
+                    Some(params.clone()),
+                )];
+            }
 
             if matches!(
                 item_type.as_str(),
@@ -1904,6 +2187,34 @@ fn map_app_server_notification(
 
             Vec::new()
         }
+        "thread/tokenUsage/updated" => vec![event(
+            "token_usage",
+            run_id,
+            conversation_id,
+            params
+                .get("threadId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            None,
+            None,
+            None,
+            None,
+            Some(params.clone()),
+        )],
+        "thread/compacted" => vec![event(
+            "context_compacted",
+            run_id,
+            conversation_id,
+            params
+                .get("threadId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            None,
+            None,
+            None,
+            None,
+            Some(params.clone()),
+        )],
         "error" => {
             let error = params.get("error").unwrap_or(params);
             let message = first_string(error, &["message", "error"])
@@ -2041,6 +2352,12 @@ async fn open_in_app(request: OpenInAppRequest) -> Result<(), String> {
         let _ = path;
         Err("Opening in external apps is only supported on macOS in this build.".to_string())
     }
+}
+
+#[tauri::command]
+async fn open_external_target(request: OpenExternalTargetRequest) -> Result<(), String> {
+    let target = validate_external_target(&request.target)?;
+    open_target_with_system(&target).await
 }
 
 #[tauri::command]
@@ -2434,14 +2751,15 @@ async fn try_wkhtmltopdf(
         .arg(html_path)
         .arg(&temp_pdf)
         .current_dir(html_path.parent().unwrap_or_else(|| Path::new(".")));
-    let output = match command_output_with_timeout(&mut command, &executable.display().to_string()).await {
-        Ok(output) => output,
-        Err(error) => {
-            let _ = fs::remove_file(&temp_pdf);
-            attempts.push(error.clone());
-            return Err(error);
-        }
-    };
+    let output =
+        match command_output_with_timeout(&mut command, &executable.display().to_string()).await {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = fs::remove_file(&temp_pdf);
+                attempts.push(error.clone());
+                return Err(error);
+            }
+        };
     if output.status.success() && ensure_pdf_written(&temp_pdf).is_ok() {
         replace_pdf(&temp_pdf, pdf_path)?;
         attempts.push(format!("{}: ok", executable.display()));
@@ -2472,13 +2790,14 @@ async fn try_cupsfilter_pdf(
         .args(["-m", "application/pdf"])
         .arg(html_path)
         .current_dir(html_path.parent().unwrap_or_else(|| Path::new(".")));
-    let output = match command_output_with_timeout(&mut command, &executable.display().to_string()).await {
-        Ok(output) => output,
-        Err(error) => {
-            attempts.push(error.clone());
-            return Err(error);
-        }
-    };
+    let output =
+        match command_output_with_timeout(&mut command, &executable.display().to_string()).await {
+            Ok(output) => output,
+            Err(error) => {
+                attempts.push(error.clone());
+                return Err(error);
+            }
+        };
     if output.status.success() && !output.stdout.is_empty() {
         let temp_pdf = temp_pdf_path(pdf_path);
         fs::write(&temp_pdf, &output.stdout)
@@ -2558,15 +2877,9 @@ fn percent_encode_url_path(value: &str) -> String {
     let mut out = String::new();
     for byte in value.as_bytes() {
         match *byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'/'
-            | b'.'
-            | b'-'
-            | b'_'
-            | b'~'
-            | b':' => out.push(*byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'-' | b'_' | b'~' | b':' => {
+                out.push(*byte as char)
+            }
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -2600,6 +2913,29 @@ async fn open_path_with_system(path: &Path) -> Result<(), String> {
     {
         let _ = path;
         Ok(())
+    }
+}
+
+async fn open_target_with_system(target: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("open")
+            .arg(target)
+            .output()
+            .await
+            .map_err(|e| format!("Failed to open external target: {e}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        return Err(command_failure_summary(&output.stdout, &output.stderr));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = target;
+        Err(
+            "Opening external browser targets is only supported on macOS in this build."
+                .to_string(),
+        )
     }
 }
 
@@ -5978,6 +6314,23 @@ fn validate_open_path(path: &str) -> Result<&str, String> {
     Ok(path)
 }
 
+fn validate_external_target(target: &str) -> Result<String, String> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err("External target is required.".to_string());
+    }
+    if target.starts_with('/') {
+        validate_open_path(target)?;
+        return Ok(target.to_string());
+    }
+    let lower = target.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("file://")
+    {
+        return Ok(target.to_string());
+    }
+    Err("Unsupported external target.".to_string())
+}
+
 fn terminal_open_target(path: &str) -> PathBuf {
     let path_ref = Path::new(path);
     if path_ref.is_dir() {
@@ -6512,6 +6865,31 @@ pub fn parse_codex_json_event(
         "item.completed" | "response.output_item.done" => {
             parse_item_completed_event(&raw, run_id, conversation_id)
         }
+        "token_count" => Some(event(
+            "token_usage",
+            run_id,
+            conversation_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(raw),
+        )),
+        "context_compacted" | "thread.compacted" => Some(event(
+            "context_compacted",
+            run_id,
+            conversation_id,
+            raw.get("thread_id")
+                .or_else(|| raw.get("threadId"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            None,
+            None,
+            None,
+            None,
+            Some(raw),
+        )),
         "turn.completed" | "response.completed" => Some(event(
             "completed",
             run_id,
@@ -6736,6 +7114,23 @@ fn parse_item_completed_event(
     let item_type = normalized_item_type(item);
     let item_id = first_string(item, &["id", "item_id", "itemId"]);
 
+    if is_context_compaction_item(&item_type) {
+        return Some(event(
+            "context_compacted",
+            run_id,
+            conversation_id,
+            raw.get("threadId")
+                .or_else(|| raw.get("thread_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            item_id,
+            Some("context_compaction".to_string()),
+            None,
+            None,
+            Some(raw.clone()),
+        ));
+    }
+
     if matches!(
         item_type.as_str(),
         "agentmessage" | "assistantmessage" | "message"
@@ -6841,6 +7236,10 @@ fn is_tool_item(normalized_type: &str) -> bool {
         || normalized_type.contains("websearch")
         || normalized_type.contains("filesearch")
         || normalized_type.contains("webfetch")
+}
+
+fn is_context_compaction_item(normalized_type: &str) -> bool {
+    matches!(normalized_type, "contextcompaction" | "compaction")
 }
 
 fn normalized_item_type(item: &Value) -> String {
@@ -7033,6 +7432,7 @@ pub fn run() {
             coworkers_sync,
             list_open_apps,
             open_in_app,
+            open_external_target,
             local_image_data_url,
             local_text_file_read,
             html_to_pdf,
@@ -7608,6 +8008,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_token_count_event() {
+        let event = parse_codex_json_event(
+            r#"{"type":"token_count","info":{"total_token_usage":{"input_tokens":34498,"cached_input_tokens":19712,"output_tokens":910,"reasoning_output_tokens":418,"total_tokens":35408},"last_token_usage":{"input_tokens":19770,"cached_input_tokens":14720,"output_tokens":659,"reasoning_output_tokens":288,"total_tokens":20429},"model_context_window":258400}}"#,
+            "run-1",
+            "conv-1",
+        )
+        .unwrap();
+        assert_eq!(event.event_type, "token_usage");
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("info"))
+                .and_then(|info| info.get("last_token_usage"))
+                .and_then(|usage| usage.get("total_tokens"))
+                .and_then(Value::as_i64),
+            Some(20429),
+        );
+    }
+
+    #[test]
     fn app_server_streams_agent_message_delta_and_suppresses_completed() {
         let mut streamed = HashSet::new();
         let delta = map_app_server_notification(
@@ -7683,6 +8104,86 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "reasoning_delta");
         assert_eq!(events[0].text.as_deref(), Some("thinking"));
+    }
+
+    #[test]
+    fn app_server_maps_thread_token_usage() {
+        let mut streamed = HashSet::new();
+        let events = map_app_server_notification(
+            "thread/tokenUsage/updated",
+            &serde_json::json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "tokenUsage": {
+                    "total": {
+                        "totalTokens": 34498,
+                        "inputTokens": 34000,
+                        "cachedInputTokens": 14720,
+                        "outputTokens": 498,
+                        "reasoningOutputTokens": 120
+                    },
+                    "last": {
+                        "totalTokens": 20429,
+                        "inputTokens": 19770,
+                        "cachedInputTokens": 14720,
+                        "outputTokens": 659,
+                        "reasoningOutputTokens": 288
+                    },
+                    "modelContextWindow": 258400
+                }
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "token_usage");
+        assert_eq!(events[0].thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(
+            events[0]
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("tokenUsage"))
+                .and_then(|usage| usage.get("last"))
+                .and_then(|last| last.get("totalTokens"))
+                .and_then(Value::as_i64),
+            Some(20429),
+        );
+    }
+
+    #[test]
+    fn app_server_maps_context_compaction_items() {
+        let mut streamed = HashSet::new();
+        let started = map_app_server_notification(
+            "item/started",
+            &serde_json::json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": { "id": "compact-1", "type": "contextCompaction" }
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        let completed = map_app_server_notification(
+            "item/completed",
+            &serde_json::json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": { "id": "compact-1", "type": "contextCompaction" }
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].event_type, "tool_started");
+        assert_eq!(started[0].title.as_deref(), Some("context_compaction"));
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].event_type, "context_compacted");
+        assert_eq!(completed[0].item_id.as_deref(), Some("compact-1"));
     }
 
     #[test]
@@ -8684,7 +9185,92 @@ mod tests {
             reasoning_effort: None,
             sandbox_mode: None,
             developer_instructions: None,
+            selected_skill: None,
+            attachments: None,
         }
+    }
+
+    #[test]
+    fn finds_native_skill_from_codex_skills_list_response() {
+        let response = json!({
+            "data": [
+                {
+                    "cwd": "/repo",
+                    "errors": [],
+                    "skills": [
+                        {
+                            "name": "browser:control-in-app-browser",
+                            "description": "Control the in-app browser.",
+                            "path": "/Users/geb/.codex/plugins/cache/openai-bundled/browser/skills/control-in-app-browser/SKILL.md",
+                            "scope": "plugin",
+                            "enabled": true
+                        },
+                        {
+                            "name": "chrome",
+                            "description": "Disabled skill should not match.",
+                            "path": "/Users/geb/.codex/skills/chrome/SKILL.md",
+                            "scope": "user",
+                            "enabled": false
+                        }
+                    ]
+                }
+            ]
+        });
+        let selection = CodexSelectedSkill {
+            id: "browser".to_string(),
+            title: "Browser".to_string(),
+            _description: None,
+        };
+
+        let native = find_native_skill_input(&response, &selection).expect("native skill");
+
+        assert_eq!(native.name, "browser:control-in-app-browser");
+        assert!(native.path.ends_with("/control-in-app-browser/SKILL.md"));
+    }
+
+    #[test]
+    fn builds_codex_native_turn_input_for_skill_and_attachments() {
+        let attachments = vec![
+            CodexChatAttachment {
+                name: "chart.png".to_string(),
+                kind: "image".to_string(),
+                path: Some("/tmp/chart.png".to_string()),
+            },
+            CodexChatAttachment {
+                name: "notes.md".to_string(),
+                kind: "file".to_string(),
+                path: Some("/tmp/notes.md".to_string()),
+            },
+        ];
+        let skill = NativeSkillInput {
+            name: "imagegen".to_string(),
+            path: "/Users/geb/.codex/skills/.system/imagegen/SKILL.md".to_string(),
+        };
+
+        let input = build_turn_input("处理附件", &attachments, Some(&skill));
+
+        assert_eq!(input[0].get("type").and_then(Value::as_str), Some("skill"));
+        assert_eq!(
+            input[0].get("name").and_then(Value::as_str),
+            Some("imagegen")
+        );
+        assert_eq!(input[1].get("type").and_then(Value::as_str), Some("text"));
+        assert_eq!(
+            input[2].get("type").and_then(Value::as_str),
+            Some("localImage")
+        );
+        assert_eq!(
+            input[2].get("path").and_then(Value::as_str),
+            Some("/tmp/chart.png")
+        );
+        assert_eq!(
+            input[3].get("type").and_then(Value::as_str),
+            Some("mention")
+        );
+        assert_eq!(
+            input[3].get("path").and_then(Value::as_str),
+            Some("/tmp/notes.md")
+        );
     }
 
     #[test]

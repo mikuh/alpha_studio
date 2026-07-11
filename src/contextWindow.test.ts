@@ -59,12 +59,73 @@ describe('context window management', () => {
     expect(prompt).toContain('当前用户消息：');
   });
 
-  it('compacts old visible messages, clears the thread, and keeps recent history in the prompt context', () => {
+  it('prefers Codex CLI token usage over the local text estimate', () => {
+    const current = conversation(
+      [message(1, 'user', '短消息')],
+      {
+        codexTokenUsage: {
+          total: {
+            totalTokens: 34498,
+            inputTokens: 34000,
+            cachedInputTokens: 14720,
+            outputTokens: 498,
+            reasoningOutputTokens: 120,
+          },
+          last: {
+            totalTokens: 20429,
+            inputTokens: 19770,
+            cachedInputTokens: 14720,
+            outputTokens: 659,
+            reasoningOutputTokens: 288,
+          },
+          modelContextWindow: 258400,
+          updatedAt: 1,
+        },
+      },
+    );
+
+    const usage = contextWindowUsage(current);
+
+    expect(usage.source).toBe('codex');
+    expect(usage.usedTokens).toBe(20429);
+    expect(usage.totalTokens).toBe(258400);
+    expect(usage.usedPercent).toBe(8);
+  });
+
+  it('warns from Codex token usage at the compact threshold', () => {
+    const current = conversation(
+      [message(1, 'user', '短消息')],
+      {
+        codexTokenUsage: {
+          total: {
+            totalTokens: 220000,
+            inputTokens: 219000,
+            cachedInputTokens: 0,
+            outputTokens: 1000,
+            reasoningOutputTokens: 0,
+          },
+          last: {
+            totalTokens: 212000,
+            inputTokens: 211000,
+            cachedInputTokens: 0,
+            outputTokens: 1000,
+            reasoningOutputTokens: 0,
+          },
+          modelContextWindow: 258000,
+          updatedAt: 1,
+        },
+      },
+    );
+
+    expect(contextWindowUsage(current).shouldCompact).toBe(true);
+  });
+
+  it('compacts old visible messages without a Codex thread and keeps recent history in the prompt context', () => {
     const longText = '主题延续、成交放量、风险提示。'.repeat(9_000);
     const messages = Array.from({ length: 12 }, (_, index) =>
       message(index + 1, index % 2 === 0 ? 'user' : 'assistant', `消息-${index + 1} ${longText}`),
     );
-    const current = conversation(messages, { codexThreadId: 'thread-too-large' });
+    const current = conversation(messages);
 
     const prepared = prepareConversationForOutgoingTurn(current);
 
@@ -75,6 +136,20 @@ describe('context window management', () => {
     expect(prepared.promptContext).toContain('压缩背景摘要');
     expect(prepared.promptContext).toContain('最近仍按原文保留的历史');
     expect(prepared.promptContext).toContain('消息-5');
+  });
+
+  it('leaves large resumable Codex threads to Codex native compaction', () => {
+    const longText = '主题延续、成交放量、风险提示。'.repeat(9_000);
+    const messages = Array.from({ length: 12 }, (_, index) =>
+      message(index + 1, index % 2 === 0 ? 'user' : 'assistant', `消息-${index + 1} ${longText}`),
+    );
+    const current = conversation(messages, { codexThreadId: 'thread-too-large' });
+
+    const prepared = prepareConversationForOutgoingTurn(current);
+
+    expect(prepared.compacted).toBe(false);
+    expect(prepared.conversation.codexThreadId).toBe('thread-too-large');
+    expect(prepared.promptContext).toBeUndefined();
   });
 
   it('formats token counts like the Codex context tooltip', () => {

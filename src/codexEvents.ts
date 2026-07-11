@@ -1,5 +1,9 @@
-import type { ChatMessage, CodexChatEvent, Conversation, FileResultBlock, ImageResultBlock, MessageBlock, ToolBlock } from './types';
+import type { ChatMessage, CodexChatEvent, CodexTokenUsage, CodexTokenUsageBreakdown, Conversation, FileResultBlock, ImageResultBlock, MessageBlock, ToolBlock } from './types';
 import { COWORKER_CATALOG, coworkerById } from './coworkers';
+
+export const CONTEXT_COMPACTION_TOOL_TITLE = 'context_compaction';
+export const CODEX_CONTEXT_COMPACTION_TARGET = 'Codex 已压缩历史上下文';
+export const CODEX_CONTEXT_COMPACTION_OUTPUT = '已收到 Codex 原生上下文压缩事件，后续回复会基于压缩后的线程继续。';
 
 export function applyCodexEventToConversation(conversation: Conversation, event: CodexChatEvent): Conversation {
   if (event.conversationId && event.conversationId !== conversation.id) {
@@ -21,6 +25,25 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
     return {
       ...conversation,
       codexThreadId: event.threadId,
+      updatedAt: now,
+    };
+  }
+
+  if (event.type === 'token_usage') {
+    const tokenUsage = tokenUsageFromEvent(event, now);
+    if (!tokenUsage) return conversation;
+    return {
+      ...conversation,
+      codexTokenUsage: tokenUsage,
+      updatedAt: now,
+    };
+  }
+
+  if (event.type === 'context_compacted') {
+    const compacted = completeContextCompactionBlock(conversation, now, event);
+    return {
+      ...compacted,
+      codexCompactedAt: now,
       updatedAt: now,
     };
   }
@@ -81,6 +104,47 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   return conversation;
 }
 
+function tokenUsageFromEvent(event: CodexChatEvent, updatedAt: number): CodexTokenUsage | null {
+  const raw = asRecord(event.raw);
+  if (!raw) return null;
+  const payload = asRecord(raw.tokenUsage) ?? asRecord(raw.info) ?? raw;
+  const totalRaw = asRecord(payload.total) ?? asRecord(payload.totalTokenUsage) ?? asRecord(payload.total_token_usage);
+  const lastRaw = asRecord(payload.last) ?? asRecord(payload.lastTokenUsage) ?? asRecord(payload.last_token_usage) ?? totalRaw;
+  if (!totalRaw || !lastRaw) return null;
+  const total = tokenUsageBreakdown(totalRaw);
+  const last = tokenUsageBreakdown(lastRaw);
+  if (!total || !last) return null;
+  return {
+    total,
+    last,
+    modelContextWindow: numericValue(payload.modelContextWindow ?? payload.model_context_window),
+    updatedAt,
+  };
+}
+
+function tokenUsageBreakdown(raw: Record<string, unknown>): CodexTokenUsageBreakdown | null {
+  const totalTokens = numericValue(raw.totalTokens ?? raw.total_tokens);
+  if (totalTokens === null) return null;
+  return {
+    totalTokens,
+    inputTokens: numericValue(raw.inputTokens ?? raw.input_tokens) ?? 0,
+    cachedInputTokens: numericValue(raw.cachedInputTokens ?? raw.cached_input_tokens) ?? 0,
+    outputTokens: numericValue(raw.outputTokens ?? raw.output_tokens) ?? 0,
+    reasoningOutputTokens: numericValue(raw.reasoningOutputTokens ?? raw.reasoning_output_tokens) ?? 0,
+  };
+}
+
+function numericValue(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.round(value));
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
 // Codex app-server streams the assistant message as pure token deltas, so we
 // append every chunk verbatim. (The old snapshot-style dedup would drop legit
 // repeated tokens like "." or " the".)
@@ -105,6 +169,38 @@ function appendThinkingDelta(conversation: Conversation, now: number, text: stri
       blocks[blocks.length - 1] = { ...last, content: last.content + text };
     } else {
       blocks.push({ type: 'thinking', content: text });
+    }
+    return { ...message, blocks };
+  });
+}
+
+function completeContextCompactionBlock(conversation: Conversation, now: number, event: CodexChatEvent): Conversation {
+  const blockId = event.itemId || `context-compaction-${event.runId}`;
+  return updateStreamingAssistant(conversation, now, (message) => {
+    const blocks = [...message.blocks];
+    let existingIndex = -1;
+    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+      const block = blocks[index];
+      if (block.type !== 'tool') continue;
+      if (block.id === blockId || block.title === CONTEXT_COMPACTION_TOOL_TITLE) {
+        existingIndex = index;
+        break;
+      }
+    }
+    const nextBlock: ToolBlock = {
+      type: 'tool',
+      id: existingIndex >= 0 && blocks[existingIndex]?.type === 'tool'
+        ? (blocks[existingIndex] as ToolBlock).id
+        : blockId,
+      title: CONTEXT_COMPACTION_TOOL_TITLE,
+      status: 'completed',
+      target: CODEX_CONTEXT_COMPACTION_TARGET,
+      output: CODEX_CONTEXT_COMPACTION_OUTPUT,
+    };
+    if (existingIndex >= 0) {
+      blocks[existingIndex] = nextBlock;
+    } else {
+      blocks.push(nextBlock);
     }
     return { ...message, blocks };
   });

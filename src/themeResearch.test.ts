@@ -133,6 +133,8 @@ describe('themeResearch', () => {
     expect(prompt).toContain(PREMARKET_THEME_SCHEMA);
     expect(prompt).toContain('capitalAttackPath');
     expect(prompt).toContain('今日资金进攻路径');
+    expect(prompt).toContain('默认不要拆成 ROLE MATRIX I/II');
+    expect(prompt).toContain('题材 / 角色 / 标的 / 角色逻辑 / 确认/失效');
     expect(prompt).toContain('executionGate');
     expect(prompt).toContain('上一期主题连续跟踪');
     expect(prompt).toContain('数据口径');

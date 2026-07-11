@@ -19,6 +19,7 @@ export interface ContextWindowUsage {
   shouldCompact: boolean;
   compacted: boolean;
   compactedMessageCount: number;
+  source: 'codex' | 'local-estimate';
 }
 
 export interface PreparedConversationContext {
@@ -28,11 +29,14 @@ export interface PreparedConversationContext {
 }
 
 export function contextWindowUsage(conversation: Conversation): ContextWindowUsage {
-  const totalTokens = DEFAULT_CONTEXT_WINDOW_TOKENS;
-  const usedTokens = Math.max(0, estimateConversationBackgroundTokens(conversation));
+  const codexUsage = codexContextWindowUsage(conversation);
+  const source = codexUsage ? 'codex' : 'local-estimate';
+  const totalTokens = codexUsage?.totalTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+  const usedTokens = Math.max(0, codexUsage?.usedTokens ?? estimateConversationBackgroundTokens(conversation));
   const remainingTokens = Math.max(0, totalTokens - usedTokens);
   const compactThresholdTokens = Math.floor(totalTokens * CONTEXT_COMPACT_THRESHOLD_RATIO);
   const usedPercent = percentOf(usedTokens, totalTokens);
+  const compacted = Boolean(conversation.backgroundContext || conversation.codexCompactedAt);
   return {
     usedTokens,
     totalTokens,
@@ -41,14 +45,16 @@ export function contextWindowUsage(conversation: Conversation): ContextWindowUsa
     remainingPercent: Math.max(0, 100 - usedPercent),
     compactThresholdTokens,
     compactThresholdPercent: Math.round(CONTEXT_COMPACT_THRESHOLD_RATIO * 100),
-    shouldCompact: shouldCompactConversation(conversation),
-    compacted: Boolean(conversation.backgroundContext),
+    shouldCompact: codexUsage ? usedTokens >= compactThresholdTokens : shouldCompactConversation(conversation),
+    compacted,
     compactedMessageCount: conversation.backgroundContext?.sourceMessageCount ?? 0,
+    source,
   };
 }
 
 export function prepareConversationForOutgoingTurn(conversation: Conversation): PreparedConversationContext {
-  const compactedConversation = shouldCompactConversation(conversation)
+  const shouldUseLocalCompaction = !conversation.codexThreadId && shouldCompactConversation(conversation);
+  const compactedConversation = shouldUseLocalCompaction
     ? compactConversation(conversation)
     : conversation;
   const compacted = compactedConversation !== conversation;
@@ -159,6 +165,8 @@ function compactConversation(conversation: Conversation): Conversation {
   return {
     ...conversation,
     codexThreadId: undefined,
+    codexTokenUsage: undefined,
+    codexCompactedAt: undefined,
     backgroundContext: {
       summary,
       sourceMessageCount: cutIndex,
@@ -183,6 +191,20 @@ function estimateConversationBackgroundTokens(conversation: Conversation): numbe
   const summaryTokens = conversation.backgroundContext?.summaryTokenEstimate
     ?? estimateTextTokens(conversation.backgroundContext?.summary ?? '');
   return SYSTEM_CONTEXT_OVERHEAD_TOKENS + summaryTokens + estimateMessagesTokens(messagesForActiveBackground(conversation));
+}
+
+function codexContextWindowUsage(conversation: Conversation): { usedTokens: number; totalTokens: number } | null {
+  const usage = conversation.codexTokenUsage;
+  if (!usage) return null;
+  const usedTokens = finitePositiveNumber(usage.last?.totalTokens);
+  const totalTokens = finitePositiveNumber(usage.modelContextWindow) ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+  if (usedTokens === null) return null;
+  return { usedTokens, totalTokens };
+}
+
+function finitePositiveNumber(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value);
 }
 
 function estimateMessagesTokens(messages: ChatMessage[]): number {

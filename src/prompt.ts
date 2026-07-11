@@ -6,6 +6,7 @@ export interface PromptOptions {
   planMode?: boolean;
   pursueGoal?: boolean;
   selectedSkill?: SkillSelection | null;
+  nativeSkillInput?: boolean;
   coworkers?: CoworkerSelection[] | null;
 }
 
@@ -76,20 +77,27 @@ export function buildCodingInstructions(
   }
   if (options.selectedSkill) {
     const skill = options.selectedSkill;
-    modeLines.push(
-      `当前指定 Skill：${skill.title} (${skill.id})。必须优先使用这个 Skill 的说明、工作流和工具路线来完成任务；如果任务明显不适合该 Skill，先简短说明原因，再用最合适的方式继续。`,
-    );
-    if (skill.id === 'alpha-studio-daily-theme-research') {
+    if (options.nativeSkillInput) {
       modeLines.push(
-        'Alpha Studio 盘前主题协议：这个 Skill 的研究规则、报告结构、输出深度、评分、连续跟踪、产业链真实性、执行闸门和校验要求必须与 `neostream-daily-theme-research` 保持一致；仅将名称/品牌/Logo 替换为 Alpha Studio / Alpha Studio Research。',
-        '默认生成正式日报而不是简版。除非用户明确要求快报或 9:25 集合竞价确认，报告必须包含 `今日执行闸门`、`今日资金进攻路径`、`今日进攻概率`、`情绪指标仪表盘`、`隔夜全球线索`、`全球线索到A股题材映射`、`上一期主题连续跟踪`、`题材分级与生命周期`、`题材持续时间与持有复核`、`龙头 / 中军 / 趋势核心 / 补涨矩阵`、`来源与风险提示`。',
-        '输出先给 `alpha.premarket_theme.v1` fenced JSON，再给完整 Markdown/HTML 报告。JSON 也必须包含全局 `capitalAttackPath`，并为每个 S/A/B 主题写出今日进攻概率、研究概率、观察权重、持有窗口和触发/失效条件。',
+        `当前指定 Skill：${skill.title} (${skill.id}) 已作为 Codex app-server 原生 skill input 传入；按 CLI 载入的 SKILL.md、工具规则和依赖说明执行。若 CLI 未能提供该 Skill 的说明，简短说明原因，再用最合适的方式继续。`,
       );
-    }
-    if (skill.id === 'imagegen') {
+    } else {
       modeLines.push(
-        '图片生成展示要求：在对话中简短说明正在生成或处理的关键步骤；最终必须把每张生成图片用可渲染的 Markdown 图片语法 `![说明](绝对路径或URL)` 或明确的本地绝对路径/URL 展示出来，并说明保存位置。不要只回复“已生成”；如果没有实际得到图片文件、URL 或可展示结果，必须说明未完成和原因。',
+        `当前指定 Skill：${skill.title} (${skill.id})。必须优先使用这个 Skill 的说明、工作流和工具路线来完成任务；如果任务明显不适合该 Skill，先简短说明原因，再用最合适的方式继续。`,
       );
+      if (skill.id === 'alpha-studio-daily-theme-research') {
+        modeLines.push(
+          'Alpha Studio 盘前主题协议：这个 Skill 的研究规则、报告结构、输出深度、评分、连续跟踪、产业链真实性、执行闸门和校验要求必须与 `neostream-daily-theme-research` 保持一致；仅将名称/品牌/Logo 替换为 Alpha Studio / Alpha Studio Research。',
+          '默认生成正式日报而不是简版。除非用户明确要求快报或 9:25 集合竞价确认，报告必须包含 `今日执行闸门`、`今日资金进攻路径`、`今日进攻概率`、`情绪指标仪表盘`、`隔夜全球线索`、`全球线索到A股题材映射`、`上一期主题连续跟踪`、`题材分级与生命周期`、`题材持续时间与持有复核`、`龙头 / 中军 / 趋势核心 / 补涨矩阵`、`来源与风险提示`。',
+          '角色矩阵默认不要拆成 `ROLE MATRIX I/II`。使用一张五列紧凑表：`题材 / 角色 / 标的 / 角色逻辑 / 确认/失效`；不要添加 `持有复核`、`今日处理` 等列，相关内容放在表后 callout 或单独 `角色限制` 表。',
+          '输出先给 `alpha.premarket_theme.v1` fenced JSON，再给完整 Markdown/HTML 报告。JSON 也必须包含全局 `capitalAttackPath`，并为每个 S/A/B 主题写出今日进攻概率、研究概率、观察权重、持有窗口和触发/失效条件。',
+        );
+      }
+      if (skill.id === 'imagegen') {
+        modeLines.push(
+          '图片生成展示要求：在对话中简短说明正在生成或处理的关键步骤；最终必须把每张生成图片用可渲染的 Markdown 图片语法 `![说明](绝对路径或URL)` 或明确的本地绝对路径/URL 展示出来，并说明保存位置。不要只回复“已生成”；如果没有实际得到图片文件、URL 或可展示结果，必须说明未完成和原因。',
+        );
+      }
     }
   }
   if (options.coworkers && options.coworkers.length) {

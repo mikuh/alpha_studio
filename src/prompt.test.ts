@@ -39,6 +39,18 @@ describe('finance research domain', () => {
     expect(prompt).toContain('必须优先使用这个 Skill');
   });
 
+  it('defers selected skills to Codex native skill input when available', () => {
+    const instructions = buildCodingInstructions({
+      selectedSkill: { id: 'alpha-studio-daily-theme-research', title: 'Alpha Studio 盘前主题' },
+      nativeSkillInput: true,
+    });
+
+    expect(instructions).toContain('原生 skill input');
+    expect(instructions).toContain('CLI 载入的 SKILL.md');
+    expect(instructions).not.toContain('ROLE MATRIX I/II');
+    expect(instructions).not.toContain('alpha.premarket_theme.v1');
+  });
+
   it('tells Image Gen turns to expose progress and renderable outputs', () => {
     const instructions = buildCodingInstructions(
       { selectedSkill: { id: 'imagegen', title: 'Image Gen' } },
@@ -58,6 +70,8 @@ describe('finance research domain', () => {
     expect(instructions).toContain('今日资金进攻路径');
     expect(instructions).toContain('隔夜全球线索');
     expect(instructions).toContain('题材持续时间与持有复核');
+    expect(instructions).toContain('ROLE MATRIX I/II');
+    expect(instructions).toContain('题材 / 角色 / 标的 / 角色逻辑 / 确认/失效');
     expect(instructions).toContain('alpha.premarket_theme.v1');
     expect(instructions).toContain('capitalAttackPath');
   });

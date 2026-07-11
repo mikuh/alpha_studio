@@ -394,6 +394,29 @@ tbody td:first-child { color: var(--ink); font-weight: 700; }
 .center { text-align: center; }
 .positive { color: var(--rust); font-weight: 800; }
 .negative { color: var(--green); font-weight: 800; }
+.tight-table,
+.role-matrix-table {
+  font-size: 7.6pt;
+  line-height: 1.42;
+}
+.tight-table thead th,
+.role-matrix-table thead th {
+  padding: 1.7mm 2mm;
+}
+.tight-table tbody td,
+.role-matrix-table tbody td {
+  padding: 1.45mm 2mm;
+}
+.role-matrix-table th:nth-child(1),
+.role-matrix-table td:nth-child(1) { width: 16%; }
+.role-matrix-table th:nth-child(2),
+.role-matrix-table td:nth-child(2) { width: 13%; }
+.role-matrix-table th:nth-child(3),
+.role-matrix-table td:nth-child(3) { width: 20%; }
+.role-matrix-table th:nth-child(4),
+.role-matrix-table td:nth-child(4) { width: 31%; }
+.role-matrix-table th:nth-child(5),
+.role-matrix-table td:nth-child(5) { width: 20%; }
 
 /* ---------- Tags & pills ---------- */
 .tag {

@@ -1689,6 +1689,56 @@ code {
   color: var(--success);
 }
 
+.codex-usage-windows {
+  min-width: 218px;
+  display: grid;
+  gap: 6px;
+}
+
+.codex-usage-window {
+  display: grid;
+  grid-template-columns: minmax(54px, 1fr) 48px 64px;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.codex-usage-window strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.codex-usage-window em {
+  color: var(--muted);
+  font-style: normal;
+  text-align: right;
+}
+
+.codex-usage-window small {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: right;
+}
+
+.codex-usage-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.codex-usage-state.error {
+  color: var(--danger);
+}
+
 .billing-table-section,
 .billing-ledger {
   margin-bottom: 34px;
@@ -2515,6 +2565,15 @@ code {
 
   .billing-metric:last-child {
     border-bottom: 0;
+  }
+
+  .codex-usage-windows {
+    min-width: 162px;
+  }
+
+  .codex-usage-window {
+    grid-template-columns: minmax(48px, 1fr) 42px 54px;
+    gap: 8px;
   }
 
   .billing-ledger-row {
@@ -8761,6 +8820,7 @@ button.environment-row:hover {
   position: absolute;
   top: 50%;
   right: 3px;
+  z-index: 1;
   width: 24px;
   height: 24px;
   display: grid;
