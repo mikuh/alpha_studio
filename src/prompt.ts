@@ -93,11 +93,11 @@ export function buildCodingInstructions(
           '输出先给 `alpha.premarket_theme.v1` fenced JSON，再给完整 Markdown/HTML 报告。JSON 也必须包含全局 `capitalAttackPath`，并为每个 S/A/B 主题写出今日进攻概率、研究概率、观察权重、持有窗口和触发/失效条件。',
         );
       }
-      if (skill.id === 'imagegen') {
-        modeLines.push(
-          '图片生成展示要求：在对话中简短说明正在生成或处理的关键步骤；最终必须把每张生成图片用可渲染的 Markdown 图片语法 `![说明](绝对路径或URL)` 或明确的本地绝对路径/URL 展示出来，并说明保存位置。不要只回复“已生成”；如果没有实际得到图片文件、URL 或可展示结果，必须说明未完成和原因。',
-        );
-      }
+    }
+    if (skill.id === 'imagegen') {
+      modeLines.push(
+        '图片生成任务完成闸门：必须实际调用图片生成工具并等待它返回可展示的图片结果后才能结束；读取 `SKILL.md`、只发起生成调用或只回复“已生成”都不算完成。成功图片会由 Alpha Studio 从工具结果中直接渲染，生成成功后无需额外复述；如果工具明确失败且无法重试，必须说明未完成和原因。',
+      );
     }
   }
   if (options.coworkers && options.coworkers.length) {

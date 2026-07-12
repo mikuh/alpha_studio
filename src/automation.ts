@@ -1,5 +1,9 @@
 import { scheduleLocalStoreCommit } from './localStore';
 import { DEFAULT_EFFORT, DEFAULT_MODEL_PROFILE_ID, isReasoningEffort, type ReasoningEffort } from './models';
+import {
+  ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
+  ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_TITLE,
+} from './themeAbilities';
 
 export const AUTOMATION_ENVIRONMENT_OPTIONS = ['工作树', '当前对话', '无代码环境'] as const;
 export const CUSTOM_AUTOMATION_SCHEDULE_VALUE = '自定义';
@@ -38,6 +42,23 @@ export const DEFAULT_AUTOMATION_MODEL = 'GPT-5.5';
 export const AUTOMATION_TASKS_KEY = 'alpha:automation-tasks-v1';
 export const AUTOMATION_TASKS_CHANGED_EVENT = 'alpha:automation-tasks-changed';
 
+export type AutomationTaskKind = 'generic' | 'intraday-monitor';
+
+export interface AutomationActiveWindow {
+  timezone: 'Asia/Shanghai';
+  weekdays: number[];
+  sessions: Array<{ start: string; end: string }>;
+}
+
+export const A_SHARE_INTRADAY_WINDOW: AutomationActiveWindow = {
+  timezone: 'Asia/Shanghai',
+  weekdays: [1, 2, 3, 4, 5],
+  sessions: [
+    { start: '09:25', end: '11:30' },
+    { start: '13:00', end: '15:00' },
+  ],
+};
+
 export interface AutomationFormState {
   title: string;
   prompt: string;
@@ -48,6 +69,11 @@ export interface AutomationFormState {
   modelProfileId?: string;
   reasoningEffort?: ReasoningEffort;
   conversationId?: string;
+  kind?: AutomationTaskKind;
+  skillId?: string;
+  skillTitle?: string;
+  activeWindow?: AutomationActiveWindow;
+  lastRunAt?: number;
 }
 
 export interface ScheduledAutomationTask extends AutomationFormState {
@@ -120,6 +146,8 @@ export function addScheduledAutomationTask(input: AutomationFormState): Schedule
 export function detectAutomationIntent(message: string): AutomationFormState | null {
   const source = normalizeText(message);
   if (/立即执行已安排任务|原计划[:：]/.test(source)) return null;
+  const intradayMonitor = detectIntradayMonitorIntent(source);
+  if (intradayMonitor) return intradayMonitor;
   if (
     !source ||
     !/(提醒|叫我|通知|自动化|定时|每隔|每[0-9一二三四五六七八九十半两]+|每个|每天|每日|每周|每星期|每月|每季度|每年|每小时|每分钟|工作日)/.test(source)
@@ -146,14 +174,56 @@ export function detectAutomationIntent(message: string): AutomationFormState | n
 }
 
 export function automationCreatedReply(task: ScheduledAutomationTask): string {
-  return [
+  const lines = [
     `已在 Alpha Studio 自动化任务列表中创建「${task.title}」。`,
     '',
     `频率：${task.schedule}`,
     `内容：${task.prompt}`,
+    task.kind === 'intraday-monitor' ? '运行窗口：A 股工作日 9:25–11:30、13:00–15:00（Asia/Shanghai）' : null,
     '',
-    '你可以在左侧「自动化」里查看、立即执行、编辑或删除。当前客户端会先保存任务配置；到点后台运行和系统通知需要接入调度/通知服务。',
-  ].join('\n');
+    task.kind === 'intraday-monitor'
+      ? '你可以在左侧「自动化」里查看、立即执行、编辑或删除。Alpha Studio 运行期间会在交易时段自动执行此任务。'
+      : '你可以在左侧「自动化」里查看、立即执行、编辑或删除。当前客户端会先保存任务配置；通用任务的后台调度仍需要接入调度/通知服务。',
+  ];
+  return lines.filter((line): line is string => line !== null).join('\n');
+}
+
+export function updateScheduledAutomationTask(
+  taskId: string,
+  patch: Partial<ScheduledAutomationTask>,
+): ScheduledAutomationTask | null {
+  let updated: ScheduledAutomationTask | null = null;
+  const tasks = loadScheduledAutomationTasks().map((task) => {
+    if (task.id !== taskId) return task;
+    updated = { ...task, ...patch, id: task.id, createdAt: task.createdAt };
+    return updated;
+  });
+  if (updated) saveScheduledAutomationTasks(tasks);
+  return updated;
+}
+
+export function isScheduledAutomationTaskDue(task: ScheduledAutomationTask, now = new Date()): boolean {
+  if (task.kind !== 'intraday-monitor' || !task.activeWindow) return false;
+  const zoned = zonedClock(now, task.activeWindow.timezone);
+  if (!task.activeWindow.weekdays.includes(zoned.weekday)) return false;
+  const minuteOfDay = zoned.hour * 60 + zoned.minute;
+  const insideSession = task.activeWindow.sessions.some(
+    (session) => minuteOfDay >= clockMinutes(session.start) && minuteOfDay <= clockMinutes(session.end),
+  );
+  if (!insideSession) return false;
+  if (!task.lastRunAt) return true;
+  const intervalMs = automationIntervalMs(task.schedule);
+  return intervalMs !== null && now.getTime() - task.lastRunAt >= intervalMs;
+}
+
+export function scheduledAutomationRunPrompt(task: ScheduledAutomationTask): string {
+  return [
+    `请立即执行已安排任务「${task.title}」。`,
+    `原计划：${task.schedule}`,
+    task.activeWindow ? '当前任务仅允许在 A 股交易时段执行。' : null,
+    '',
+    task.prompt,
+  ].filter((line): line is string => line !== null).join('\n');
 }
 
 function isScheduledAutomationTask(task: Partial<ScheduledAutomationTask>): task is ScheduledAutomationTask {
@@ -167,9 +237,72 @@ function isScheduledAutomationTask(task: Partial<ScheduledAutomationTask>): task
     typeof task.model === 'string' &&
     (task.modelProfileId === undefined || typeof task.modelProfileId === 'string') &&
     (task.reasoningEffort === undefined || isReasoningEffort(task.reasoningEffort)) &&
+    (task.kind === undefined || task.kind === 'generic' || task.kind === 'intraday-monitor') &&
+    (task.skillId === undefined || typeof task.skillId === 'string') &&
+    (task.skillTitle === undefined || typeof task.skillTitle === 'string') &&
+    (task.lastRunAt === undefined || typeof task.lastRunAt === 'number') &&
+    (task.activeWindow === undefined || isAutomationActiveWindow(task.activeWindow)) &&
     typeof task.createdAt === 'number' &&
     (task.conversationId === undefined || typeof task.conversationId === 'string'),
   );
+}
+
+function detectIntradayMonitorIntent(source: string): AutomationFormState | null {
+  if (!source.includes('盘中监控') || !/(创建|定时任务|每(?:隔)?\d+分钟)/.test(source)) return null;
+  return {
+    title: '盘中触发监控',
+    prompt: '使用 alpha-studio-intraday-monitor，基于今日最新研究报告和上一次监控结果，检查已到观察时点的触发条件、升级条件、降级条件和失效条件；仅报告状态变化、当前证据、研究动作与下一观察点。',
+    environment: '当前对话',
+    project: '选择项目',
+    schedule: extractSchedule(source) ?? '每 10 分钟',
+    model: DEFAULT_AUTOMATION_MODEL,
+    modelProfileId: DEFAULT_MODEL_PROFILE_ID,
+    reasoningEffort: DEFAULT_EFFORT,
+    kind: 'intraday-monitor',
+    skillId: ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
+    skillTitle: ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_TITLE,
+    activeWindow: A_SHARE_INTRADAY_WINDOW,
+  };
+}
+
+function isAutomationActiveWindow(value: unknown): value is AutomationActiveWindow {
+  if (!value || typeof value !== 'object') return false;
+  const window = value as Partial<AutomationActiveWindow>;
+  return window.timezone === 'Asia/Shanghai' &&
+    Array.isArray(window.weekdays) && window.weekdays.every((day) => typeof day === 'number') &&
+    Array.isArray(window.sessions) && window.sessions.every(
+      (session) => Boolean(session && typeof session.start === 'string' && typeof session.end === 'string'),
+    );
+}
+
+function automationIntervalMs(schedule: string): number | null {
+  if (schedule === '每小时') return 60 * 60_000;
+  const match = schedule.match(/^每\s*(\d+)\s*(分钟|小时)$/);
+  if (!match) return null;
+  const count = Math.max(1, Number.parseInt(match[1], 10));
+  return count * (match[2] === '小时' ? 60 : 1) * 60_000;
+}
+
+function zonedClock(date: Date, timezone: AutomationActiveWindow['timezone']): { weekday: number; hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const weekdays: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    weekday: weekdays[values.weekday] ?? 0,
+    hour: Number.parseInt(values.hour ?? '0', 10),
+    minute: Number.parseInt(values.minute ?? '0', 10),
+  };
+}
+
+function clockMinutes(value: string): number {
+  const [hour, minute] = value.split(':').map((part) => Number.parseInt(part, 10));
+  return hour * 60 + minute;
 }
 
 function normalizeText(value: string): string {

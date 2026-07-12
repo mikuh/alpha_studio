@@ -7232,6 +7232,7 @@ fn is_tool_item(normalized_type: &str) -> bool {
         || normalized_type.contains("shell")
         || normalized_type.contains("functioncall")
         || normalized_type.contains("mcpcall")
+        || normalized_type.contains("imagegeneration")
         || normalized_type.contains("filechange")
         || normalized_type.contains("websearch")
         || normalized_type.contains("filesearch")
@@ -7284,6 +7285,8 @@ fn extract_tool_output(item: &Value) -> Option<String> {
         &[
             "output",
             "aggregatedOutput",
+            "savedPath",
+            "saved_path",
             "result",
             "stdout",
             "stderr",
@@ -8223,6 +8226,38 @@ mod tests {
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].event_type, "tool_failed");
         assert_eq!(failed[0].text.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn app_server_maps_native_image_generation_completion() {
+        let mut streamed = HashSet::new();
+        let events = map_app_server_notification(
+            "item/completed",
+            &serde_json::json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": {
+                    "id": "image-generation-1",
+                    "type": "imageGeneration",
+                    "status": "completed",
+                    "revisedPrompt": "one orange cat",
+                    "result": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+                    "savedPath": "/tmp/generated_images/image-generation-1.png"
+                }
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "tool_completed");
+        assert_eq!(events[0].item_id.as_deref(), Some("image-generation-1"));
+        assert_eq!(events[0].title.as_deref(), Some("imageGeneration"));
+        assert_eq!(
+            events[0].text.as_deref(),
+            Some("/tmp/generated_images/image-generation-1.png")
+        );
     }
 
     #[test]

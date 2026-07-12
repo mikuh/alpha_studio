@@ -248,7 +248,7 @@ describe('applyCodexEventToConversation', () => {
         id: 'img-1',
         title: 'imagegen.imagegen',
         status: 'completed',
-        output: 'Generated image: /Users/geb/.codex/generated_images/cat.png',
+        output: '图片已生成，结果见下方。',
       },
       {
         type: 'image_result',
@@ -277,6 +277,112 @@ describe('applyCodexEventToConversation', () => {
           },
         ],
       },
+    ]);
+  });
+
+  it('surfaces inline images returned by a generic wait tool', () => {
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'wait-1',
+      title: 'wait',
+      text: JSON.stringify([
+        { type: 'input_text', text: 'Script completed' },
+        { type: 'input_image', image_url: dataUrl },
+      ]),
+    });
+
+    expect(completed.messages[0].blocks).toEqual([
+      {
+        type: 'tool',
+        id: 'wait-1',
+        title: 'wait',
+        status: 'completed',
+        output: '图片已生成，结果见下方。',
+      },
+      {
+        type: 'image_result',
+        id: 'wait-1-result',
+        title: '生成结果',
+        images: [
+          {
+            id: 'wait-1-result-0',
+            src: dataUrl,
+            alt: '生成图片',
+            name: '生成图片',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('surfaces native app-server imageGeneration results', () => {
+    const rawResult = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB';
+    const savedPath = '/Users/geb/.alpha-studio/codex-home/generated_images/thread/image-generation-1.png';
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'image-generation-1',
+      title: 'imageGeneration',
+      text: rawResult,
+      raw: {
+        threadId: 'thread-1',
+        item: {
+          id: 'image-generation-1',
+          type: 'imageGeneration',
+          status: 'completed',
+          revisedPrompt: 'one orange cat',
+          result: rawResult,
+          savedPath,
+        },
+      },
+    });
+
+    expect(completed.messages[0].blocks).toEqual([
+      {
+        type: 'tool',
+        id: 'image-generation-1',
+        title: 'imageGeneration',
+        status: 'completed',
+        output: '图片已生成，结果见下方。',
+      },
+      {
+        type: 'image_result',
+        id: 'image-generation-1-result',
+        title: '生成结果',
+        images: [
+          {
+            id: 'image-generation-1-result-0',
+            src: savedPath,
+            alt: 'image-generation-1.png',
+            name: 'image-generation-1.png',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('shows a visible failure notice when an Image Gen turn completes without an image', () => {
+    const conversation = baseConversation();
+    conversation.messages.unshift({
+      id: 'user-1',
+      role: 'user',
+      timestamp: 0,
+      blocks: [{ type: 'text', content: '画一只猫' }],
+      selectedSkill: { id: 'imagegen', title: 'Image Gen' },
+    });
+
+    const completed = applyCodexEventToConversation(conversation, {
+      type: 'completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+    });
+
+    expect(completed.messages[1].blocks).toEqual([
+      { type: 'error', content: '图片生成已结束，但未收到可展示的图片结果。请重试。' },
     ]);
   });
 
@@ -385,5 +491,25 @@ describe('applyCodexEventToConversation', () => {
     expect(next.runId).toBe('run-1');
     expect(next.messages[0].isStreaming).toBe(true);
     expect(next.messages[0].blocks[0]).toEqual({ type: 'error', content: 'Provider 正在重试' });
+  });
+
+  it('updates reconnect progress in place instead of appending another status', () => {
+    const conversation = { ...baseConversation(), runId: 'run-1' };
+    const first = applyCodexEventToConversation(conversation, {
+      type: 'status',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      message: 'Reconnecting... 1/5',
+    });
+    const second = applyCodexEventToConversation(first, {
+      type: 'status',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      message: 'Reconnecting... 2/5',
+    });
+
+    expect(second.messages[0].blocks).toEqual([
+      { type: 'error', content: 'Reconnecting... 2/5' },
+    ]);
   });
 });

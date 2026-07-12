@@ -14,6 +14,7 @@ import { buildCodingInstructions, buildReviewPrompt } from './prompt';
 import { checkCodex, isTauriRuntime, listCodexModels, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
+import { addThemeAbilityContext, inferThemeAbilitySkill } from './themeAbilities';
 import {
   ALPHA_GATEWAY_PROVIDER_ID,
   createGatewayRun,
@@ -132,6 +133,7 @@ interface ChatState {
   refreshCodexStatus: (options?: { forceModelRefetch?: boolean }) => Promise<void>;
   refreshCodexModels: (forceRefetch: boolean) => Promise<void>;
   sendMessage: (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null, coworkers?: CoworkerSelection[] | null) => Promise<void>;
+  sendMessageToConversation: (conversationId: string, message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null, coworkers?: CoworkerSelection[] | null, automationRun?: boolean) => Promise<void>;
   removeQueuedMessage: (conversationId: string, queuedMessageId: string) => void;
   updateQueuedMessage: (conversationId: string, queuedMessageId: string, patch: Pick<QueuedChatMessage, 'text'>) => void;
   reorderQueuedMessage: (conversationId: string, queuedMessageId: string, beforeQueuedMessageId: string | null) => void;
@@ -319,7 +321,8 @@ export const useChatStore = create<ChatState>()(
         const attachmentList = queuedMessage.attachments && queuedMessage.attachments.length
           ? queuedMessage.attachments
           : undefined;
-        const selectedSkill = queuedMessage.selectedSkill;
+        const explicitSelectedSkill = queuedMessage.selectedSkill;
+        const selectedSkill = explicitSelectedSkill ?? inferThemeAbilitySkill(trimmed) ?? undefined;
         const coworkerList = queuedMessage.coworkers && queuedMessage.coworkers.length
           ? queuedMessage.coworkers
           : undefined;
@@ -354,7 +357,7 @@ export const useChatStore = create<ChatState>()(
         const nextTitle = conversation.messages.length === 0
           ? buildConversationTitle(trimmed || attachmentList?.[0]?.name || '')
           : conversation.title;
-        const automationIntent = !attachmentList && !selectedSkill && !coworkerList ? detectAutomationIntent(trimmed) : null;
+        const automationIntent = !attachmentList && !explicitSelectedSkill && !coworkerList ? detectAutomationIntent(trimmed) : null;
 
         if (automationIntent) {
           const profile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
@@ -415,7 +418,7 @@ export const useChatStore = create<ChatState>()(
           error: null,
         }));
 
-        const sandboxMode = await runApprovalGate(conversationId);
+        const sandboxMode = queuedMessage.automationRun ? 'read-only' : await runApprovalGate(conversationId);
         if (sandboxMode === null) return;
 
         if (!isTauriRuntime()) {
@@ -436,7 +439,7 @@ export const useChatStore = create<ChatState>()(
           const result = await startCodexChat({
             conversationId,
             prompt: addBackgroundContextToPrompt(
-              trimmed,
+              addThemeAbilityContext(trimmed, userMessage.selectedSkill?.id, get().conversations),
               preparedContext.promptContext,
             ),
             developerInstructions: buildCodingInstructions(
@@ -923,7 +926,6 @@ export const useChatStore = create<ChatState>()(
       sendMessage: async (message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null, coworkers?: CoworkerSelection[] | null) => {
         const text = message.trim();
         const attachmentList = attachments && attachments.length ? attachments : undefined;
-        const coworkerList = coworkers && coworkers.length ? coworkers.map(normalizeCoworkerSelection) : undefined;
         if (!text && !attachmentList) return;
 
         let conversationId = get().currentConversationId;
@@ -931,6 +933,14 @@ export const useChatStore = create<ChatState>()(
         if (!conversationId || !activeIds.has(conversationId)) {
           conversationId = get().createConversation();
         }
+        await get().sendMessageToConversation(conversationId, text, attachmentList, selectedSkill, coworkers);
+      },
+
+      sendMessageToConversation: async (conversationId: string, message: string, attachments?: MessageAttachment[], selectedSkill?: SkillSelection | null, coworkers?: CoworkerSelection[] | null, automationRun = false) => {
+        const text = message.trim();
+        const attachmentList = attachments && attachments.length ? attachments : undefined;
+        const coworkerList = coworkers && coworkers.length ? coworkers.map(normalizeCoworkerSelection) : undefined;
+        if (!text && !attachmentList) return;
         const conversation = get().conversations.find((item) => item.id === conversationId);
         if (!conversation || conversation.archivedAt) return;
 
@@ -941,6 +951,7 @@ export const useChatStore = create<ChatState>()(
           attachments: attachmentList,
           selectedSkill: selectedSkill ? normalizeSelectedSkill(selectedSkill) : undefined,
           coworkers: coworkerList,
+          automationRun,
         };
 
         if (conversation.status === 'streaming') {

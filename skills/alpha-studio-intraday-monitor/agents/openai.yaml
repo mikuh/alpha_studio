@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alpha Studio 盘中监控"
+  short_description: "基于今日研究报告持续检查盘中触发、升级与失效条件变化"
+  default_prompt: "Use $alpha-studio-intraday-monitor to compare live A-share conditions with today's report triggers."

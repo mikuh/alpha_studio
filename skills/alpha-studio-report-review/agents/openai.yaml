@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alpha Studio 日报复盘"
+  short_description: "复盘今日研究报告的预测、触发表现、偏差原因与次日调整"
+  default_prompt: "Use $alpha-studio-report-review to review today's Alpha Studio research report against actual market outcomes."

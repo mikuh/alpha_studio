@@ -11,6 +11,7 @@ import {
   visibleConversations,
 } from './store';
 import type { ChatMessage, Conversation, CoworkerSelection, SkillSelection } from './types';
+import { INTRADAY_MONITOR_CARD_PROMPT } from './themeAbilities';
 
 function textMessage(content = 'hi'): ChatMessage {
   return { id: `msg-${content}`, role: 'user', timestamp: 1, blocks: [{ type: 'text', content }] };
@@ -474,6 +475,30 @@ describe('automation turns', () => {
       prompt: '提醒我喝水。',
       schedule: '每 5 分钟',
       environment: '当前对话',
+      conversationId: 'conv-automation',
+    });
+  });
+
+  it('creates a linked intraday monitor task without sending the setup request to Codex', async () => {
+    await useChatStore.getState().sendMessage(INTRADAY_MONITOR_CARD_PROMPT);
+
+    const state = useChatStore.getState();
+    const current = state.conversations[0];
+    const savedTasks = JSON.parse(window.localStorage.getItem(AUTOMATION_TASKS_KEY) || '[]');
+
+    expect(current.status).toBe('idle');
+    expect(state.pendingAuthorization).toBeNull();
+    expect(current.messages[1].blocks).toEqual([
+      expect.objectContaining({
+        type: 'text',
+        content: expect.stringContaining('Alpha Studio 运行期间会在交易时段自动执行'),
+      }),
+    ]);
+    expect(savedTasks[0]).toMatchObject({
+      title: '盘中触发监控',
+      schedule: '每 10 分钟',
+      kind: 'intraday-monitor',
+      skillId: 'alpha-studio-intraday-monitor',
       conversationId: 'conv-automation',
     });
   });

@@ -249,17 +249,21 @@ function completeTool(conversation: Conversation, now: number, event: CodexChatE
   const target = toolTargetFromEvent(event);
   return updateStreamingAssistant(conversation, now, (message) => {
     const blocks = ensureToolBlock(message.blocks, toolId, event.title || 'tool', target);
+    const imageResult = imageResultFromToolEvent(event, toolId);
+    const fileResult = fileResultFromToolEvent(event, toolId);
+    const hasImageResult = Boolean(imageResult?.images.length);
     const completedBlocks = blocks.map((block) => {
       if (block.type !== 'tool' || block.id !== toolId) return block;
       return {
         ...block,
         status: 'completed' as const,
         target: block.target || target,
-        output: event.text || block.output,
+        // Image generation can return a multi-megabyte data URL nested inside a
+        // generic `wait` result. Keep the image in a dedicated renderable block
+        // instead of duplicating that payload inside the collapsed tool log.
+        output: hasImageResult ? '图片已生成，结果见下方。' : event.text || block.output,
       };
     });
-    const imageResult = imageResultFromToolEvent(event, toolId);
-    const fileResult = fileResultFromToolEvent(event, toolId);
     const resultBlocks: MessageBlock[] = [...completedBlocks];
     if (imageResult && !resultBlocks.some((block) => block.type === 'image_result' && block.id === imageResult.id)) {
       resultBlocks.push(imageResult);
@@ -427,6 +431,20 @@ function appendStatusBlock(conversation: Conversation, now: number, content: str
     if (last?.type === 'error' && last.content === content) {
       return message;
     }
+    if (isReconnectStatusContent(content)) {
+      const firstReconnectIndex = message.blocks.findIndex(
+        (block) => block.type === 'error' && isReconnectStatusContent(block.content),
+      );
+      if (firstReconnectIndex >= 0) {
+        const blocks = message.blocks.filter(
+          (block, index) => index === firstReconnectIndex
+            || block.type !== 'error'
+            || !isReconnectStatusContent(block.content),
+        );
+        blocks[firstReconnectIndex] = { type: 'error', content };
+        return { ...message, blocks };
+      }
+    }
     return {
       ...message,
       blocks: [...message.blocks, { type: 'error', content }],
@@ -434,7 +452,12 @@ function appendStatusBlock(conversation: Conversation, now: number, content: str
   });
 }
 
+function isReconnectStatusContent(content: string): boolean {
+  return /^Reconnecting\.\.\.\s+\d+\/\d+$/i.test(content.trim());
+}
+
 function finishStreaming(conversation: Conversation, now: number): Conversation {
+  const imageGenerationTurn = isImageGenerationTurn(conversation);
   return updateStreamingAssistant(
     {
       ...conversation,
@@ -442,12 +465,33 @@ function finishStreaming(conversation: Conversation, now: number): Conversation 
       runId: undefined,
     },
     now,
-    (message) => ({
-      ...message,
-      isStreaming: false,
-      blocks: message.blocks,
-    }),
+    (message) => {
+      const hasImageResult = message.blocks.some((block) => {
+        if (block.type === 'image_result') return block.images.length > 0;
+        if (block.type === 'file_result') return block.files.some((file) => file.kind === 'image');
+        if (block.type === 'text') return extractImageCandidatesFromText(block.content).length > 0;
+        return false;
+      });
+      const hasMissingResultNotice = message.blocks.some(
+        (block) => block.type === 'error' && block.content.includes('未收到可展示的图片结果'),
+      );
+      return {
+        ...message,
+        isStreaming: false,
+        blocks: imageGenerationTurn && !hasImageResult && !hasMissingResultNotice
+          ? [...message.blocks, { type: 'error', content: '图片生成已结束，但未收到可展示的图片结果。请重试。' }]
+          : message.blocks,
+      };
+    },
   );
+}
+
+function isImageGenerationTurn(conversation: Conversation): boolean {
+  for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
+    const message = conversation.messages[index];
+    if (message.role === 'user') return message.selectedSkill?.id === 'imagegen';
+  }
+  return false;
 }
 
 function updateStreamingAssistant(
@@ -495,13 +539,18 @@ const ABSOLUTE_FILE_PATH_PATTERN = new RegExp('(?:^|[\\s"\'(])((?:~|\\/)[^\\s"\'
 const GENERATED_FILE_HINT_PATTERN = /\b(?:generated|created|saved|wrote|written|exported|output|file|path)\b|(?:生成|已生成|创建|已创建|保存|已保存|输出|文件|保存位置)/i;
 
 function imageResultFromToolEvent(event: CodexChatEvent, toolId: string): ImageResultBlock | null {
-  if (!isImageGenerationTool(event)) return null;
   const candidates = [
     ...extractImageCandidatesFromText(event.text || ''),
+    ...extractImageGenerationCandidates(event.raw),
     ...extractImageCandidatesFromUnknown(event.raw),
   ];
   const unique = uniqueImageCandidates(candidates);
   if (unique.length === 0) return null;
+  // The image tool is invoked through the generic orchestration layer. When it
+  // runs longer than one yield, the final bitmap arrives on a `wait` tool as an
+  // `input_image` data URL, so title-based detection alone drops a valid image.
+  const hasInlineImage = unique.some((candidate) => /^data:image\//i.test(candidate.src));
+  if (!isImageGenerationTool(event) && !hasInlineImage) return null;
   return {
     type: 'image_result',
     id: `${toolId}-result`,
@@ -516,6 +565,47 @@ function imageResultFromToolEvent(event: CodexChatEvent, toolId: string): ImageR
       };
     }),
   };
+}
+
+function extractImageGenerationCandidates(value: unknown): ImageCandidate[] {
+  if (!value || typeof value !== 'object') return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => extractImageGenerationCandidates(item));
+  }
+
+  const record = value as Record<string, unknown>;
+  const type = typeof record.type === 'string'
+    ? record.type.replace(/[\s_-]/g, '').toLowerCase()
+    : '';
+  const candidates: ImageCandidate[] = [];
+  if (type.includes('imagegeneration')) {
+    const savedPath = record.savedPath ?? record.saved_path;
+    const hasSavedImage = typeof savedPath === 'string' && isImageSrc(savedPath);
+    if (hasSavedImage) {
+      candidates.push({ src: savedPath });
+    } else if (typeof record.result === 'string') {
+      const src = imageGenerationResultSrc(record.result);
+      if (src) candidates.push({ src });
+    }
+  }
+
+  for (const entry of Object.values(record)) {
+    if (entry && typeof entry === 'object') {
+      candidates.push(...extractImageGenerationCandidates(entry));
+    }
+  }
+  return candidates;
+}
+
+function imageGenerationResultSrc(result: string): string | null {
+  const trimmed = result.trim();
+  if (!trimmed) return null;
+  if (isImageSrc(trimmed)) return trimmed;
+  if (trimmed.startsWith('iVBORw0KGgo')) return `data:image/png;base64,${trimmed}`;
+  if (trimmed.startsWith('/9j/')) return `data:image/jpeg;base64,${trimmed}`;
+  if (trimmed.startsWith('UklGR')) return `data:image/webp;base64,${trimmed}`;
+  if (trimmed.startsWith('R0lGOD')) return `data:image/gif;base64,${trimmed}`;
+  return null;
 }
 
 function fileResultFromToolEvent(event: CodexChatEvent, toolId: string): FileResultBlock | null {

@@ -1,3 +1,5 @@
+import { INTRADAY_MONITOR_CARD_PROMPT, REPORT_REVIEW_CARD_PROMPT } from './themeAbilities';
+
 export interface DomainPromptPack {
   systemLines: string[];
   responseGuidance: string[];
@@ -5,11 +7,11 @@ export interface DomainPromptPack {
 
 export type WorkModeId = 'finance-research';
 
-export type DomainSuggestionIcon = 'market' | 'research' | 'risk';
+export type DomainSuggestionIcon = 'report' | 'monitor' | 'review';
 
-export type DomainFeatureIcon = 'browser' | 'chat';
+export type DomainFeatureIcon = 'browser';
 
-export type DomainFeatureAction = 'open-url' | 'open-side-chat';
+export type DomainFeatureAction = 'open-url';
 
 export interface DomainNavItem {
   id: string;
@@ -114,22 +116,22 @@ export const financeResearchDomain: DomainConfig = {
     rightPanelTitle: '投研侧栏',
     suggestions: [
       {
-        id: 'market-move',
-        title: '分析市场异动',
-        prompt: '帮我梳理今天市场主要异动、可能驱动因素和需要继续跟踪的信号。',
-        icon: 'market',
+        id: 'daily-report',
+        title: '生成今日报告',
+        prompt: '使用 alpha-studio-daily-theme-research 生成今日的报告',
+        icon: 'report',
       },
       {
-        id: 'company-research',
-        title: '整理公司研究',
-        prompt: '基于我提供的材料，整理一家公司基本面、催化剂、风险和待验证问题。',
-        icon: 'research',
+        id: 'intraday-monitor',
+        title: '盘中监控',
+        prompt: INTRADAY_MONITOR_CARD_PROMPT,
+        icon: 'monitor',
       },
       {
-        id: 'portfolio-risk',
-        title: '评估组合风险',
-        prompt: '帮我复盘一个持仓组合的行业暴露、主要风险和后续观察指标。',
-        icon: 'risk',
+        id: 'evening-review',
+        title: '晚间复盘',
+        prompt: REPORT_REVIEW_CARD_PROMPT,
+        icon: 'review',
       },
     ],
     features: [
@@ -140,14 +142,6 @@ export const financeResearchDomain: DomainConfig = {
         desc: '打开行情、公告或研究资料',
         shortcut: '⌘T',
         action: 'open-url',
-      },
-      {
-        id: 'side-chat',
-        icon: 'chat',
-        title: '侧边聊天',
-        desc: '保留当前上下文继续追问',
-        shortcut: '⌥⌘S',
-        action: 'open-side-chat',
       },
     ],
   },

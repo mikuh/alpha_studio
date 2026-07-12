@@ -3,8 +3,10 @@ import {
   AUTOMATION_TASKS_KEY,
   addScheduledAutomationTask,
   detectAutomationIntent,
+  isScheduledAutomationTaskDue,
   loadScheduledAutomationTasks,
 } from './automation';
+import { INTRADAY_MONITOR_CARD_PROMPT } from './themeAbilities';
 
 describe('automation intent detection', () => {
   beforeEach(() => {
@@ -21,6 +23,37 @@ describe('automation intent detection', () => {
       environment: '当前对话',
       project: '选择项目',
     });
+  });
+
+  it('creates a trading-session monitor task instead of a generic reminder', () => {
+    const intent = detectAutomationIntent(INTRADAY_MONITOR_CARD_PROMPT);
+
+    expect(intent).toMatchObject({
+      title: '盘中触发监控',
+      schedule: '每 10 分钟',
+      environment: '当前对话',
+      kind: 'intraday-monitor',
+      skillId: 'alpha-studio-intraday-monitor',
+      activeWindow: {
+        timezone: 'Asia/Shanghai',
+        weekdays: [1, 2, 3, 4, 5],
+      },
+    });
+    expect(intent?.prompt).toContain('基于今日最新研究报告');
+  });
+
+  it('runs intraday monitors only when their interval is due inside A-share sessions', () => {
+    const input = detectAutomationIntent(INTRADAY_MONITOR_CARD_PROMPT);
+    expect(input).not.toBeNull();
+    const task = addScheduledAutomationTask(input!);
+
+    expect(isScheduledAutomationTaskDue(task, new Date('2026-07-13T01:25:00.000Z'))).toBe(true);
+    expect(isScheduledAutomationTaskDue(task, new Date('2026-07-13T04:00:00.000Z'))).toBe(false);
+    expect(isScheduledAutomationTaskDue(task, new Date('2026-07-12T02:00:00.000Z'))).toBe(false);
+
+    const recentlyRun = { ...task, lastRunAt: new Date('2026-07-13T01:20:00.000Z').getTime() };
+    expect(isScheduledAutomationTaskDue(recentlyRun, new Date('2026-07-13T01:29:00.000Z'))).toBe(false);
+    expect(isScheduledAutomationTaskDue(recentlyRun, new Date('2026-07-13T01:30:00.000Z'))).toBe(true);
   });
 
   it('stores stable model metadata for new tasks', () => {

@@ -9,6 +9,7 @@ import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles, modelProfilesFromCodexC
 import type { CodexModelCatalogItem } from './types';
 import { useChatStore } from './store';
 import type { Conversation } from './types';
+import { INTRADAY_MONITOR_CARD_PROMPT, REPORT_REVIEW_CARD_PROMPT } from './themeAbilities';
 
 const windowMockState = vi.hoisted(() => ({
   fullscreen: false,
@@ -440,7 +441,7 @@ describe('right feature panel', () => {
     expect(featuresPanel).toBeInTheDocument();
     expect(featuresPanel).toHaveAccessibleName('投研侧栏');
     expect(within(featuresPanel).getByRole('button', { name: /浏览器/ })).toBeInTheDocument();
-    expect(within(featuresPanel).getByRole('button', { name: /侧边聊天/ })).toBeInTheDocument();
+    expect(within(featuresPanel).queryByRole('button', { name: /侧边聊天/ })).not.toBeInTheDocument();
     expect(within(featuresPanel).queryByRole('button', { name: /审查/ })).not.toBeInTheDocument();
     expect(within(featuresPanel).queryByRole('button', { name: /^终端$/ })).not.toBeInTheDocument();
     expect(within(featuresPanel).queryByRole('button', { name: /文件/ })).not.toBeInTheDocument();
@@ -453,8 +454,7 @@ describe('right feature panel', () => {
     const { container } = render(<App />);
 
     await user.click(screen.getByLabelText('打开侧边栏'));
-    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(featuresPanel).getByRole('button', { name: /侧边聊天/ }));
+    fireEvent.keyDown(window, { metaKey: true, altKey: true, code: 'KeyS' });
 
     expect(container.querySelector('.app-shell')).not.toHaveClass('right-dock-expanded');
     expect(screen.getByLabelText('展开侧边栏')).toHaveAttribute('aria-pressed', 'false');
@@ -694,15 +694,18 @@ describe('right feature panel', () => {
     expect(composerCard).not.toHaveClass('compact');
     const textbox = within(composerCard).getByRole('textbox');
     const suggestions = [
-      ['分析市场异动', '帮我梳理今天市场主要异动、可能驱动因素和需要继续跟踪的信号。'],
-      ['整理公司研究', '基于我提供的材料，整理一家公司基本面、催化剂、风险和待验证问题。'],
-      ['评估组合风险', '帮我复盘一个持仓组合的行业暴露、主要风险和后续观察指标。'],
+      ['生成今日报告', '使用 alpha-studio-daily-theme-research 生成今日的报告'],
+      ['盘中监控', INTRADAY_MONITOR_CARD_PROMPT],
+      ['晚间复盘', REPORT_REVIEW_CARD_PROMPT],
     ];
 
     for (const [title, prompt] of suggestions) {
       await user.click(screen.getByRole('button', { name: new RegExp(title) }));
       expect(textbox).toHaveValue(prompt);
     }
+    expect(screen.getByRole('button', { name: /生成今日报告/ }).querySelector('.lucide-file-chart-column')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /盘中监控/ }).querySelector('.lucide-activity')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /晚间复盘/ }).querySelector('.lucide-moon-star')).toBeInTheDocument();
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
@@ -855,7 +858,7 @@ describe('right feature panel', () => {
     const tabMenu = container.querySelector('.right-dock-tab-menu') as HTMLElement;
 
     expect(within(tabMenu).getByRole('button', { name: /浏览器/ })).toBeInTheDocument();
-    expect(within(tabMenu).getByRole('button', { name: /侧边聊天/ })).toBeInTheDocument();
+    expect(within(tabMenu).queryByRole('button', { name: /侧边聊天/ })).not.toBeInTheDocument();
     expect(within(tabMenu).queryByRole('button', { name: /审查/ })).not.toBeInTheDocument();
     expect(within(tabMenu).queryByRole('button', { name: /^终端$/ })).not.toBeInTheDocument();
     expect(within(tabMenu).queryByRole('button', { name: /文件/ })).not.toBeInTheDocument();
@@ -911,9 +914,9 @@ describe('right feature panel', () => {
     expect(container.querySelector('.top-bar')).not.toBeInTheDocument();
     expect(automationPage.querySelector('.automation-drag-strip')).toHaveAttribute('data-tauri-drag-region');
     expect(screen.queryByRole('dialog', { name: '设置' })).not.toBeInTheDocument();
-    expect(within(automationPage).getByRole('heading', { name: '已安排' })).toBeInTheDocument();
-    expect(within(automationPage).getByRole('tab', { name: 'Tasks' })).toHaveAttribute('aria-selected', 'true');
-    expect(within(automationPage).getByRole('button', { name: '手动创建' })).toBeInTheDocument();
+    expect(within(automationPage).getByRole('heading', { name: '已安排的任务' })).toBeInTheDocument();
+    expect(within(automationPage).getByRole('tab', { name: '已安排' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(automationPage).getByRole('button', { name: '创建计划任务' })).toBeInTheDocument();
     expect(within(automationPage).getByText('创建首个已安排任务')).toBeInTheDocument();
   });
 
@@ -923,14 +926,49 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByRole('button', { name: '自动化' }));
     const automationPage = container.querySelector('.automation-page') as HTMLElement;
-    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+    await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
 
     const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
     expect(within(editor).getByPlaceholderText('已安排任务标题')).toBeInTheDocument();
-    expect(within(editor).getByPlaceholderText('添加提示词，例如：在 $sentry 中查找崩溃')).toBeInTheDocument();
-    expect(within(editor).getByLabelText('运行环境')).toHaveValue('工作树');
-    expect(within(editor).getByLabelText('重复次数')).toHaveValue('每天 9:00');
+    expect(within(editor).getByPlaceholderText('描述 Codex 应该做什么')).toBeInTheDocument();
+    expect(within(editor).getByLabelText('运行于')).toHaveValue('工作树');
+    expect(within(editor).getByLabelText('重复')).toHaveValue('daily');
+    expect(within(editor).getByLabelText('时间')).toHaveTextContent('9:00');
     expect(within(editor).getByLabelText('模型')).toHaveValue('gpt-5.5');
+  });
+
+  it('uses a compact keyboard-friendly time picker for automation schedules', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const automationPage = container.querySelector('.automation-page') as HTMLElement;
+    await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
+
+    const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
+    const timeTrigger = within(editor).getByRole('button', { name: '时间' });
+    expect(timeTrigger).toHaveAttribute('aria-expanded', 'false');
+    expect(timeTrigger).toHaveTextContent('9:00');
+
+    await user.click(timeTrigger);
+    let timePicker = within(editor).getByRole('dialog', { name: '选择时间' });
+    expect(timeTrigger).toHaveAttribute('aria-expanded', 'true');
+    expect(within(timePicker).getByRole('button', { name: '9 时' })).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(within(timePicker).getByRole('button', { name: '14 时' }));
+    expect(timeTrigger).toHaveTextContent('14:00');
+    timePicker = within(editor).getByRole('dialog', { name: '选择时间' });
+    await user.click(within(timePicker).getByRole('button', { name: '30 分' }));
+
+    expect(within(editor).queryByRole('dialog', { name: '选择时间' })).not.toBeInTheDocument();
+    expect(timeTrigger).toHaveTextContent('14:30');
+    await user.keyboard('{ArrowUp}');
+    expect(timeTrigger).toHaveTextContent('14:45');
+
+    await user.click(timeTrigger);
+    expect(within(editor).getByRole('dialog', { name: '选择时间' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(within(editor).queryByRole('dialog', { name: '选择时间' })).not.toBeInTheDocument();
   });
 
   it('does not show the left sidebar collapse button in the automation page', async () => {
@@ -939,7 +977,7 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByRole('button', { name: '自动化' }));
     const automationPage = container.querySelector('.automation-page') as HTMLElement;
-    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+    await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
 
     expect(within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' })).toBeInTheDocument();
     expect(within(automationPage).queryByLabelText('收起侧栏')).not.toBeInTheDocument();
@@ -966,20 +1004,26 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByRole('button', { name: '自动化' }));
     const automationPage = container.querySelector('.automation-page') as HTMLElement;
-    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+    await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
 
     const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
-    const scheduleSelect = within(editor).getByLabelText('重复次数') as HTMLSelectElement;
-    expect(Array.from(scheduleSelect.options).map((option) => option.value)).toEqual(expect.arrayContaining([
-      '每 6 小时',
-      '每月最后一天 18:00',
-      '每季度第一个工作日 9:00',
-      '自定义',
-    ]));
+    const repeatSelect = within(editor).getByLabelText('重复') as HTMLSelectElement;
+    expect(Array.from(repeatSelect.options).map((option) => option.value)).toEqual([
+      'daily',
+      'weekdays',
+      'weekly',
+      'monthly',
+      'interval',
+      'custom',
+    ]);
 
-    await user.selectOptions(scheduleSelect, '自定义');
+    await user.selectOptions(repeatSelect, 'weekly');
+    expect(within(editor).getByLabelText('星期')).toHaveValue('五');
+    expect(within(editor).getByLabelText('时间')).toHaveTextContent('9:00');
+
+    await user.selectOptions(repeatSelect, 'custom');
     const customSchedule = within(editor).getByLabelText('自定义重复规则');
-    expect(scheduleSelect).toHaveValue('自定义');
+    expect(repeatSelect).toHaveValue('custom');
     expect(customSchedule).toHaveValue('Cron: 0 9 * * *');
     await user.clear(customSchedule);
     await user.type(customSchedule, '每 2 天 9:00');
@@ -998,7 +1042,7 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByRole('button', { name: '自动化' }));
     const automationPage = container.querySelector('.automation-page') as HTMLElement;
-    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+    await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
 
     const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
     const modelSelect = within(editor).getByLabelText('模型') as HTMLSelectElement;
@@ -1018,10 +1062,10 @@ describe('right feature panel', () => {
     const { container } = render(<App />);
     await user.click(screen.getByRole('button', { name: '自动化' }));
     const page = container.querySelector('.automation-page') as HTMLElement;
-    await user.click(within(page).getByRole('button', { name: '手动创建' }));
+    await user.click(within(page).getByRole('button', { name: '创建计划任务' }));
     const editor = within(page).getByRole('complementary', { name: '手动创建自动化任务' });
     const model = within(editor).getByLabelText('模型') as HTMLSelectElement;
-    const effort = within(editor).getByLabelText('推理强度') as HTMLSelectElement;
+    const effort = within(editor).getByLabelText('推理') as HTMLSelectElement;
     expect(Array.from(model.options).map((option) => option.value)).toEqual(expect.arrayContaining(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']));
     await user.selectOptions(model, 'gpt-5.6-sol');
     expect(Array.from(effort.options).map((option) => option.value)).toEqual(expect.arrayContaining(['high', 'max', 'ultra']));
@@ -1052,13 +1096,14 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByRole('button', { name: '自动化' }));
     const automationPage = container.querySelector('.automation-page') as HTMLElement;
-    await user.click(within(automationPage).getByRole('tab', { name: 'Templates' }));
+    await user.click(within(automationPage).getByRole('tab', { name: '模板' }));
     await user.click(within(automationPage).getByRole('button', { name: /CI 失败总结/ }));
 
     const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
     expect(within(editor).getByLabelText('已安排任务标题')).toHaveValue('CI 失败总结');
     expect(within(editor).getByLabelText('提示词')).toHaveValue('总结上一个 CI 窗口中的失败和不稳定测试，并给出首要修复建议。');
-    expect(within(editor).getByLabelText('重复次数')).toHaveValue('每天 21:00');
+    expect(within(editor).getByLabelText('重复')).toHaveValue('daily');
+    expect(within(editor).getByLabelText('时间')).toHaveTextContent('21:00');
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
@@ -1068,12 +1113,12 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByRole('button', { name: '自动化' }));
     const automationPage = container.querySelector('.automation-page') as HTMLElement;
-    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+    await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
     const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
 
     await user.type(within(editor).getByLabelText('已安排任务标题'), '每日 Neostream 题材研究日报');
     await user.type(within(editor).getByLabelText('提示词'), '汇总 Neostream 每日题材研究，并突出异常波动。');
-    await user.click(within(editor).getByRole('button', { name: '创建任务' }));
+    await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
 
     expect(within(automationPage).getByRole('heading', { name: '当前' })).toBeInTheDocument();
     expect(within(automationPage).getByRole('button', { name: /每日 Neostream 题材研究日报/ })).toBeInTheDocument();
@@ -1088,12 +1133,12 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByRole('button', { name: '自动化' }));
     let automationPage = container.querySelector('.automation-page') as HTMLElement;
-    await user.click(within(automationPage).getByRole('button', { name: '手动创建' }));
+    await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
     let editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
 
     await user.type(within(editor).getByLabelText('已安排任务标题'), '每日 Neostream 题材研究日报');
     await user.type(within(editor).getByLabelText('提示词'), '汇总 Neostream 每日题材研究，并突出异常波动。');
-    await user.click(within(editor).getByRole('button', { name: '创建任务' }));
+    await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
 
     let taskRow = within(automationPage)
       .getByRole('button', { name: /每日 Neostream 题材研究日报/ })
@@ -1117,7 +1162,7 @@ describe('right feature panel', () => {
     editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
     await user.clear(within(editor).getByLabelText('已安排任务标题'));
     await user.type(within(editor).getByLabelText('已安排任务标题'), '更新后的任务');
-    await user.click(within(editor).getByRole('button', { name: '保存任务' }));
+    await user.click(within(automationPage).getByRole('button', { name: '保存任务' }));
 
     expect(within(automationPage).getByRole('button', { name: /更新后的任务/ })).toBeInTheDocument();
 
@@ -2179,15 +2224,10 @@ describe('right feature panel', () => {
     expect(container.querySelector('.workspace > .terminal-panel')).not.toBeInTheDocument();
   });
 
-  it('opens side chat as its own Codex-style right dock tab', async () => {
-    const user = userEvent.setup();
+  it('opens side chat as its own Codex-style right dock tab from the keyboard shortcut', async () => {
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const launcher = container.querySelector('.features-panel') as HTMLElement;
-    expect(launcher).toBeInTheDocument();
-
-    await user.click(within(launcher).getByRole('button', { name: /侧边聊天/ }));
+    fireEvent.keyDown(window, { metaKey: true, altKey: true, code: 'KeyS' });
 
     const sideChat = container.querySelector('.side-chat-panel') as HTMLElement;
     expect(sideChat).toBeInTheDocument();
@@ -2215,10 +2255,35 @@ describe('right feature panel', () => {
     const tabMenu = container.querySelector('.right-dock-tab-menu') as HTMLElement;
     expect(tabMenu).toBeInTheDocument();
     expect(within(tabMenu).getByRole('button', { name: /浏览器/ })).toBeInTheDocument();
-    expect(within(tabMenu).getByRole('button', { name: /侧边聊天/ })).toBeInTheDocument();
+    expect(within(tabMenu).queryByRole('button', { name: /侧边聊天/ })).not.toBeInTheDocument();
     expect(within(tabMenu).queryByRole('button', { name: /审查/ })).not.toBeInTheDocument();
     expect(within(tabMenu).queryByRole('button', { name: /^终端$/ })).not.toBeInTheDocument();
     expect(within(tabMenu).queryByRole('button', { name: /文件/ })).not.toBeInTheDocument();
+  });
+
+  it('restores a wide right sidebar beyond the former 620px limit', async () => {
+    window.localStorage.setItem('alpha:right-sidebar-width', '1040');
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+
+    const shell = container.querySelector('.app-shell') as HTMLElement;
+    expect(shell.style.getPropertyValue('--right-sidebar-width')).toBe('1040px');
+    expect(shell.style.getPropertyValue('--right-panel-main-min-width')).toBe('360px');
+
+    const row = container.querySelector('.workspace-row') as HTMLElement;
+    const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
+    const resizer = container.querySelector('.right-panel-resizer') as HTMLElement;
+    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({ width: 1500 } as DOMRect);
+    vi.spyOn(dock, 'getBoundingClientRect').mockReturnValue({ width: 1040 } as DOMRect);
+    Object.defineProperty(resizer, 'setPointerCapture', { value: vi.fn(), configurable: true });
+
+    fireEvent.pointerDown(resizer, { clientX: 1050, pointerId: 1 });
+    fireEvent.pointerMove(resizer, { clientX: 1010, pointerId: 1 });
+    fireEvent.pointerUp(resizer, { pointerId: 1 });
+
+    expect(shell.style.getPropertyValue('--right-sidebar-width')).toBe('1080px');
   });
 
   it('expands and restores the right dock from the tab bar action', async () => {
@@ -2411,9 +2476,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const launcher = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(launcher).getByRole('button', { name: /侧边聊天/ }));
+    fireEvent.keyDown(window, { metaKey: true, altKey: true, code: 'KeyS' });
 
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     const sideChat = container.querySelector('.side-chat-panel') as HTMLElement;
@@ -2434,9 +2497,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const launcher = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(launcher).getByRole('button', { name: /侧边聊天/ }));
+    fireEvent.keyDown(window, { metaKey: true, altKey: true, code: 'KeyS' });
 
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     expect(within(dock).getByRole('tab', { name: '侧边聊天' })).toBeInTheDocument();
@@ -2468,6 +2529,15 @@ describe('right feature panel', () => {
     expect(css).toContain('.browser-address-field:hover .browser-external-open:not(:disabled),');
     expect(css).toContain('.browser-address-field:focus-within .browser-external-open:not(:disabled),');
     expect(css).toMatch(/\.browser-address-field:hover\s+\.browser-external-open:not\(:disabled\),\s*\.browser-address-field:focus-within\s+\.browser-external-open:not\(:disabled\),\s*\.browser-external-open:focus-visible:not\(:disabled\)\s*{[^}]*opacity:\s*0\.72;[^}]*pointer-events:\s*auto;/s);
+  });
+
+  it('adapts the conversation composer to the width left by a wide right dock', () => {
+    const cssPath = `${process.cwd()}/src/styles.css`;
+    const css = readFileSync(cssPath, 'utf8');
+
+    expect(css).toMatch(/\.right-dock-workspace\s*{[^}]*width:\s*min\(\s*var\(--right-sidebar-width, 416px\),\s*calc\(100% - var\(--right-panel-main-min-width, 360px\)\)\s*\);/s);
+    expect(css).toMatch(/\.main-stage\s*{[^}]*container-name:\s*main-stage;[^}]*container-type:\s*inline-size;/s);
+    expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.composer-toolbar\s*{[^}]*flex-wrap:\s*nowrap;[\s\S]*?\.context-window-indicator > span\s*{[^}]*display:\s*none;/s);
   });
 
   it('keeps panel actions fixed while environment actions move beside an open right dock', () => {

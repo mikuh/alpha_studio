@@ -18,6 +18,7 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import {
+  Activity,
   AlertCircle,
   AlertTriangle,
   AppWindow,
@@ -47,6 +48,7 @@ import {
   EyeOff,
   ExternalLink,
   File,
+  FileChartColumn,
   FileCode2,
   FileDiff,
   FileSpreadsheet,
@@ -81,6 +83,7 @@ import {
   Minus,
   Monitor,
   Moon,
+  MoonStar,
   MoreHorizontal,
   Network,
   PanelBottom,
@@ -172,7 +175,6 @@ import {
 } from './coworkers';
 import {
   AUTOMATION_ENVIRONMENT_OPTIONS,
-  AUTOMATION_SCHEDULE_OPTIONS,
   AUTOMATION_TASKS_CHANGED_EVENT,
   CUSTOM_AUTOMATION_SCHEDULE_VALUE,
   automationTitleFromPrompt,
@@ -183,6 +185,7 @@ import {
   type AutomationFormState,
   type ScheduledAutomationTask,
 } from './automation';
+import { useAutomationScheduler } from './automationScheduler';
 import { loadLocalStoreSnapshot } from './localStore';
 import { activeDomain, type DomainConfig, type DomainSuggestion } from './domain';
 import {
@@ -244,6 +247,12 @@ import {
   ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
   ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE,
 } from './themeResearch';
+import {
+  ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
+  ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_TITLE,
+  ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID,
+  ALPHA_STUDIO_REPORT_REVIEW_SKILL_TITLE,
+} from './themeAbilities';
 import type {
   ChatMessage,
   Conversation,
@@ -313,7 +322,10 @@ const SIDEBAR_MIN_WIDTH = 244;
 const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 300;
 const RIGHT_SIDEBAR_MIN_WIDTH = 320;
-const RIGHT_SIDEBAR_MAX_WIDTH = 620;
+// The dock may take over most of a wide window (for example when reading a
+// browser page). RightPanelResizer still preserves RIGHT_PANEL_MIN_MAIN_WIDTH
+// for the conversation column, so this is only a generous absolute ceiling.
+const RIGHT_SIDEBAR_MAX_WIDTH = 2400;
 const RIGHT_SIDEBAR_DEFAULT_WIDTH = 416;
 const GIT_PANEL_MIN_WIDTH = 360;
 const GIT_PANEL_MAX_WIDTH = 760;
@@ -331,7 +343,7 @@ const RIGHT_DOCK_META: Record<RightDockKind, { label: string; shortcut?: string 
   'side-chat': { label: '侧边聊天', shortcut: '⌥⌘S' },
   'research-workbench': { label: '投研工作台' },
 };
-const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['research-workbench', 'browser', 'side-chat'];
+const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['research-workbench', 'browser'];
 
 type SkillCategory = 'personal' | 'system' | 'recommended';
 type SkillCategoryFilter = SkillCategory | 'all';
@@ -351,7 +363,9 @@ type SkillIcon =
   | 'slack'
   | 'database'
   | 'cloud'
-  | 'chart';
+  | 'chart'
+  | 'monitor'
+  | 'review';
 
 interface SkillDetailSection {
   title?: string;
@@ -429,6 +443,32 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     detail: detail(
       '生成 Alpha Studio Research 风格的 A 股盘前主题跟踪、盘中更新和收盘复盘报告，规则与 neostream-daily-theme-research 保持一致。',
       '默认正式日报必须包含今日执行闸门、今日资金进攻路径、隔夜全球线索、连续跟踪、持有复核、角色矩阵、来源与风险提示；可从 Composer 的技能菜单发起结构化 JSON 和完整 Markdown/HTML 报告生成。',
+    ),
+  },
+  {
+    id: ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
+    title: ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_TITLE,
+    description: '基于今日研究报告持续检查盘中触发、升级、降级与失效条件。',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'monitor',
+    detail: detail(
+      '将今日已生成的报告作为不可改写的基线，对照实时行情检查触发、升级、降级和失效条件。',
+      '搭配 Alpha Studio 自动化任务可在 A 股交易时段每隔数分钟运行，输出只聚焦相对上一次监控的状态变化。',
+    ),
+  },
+  {
+    id: ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID,
+    title: ALPHA_STUDIO_REPORT_REVIEW_SKILL_TITLE,
+    description: '将今日研究报告与实际行情、盘中监控结果对照，完成偏差归因与次日调整。',
+    category: 'personal',
+    source: '个人',
+    installed: true,
+    icon: 'review',
+    detail: detail(
+      '复盘当日报告的主路径、备选路径、题材概率、触发条件和标的角色判断，严格区分事前假设与事后信息。',
+      '输出命中/误判审计、偏差归因、应保留或修改的规则，以及次一交易日交接条件。',
     ),
   },
   {
@@ -639,47 +679,51 @@ interface AutomationSelectGroup {
 type AutomationSelectEntry = string | AutomationSelectOption | AutomationSelectGroup;
 
 const CUSTOM_AUTOMATION_SCHEDULE_DEFAULT = 'Cron: 0 9 * * *';
-const AUTOMATION_SCHEDULE_OPTION_GROUPS: readonly AutomationSelectGroup[] = [
-  {
-    label: '分钟 / 小时',
-    options: automationSelectOptions([
-      '每 5 分钟',
-      '每 10 分钟',
-      '每 15 分钟',
-      '每 30 分钟',
-      '每小时',
-      '每 2 小时',
-      '每 3 小时',
-      '每 6 小时',
-      '每 12 小时',
-    ]),
-  },
-  {
-    label: '每天',
-    options: automationSelectOptions(['每天 8:00', '每天 9:00', '每天 12:00', '每天 18:00', '每天 21:00']),
-  },
-  {
-    label: '工作日',
-    options: automationSelectOptions(['每个工作日 9:00', '每个工作日 10:00', '每个工作日 18:00']),
-  },
-  {
-    label: '每周',
-    options: automationSelectOptions(['每周一 9:00', '每周三 14:00', '每周五 9:00', '每周五 17:30', '每周日 20:00']),
-  },
-  {
-    label: '每月 / 更长周期',
-    options: automationSelectOptions([
-      '每月 1 日 9:00',
-      '每月 15 日 9:00',
-      '每月最后一天 18:00',
-      '每季度第一个工作日 9:00',
-      '每年 1 月 1 日 9:00',
-    ]),
-  },
-  {
-    label: '自定义',
-    options: automationSelectOptions([CUSTOM_AUTOMATION_SCHEDULE_VALUE]),
-  },
+type AutomationRepeatMode = 'daily' | 'weekdays' | 'weekly' | 'monthly' | 'interval' | 'custom';
+type AutomationIntervalUnit = '分钟' | '小时' | '天' | '周' | '个月';
+
+interface AutomationScheduleParts {
+  repeat: AutomationRepeatMode;
+  time: string;
+  weekday: string;
+  monthDay: string;
+  intervalCount: string;
+  intervalUnit: AutomationIntervalUnit;
+  customValue: string;
+}
+
+const AUTOMATION_REPEAT_OPTIONS: readonly AutomationSelectOption[] = [
+  { value: 'daily', label: '每天' },
+  { value: 'weekdays', label: '工作日' },
+  { value: 'weekly', label: '每周' },
+  { value: 'monthly', label: '每月' },
+  { value: 'interval', label: '按间隔' },
+  { value: 'custom', label: '自定义' },
+];
+const AUTOMATION_WEEKDAY_OPTIONS: readonly AutomationSelectOption[] = [
+  { value: '一', label: '星期一' },
+  { value: '二', label: '星期二' },
+  { value: '三', label: '星期三' },
+  { value: '四', label: '星期四' },
+  { value: '五', label: '星期五' },
+  { value: '六', label: '星期六' },
+  { value: '日', label: '星期日' },
+];
+const AUTOMATION_MONTH_DAY_OPTIONS: readonly AutomationSelectOption[] = [
+  ...Array.from({ length: 31 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} 日` })),
+  { value: 'last', label: '最后一天' },
+];
+const AUTOMATION_INTERVAL_UNIT_OPTIONS: readonly AutomationSelectOption[] = [
+  { value: '分钟', label: '分钟' },
+  { value: '小时', label: '小时' },
+  { value: '天', label: '天' },
+  { value: '周', label: '周' },
+  { value: '个月', label: '个月' },
+];
+const AUTOMATION_ENVIRONMENT_SELECT_OPTIONS: readonly AutomationSelectOption[] = [
+  { value: '工作树', label: '新任务' },
+  { value: '当前对话', label: '当前对话' },
+  { value: '无代码环境', label: '无代码环境' },
 ];
 
 const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
@@ -1068,6 +1112,7 @@ function AppWorkspace() {
   const setCurrentConversation = useChatStore((state) => state.setCurrentConversation);
   const workModeId = useChatStore((state) => state.workModeId);
   const domain = activeDomain(workModeId);
+  useAutomationScheduler();
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -1487,6 +1532,7 @@ function AppWorkspace() {
               {
                 ['--sidebar-width']: `${sidebarWidth}px`,
                 ['--right-sidebar-width']: `${rightSidebarWidth}px`,
+                ['--right-panel-main-min-width']: `${RIGHT_PANEL_MIN_MAIN_WIDTH}px`,
                 ['--git-panel-width']: `${gitPanelWidth}px`,
                 ['--review-panel-width']: `${reviewPanelWidth}px`,
               } as CSSProperties
@@ -1564,7 +1610,6 @@ function AppWorkspace() {
                 expanded={rightDockExpanded}
                 onToggleExpanded={() => setRightDockExpanded((expanded) => !expanded)}
                 onOpenBrowser={() => addRightDockTab('browser')}
-                onOpenSideChat={() => addRightDockTab('side-chat')}
                 onOpenResearchWorkbench={() => addRightDockTab('research-workbench')}
                 onCloseGit={() => {
                   setRightDockExpanded(false);
@@ -1755,7 +1800,7 @@ function RightPanelResizer({
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     const row = event.currentTarget.closest('.workspace-row') as HTMLElement | null;
-    const panel = row?.querySelector('.right-dock-panel') as HTMLElement | null;
+    const panel = row?.querySelector('.right-dock-workspace') as HTMLElement | null;
     drag.current = {
       x: event.clientX,
       w: panel?.getBoundingClientRect().width || defaultWidth,
@@ -3660,7 +3705,6 @@ function RightDockWorkspace({
   expanded,
   onToggleExpanded,
   onOpenBrowser,
-  onOpenSideChat,
   onOpenResearchWorkbench,
   onCloseGit,
 }: {
@@ -3676,7 +3720,6 @@ function RightDockWorkspace({
   expanded: boolean;
   onToggleExpanded: () => void;
   onOpenBrowser: () => void;
-  onOpenSideChat: () => void;
   onOpenResearchWorkbench: () => void;
   onCloseGit: () => void;
 }) {
@@ -3718,7 +3761,6 @@ function RightDockWorkspace({
         <FeaturesPanel
           domain={domain}
           onOpenBrowser={onOpenBrowser}
-          onOpenSideChat={onOpenSideChat}
           onOpenResearchWorkbench={onOpenResearchWorkbench}
         />
       )}
@@ -3834,12 +3876,10 @@ function RightDockTabBar({
 function FeaturesPanel({
   domain,
   onOpenBrowser,
-  onOpenSideChat,
   onOpenResearchWorkbench,
 }: {
   domain: DomainConfig;
   onOpenBrowser: () => void;
-  onOpenSideChat: () => void;
   onOpenResearchWorkbench: () => void;
 }) {
   const featureActions: Array<{
@@ -3866,14 +3906,6 @@ function FeaturesPanel({
       shortcut: '⌘T',
       title: '打开行情、公告或研究资料',
       onClick: onOpenBrowser,
-    },
-    {
-      id: 'side-chat',
-      label: '侧边聊天',
-      icon: <MessageSquare size={14} />,
-      shortcut: '⌥⌘S',
-      title: '打开侧边聊天',
-      onClick: onOpenSideChat,
     },
   ];
 
@@ -4589,6 +4621,11 @@ function AutomationsPage({
       model: task.model,
       modelProfileId: task.modelProfileId,
       reasoningEffort: task.reasoningEffort,
+      kind: task.kind,
+      skillId: task.skillId,
+      skillTitle: task.skillTitle,
+      activeWindow: task.activeWindow,
+      lastRunAt: task.lastRunAt,
     });
     setEditorOpen(true);
   };
@@ -4625,7 +4662,16 @@ function AutomationsPage({
     const availableProfiles = visibleModelProfilesForCodexStatus(state.modelProfiles.filter((profile) => profile.enabled), state.codexStatus, state.clientLicenseSession);
     const selection = resolveAutomationSelection(task, availableProfiles, state.selectedModelProfileId, state.reasoningEffort);
     state.setModelSelection(selection.profile.id, selection.reasoningEffort);
-    void sendMessage(automationRunPrompt(task, selection.profile.label, selection.profile.supportsReasoningEffort ? selection.reasoningEffort : undefined));
+    const runPrompt = automationRunPrompt(
+      task,
+      selection.profile.label,
+      selection.profile.supportsReasoningEffort ? selection.reasoningEffort : undefined,
+    );
+    if (task.skillId) {
+      void sendMessage(runPrompt, undefined, { id: task.skillId, title: task.skillTitle || task.skillId });
+    } else {
+      void sendMessage(runPrompt);
+    }
   };
 
   const deleteTask = (taskId: string) => {
@@ -4673,14 +4719,27 @@ function AutomationsPage({
         <div className="automation-topbar-start">
           <CollapsedSidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
           <div className="automation-tabs" role="tablist" aria-label="自动化">
-            <button type="button" role="tab" aria-selected={tab === 'tasks'} className={tab === 'tasks' ? 'active' : ''} onClick={() => { setTab('tasks'); setQuery(''); }}>Tasks</button>
-            <button type="button" role="tab" aria-selected={tab === 'templates'} className={tab === 'templates' ? 'active' : ''} onClick={() => { setTab('templates'); setQuery(''); }}>Templates</button>
+            <button type="button" role="tab" aria-selected={tab === 'tasks'} className={tab === 'tasks' ? 'active' : ''} onClick={() => { setTab('tasks'); setQuery(''); }}>已安排</button>
+            <button type="button" role="tab" aria-selected={tab === 'templates'} className={tab === 'templates' ? 'active' : ''} onClick={() => { setTab('templates'); setQuery(''); }}>模板</button>
           </div>
         </div>
-        <button type="button" className={`automation-create-btn ${editorOpen && !selectedTaskId ? 'active' : ''}`} onClick={() => openManualEditor()}>
-          <span>手动创建</span>
-          <ChevronDown size={14} />
-        </button>
+        <div className="automation-topbar-end">
+          <button
+            type={editorOpen ? 'submit' : 'button'}
+            form={editorOpen ? 'automation-editor-form' : undefined}
+            className={`automation-create-btn ${editorOpen && !selectedTaskId ? 'active' : ''}`}
+            disabled={editorOpen && !form.prompt.trim()}
+            onClick={editorOpen ? undefined : () => openManualEditor()}
+          >
+            <span>{selectedTaskId ? '保存任务' : '创建计划任务'}</span>
+            <ChevronDown size={14} />
+          </button>
+          {editorOpen && (
+            <button type="button" className="automation-editor-close" aria-label="关闭创建任务" onClick={() => setEditorOpen(false)}>
+              <X size={15} />
+            </button>
+          )}
+        </div>
       </div>
       <div className="automation-layout">
         <div className="automation-shell">
@@ -4688,7 +4747,7 @@ function AutomationsPage({
             <div className="automation-view">
               <header className="automation-head">
                 <div>
-                  <h1>已安排</h1>
+                  <h1>已安排的任务</h1>
                   <div className="automation-subtitle">
                     <span>管理周期性任务、提醒和监控</span>
                     <button type="button" onClick={() => { setTab('templates'); setQuery(''); }}>了解更多</button>
@@ -4709,10 +4768,10 @@ function AutomationsPage({
                           <span className="automation-task-status" aria-hidden="true" />
                           <span className="automation-task-copy">
                             <strong>{task.title}</strong>
-                            <span>Next run 待安排 · {task.schedule}</span>
+                            <span>{task.kind === 'intraday-monitor' ? '交易时段自动运行' : 'Next run 待安排'} · {task.schedule}</span>
                           </span>
                         </button>
-                        <span className="automation-task-meta">{task.project === '选择项目' ? '手动创建' : task.project}</span>
+                        <span className="automation-task-meta">{task.kind === 'intraday-monitor' ? '盘中监控' : task.project === '选择项目' ? '手动创建' : task.project}</span>
                         <span className="automation-task-actions" aria-label="任务操作">
                           <button type="button" className="automation-task-action" aria-label="立即执行" title="立即执行" onClick={() => runTaskNow(task)}>
                             <Play size={14} />
@@ -4746,8 +4805,8 @@ function AutomationsPage({
             <div className="automation-view">
               <header className="automation-head templates">
                 <div>
-                  <h1>Templates</h1>
-                  <p>Start with a scheduled task template</p>
+                  <h1>任务模板</h1>
+                  <p>从预设开始创建计划任务</p>
                 </div>
                 <label className="automation-search">
                   <Search size={15} />
@@ -4787,7 +4846,6 @@ function AutomationsPage({
             projectOptions={projectOptions}
             selectedTaskId={selectedTaskId}
             titleInputRef={titleInputRef}
-            onCancel={() => setEditorOpen(false)}
             onChange={updateForm}
             onModelChange={(id) => { const profile = visibleAutomationProfiles.find((item) => item.id === id); if (profile) setForm((current) => ({ ...current, model: profile.label, modelProfileId: profile.id, reasoningEffort: resolveReasoningEffortForProfile(profile, current.reasoningEffort ?? currentReasoningEffort) })); }}
             onEffortChange={(effort) => updateForm('reasoningEffort', effort)}
@@ -4816,10 +4874,6 @@ function normalizeAutomationSchedule(schedule: string): string {
   return schedule.replace('星期五', '每周五').replace('09:00', '9:00');
 }
 
-function automationSelectOptions(values: readonly string[]): AutomationSelectOption[] {
-  return values.map((value) => ({ value, label: value }));
-}
-
 function isAutomationSelectGroup(option: AutomationSelectEntry): option is AutomationSelectGroup {
   return typeof option === 'object' && 'options' in option;
 }
@@ -4830,8 +4884,76 @@ function renderAutomationSelectOption(option: string | AutomationSelectOption): 
   return <option key={value} value={value}>{label}</option>;
 }
 
-function isCustomAutomationSchedule(schedule: string): boolean {
-  return schedule === CUSTOM_AUTOMATION_SCHEDULE_VALUE || !AUTOMATION_SCHEDULE_OPTIONS.some((option) => option === schedule);
+function normalizeAutomationTime(time: string | undefined): string {
+  const match = time?.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return '9:00';
+  return `${Number.parseInt(match[1], 10)}:${match[2]}`;
+}
+
+function parseAutomationSchedule(schedule: string): AutomationScheduleParts {
+  const value = schedule.trim();
+  const defaults: AutomationScheduleParts = {
+    repeat: 'daily',
+    time: '9:00',
+    weekday: '五',
+    monthDay: '1',
+    intervalCount: '30',
+    intervalUnit: '分钟',
+    customValue: CUSTOM_AUTOMATION_SCHEDULE_DEFAULT,
+  };
+
+  if (!value) return { ...defaults, repeat: 'custom', customValue: '' };
+
+  let match = value.match(/^每天\s+(\d{1,2}:\d{2})$/);
+  if (match) return { ...defaults, repeat: 'daily', time: normalizeAutomationTime(match[1]) };
+
+  match = value.match(/^每个工作日\s+(\d{1,2}:\d{2})$/);
+  if (match) return { ...defaults, repeat: 'weekdays', time: normalizeAutomationTime(match[1]) };
+
+  match = value.match(/^每周([一二三四五六日天])\s+(\d{1,2}:\d{2})$/);
+  if (match) return { ...defaults, repeat: 'weekly', weekday: match[1] === '天' ? '日' : match[1], time: normalizeAutomationTime(match[2]) };
+
+  match = value.match(/^每月\s+(最后一天|\d+\s*日)\s+(\d{1,2}:\d{2})$/);
+  if (match) {
+    return {
+      ...defaults,
+      repeat: 'monthly',
+      monthDay: match[1] === '最后一天' ? 'last' : match[1].replace(/\s*日$/, ''),
+      time: normalizeAutomationTime(match[2]),
+    };
+  }
+
+  if (value === '每小时') return { ...defaults, repeat: 'interval', intervalCount: '1', intervalUnit: '小时' };
+  match = value.match(/^每\s*(\d+)\s*(分钟|小时|天|周|个月)(?:\s+(\d{1,2}:\d{2}))?$/);
+  if (match) {
+    return {
+      ...defaults,
+      repeat: 'interval',
+      intervalCount: match[1],
+      intervalUnit: match[2] as AutomationIntervalUnit,
+      time: normalizeAutomationTime(match[3]),
+    };
+  }
+
+  return { ...defaults, repeat: 'custom', customValue: value === CUSTOM_AUTOMATION_SCHEDULE_VALUE ? CUSTOM_AUTOMATION_SCHEDULE_DEFAULT : value || CUSTOM_AUTOMATION_SCHEDULE_DEFAULT };
+}
+
+function formatAutomationSchedule(parts: AutomationScheduleParts): string {
+  if (parts.repeat === 'daily') return `每天 ${normalizeAutomationTime(parts.time)}`;
+  if (parts.repeat === 'weekdays') return `每个工作日 ${normalizeAutomationTime(parts.time)}`;
+  if (parts.repeat === 'weekly') return `每周${parts.weekday} ${normalizeAutomationTime(parts.time)}`;
+  if (parts.repeat === 'monthly') {
+    const day = parts.monthDay === 'last' ? '最后一天' : `${parts.monthDay} 日`;
+    return `每月 ${day} ${normalizeAutomationTime(parts.time)}`;
+  }
+  if (parts.repeat === 'interval') {
+    const count = Math.max(1, Number.parseInt(parts.intervalCount, 10) || 1);
+    const base = count === 1 && parts.intervalUnit === '小时' ? '每小时' : `每 ${count} ${parts.intervalUnit}`;
+    return parts.intervalUnit === '分钟' || parts.intervalUnit === '小时'
+      ? base
+      : `${base} ${normalizeAutomationTime(parts.time)}`;
+  }
+  return parts.customValue;
 }
 
 function automationModelOptionGroups(
@@ -4909,7 +5031,6 @@ function AutomationManualEditor({
   projectOptions,
   selectedTaskId,
   titleInputRef,
-  onCancel,
   onChange,
   onModelChange,
   onEffortChange,
@@ -4923,28 +5044,32 @@ function AutomationManualEditor({
   projectOptions: string[];
   selectedTaskId: string | null;
   titleInputRef: RefObject<HTMLInputElement | null>;
-  onCancel: () => void;
   onChange: <Field extends keyof AutomationFormState>(field: Field, value: AutomationFormState[Field]) => void;
   onModelChange: (value: string) => void;
   onEffortChange: (value: ReasoningEffort) => void;
   onSubmit: (event: FormEvent) => void;
 }) {
-  const customSchedule = isCustomAutomationSchedule(form.schedule);
-  const scheduleSelectValue = customSchedule ? CUSTOM_AUTOMATION_SCHEDULE_VALUE : form.schedule;
-  const customScheduleValue = form.schedule === CUSTOM_AUTOMATION_SCHEDULE_VALUE ? '' : form.schedule;
+  const parsedScheduleParts = parseAutomationSchedule(form.schedule);
+  const [scheduleModeOverride, setScheduleModeOverride] = useState<AutomationRepeatMode | null>(null);
+  const scheduleParts = scheduleModeOverride === 'custom'
+    ? { ...parsedScheduleParts, repeat: 'custom' as const, customValue: form.schedule }
+    : parsedScheduleParts;
 
-  const changeSchedule = (value: string) => {
-    onChange(
-      'schedule',
-      value === CUSTOM_AUTOMATION_SCHEDULE_VALUE
-        ? (customSchedule ? customScheduleValue || CUSTOM_AUTOMATION_SCHEDULE_DEFAULT : CUSTOM_AUTOMATION_SCHEDULE_DEFAULT)
-        : value,
-    );
+  useEffect(() => setScheduleModeOverride(null), [selectedTaskId]);
+
+  const changeSchedulePart = (patch: Partial<AutomationScheduleParts>) => {
+    const next = { ...scheduleParts, ...patch };
+    if (patch.repeat) setScheduleModeOverride(patch.repeat === 'custom' ? 'custom' : null);
+    if (patch.repeat === 'custom' && scheduleParts.repeat !== 'custom') {
+      next.customValue = CUSTOM_AUTOMATION_SCHEDULE_DEFAULT;
+    }
+    onChange('schedule', formatAutomationSchedule(next));
   };
+  const intervalNeedsTime = scheduleParts.intervalUnit !== '分钟' && scheduleParts.intervalUnit !== '小时';
 
   return (
     <aside className="automation-editor" aria-label="手动创建自动化任务">
-      <form className="automation-editor-form" onSubmit={onSubmit}>
+      <form id="automation-editor-form" className="automation-editor-form" onSubmit={onSubmit}>
         <div className="automation-editor-main">
           <input
             ref={titleInputRef}
@@ -4958,58 +5083,245 @@ function AutomationManualEditor({
             className="automation-editor-prompt"
             value={form.prompt}
             onChange={(event) => onChange('prompt', event.target.value)}
-            placeholder="添加提示词，例如：在 $sentry 中查找崩溃"
+            placeholder="描述 Codex 应该做什么"
             aria-label="提示词"
           />
         </div>
-        <div className="automation-editor-details">
-          <span className="automation-editor-section-title">详情</span>
-          <AutomationEditorSelect
-            label="运行环境"
-            value={form.environment}
-            options={AUTOMATION_ENVIRONMENT_OPTIONS}
-            showInfo
-            onChange={(value) => onChange('environment', value)}
-          />
-          <AutomationEditorSelect
-            label="项目"
-            value={form.project}
-            options={projectOptions}
-            onChange={(value) => onChange('project', value)}
-          />
-          <AutomationEditorSelect
-            label="重复次数"
-            value={scheduleSelectValue}
-            options={AUTOMATION_SCHEDULE_OPTION_GROUPS}
-            onChange={changeSchedule}
-          />
-          {customSchedule && (
-            <label className="automation-editor-custom-rule">
-              <span>自定义规则</span>
-              <input
-                value={customScheduleValue}
-                onChange={(event) => onChange('schedule', event.target.value)}
-                placeholder="Cron: 0 9 * * * 或 每 2 天 9:00"
-                aria-label="自定义重复规则"
+        <div className="automation-editor-settings">
+          <section className="automation-editor-section" aria-label="任务详情">
+            <div className="automation-editor-section-heading">
+              <span>详情</span>
+              <Info size={13} aria-hidden="true" />
+            </div>
+            <div className="automation-editor-card">
+              <AutomationEditorSelect
+                label="运行于"
+                value={form.environment}
+                options={AUTOMATION_ENVIRONMENT_SELECT_OPTIONS}
+                onChange={(value) => onChange('environment', value)}
               />
-            </label>
-          )}
-          <AutomationEditorSelect
-            label="模型"
-            value={modelValue}
-            options={modelOptions}
-            onChange={onModelChange}
-          />
-          {effortOptions.length > 0 && <AutomationEditorSelect label="推理强度" value={effortValue} options={effortOptions.map((option) => ({ value: option.id, label: option.label }))} onChange={(value) => onEffortChange(value as ReasoningEffort)} />}
-        </div>
-        <div className="automation-editor-actions">
-          <button type="button" className="automation-editor-secondary" onClick={onCancel}>取消</button>
-          <button type="submit" className="automation-editor-primary" disabled={!form.prompt.trim()}>
-            {selectedTaskId ? '保存任务' : '创建任务'}
-          </button>
+              <AutomationEditorSelect
+                label="项目"
+                value={form.project}
+                options={[{ value: '选择项目', label: '无' }, ...projectOptions.filter((option) => option !== '选择项目')]}
+                onChange={(value) => onChange('project', value)}
+              />
+              <AutomationEditorSelect
+                label="模型"
+                value={modelValue}
+                options={modelOptions}
+                onChange={onModelChange}
+              />
+              {effortOptions.length > 0 && (
+                <AutomationEditorSelect
+                  label="推理"
+                  value={effortValue}
+                  options={effortOptions.map((option) => ({ value: option.id, label: option.label }))}
+                  onChange={(value) => onEffortChange(value as ReasoningEffort)}
+                />
+              )}
+            </div>
+          </section>
+
+          <section className="automation-editor-section automation-frequency-section" aria-label="运行频率">
+            <div className="automation-editor-section-heading"><span>频率</span></div>
+            <div className="automation-editor-card">
+              <AutomationEditorSelect
+                label="重复"
+                value={scheduleParts.repeat}
+                options={AUTOMATION_REPEAT_OPTIONS}
+                onChange={(value) => changeSchedulePart({ repeat: value as AutomationRepeatMode })}
+              />
+              {scheduleParts.repeat === 'weekly' && (
+                <AutomationEditorSelect
+                  label="星期"
+                  value={scheduleParts.weekday}
+                  options={AUTOMATION_WEEKDAY_OPTIONS}
+                  onChange={(value) => changeSchedulePart({ weekday: value })}
+                />
+              )}
+              {scheduleParts.repeat === 'monthly' && (
+                <AutomationEditorSelect
+                  label="日期"
+                  value={scheduleParts.monthDay}
+                  options={AUTOMATION_MONTH_DAY_OPTIONS}
+                  onChange={(value) => changeSchedulePart({ monthDay: value })}
+                />
+              )}
+              {scheduleParts.repeat === 'interval' && (
+                <>
+                  <AutomationEditorSelect
+                    label="间隔"
+                    value={scheduleParts.intervalCount}
+                    options={Array.from({ length: 60 }, (_, index) => String(index + 1))}
+                    onChange={(value) => changeSchedulePart({ intervalCount: value })}
+                  />
+                  <AutomationEditorSelect
+                    label="单位"
+                    value={scheduleParts.intervalUnit}
+                    options={AUTOMATION_INTERVAL_UNIT_OPTIONS}
+                    onChange={(value) => changeSchedulePart({ intervalUnit: value as AutomationIntervalUnit })}
+                  />
+                </>
+              )}
+              {scheduleParts.repeat !== 'custom' && (scheduleParts.repeat !== 'interval' || intervalNeedsTime) && (
+                <AutomationEditorTime
+                  value={scheduleParts.time}
+                  onChange={(value) => changeSchedulePart({ time: value })}
+                />
+              )}
+              {scheduleParts.repeat === 'custom' && (
+                <label className="automation-editor-custom-rule">
+                  <span>规则</span>
+                  <input
+                    value={scheduleParts.customValue}
+                    onChange={(event) => changeSchedulePart({ customValue: event.target.value })}
+                    placeholder="Cron: 0 9 * * *"
+                    aria-label="自定义重复规则"
+                  />
+                </label>
+              )}
+            </div>
+          </section>
         </div>
       </form>
     </aside>
+  );
+}
+
+function AutomationEditorTime({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const normalizedValue = normalizeAutomationTime(value);
+  const [hourText, minuteText] = normalizedValue.split(':');
+  const selectedHour = Number.parseInt(hourText, 10);
+  const selectedMinute = minuteText.padStart(2, '0');
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const selectedHourRef = useRef<HTMLButtonElement>(null);
+  const minuteOptions = ['00', '15', '30', '45'];
+  if (!minuteOptions.includes(selectedMinute)) minuteOptions.push(selectedMinute);
+  minuteOptions.sort((left, right) => Number(left) - Number(right));
+
+  const closePicker = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  useCloseOnOutsidePointer(open, rootRef, () => setOpen(false));
+  useEffect(() => {
+    if (open) selectedHourRef.current?.focus();
+  }, [open]);
+
+  const selectTime = (hour: number, minute: string, close = false) => {
+    onChange(`${hour}:${minute.padStart(2, '0')}`);
+    if (close) closePicker();
+  };
+
+  const nudgeTime = (direction: 1 | -1) => {
+    const currentMinutes = selectedHour * 60 + Number(selectedMinute);
+    const nextMinutes = (currentMinutes + direction * 15 + 24 * 60) % (24 * 60);
+    selectTime(Math.floor(nextMinutes / 60), String(nextMinutes % 60).padStart(2, '0'));
+  };
+
+  const handleTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      nudgeTime(event.key === 'ArrowUp' ? 1 : -1);
+    }
+  };
+
+  return (
+    <div className="automation-editor-row automation-editor-time-row">
+      <span className="automation-editor-label">时间</span>
+      <div
+        ref={rootRef}
+        className={`automation-time-picker-root ${open ? 'open' : ''}`}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && open) {
+            event.preventDefault();
+            closePicker();
+          }
+        }}
+      >
+        <button
+          ref={triggerRef}
+          type="button"
+          className="automation-time-trigger"
+          aria-label="时间"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          title="选择时间；上下方向键可按 15 分钟调整"
+          onClick={() => setOpen((current) => !current)}
+          onKeyDown={handleTriggerKeyDown}
+        >
+          <span>{normalizedValue}</span>
+          <ChevronDown size={14} aria-hidden="true" />
+        </button>
+
+        {open && (
+          <div className="automation-time-popover" role="dialog" aria-label="选择时间">
+            <div className="automation-time-popover-head">
+              <span className="automation-time-popover-title"><Clock3 size={14} />选择时间</span>
+              <strong>{normalizedValue}</strong>
+            </div>
+
+            <div className="automation-time-quick" aria-label="常用时间">
+              {['9:00', '12:00', '18:00', '21:00'].map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  className={preset === normalizedValue ? 'active' : ''}
+                  aria-label={`快速选择 ${preset}`}
+                  onClick={() => {
+                    const [hour, minute] = preset.split(':');
+                    selectTime(Number(hour), minute, true);
+                  }}
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
+
+            <div className="automation-time-group">
+              <span className="automation-time-group-label">小时</span>
+              <div className="automation-hour-grid">
+                {Array.from({ length: 24 }, (_, hour) => (
+                  <button
+                    key={hour}
+                    ref={hour === selectedHour ? selectedHourRef : undefined}
+                    type="button"
+                    className={hour === selectedHour ? 'active' : ''}
+                    aria-label={`${hour} 时`}
+                    aria-pressed={hour === selectedHour}
+                    onClick={() => selectTime(hour, selectedMinute)}
+                  >
+                    {hour}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="automation-time-group minute-group">
+              <span className="automation-time-group-label">分钟</span>
+              <div className="automation-minute-grid">
+                {minuteOptions.map((minute) => (
+                  <button
+                    key={minute}
+                    type="button"
+                    className={minute === selectedMinute ? 'active' : ''}
+                    aria-label={`${minute} 分`}
+                    aria-pressed={minute === selectedMinute}
+                    onClick={() => selectTime(selectedHour, minute, true)}
+                  >
+                    :{minute}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -5017,20 +5329,17 @@ function AutomationEditorSelect({
   label,
   value,
   options,
-  showInfo = false,
   onChange,
 }: {
   label: string;
   value: string;
   options: readonly AutomationSelectEntry[];
-  showInfo?: boolean;
   onChange: (value: string) => void;
 }) {
   return (
     <label className="automation-editor-row">
       <span className="automation-editor-label">
         <span>{label}</span>
-        {showInfo && <Info size={13} aria-hidden="true" />}
       </span>
       <span className="automation-editor-select">
         <select value={value} aria-label={label} onChange={(event) => onChange(event.target.value)}>
@@ -5446,6 +5755,10 @@ function skillIcon(skill: SkillCatalogItem | SkillSelection, size = 16): ReactNo
       return <Network size={size} />;
     case 'chart':
       return <FileSpreadsheet size={size} />;
+    case 'monitor':
+      return <Activity size={size} />;
+    case 'review':
+      return <MoonStar size={size} />;
     case 'browser':
     default:
       return <Globe size={size} />;
@@ -10853,9 +11166,9 @@ function settingsIcon(section: SettingsSection): ReactNode {
 
 function domainSuggestionIcon(suggestion: DomainSuggestion): ReactNode {
   const icons: Record<DomainSuggestion['icon'], ReactNode> = {
-    market: <ArrowDownUp size={16} className="icon" />,
-    research: <Search size={16} className="icon" />,
-    risk: <ShieldQuestion size={16} className="icon" />,
+    report: <FileChartColumn size={16} className="icon" />,
+    monitor: <Activity size={16} className="icon" />,
+    review: <MoonStar size={16} className="icon" />,
   };
   return icons[suggestion.icon];
 }

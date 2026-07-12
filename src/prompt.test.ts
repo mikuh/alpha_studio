@@ -56,9 +56,20 @@ describe('finance research domain', () => {
       { selectedSkill: { id: 'imagegen', title: 'Image Gen' } },
     );
 
-    expect(instructions).toContain('图片生成展示要求');
-    expect(instructions).toContain('Markdown 图片');
-    expect(instructions).toContain('不要只回复“已生成”');
+    expect(instructions).toContain('图片生成任务完成闸门');
+    expect(instructions).toContain('等待它返回可展示的图片结果');
+    expect(instructions).toContain('只回复“已生成”都不算完成');
+  });
+
+  it('keeps the Image Gen completion gate with native skill input', () => {
+    const instructions = buildCodingInstructions({
+      selectedSkill: { id: 'imagegen', title: 'Image Gen' },
+      nativeSkillInput: true,
+    });
+
+    expect(instructions).toContain('原生 skill input');
+    expect(instructions).toContain('图片生成任务完成闸门');
+    expect(instructions).toContain('成功图片会由 Alpha Studio 从工具结果中直接渲染');
   });
 
   it('keeps Alpha Studio premarket theme turns aligned with Neostream-level output', () => {

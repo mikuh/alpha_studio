@@ -154,6 +154,7 @@ export interface QueuedChatMessage {
   attachments?: MessageAttachment[];
   selectedSkill?: SkillSelection;
   coworkers?: CoworkerSelection[];
+  automationRun?: boolean;
 }
 
 export interface BackgroundContextSummary {
