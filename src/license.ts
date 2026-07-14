@@ -249,7 +249,7 @@ export async function fetchClientBillingSummary(session: ClientLicenseSession): 
       tenantId: session.tenant.id,
       deviceId: session.device.id,
     }),
-  });
+  }, { retryLoopback: true });
 }
 
 export function modelProfilesFromClientLicense(
@@ -278,19 +278,81 @@ export function modelProfilesFromClientLicense(
   return [...subscriptionProfiles, ...gatewayProfiles];
 }
 
-async function alphaFetch<T>(apiBaseUrl: string, path: string, init: RequestInit): Promise<T> {
-  const response = await fetch(`${normalizeApiBaseUrl(apiBaseUrl)}${path}`, {
-    ...init,
-    headers: {
-      'content-type': 'application/json',
-      ...(init.headers || {}),
-    },
-  });
+async function alphaFetch<T>(
+  apiBaseUrl: string,
+  path: string,
+  init: RequestInit,
+  options: { retryLoopback?: boolean } = {},
+): Promise<T> {
+  const baseUrls = options.retryLoopback
+    ? apiBaseUrlCandidates(apiBaseUrl)
+    : [normalizeApiBaseUrl(apiBaseUrl)];
+  let response: Response | null = null;
+  let lastError: unknown = null;
+
+  for (const baseUrl of baseUrls) {
+    try {
+      response = await fetch(`${baseUrl}${path}`, {
+        ...init,
+        headers: {
+          'content-type': 'application/json',
+          ...(init.headers || {}),
+        },
+      });
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (!response) {
+    const endpoint = normalizeApiBaseUrl(apiBaseUrl);
+    const originalMessage = lastError instanceof Error && lastError.message.trim()
+      ? ` 原始错误：${lastError.message.trim()}`
+      : '';
+    const nextStep = endpoint.startsWith('http://localhost')
+      ? '本地部署可执行 docker compose up -d。'
+      : '请检查网络或服务地址。';
+    throw new Error(`无法连接 Alpha Studio 服务（${endpoint}）。请确认后台服务已启动；${nextStep}${originalMessage}`);
+  }
+
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Alpha Studio API ${response.status}`);
+    throw new Error(apiErrorMessage(text) || `Alpha Studio API ${response.status}`);
   }
-  return response.json();
+
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(`Alpha Studio 服务返回了无效数据（${path}）。`);
+  }
+}
+
+function apiBaseUrlCandidates(value: string): string[] {
+  const normalized = normalizeApiBaseUrl(value);
+  const candidates = [normalized];
+  try {
+    const url = new URL(normalized);
+    if (url.protocol === 'http:' && url.hostname === 'localhost') {
+      url.hostname = '127.0.0.1';
+      candidates.push(url.toString().replace(/\/$/, ''));
+    }
+  } catch {
+    // The primary request below will produce the actionable error message.
+  }
+  return [...new Set(candidates)];
+}
+
+function apiErrorMessage(text: string): string {
+  if (!text.trim()) return '';
+  try {
+    const payload = JSON.parse(text) as { error?: { message?: unknown }; message?: unknown };
+    const message = payload.error?.message ?? payload.message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
+  } catch {
+    // Preserve non-JSON API errors below.
+  }
+  return text.trim();
 }
 
 function normalizeApiBaseUrl(value: string): string {

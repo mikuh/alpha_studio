@@ -16,6 +16,18 @@ import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } fro
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
 import { addThemeAbilityContext, inferThemeAbilitySkill } from './themeAbilities';
 import {
+  PREMARKET_THEME_IMPORT_EVENT,
+  loadPremarketThemeRuns,
+  parsePremarketThemeResult,
+  savePremarketThemeRun,
+} from './themeResearch';
+import {
+  THEME_MONITOR_EVENT_SCHEMA,
+  THEME_REVIEW_SCHEMA,
+  ingestThemeMonitorResult,
+  ingestThemeReviewResult,
+} from './themeValidation';
+import {
   ALPHA_GATEWAY_PROVIDER_ID,
   createGatewayRun,
   loadClientLicenseSession,
@@ -1280,6 +1292,28 @@ export const useChatStore = create<ChatState>()(
         }));
         for (const conversationId of Array.from(new Set(readyConversationIds))) {
           startNextQueuedMessage(conversationId);
+        }
+        if (event.type === 'completed' && event.conversationId) {
+          const conversation = get().conversations.find((item) => item.id === event.conversationId);
+          const assistant = [...(conversation?.messages ?? [])].reverse().find((message) => message.role === 'assistant');
+          const text = assistant ? messageBlocksToText(assistant.blocks) : '';
+          if (text.includes('alpha.premarket_theme.v1') || text.includes('alpha.premarket_theme.v2')) {
+            const parsed = parsePremarketThemeResult(text);
+            if (parsed.ok && parsed.run) savePremarketThemeRun(parsed.run);
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent(PREMARKET_THEME_IMPORT_EVENT, {
+                detail: parsed.ok
+                  ? { ok: true, reportId: parsed.run?.id }
+                  : { ok: false, error: parsed.error || '报告未进入跟踪库。' },
+              }));
+            }
+          }
+          if (text.includes(THEME_MONITOR_EVENT_SCHEMA)) {
+            ingestThemeMonitorResult(text, loadPremarketThemeRuns());
+          }
+          if (text.includes(THEME_REVIEW_SCHEMA)) {
+            ingestThemeReviewResult(text, loadPremarketThemeRuns());
+          }
         }
       },
       };

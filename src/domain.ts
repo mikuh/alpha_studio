@@ -147,21 +147,12 @@ export const financeResearchDomain: DomainConfig = {
   },
   navigation: {
     personal: [
-      { id: 'general', label: '常规' },
-      { id: 'profile', label: '个人资料' },
-      { id: 'appearance', label: '外观' },
-      { id: 'config', label: '配置' },
-      { id: 'models', label: '模型' },
-      { id: 'personalization', label: '个性化' },
-      { id: 'keyboard', label: '键盘快捷键' },
+      { id: 'general', label: '显示偏好' },
+      { id: 'profile', label: '账户与授权' },
       { id: 'usage', label: '使用情况和计费' },
     ],
     integrations: [
-      { id: 'snapshots', label: '资料快照' },
       { id: 'jqdata', label: '聚宽数据' },
-      { id: 'mcp', label: '技能' },
-      { id: 'browser', label: '浏览器' },
-      { id: 'computer', label: '电脑操控' },
     ],
     coding: [],
     archived: [{ id: 'archived', label: '已归档对话' }],

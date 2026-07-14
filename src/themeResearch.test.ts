@@ -3,10 +3,13 @@ import { buildQuoteMap, loadResearchState, researchAccountSummary } from './rese
 import {
   PREMARKET_THEME_RUNS_KEY,
   PREMARKET_THEME_SCHEMA,
+  PREMARKET_THEME_SCHEMA_V1,
   buildPremarketThemePrompt,
+  extractLegacyPremarketThemeDraft,
   loadPremarketThemeRuns,
   parsePremarketThemeResult,
   savePremarketThemeRun,
+  stableThemeContentHash,
   type PremarketThemeRun,
 } from './themeResearch';
 
@@ -154,6 +157,36 @@ describe('themeResearch', () => {
     expect(parsed.run?.themes[0].name).toBe('AI算力');
     expect(parsed.run?.themes[0].status).toBe('pending');
     expect(parsed.run?.reportMarkdown).toContain('# 盘前主题研究');
+  });
+
+  it('upgrades v1 reports to the v2 tracking model without changing their source schema', () => {
+    const parsed = parsePremarketThemeResult(validReply(validThemeJson({ schema: PREMARKET_THEME_SCHEMA_V1 })));
+    expect(parsed.ok).toBe(true);
+    expect(parsed.run?.schema).toBe(PREMARKET_THEME_SCHEMA);
+    expect(parsed.run?.sourceSchema).toBe(PREMARKET_THEME_SCHEMA_V1);
+    expect(parsed.run?.themes[0].rank).toBe(1);
+    expect(parsed.run?.themes[0].stocks[0].roleRank).toBe(1);
+    expect(parsed.run?.themes[0].triggerSpecs[0].evaluator).toBe('ai');
+  });
+
+  it('extracts legacy markdown into a confirmation-only tracking draft', () => {
+    const draft = extractLegacyPremarketThemeDraft(`
+# 2026-07-07 盘前报告
+生成时间：2026-07-07 09:10:00
+| 题材 | 角色 | 标的 |
+| --- | --- | --- |
+| AI算力 | 中军 | 浪潮信息(000977)、中科曙光(603019) |
+| AI算力 | 龙头 | 新易盛(300502) |
+`);
+    expect(draft?.themes[0].rank).toBe(1);
+    expect(draft?.themes[0].stocks[0]).toMatchObject({ role: '中军', roleRank: 1, code: '000977.XSHE' });
+    expect(draft?.themes[0].stocks[1]).toMatchObject({ roleRank: 2, code: '603019.XSHG' });
+    expect(draft?.reportMode).toBe('legacy_import');
+  });
+
+  it('hashes semantically identical structured content deterministically', () => {
+    expect(stableThemeContentHash({ b: 2, a: { y: 2, x: 1 } }))
+      .toBe(stableThemeContentHash({ a: { x: 1, y: 2 }, b: 2 }));
   });
 
   it('rejects results without schema or complete theme cards', () => {

@@ -19,7 +19,32 @@ If no same-day report is present in the supplied context, stop and ask the user 
 
 ## Output
 
-Use this concise structure:
+First output a fenced JSON block for the tracking panel. Reuse only the exact report identifiers supplied by Alpha Studio and keep evidence timestamped and source-aware.
+
+```json
+{
+  "schema": "alpha.theme_review.v1",
+  "reportId": "exact supplied report id",
+  "reportContentHash": "exact supplied content hash",
+  "generatedAt": "ISO-8601 timestamp with offset",
+  "score": 0,
+  "missingIntradayHistory": false,
+  "summary": "one-paragraph conclusion",
+  "items": [
+    {
+      "id": "stable audit item id",
+      "label": "primary route, theme, stock role, or trigger",
+      "verdict": "hit|partial|not_triggered|miss|data_missing",
+      "evidence": "observed result, source, and timestamp",
+      "attribution": "thesis|trigger|data|new_information"
+    }
+  ],
+  "lessons": ["reusable lesson"],
+  "proposedRuleChanges": ["proposal requiring user confirmation"]
+}
+```
+
+Then use this concise human-readable structure:
 
 1. `复盘结论` — one paragraph and an overall grade.
 2. `预测与实际对照` — primary route, backup route, themes, and stock roles.

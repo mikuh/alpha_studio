@@ -13,8 +13,11 @@ import { scheduleLocalStoreCommit } from './localStore';
 
 export const ALPHA_STUDIO_DAILY_THEME_SKILL_ID = 'alpha-studio-daily-theme-research';
 export const ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE = 'Alpha Studio 盘前主题';
-export const PREMARKET_THEME_SCHEMA = 'alpha.premarket_theme.v1';
+export const PREMARKET_THEME_SCHEMA_V1 = 'alpha.premarket_theme.v1';
+export const PREMARKET_THEME_SCHEMA = 'alpha.premarket_theme.v2';
 export const PREMARKET_THEME_RUNS_KEY = 'alpha-studio.premarket-theme-runs.v1';
+export const PREMARKET_THEME_RUNS_CHANGED_EVENT = 'alpha-studio:premarket-theme-runs-changed';
+export const PREMARKET_THEME_IMPORT_EVENT = 'alpha-studio:premarket-theme-import';
 
 export type PremarketThemeStatus = 'pending' | 'watching' | 'adopted' | 'ignored' | 'review';
 
@@ -47,11 +50,32 @@ export interface PremarketThemeStock {
   name: string;
   code?: string;
   role?: string;
+  roleRank: number;
   authenticity?: string;
+}
+
+export type ThemeTriggerEvaluator = 'quote' | 'breadth' | 'time' | 'ai' | 'manual';
+export type ThemeTriggerOperator = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'contains';
+
+export interface PremarketThemeTrigger {
+  id: string;
+  label: string;
+  evaluator: ThemeTriggerEvaluator;
+  subjectCode?: string;
+  field?: string;
+  operator?: ThemeTriggerOperator;
+  threshold?: number | string;
+  windowStart?: string;
+  windowEnd?: string;
+  confirmForSeconds: number;
+  dataSource: string;
+  actionOnTrigger: string;
+  actionOnFailure: string;
 }
 
 export interface PremarketTheme {
   id: string;
+  rank: number;
   name: string;
   grade: 'S' | 'A' | 'B' | 'C';
   conclusion: string;
@@ -65,6 +89,7 @@ export interface PremarketTheme {
   todayOnlyDo: string[];
   todayDoNotDo: string[];
   triggers: string[];
+  triggerSpecs: PremarketThemeTrigger[];
   invalidation: string;
   risk: string;
   stocks: PremarketThemeStock[];
@@ -81,6 +106,10 @@ export interface PremarketContinuityRow {
 export interface PremarketThemeRun {
   id: string;
   schema: typeof PREMARKET_THEME_SCHEMA;
+  sourceSchema: typeof PREMARKET_THEME_SCHEMA | typeof PREMARKET_THEME_SCHEMA_V1;
+  tradeDate: string;
+  dataCutoff: string;
+  contentHash: string;
   generatedAt: string;
   importedAt: string;
   reportMode: string;
@@ -146,8 +175,13 @@ function normalizeStatus(value: unknown): PremarketThemeStatus {
   return 'pending';
 }
 
-function normalizeStock(value: unknown): PremarketThemeStock | null {
-  if (typeof value === 'string') return { name: value };
+function positiveInteger(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function normalizeStock(value: unknown, index = 0): PremarketThemeStock | null {
+  if (typeof value === 'string') return { name: value, roleRank: index + 1 };
   if (!value || typeof value !== 'object') return null;
   const raw = value as Record<string, unknown>;
   const name = stringValue(raw.name || raw.displayName || raw.display_name);
@@ -156,7 +190,56 @@ function normalizeStock(value: unknown): PremarketThemeStock | null {
     name,
     code: stringValue(raw.code) || undefined,
     role: stringValue(raw.role) || undefined,
+    roleRank: positiveInteger(raw.roleRank || raw.role_rank, index + 1),
     authenticity: stringValue(raw.authenticity || raw.relevance || raw.evidenceLevel || raw.evidence_level) || undefined,
+  };
+}
+
+function normalizeTriggerEvaluator(value: unknown): ThemeTriggerEvaluator {
+  const evaluator = stringValue(value).toLowerCase();
+  return evaluator === 'quote' || evaluator === 'breadth' || evaluator === 'time' || evaluator === 'manual'
+    ? evaluator
+    : 'ai';
+}
+
+function normalizeTriggerOperator(value: unknown): ThemeTriggerOperator | undefined {
+  const operator = stringValue(value).toLowerCase();
+  return operator === 'gt' || operator === 'gte' || operator === 'lt' || operator === 'lte' || operator === 'eq' || operator === 'contains'
+    ? operator
+    : undefined;
+}
+
+function normalizeTrigger(value: unknown, themeId: string, index: number): PremarketThemeTrigger | null {
+  if (typeof value === 'string') {
+    return {
+      id: `${themeId}-trigger-${index + 1}`,
+      label: value,
+      evaluator: 'ai',
+      confirmForSeconds: 0,
+      dataSource: '待验证',
+      actionOnTrigger: '等待二次确认',
+      actionOnFailure: '继续观察',
+    };
+  }
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const label = stringValue(raw.label || raw.name || raw.description || raw.condition);
+  if (!label) return null;
+  const thresholdValue = raw.threshold ?? raw.value;
+  return {
+    id: stringValue(raw.id) || `${themeId}-trigger-${index + 1}`,
+    label,
+    evaluator: normalizeTriggerEvaluator(raw.evaluator || raw.type),
+    subjectCode: stringValue(raw.subjectCode || raw.subject_code || raw.code) || undefined,
+    field: stringValue(raw.field || raw.metric) || undefined,
+    operator: normalizeTriggerOperator(raw.operator || raw.op),
+    threshold: typeof thresholdValue === 'number' || typeof thresholdValue === 'string' ? thresholdValue : undefined,
+    windowStart: stringValue(raw.windowStart || raw.window_start) || undefined,
+    windowEnd: stringValue(raw.windowEnd || raw.window_end) || undefined,
+    confirmForSeconds: Math.max(0, Number(raw.confirmForSeconds || raw.confirm_for_seconds) || 0),
+    dataSource: stringValue(raw.dataSource || raw.data_source, '待验证'),
+    actionOnTrigger: stringValue(raw.actionOnTrigger || raw.action_on_trigger, '等待二次确认'),
+    actionOnFailure: stringValue(raw.actionOnFailure || raw.action_on_failure, '继续观察'),
   };
 }
 
@@ -199,8 +282,14 @@ function normalizeTheme(value: unknown, index: number): PremarketTheme | null {
   const raw = value as Record<string, unknown>;
   const name = stringValue(raw.name || raw.theme);
   if (!name) return null;
+  const id = stringValue(raw.id) || `theme-${index + 1}-${name}`;
+  const structuredTriggers = raw.triggerSpecs || raw.trigger_specs;
+  const triggerValues = Array.isArray(structuredTriggers)
+    ? structuredTriggers
+    : stringList(raw.triggers || raw.confirmationTriggers || raw.confirmation_triggers);
   return {
-    id: stringValue(raw.id) || `theme-${index + 1}-${name}`,
+    id,
+    rank: positiveInteger(raw.rank, index + 1),
     name,
     grade: normalizeGrade(raw.grade),
     conclusion: stringValue(raw.conclusion || raw.verdict || raw.todayConclusion),
@@ -222,6 +311,9 @@ function normalizeTheme(value: unknown, index: number): PremarketTheme | null {
     todayOnlyDo: stringList(raw.todayOnlyDo || raw.today_only_do),
     todayDoNotDo: stringList(raw.todayDoNotDo || raw.today_do_not_do),
     triggers: stringList(raw.triggers || raw.confirmationTriggers || raw.confirmation_triggers),
+    triggerSpecs: triggerValues
+      .map((trigger, triggerIndex) => normalizeTrigger(trigger, id, triggerIndex))
+      .filter((trigger): trigger is PremarketThemeTrigger => Boolean(trigger)),
     invalidation: stringValue(raw.invalidation || raw.failureAction || raw.failure_action),
     risk: stringValue(raw.risk || raw.riskNote || raw.risk_note),
     stocks: Array.isArray(raw.stocks) ? raw.stocks.map(normalizeStock).filter((item): item is PremarketThemeStock => Boolean(item)) : [],
@@ -321,7 +413,7 @@ function extractJsonCandidates(text: string): Array<{ json: string; endIndex: nu
   while ((match = fenced.exec(text))) {
     candidates.push({ json: match[1].trim(), endIndex: fenced.lastIndex });
   }
-  const schemaIndex = text.indexOf(PREMARKET_THEME_SCHEMA);
+  const schemaIndex = Math.max(text.indexOf(PREMARKET_THEME_SCHEMA), text.indexOf(PREMARKET_THEME_SCHEMA_V1));
   if (schemaIndex >= 0) {
     const start = text.lastIndexOf('{', schemaIndex);
     const end = text.indexOf('\n\n', schemaIndex);
@@ -336,11 +428,141 @@ function markdownAfterFirstJson(text: string, endIndex: number): string {
   return text.slice(endIndex).trim();
 }
 
+function shanghaiDate(value: string): string {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return '';
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(parsed));
+}
+
+export function stableThemeContentHash(value: unknown): string {
+  const text = typeof value === 'string' ? value : stableJson(value);
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function legacySecurityCode(value: string): string | undefined {
+  const explicit = value.match(/\b(\d{6})\.(XSHG|XSHE)\b/i);
+  if (explicit) return `${explicit[1]}.${explicit[2].toUpperCase()}`;
+  const plain = value.match(/(?:^|[^\d])(\d{6})(?!\d)/)?.[1];
+  if (!plain) return undefined;
+  return `${plain}.${plain.startsWith('6') || plain.startsWith('9') ? 'XSHG' : 'XSHE'}`;
+}
+
+function legacyTimestamp(text: string): string {
+  const iso = text.match(/20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/)?.[0];
+  if (iso && Number.isFinite(Date.parse(iso))) return new Date(iso).toISOString();
+  const local = text.match(/(20\d{2}[-/]\d{2}[-/]\d{2})\s+(\d{1,2}:\d{2}(?::\d{2})?)/);
+  if (local) {
+    const parsed = Date.parse(`${local[1].split('/').join('-')}T${local[2]}+08:00`);
+    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+  }
+  return '';
+}
+
+export function extractLegacyPremarketThemeDraft(text: string, title = '导入的历史日报'): PremarketThemeRun | null {
+  const rows = text.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.includes('|') && !/^\|?\s*:?-{2,}/.test(line))
+    .map((line) => line.split('|').map((cell) => cell.trim()).filter(Boolean))
+    .filter((cells) => cells.some((cell) => /(中军|趋势核心|龙头|补涨)/.test(cell)));
+  const themes = new Map<string, { rank: number; stocks: PremarketThemeStock[] }>();
+  for (const cells of rows) {
+    const roleIndex = cells.findIndex((cell) => /(中军|趋势核心|龙头|补涨)/.test(cell));
+    if (roleIndex < 0) continue;
+    const role = cells[roleIndex].match(/(中军|趋势核心|龙头|补涨)/)?.[1] || '待确认';
+    const themeName = cells[Math.max(0, roleIndex - 1)] || `题材 ${themes.size + 1}`;
+    if (/^(题材|主题)$/.test(themeName)) continue;
+    const stockCell = cells[roleIndex + 1] || '';
+    const entry = themes.get(themeName) || { rank: themes.size + 1, stocks: [] };
+    const chunks = stockCell.split(/[、,，/]/).map((item) => item.trim()).filter(Boolean);
+    for (const [index, chunk] of chunks.entries()) {
+      const code = legacySecurityCode(chunk);
+      const name = chunk
+        .replace(/\(?\d{6}(?:\.(?:XSHG|XSHE))?\)?/gi, '')
+        .replace(/[（(][ABCD][）)]/g, '')
+        .trim();
+      if (!name && !code) continue;
+      entry.stocks.push({ name: name || code as string, code, role, roleRank: index + 1 });
+    }
+    themes.set(themeName, entry);
+  }
+  if (!themes.size) return null;
+  const generatedAt = legacyTimestamp(text);
+  const dateMatch = text.match(/20\d{2}[-/]\d{2}[-/]\d{2}/)?.[0]?.split('/').join('-');
+  const tradeDate = dateMatch || (generatedAt ? shanghaiDate(generatedAt) : '');
+  const canEstablishTiming = Boolean(generatedAt && tradeDate);
+  const draftThemes: PremarketTheme[] = Array.from(themes.entries()).map(([name, value]) => ({
+    id: `legacy-theme-${value.rank}`,
+    rank: value.rank,
+    name,
+    grade: 'C',
+    conclusion: '由历史报告表格抽取，待用户确认。',
+    lifecycle: '待确认',
+    capitalType: '待确认',
+    attackPath: '待确认',
+    todayAttackProbability: '未给出',
+    researchProbability: '未给出',
+    observationWeight: '未给出',
+    todayOnlyDo: [],
+    todayDoNotDo: [],
+    triggers: ['历史报告触发条件需人工确认'],
+    triggerSpecs: [{
+      id: `legacy-theme-${value.rank}-trigger-1`,
+      label: '历史报告触发条件需人工确认',
+      evaluator: 'manual',
+      confirmForSeconds: 0,
+      dataSource: '导入报告',
+      actionOnTrigger: '用户确认后继续跟踪',
+      actionOnFailure: '仅用于阅读与复盘',
+    }],
+    invalidation: '', risk: '历史抽取信息不完整', stocks: value.stocks, status: 'pending',
+  }));
+  const hashBasis = { title, tradeDate, generatedAt, themes: draftThemes, text };
+  return {
+    schema: PREMARKET_THEME_SCHEMA,
+    sourceSchema: PREMARKET_THEME_SCHEMA_V1,
+    id: `legacy-${stableThemeContentHash(hashBasis).slice(6)}`,
+    contentHash: stableThemeContentHash(hashBasis),
+    tradeDate,
+    generatedAt: generatedAt || new Date().toISOString(),
+    dataCutoff: generatedAt || '',
+    importedAt: new Date().toISOString(),
+    reportMode: canEstablishTiming ? 'legacy_import' : 'legacy_import_missing_time',
+    title,
+    executionGate: { state: '只观察', todayOnlyDo: [], todayDoNotDo: [], triggerBeforeAction: [], failureAction: '仅用于阅读与复盘。' },
+    capitalAttackPath: { primaryRoute: '', backupRoute: '', invalidationRoute: '', todayAttackProbability: '未给出', rationale: '', actionCondition: '' },
+    marketSentiment: '待确认', previousContinuity: [], themes: draftThemes,
+    risks: ['历史 Markdown/HTML 由本地启发式抽取，未经确认不得用于回测。'],
+    sourceNotes: ['legacy heuristic extraction'], reportMarkdown: text,
+  };
+}
+
 export function parsePremarketThemeResult(text: string, options: { requireCompleteReport?: boolean } = {}): PremarketThemeParseResult {
   for (const candidate of extractJsonCandidates(text)) {
     try {
       const parsed = JSON.parse(candidate.json) as Record<string, unknown>;
-      if (parsed.schema !== PREMARKET_THEME_SCHEMA) continue;
+      if (parsed.schema !== PREMARKET_THEME_SCHEMA && parsed.schema !== PREMARKET_THEME_SCHEMA_V1) continue;
       const themes = Array.isArray(parsed.themes)
         ? parsed.themes.map(normalizeTheme).filter((item): item is PremarketTheme => Boolean(item))
         : [];
@@ -348,8 +570,16 @@ export function parsePremarketThemeResult(text: string, options: { requireComple
         return { ok: false, error: '结构化结果里没有可用主题。' };
       }
       const now = new Date().toISOString();
+      const generatedAt = stringValue(parsed.generatedAt || parsed.generated_at) || now;
+      const dataCutoff = stringValue(parsed.dataCutoff || parsed.data_cutoff) || generatedAt;
       const reportMode = stringValue(parsed.reportMode || parsed.report_mode, 'pre_market');
       const reportMarkdown = markdownAfterFirstJson(text, candidate.endIndex);
+      const hashPayload = { ...parsed };
+      delete hashPayload.id;
+      delete hashPayload.contentHash;
+      delete hashPayload.content_hash;
+      delete hashPayload.importedAt;
+      delete hashPayload.imported_at;
       const capitalAttackPath = normalizeCapitalAttackPath(parsed.capitalAttackPath || parsed.capital_attack_path);
       const missingSections = missingDailyReportSections(reportMarkdown, reportMode);
       const shouldValidateReport = options.requireCompleteReport ?? Boolean(reportMarkdown.trim());
@@ -378,7 +608,11 @@ export function parsePremarketThemeResult(text: string, options: { requireComple
         run: {
           id: stringValue(parsed.id) || createId('premarket'),
           schema: PREMARKET_THEME_SCHEMA,
-          generatedAt: stringValue(parsed.generatedAt || parsed.generated_at) || now,
+          sourceSchema: parsed.schema as PremarketThemeRun['sourceSchema'],
+          tradeDate: stringValue(parsed.tradeDate || parsed.trade_date) || shanghaiDate(generatedAt),
+          dataCutoff,
+          contentHash: stableThemeContentHash({ structured: hashPayload, reportMarkdown }),
+          generatedAt,
           importedAt: now,
           reportMode,
           title: stringValue(parsed.title, '盘前主题研究'),
@@ -399,16 +633,17 @@ export function parsePremarketThemeResult(text: string, options: { requireComple
   return { ok: false, error: `最近回复中没有找到 ${PREMARKET_THEME_SCHEMA} JSON。` };
 }
 
-function normalizeRun(value: unknown): PremarketThemeRun | null {
+export function normalizePremarketThemeRun(value: unknown): PremarketThemeRun | null {
   if (!value || typeof value !== 'object') return null;
   const raw = value as Record<string, unknown>;
-  if (raw.schema !== PREMARKET_THEME_SCHEMA) return null;
+  if (raw.schema !== PREMARKET_THEME_SCHEMA && raw.schema !== PREMARKET_THEME_SCHEMA_V1) return null;
   const parsed = parsePremarketThemeResult(`\`\`\`json\n${JSON.stringify(raw)}\n\`\`\``, { requireCompleteReport: false });
   if (!parsed.ok || !parsed.run) return null;
   return {
     ...parsed.run,
     id: stringValue(raw.id) || parsed.run.id,
     importedAt: stringValue(raw.importedAt || raw.imported_at) || parsed.run.importedAt,
+    contentHash: stringValue(raw.contentHash || raw.content_hash) || parsed.run.contentHash,
     reportMarkdown: stringValue(raw.reportMarkdown || raw.report_markdown) || parsed.run.reportMarkdown,
   };
 }
@@ -420,7 +655,7 @@ export function loadPremarketThemeRuns(): PremarketThemeRun[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.map(normalizeRun).filter((item): item is PremarketThemeRun => Boolean(item));
+    return parsed.map(normalizePremarketThemeRun).filter((item): item is PremarketThemeRun => Boolean(item));
   } catch {
     return [];
   }
@@ -428,18 +663,32 @@ export function loadPremarketThemeRuns(): PremarketThemeRun[] {
 
 export function savePremarketThemeRun(run: PremarketThemeRun): PremarketThemeRun[] {
   if (typeof window === 'undefined') return [run];
-  const next = [run, ...loadPremarketThemeRuns().filter((item) => item.id !== run.id)].slice(0, 30);
+  const next = [
+    run,
+    ...loadPremarketThemeRuns().filter((item) => item.contentHash !== run.contentHash && item.id !== run.id),
+  ];
   window.localStorage.setItem(PREMARKET_THEME_RUNS_KEY, JSON.stringify(next));
+  window.dispatchEvent(new CustomEvent(PREMARKET_THEME_RUNS_CHANGED_EVENT, { detail: next }));
   schedulePremarketThemePersist(next);
   return next;
 }
 
 export function savePremarketThemeRuns(runs: PremarketThemeRun[]): PremarketThemeRun[] {
+  const seen = new Set<string>();
+  const normalized = runs
+    .map(normalizePremarketThemeRun)
+    .filter((item): item is PremarketThemeRun => Boolean(item))
+    .filter((item) => {
+      if (seen.has(item.contentHash)) return false;
+      seen.add(item.contentHash);
+      return true;
+    });
   if (typeof window !== 'undefined') {
-    window.localStorage.setItem(PREMARKET_THEME_RUNS_KEY, JSON.stringify(runs.slice(0, 30)));
-    schedulePremarketThemePersist(runs.slice(0, 30));
+    window.localStorage.setItem(PREMARKET_THEME_RUNS_KEY, JSON.stringify(normalized));
+    window.dispatchEvent(new CustomEvent(PREMARKET_THEME_RUNS_CHANGED_EVENT, { detail: normalized }));
+    schedulePremarketThemePersist(normalized);
   }
-  return runs.slice(0, 30);
+  return normalized;
 }
 
 function schedulePremarketThemePersist(runs: PremarketThemeRun[]): void {
@@ -499,7 +748,7 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
     '该 skill 的研究规则、报告深度、模块顺序、评分/连续跟踪/产业链真实性/校验要求必须与 neostream-daily-theme-research 保持一致；只把名称与品牌替换为 Alpha Studio / Alpha Studio Research。',
     '',
     '输出要求：',
-    '1. 先输出一个 fenced JSON 代码块，schema 必须为 `alpha.premarket_theme.v1`。',
+    `1. 先输出一个 fenced JSON 代码块，schema 必须为 \`${PREMARKET_THEME_SCHEMA}\`。`,
     '2. JSON 后继续输出完整 Markdown 研究报告，保留 Alpha Studio Research 的风格；默认是正式日报，不要压缩成 3-5 页骨架或只给卡片摘要。',
     '3. JSON 用于工作台卡片，Markdown 用于完整报告归档。',
     '4. 必须根据当前生成时间判断是盘前、盘前延迟版、盘中更新还是复盘 + 次日前瞻；不要混用前收盘情绪和盘中数据。',
@@ -513,6 +762,8 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
     JSON.stringify(
       {
         schema: PREMARKET_THEME_SCHEMA,
+        tradeDate: generatedAt.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' }),
+        dataCutoff: generatedAt.toISOString(),
         generatedAt: generatedAt.toISOString(),
         reportMode: 'pre_market|delayed_pre_market|intraday|post_market',
         title: '盘前主题研究',
@@ -536,6 +787,7 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
         themes: [
           {
             id: 'theme-ai-hardware',
+            rank: 1,
             name: 'AI硬件',
             grade: 'S|A|B|C',
             conclusion: '...',
@@ -555,9 +807,24 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
             todayOnlyDo: ['...'],
             todayDoNotDo: ['...'],
             triggers: ['...'],
+            triggerSpecs: [{
+              id: 'theme-ai-hardware-breadth',
+              label: '题材上涨家数占比超过 60%',
+              evaluator: 'breadth|quote|time|ai|manual',
+              subjectCode: '000000.XSHE',
+              field: 'changePct|volumeRatio|breadthPct|time',
+              operator: 'gt|gte|lt|lte|eq|contains',
+              threshold: 60,
+              windowStart: '09:30',
+              windowEnd: '10:00',
+              confirmForSeconds: 60,
+              dataSource: 'eastmoney|jqdata|official_news',
+              actionOnTrigger: '等待二次确认',
+              actionOnFailure: '继续观察',
+            }],
             invalidation: '...',
             risk: '...',
-            stocks: [{ name: '标的（A）', code: '000000.XSHE', role: '中军/趋势核心/龙头/补涨', authenticity: 'A/B/C/D' }],
+            stocks: [{ name: '标的（A）', code: '000000.XSHE', role: '中军/趋势核心/龙头/补涨', roleRank: 1, authenticity: 'A/B/C/D' }],
           },
         ],
         risks: ['...'],

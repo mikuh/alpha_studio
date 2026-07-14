@@ -24,9 +24,15 @@ import {
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
+  Activity,
+  Building2,
   ChartCandlestick,
+  ChevronRight,
   Database,
+  GitCompareArrows,
   GripVertical,
+  Landmark,
+  ListTree,
   Loader2,
   Plus,
   RefreshCw,
@@ -41,9 +47,12 @@ import {
   emptyJqDataConfig,
   fetchJqDailyBars,
   fetchJqLatestPriceBatch,
+  fetchJqResearchSnapshot,
   fetchJqSecurityProfile,
+  fetchJqSecurityUniverse,
   loadJqDataConfig,
   type JqDataConfig,
+  type JqResearchSnapshot,
   type JqSecurityProfile,
 } from './jqdata';
 import {
@@ -97,8 +106,9 @@ import {
   type ResearchTrade,
 } from './research';
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
+import { ResearchValidationPanel } from './ResearchValidation';
 
-type WorkbenchTab = 'market' | 'overview' | 'watchlist' | 'holdings' | 'trade' | 'portfolios';
+type WorkbenchTab = 'market' | 'overview' | 'watchlist' | 'holdings' | 'trade' | 'portfolios' | 'data' | 'validation';
 type MarketDataSource = 'eastmoney' | 'jqdata' | null;
 type MarketRankMode = 'gainers' | 'losers' | 'turnoverRate' | 'turnover';
 type MarketBoardFilter = 'all' | 'main' | 'startup' | 'star';
@@ -118,6 +128,8 @@ const TAB_LABELS: Record<WorkbenchTab, string> = {
   holdings: '持仓',
   trade: '交易',
   portfolios: '组合',
+  data: '研究数据',
+  validation: '日报跟踪',
 };
 
 interface TradePrefill {
@@ -153,6 +165,7 @@ function liveOverrideFromQuote(quote: ResearchQuote): LivePriceOverride {
     source: quote.source === 'sample' ? 'eastmoney' : quote.source,
     price: quote.price,
     prevClose: quote.prevClose,
+    open: quote.open,
     high: quote.high,
     low: quote.low,
     volumeShares: quote.volumeShares,
@@ -692,6 +705,8 @@ export function ResearchWorkbenchPanel() {
             onDetail={openDetail}
           />
         )}
+        {tab === 'data' && <JqDataResearchTab jqReady={jqReady} state={state} />}
+        {tab === 'validation' && <ResearchValidationPanel />}
       </div>
 
       <footer className="rw-quick" aria-label="AI 分析任务">
@@ -735,6 +750,364 @@ function AccountMetric({
       <em>{label}</em>
       <strong>{value}</strong>
     </span>
+  );
+}
+
+// ---- 研究数据 -----------------------------------------------------------------
+
+type ResearchDataLens = 'fundamentals' | 'capital' | 'industry' | 'events' | 'assets';
+type ResearchAssetType = 'stock' | 'fund' | 'index' | 'futures';
+
+const RESEARCH_DATA_LENSES: Array<{
+  id: ResearchDataLens;
+  label: string;
+  privileges: string[];
+}> = [
+  { id: 'fundamentals', label: '基本面', privileges: ['VALUATION', 'INDICATOR', 'BALANCE', 'INCOME', 'CASH_FLOW'] },
+  { id: 'capital', label: '资金交易', privileges: ['GET_MONEY_FLOW', 'GET_MTSS', 'GET_BILLBOARD_LIST'] },
+  { id: 'industry', label: '行业成分', privileges: ['GET_INDUSTRY', 'GET_CONCEPT'] },
+  { id: 'events', label: '公司事件', privileges: ['GET_LOCKED_SHARES', 'GET_PREOPEN_INFOS'] },
+  { id: 'assets', label: '多资产', privileges: ['GET_ALL_SECURITIES'] },
+];
+
+function researchRowNumber(row: Record<string, unknown> | null | undefined, key: string): number | null {
+  const value = Number(row?.[key]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function researchRowText(row: Record<string, unknown> | null | undefined, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value !== null && value !== undefined && String(value).trim()) return String(value).trim();
+  }
+  return '—';
+}
+
+function researchMetric(value: number | null, kind: 'ratio' | 'percent' | 'multiple' | 'money' | 'plain' = 'plain'): string {
+  if (value === null) return '—';
+  if (kind === 'ratio') return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+  if (kind === 'percent') return `${value.toFixed(2)}%`;
+  if (kind === 'multiple') return `${value.toFixed(2)}x`;
+  if (kind === 'money') {
+    const absolute = Math.abs(value);
+    if (absolute >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
+    if (absolute >= 1e4) return `${(value / 1e4).toFixed(1)}万`;
+    return value.toFixed(2);
+  }
+  return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+}
+
+function sumResearchRows(rows: Record<string, unknown>[], key: string, count = rows.length): number | null {
+  const values = rows.slice(-count).map((row) => Number(row[key])).filter(Number.isFinite);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function latestResearchRow(rows: Record<string, unknown>[]): Record<string, unknown> | null {
+  return rows.length ? rows[rows.length - 1] : null;
+}
+
+function JqDataResearchTab({ jqReady, state }: { jqReady: boolean; state: ResearchState }) {
+  const [code, setCode] = useState('000001.XSHE');
+  const [asOfDate, setAsOfDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [lens, setLens] = useState<ResearchDataLens>('fundamentals');
+  const [snapshot, setSnapshot] = useState<JqResearchSnapshot | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [assetType, setAssetType] = useState<ResearchAssetType>('stock');
+  const [assetRows, setAssetRows] = useState<Record<string, unknown>[]>([]);
+  const [assetLoading, setAssetLoading] = useState(false);
+
+  const securities = useMemo(() => {
+    const custom = Object.entries(state.customSecurities).map(([customCode, value]) => ({
+      code: customCode,
+      name: value.name,
+      sector: value.sector,
+    }));
+    return [...RESEARCH_CATALOG, ...custom.filter((item) => !RESEARCH_CATALOG.some((base) => base.code === item.code))];
+  }, [state.customSecurities]);
+  const security = securities.find((item) => item.code === code) ?? securities[0];
+
+  const refresh = useCallback(async () => {
+    if (!jqReady || !code) return;
+    setLoading(true);
+    setError('');
+    try {
+      const result = await fetchJqResearchSnapshot(code, asOfDate);
+      setSnapshot(result);
+      if (!result.fundamentals && !result.moneyFlow.length && !result.industry.length) {
+        setError(result.warnings[0] ?? '这个日期没有返回可用于研究的数据，请尝试前一个交易日。');
+      }
+    } catch (reason) {
+      setSnapshot(null);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [asOfDate, code, jqReady]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const availableLenses = useMemo(() => {
+    if (!snapshot?.privileges.length) return RESEARCH_DATA_LENSES;
+    const privilegeSet = new Set(snapshot.privileges);
+    return RESEARCH_DATA_LENSES.filter((item) => item.privileges.some((privilege) => privilegeSet.has(privilege)));
+  }, [snapshot?.privileges]);
+
+  useEffect(() => {
+    if (availableLenses.some((item) => item.id === lens)) return;
+    setLens(availableLenses[0]?.id ?? 'fundamentals');
+  }, [availableLenses, lens]);
+
+  useEffect(() => {
+    if (!jqReady || lens !== 'assets') return;
+    let cancelled = false;
+    setAssetLoading(true);
+    void fetchJqSecurityUniverse(assetType, asOfDate, 6000)
+      .then((rows) => {
+        if (!cancelled) setAssetRows(rows);
+      })
+      .finally(() => {
+        if (!cancelled) setAssetLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [asOfDate, assetType, jqReady, lens]);
+
+  if (!jqReady) {
+    return (
+      <div className="rw-tab-page rw-data-page">
+        <div className="rw-data-empty">
+          <Database size={22} />
+          <h3>添加聚宽账号后开始研究</h3>
+          <p>在“设置 → 聚宽数据”保存账号，工作台会直接读取财务、资金、行业、事件与多资产数据。</p>
+        </div>
+      </div>
+    );
+  }
+
+  const promptContext = [
+    `研究标的：${security?.name ?? code}（${code}）`,
+    `数据截止：${asOfDate}`,
+    `当前研究视角：${RESEARCH_DATA_LENSES.find((item) => item.id === lens)?.label ?? lens}`,
+    snapshot?.fundamentals ? `财务快照：${JSON.stringify(snapshot.fundamentals)}` : '',
+    snapshot?.industry.length ? `行业：${snapshot.industry.map((row) => researchRowText(row, 'industry_name', 'name')).join(' / ')}` : '',
+    '请只使用给定日期可见的数据，先核对口径与异常值，再给出投资含义、反证条件和下一步验证清单。',
+  ].filter(Boolean).join('\n');
+
+  return (
+    <div className="rw-tab-page rw-data-page">
+      <section className="rw-research-data-toolbar" aria-label="研究数据筛选">
+        <label>
+          <span>研究标的</span>
+          <select value={code} onChange={(event) => setCode(event.target.value)}>
+            {securities.map((item) => <option key={item.code} value={item.code}>{shortCode(item.code)} {item.name}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>截止日期</span>
+          <input type="date" value={asOfDate} onChange={(event) => setAsOfDate(event.target.value)} />
+        </label>
+        <button type="button" className="rw-btn ghost" onClick={() => void refresh()} disabled={loading}>
+          <RefreshCw size={13} className={loading ? 'spin' : ''} />刷新数据
+        </button>
+      </section>
+
+      <nav className="rw-research-lenses" aria-label="研究视角">
+        {availableLenses.map((item) => (
+          <button key={item.id} type="button" className={lens === item.id ? 'active' : ''} aria-pressed={lens === item.id} onClick={() => setLens(item.id)}>
+            {item.label}
+          </button>
+        ))}
+      </nav>
+
+      {error && <div className="rw-inline-error">{error}</div>}
+      {loading && !snapshot ? <div className="rw-data-loading"><Loader2 size={17} className="spin" />正在读取研究数据…</div> : (
+        <div className="rw-research-data-layout">
+          <main>
+            {lens === 'fundamentals' && <FundamentalsLens row={snapshot?.fundamentals ?? null} />}
+            {lens === 'capital' && <CapitalLens snapshot={snapshot} />}
+            {lens === 'industry' && <IndustryLens snapshot={snapshot} />}
+            {lens === 'events' && <EventsLens snapshot={snapshot} />}
+            {lens === 'assets' && (
+              <AssetsLens
+                assetType={assetType}
+                rows={assetRows}
+                loading={assetLoading}
+                onAssetTypeChange={setAssetType}
+              />
+            )}
+          </main>
+          <ResearchDataActions code={code} name={security?.name ?? code} promptContext={promptContext} />
+        </div>
+      )}
+      <footer className="rw-research-data-source">数据源：JQData · 截止 {asOfDate}</footer>
+    </div>
+  );
+}
+
+function FundamentalsLens({ row }: { row: Record<string, unknown> | null }) {
+  const pe = researchRowNumber(row, 'pe_ratio');
+  const pb = researchRowNumber(row, 'pb_ratio');
+  const roe = researchRowNumber(row, 'roe');
+  const revenueGrowth = researchRowNumber(row, 'inc_revenue_year_on_year');
+  const profitGrowth = researchRowNumber(row, 'inc_net_profit_year_on_year');
+  const totalAssets = researchRowNumber(row, 'total_assets');
+  const totalLiability = researchRowNumber(row, 'total_liability');
+  const liabilityRatio = totalAssets && totalLiability !== null ? totalLiability / totalAssets * 100 : null;
+  const cashFlow = researchRowNumber(row, 'net_operate_cash_flow');
+  const netProfit = researchRowNumber(row, 'net_profit');
+  const cashConversion = netProfit && cashFlow !== null ? cashFlow / netProfit : null;
+  const metrics = [
+    ['PE', researchMetric(pe, 'multiple'), '滚动市盈率'],
+    ['PB', researchMetric(pb, 'multiple'), '市净率'],
+    ['ROE', researchMetric(roe, 'percent'), '净资产收益率'],
+    ['营收同比', researchMetric(revenueGrowth, 'ratio'), '主营增长'],
+    ['净利润同比', researchMetric(profitGrowth, 'ratio'), '盈利增长'],
+    ['资产负债率', liabilityRatio === null ? '—' : `${liabilityRatio.toFixed(2)}%`, '资产负债结构'],
+  ];
+  const rows = [
+    ['估值', '市盈率（PE）', researchMetric(pe, 'multiple'), pe === null ? '等待数据' : pe > 0 && pe < 15 ? '估值较低，需核对盈利可持续性' : '结合增长与行业中枢判断'],
+    ['估值', '市净率（PB）', researchMetric(pb, 'multiple'), pb === null ? '等待数据' : pb < 1 ? '低于账面价值，重点检查资产质量' : '关注资本回报能否覆盖估值'],
+    ['盈利', '净资产收益率（ROE）', researchMetric(roe, 'percent'), roe === null ? '等待数据' : roe >= 15 ? '资本回报较强' : '需要拆解杠杆与利润率'],
+    ['盈利', '净利率', researchMetric(researchRowNumber(row, 'net_profit_margin'), 'percent'), '观察商业模式与一次性损益'],
+    ['成长', '营业收入同比', researchMetric(revenueGrowth, 'ratio'), revenueGrowth !== null && revenueGrowth < 0 ? '收入承压，核对量价与份额' : '验证增长质量与基数效应'],
+    ['成长', '归母净利润同比', researchMetric(profitGrowth, 'ratio'), profitGrowth !== null && revenueGrowth !== null && profitGrowth > revenueGrowth ? '利润增速快于收入，检查利润率来源' : '结合收入与现金流验证'],
+    ['偿债', '资产负债率', liabilityRatio === null ? '—' : `${liabilityRatio.toFixed(2)}%`, '金融与非金融行业口径不可直接横比'],
+    ['现金流', '经营现金流 / 净利润', cashConversion === null ? '—' : `${cashConversion.toFixed(2)}x`, cashConversion !== null && cashConversion >= 1 ? '利润现金含量较好' : '检查应收、存货与非现金项目'],
+  ];
+  return (
+    <section className="rw-fundamentals-lens" aria-label="基本面研究">
+      <div className="rw-fundamental-metrics">
+        {metrics.map(([label, value, note]) => <article key={label}><span>{label}</span><strong>{value}</strong><em>{note}</em></article>)}
+      </div>
+      <div className="rw-research-table-card">
+        <header><h3>核心财务快照</h3><span>估值 · 盈利 · 成长 · 偿债 · 现金流</span></header>
+        <div className="rw-research-table rw-fundamental-table">
+          <div className="head"><span>维度</span><span>指标</span><span>当前值</span><span>投资判断</span></div>
+          {rows.map(([dimension, metric, value, reading]) => <div key={metric}><span>{dimension}</span><strong>{metric}</strong><span>{value}</span><p>{reading}</p></div>)}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CapitalLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
+  const moneyRows = snapshot?.moneyFlow ?? [];
+  const mtssRows = snapshot?.mtss ?? [];
+  const latestMoney = latestResearchRow(moneyRows);
+  const latestMtss = latestResearchRow(mtssRows);
+  const cards = [
+    ['近 10 日主力净流入', researchMetric(sumResearchRows(moneyRows, 'net_amount_main', 10), 'money')],
+    ['近 5 日主力净流入', researchMetric(sumResearchRows(moneyRows, 'net_amount_main', 5), 'money')],
+    ['最新融资余额', researchMetric(researchRowNumber(latestMtss, 'fin_value'), 'money')],
+    ['最新融券余额', researchMetric(researchRowNumber(latestMtss, 'sec_value'), 'money')],
+  ];
+  return (
+    <section className="rw-capital-lens" aria-label="资金交易研究">
+      <div className="rw-capital-cards">{cards.map(([label, value]) => <article key={label}><span>{label}</span><strong>{value}</strong></article>)}</div>
+      <div className="rw-research-split">
+        <div className="rw-research-table-card">
+          <header><h3>资金流向</h3><span>近 10 个交易日</span></header>
+          <div className="rw-research-table compact">
+            <div className="head"><span>日期</span><span>涨跌</span><span>主力净流入</span><span>主力占比</span></div>
+            {moneyRows.slice(-10).reverse().map((row, index) => <div key={`${researchRowText(row, 'date')}-${index}`}><span>{researchRowText(row, 'date')}</span><span>{researchMetric(researchRowNumber(row, 'change_pct'), 'ratio')}</span><strong>{researchMetric(researchRowNumber(row, 'net_amount_main'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'net_pct_main'), 'ratio')}</span></div>)}
+          </div>
+        </div>
+        <div className="rw-research-table-card">
+          <header><h3>杠杆交易</h3><span>融资融券变化</span></header>
+          <div className="rw-research-table compact">
+            <div className="head"><span>日期</span><span>融资余额</span><span>融资买入</span><span>融券余额</span></div>
+            {mtssRows.slice(-10).reverse().map((row, index) => <div key={`${researchRowText(row, 'date')}-${index}`}><span>{researchRowText(row, 'date')}</span><strong>{researchMetric(researchRowNumber(row, 'fin_value'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'fin_buy_value'), 'money')}</span><span>{researchMetric(researchRowNumber(row, 'sec_value'), 'money')}</span></div>)}
+          </div>
+        </div>
+      </div>
+      {!latestMoney && <div className="rw-empty">所选日期前没有返回资金流记录。</div>}
+    </section>
+  );
+}
+
+function IndustryLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
+  const industries = snapshot?.industry ?? [];
+  const concepts = snapshot?.concepts ?? [];
+  return (
+    <section className="rw-industry-lens" aria-label="行业成分研究">
+      <div className="rw-research-table-card">
+        <header><h3>行业归属</h3><span>按截止日期还原</span></header>
+        <div className="rw-industry-grid">
+          {industries.map((row, index) => <article key={`${researchRowText(row, 'industry_code')}-${index}`}><Building2 size={16} /><span>{researchRowText(row, 'category')}</span><strong>{researchRowText(row, 'industry_name', 'name')}</strong><em>{researchRowText(row, 'industry_code')}</em></article>)}
+          {!industries.length && <div className="rw-empty">没有返回行业归属。</div>}
+        </div>
+      </div>
+      <div className="rw-research-table-card">
+        <header><h3>概念标签</h3><span>用于寻找主题映射与对照组</span></header>
+        <div className="rw-concept-chips">
+          {concepts.map((row, index) => <span key={`${researchRowText(row, 'concept_code')}-${index}`}>{researchRowText(row, 'name', 'concept_name', 'concept_code')}</span>)}
+          {!concepts.length && <div className="rw-empty">所选标的没有返回概念标签。</div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function EventsLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
+  const locked = snapshot?.lockedShares ?? [];
+  const billboard = snapshot?.billboard ?? [];
+  const preopen = snapshot?.preopen?.[0] ?? null;
+  const companyRows = snapshot?.companyResearch ?? [];
+  const shareholders = companyRows.filter((row) => row.section === 'shareholders');
+  const pledges = companyRows.filter((row) => row.section === 'pledge');
+  const northbound = companyRows.filter((row) => row.section === 'northbound');
+  const forecasts = companyRows.filter((row) => row.section === 'forecast');
+  const latestNorthbound = northbound[0] ?? null;
+  const latestForecast = forecasts[0] ?? null;
+  return (
+    <section className="rw-events-lens" aria-label="公司事件研究">
+      <div className="rw-event-summary">
+        <article><span>未来一年解禁批次</span><strong>{locked.length}</strong><em>检查潜在供给压力</em></article>
+        <article><span>近 90 日龙虎榜记录</span><strong>{billboard.length}</strong><em>识别席位与交易拥挤</em></article>
+        <article><span>北向持股比例</span><strong>{researchMetric(researchRowNumber(latestNorthbound, 'share_ratio'), 'percent')}</strong><em>{researchRowText(latestNorthbound, 'day')}</em></article>
+        <article><span>最新业绩预告</span><strong>{researchRowText(latestForecast, 'type')}</strong><em>{researchRowText(latestForecast, 'pub_date')}</em></article>
+      </div>
+      <div className="rw-research-split">
+        <div className="rw-research-table-card"><header><h3>限售解禁</h3><span>未来 365 天</span></header><div className="rw-research-table compact"><div className="head"><span>日期</span><span>解禁股数</span><span>占总股本</span><span>类型</span></div>{locked.slice(0, 12).map((row, index) => <div key={index}><span>{researchRowText(row, 'day', 'date')}</span><strong>{researchMetric(researchRowNumber(row, 'num'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'rate1'), 'percent')}</span><span>{researchRowText(row, 'type')}</span></div>)}</div></div>
+        <div className="rw-research-table-card"><header><h3>龙虎榜</h3><span>近 90 天</span></header><div className="rw-research-table compact"><div className="head"><span>日期</span><span>方向</span><span>席位</span><span>净额</span></div>{billboard.slice(0, 12).map((row, index) => <div key={index}><span>{researchRowText(row, 'day', 'date')}</span><span>{researchRowText(row, 'direction')}</span><strong>{researchRowText(row, 'sales_depart_name')}</strong><span>{researchMetric(researchRowNumber(row, 'net_value'), 'money')}</span></div>)}</div></div>
+      </div>
+      <div className="rw-research-split">
+        <div className="rw-research-table-card"><header><h3>主要股东</h3><span>最近披露口径</span></header><div className="rw-research-table compact"><div className="head"><span>报告期</span><span>股东</span><span>持股比例</span><span>质押/冻结</span></div>{shareholders.slice(0, 10).map((row, index) => <div key={index}><span>{researchRowText(row, 'end_date')}</span><strong>{researchRowText(row, 'shareholder_name')}</strong><span>{researchMetric(researchRowNumber(row, 'share_ratio'), 'percent')}</span><span>{researchMetric(researchRowNumber(row, 'share_pledge_freeze'), 'money')}</span></div>)}</div></div>
+        <div className="rw-research-table-card"><header><h3>质押与交易边界</h3><span>风险核对</span></header><div className="rw-research-table compact"><div className="head"><span>事项</span><span>日期</span><span>数量/价格</span><span>占比</span></div>{pledges.slice(0, 8).map((row, index) => <div key={index}><span>股权质押</span><span>{researchRowText(row, 'pub_date')}</span><strong>{researchMetric(researchRowNumber(row, 'pledge_number'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'pledge_total_ratio'), 'percent')}</span></div>)}<div><span>涨停参考</span><span>{researchRowText(preopen, 'date')}</span><strong>{researchMetric(researchRowNumber(preopen, 'high_limit'))}</strong><span>—</span></div><div><span>跌停参考</span><span>{researchRowText(preopen, 'date')}</span><strong>{researchMetric(researchRowNumber(preopen, 'low_limit'))}</strong><span>—</span></div></div></div>
+      </div>
+    </section>
+  );
+}
+
+function AssetsLens({ assetType, rows, loading, onAssetTypeChange }: { assetType: ResearchAssetType; rows: Record<string, unknown>[]; loading: boolean; onAssetTypeChange: (type: ResearchAssetType) => void }) {
+  const types: Array<[ResearchAssetType, string]> = [['stock', '股票'], ['fund', '基金'], ['index', '指数'], ['futures', '期货']];
+  return (
+    <section className="rw-assets-lens" aria-label="多资产标的库">
+      <div className="rw-asset-tabs" role="group" aria-label="资产类型">{types.map(([id, label]) => <button key={id} type="button" className={assetType === id ? 'active' : ''} onClick={() => onAssetTypeChange(id)}>{label}</button>)}</div>
+      <div className="rw-research-table-card">
+        <header><h3>{types.find(([id]) => id === assetType)?.[1]}标的库</h3><span>{loading ? '读取中…' : `${rows.length.toLocaleString('zh-CN')} 个可研究标的`}</span></header>
+        <div className="rw-research-table rw-assets-table"><div className="head"><span>代码</span><span>名称</span><span>上市日期</span><span>存续状态</span></div>{rows.slice(0, 80).map((row, index) => <div key={`${researchRowText(row, 'index', 'code')}-${index}`}><strong>{researchRowText(row, 'index', 'code')}</strong><span>{researchRowText(row, 'display_name', 'name')}</span><span>{researchRowText(row, 'start_date')}</span><span>{researchRowText(row, 'end_date') === '2200-01-01' ? '存续' : researchRowText(row, 'end_date')}</span></div>)}</div>
+      </div>
+    </section>
+  );
+}
+
+function ResearchDataActions({ code, name, promptContext }: { code: string; name: string; promptContext: string }) {
+  const actions = [
+    { icon: <GitCompareArrows size={17} />, title: '与同业比较', detail: '选取同一行业公司，对比估值、盈利与增长差异。', prompt: `${promptContext}\n请构造同业对照组并做横向比较，指出相对优势、估值陷阱与关键分歧。` },
+    { icon: <Landmark size={17} />, title: '检查盈利质量', detail: '拆解利润、现金流和资产负债表，寻找一次性收益。', prompt: `${promptContext}\n请检查盈利质量，重点分析现金转换、资产质量、杠杆来源与一次性项目。` },
+    { icon: <Activity size={17} />, title: '解释资金背离', detail: '把价格、主力资金与融资变化放在同一时间轴。', prompt: `${promptContext}\n请解释价格、资金流和两融数据是否背离，并给出可证伪的后续观察点。` },
+    { icon: <ListTree size={17} />, title: '生成可复现研究', detail: '形成研究结论、数据口径、反证条件和复查清单。', prompt: `${promptContext}\n请生成一份可复现研究报告，包含数据口径、计算过程、结论、反证条件与跟踪清单。` },
+  ];
+  return (
+    <aside className="rw-research-actions" aria-label="研究动作">
+      <header><Sparkles size={14} /><h3>研究动作</h3></header>
+      {actions.map((action) => <span key={action.title} className="rw-research-action" draggable onDragStart={(event) => startResearchDrag(event, action.prompt)} title={`拖给 Agent 研究 ${name}（${code}）`}><i>{action.icon}</i><span><strong>{action.title}</strong><em>{action.detail}</em></span><ChevronRight size={14} /></span>)}
+    </aside>
   );
 }
 

@@ -31,6 +31,7 @@ Produce a professional "Alpha Studio Research" daily A-share theme tracking and 
 - For formal printable HTML/PDF reports, default to the standard daily report depth: 8-10 A4 pages when continuity, authenticity, overnight-global, and attack-path content is present. Do not deliver a 3-5 page abbreviated report unless the user asks for a quick brief.
 - For formal printable HTML/PDF reports, use the skill's business report template and avoid decorative, marketing-style, or overly warm palettes. Keep the layout structured, sober, and print-friendly.
 - If the user asks to run this every day before 9:00, create or propose an automation with the available automation tool rather than writing raw scheduling instructions.
+- When Alpha Studio requests a structured payload, output `alpha.premarket_theme.v2` before the human-readable report. Include explicit `tradeDate`, `generatedAt`, `dataCutoff`, theme `rank`, and every stock's normalized exchange-qualified `code`, `role`, and `roleRank`. Each condition must have a stable `triggerSpecs[].id`, evaluator (`quote|breadth|time|ai|manual`), subject/field/operator/threshold when numeric, observation window, confirmation duration, required data source, trigger action, and failure action. Never force semantic conditions into numeric rules; label them `ai` or `manual`.
 
 ## Workflow
 

@@ -142,6 +142,7 @@ import {
   gitStatus,
   gitUnstage,
   createProjectFolder,
+  browserWebviewAction,
   isTauriRuntime,
   listOpenApps,
   localImageDataUrl,
@@ -162,8 +163,11 @@ import {
   type CodexRateLimitSnapshot,
   type CodexRateLimitWindow,
   type CodexSubscriptionUsage,
+  type BrowserWebviewEvent,
 } from './codexBridge';
 import { contextWindowUsage, formatTokenCount, type ContextWindowUsage } from './contextWindow';
+import { BrowserPdfViewer } from './BrowserPdfViewer';
+import { NativeBrowserSurface } from './NativeBrowserSurface';
 import {
   COWORKER_CATALOG,
   COWORKER_GROUP_LABELS,
@@ -223,13 +227,10 @@ import {
   type Speed,
 } from './models';
 import {
-  JQDATA_CAPABILITIES,
   emptyJqDataConfig,
   loadJqDataConfig,
   saveJqDataConfig,
-  testJqDataConnection,
   type JqDataConfig,
-  type JqDataProbeResult,
 } from './jqdata';
 import {
   activeConversations,
@@ -291,22 +292,8 @@ type Theme = 'light' | 'dark';
 type SettingsSection =
   | 'general'
   | 'profile'
-  | 'appearance'
-  | 'config'
-  | 'models'
-  | 'personalization'
-  | 'keyboard'
   | 'usage'
-  | 'snapshots'
   | 'jqdata'
-  | 'mcp'
-  | 'browser'
-  | 'computer'
-  | 'hooks'
-  | 'connections'
-  | 'git'
-  | 'environment'
-  | 'worktrees'
   | 'archived';
 
 const SIDEBAR_WIDTH_KEY = 'alpha:codex-sidebar-width';
@@ -1149,6 +1136,10 @@ function AppWorkspace() {
   const [rightDockExpanded, setRightDockExpanded] = useState(false);
   const [rightDockTabs, setRightDockTabs] = useState<RightDockTab[]>([]);
   const [activeRightDockTabId, setActiveRightDockTabId] = useState<string | null>(null);
+  const lastRegularRightPanelRef = useRef<{
+    panel: Exclude<RightPanel, 'none' | 'coworkers'>;
+    activeTabId: string | null;
+  }>({ panel: 'features', activeTabId: null });
   const nextRightDockTabRef = useRef(0);
   const [mainView, setMainView] = useState<MainView>('chat');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1289,16 +1280,22 @@ function AppWorkspace() {
   }, [currentConversationId]);
 
   const openSettings = (section: SettingsSection = 'general') => {
+    setRightDockExpanded(false);
+    setRightPanelVisible(false);
     setSettingsSection(section);
     setSettingsOpen(true);
   };
 
   const openSkills = () => {
+    setRightDockExpanded(false);
+    setRightPanelVisible(false);
     setSettingsOpen(false);
     setMainView('skills');
   };
 
   const openAutomations = () => {
+    setRightDockExpanded(false);
+    setRightPanelVisible(false);
     setSettingsOpen(false);
     setMainView('automations');
   };
@@ -1361,13 +1358,25 @@ function AppWorkspace() {
   );
   const currentRightPanel: RightPanel = activeRightDockTab?.kind ?? rightPanel;
 
-  const openRightPanel = useCallback((panel: RightPanel = 'features') => {
-    setRightPanel(panel);
-    if (panel === 'features' || panel === 'coworkers' || panel === 'git') setActiveRightDockTabId(null);
-    if (panel === 'features' || panel === 'coworkers' || panel === 'git') setRightDockExpanded(false);
+  useEffect(() => {
+    if (currentRightPanel === 'none' || currentRightPanel === 'coworkers') return;
+    lastRegularRightPanelRef.current = {
+      panel: currentRightPanel,
+      activeTabId: activeRightDockTabId,
+    };
+  }, [activeRightDockTabId, currentRightPanel]);
+
+  const showRegularRightPanel = useCallback(() => {
+    const saved = lastRegularRightPanelRef.current;
+    const savedTab = saved.activeTabId
+      ? rightDockTabs.find((tab) => tab.id === saved.activeTabId) ?? null
+      : null;
+    setActiveRightDockTabId(savedTab?.id ?? null);
+    setRightPanel(savedTab?.kind ?? (saved.panel === 'git' ? 'git' : 'features'));
+    setRightDockExpanded(false);
     setRightDockMounted(true);
     setRightPanelVisible(true);
-  }, []);
+  }, [rightDockTabs]);
 
   const addRightDockTab = useCallback((kind: RightDockKind, url?: string) => {
     nextRightDockTabRef.current += 1;
@@ -1425,7 +1434,7 @@ function AppWorkspace() {
     setRightDockMounted(true);
     if (rightPanelVisible) {
       if (currentRightPanel === 'coworkers') {
-        openRightPanel('features');
+        showRegularRightPanel();
         return;
       }
       setRightDockExpanded(false);
@@ -1433,11 +1442,11 @@ function AppWorkspace() {
       return;
     }
     if (currentRightPanel === 'coworkers') {
-      openRightPanel('features');
+      showRegularRightPanel();
       return;
     }
     setRightPanelVisible(true);
-  }, [currentRightPanel, openRightPanel, rightPanelVisible]);
+  }, [currentRightPanel, rightPanelVisible, showRegularRightPanel]);
 
   const toggleCoworkersPanel = useCallback(() => {
     if (coworkersPanelOpen) {
@@ -1445,8 +1454,18 @@ function AppWorkspace() {
       setRightPanelVisible(false);
       return;
     }
-    openRightPanel('coworkers');
-  }, [coworkersPanelOpen, openRightPanel]);
+    if (currentRightPanel !== 'coworkers') {
+      lastRegularRightPanelRef.current = {
+        panel: currentRightPanel === 'none' ? 'features' : currentRightPanel,
+        activeTabId: activeRightDockTabId,
+      };
+      setRightPanel('coworkers');
+      setActiveRightDockTabId(null);
+    }
+    setRightDockExpanded(false);
+    setRightDockMounted(true);
+    setRightPanelVisible(true);
+  }, [activeRightDockTabId, coworkersPanelOpen, currentRightPanel]);
 
   const compactRightPanel =
     currentRightPanel === 'features' ||
@@ -1493,8 +1512,6 @@ function AppWorkspace() {
               onCommit: setReviewPanelWidth,
             }
           : null;
-  const showFloatingRightPanelToggle = rightPanelVisible && !rightDockExpanded && (mainView !== 'chat' || settingsOpen);
-
   const skillRuntime = useMemo<SkillRuntimeContextValue>(() => ({
     status: skillStatus,
     queuedSkill,
@@ -1565,12 +1582,12 @@ function AppWorkspace() {
                   sidebarCollapsed={sidebarCollapsed}
                   rightPanelOpen={rightPanelToggleOpen}
                   coworkersPanelOpen={coworkersPanelOpen}
-                  hideRightPanelToggle={settingsOpen && rightPanelVisible}
+                  hidePanelActions={settingsOpen}
                   onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
                   onToggleRightPanel={toggleRightPanel}
                   onToggleCoworkersPanel={toggleCoworkersPanel}
                   onOpenSideChat={() => addRightDockTab('side-chat')}
-                  onOpenSettings={() => openSettings('config')}
+                  onOpenSettings={() => openSettings('general')}
                 />
               )}
               {mainView === 'skills' ? (
@@ -1619,14 +1636,6 @@ function AppWorkspace() {
             )}
           </div>
           {rightPanelVisible && rightDockExpanded && currentRightPanel !== 'side-chat' && <DockOverlayComposer domain={domain} />}
-          {showFloatingRightPanelToggle && (
-            <div className="top-bar-actions floating-right-panel-actions">
-              <div className="top-bar-panel-actions">
-                <CoworkersToggleButton open={coworkersPanelOpen} onToggle={toggleCoworkersPanel} />
-                <RightPanelToggleButton open={rightPanelToggleOpen} onToggle={toggleRightPanel} />
-              </div>
-            </div>
-          )}
         </div>
         <SettingsPage
           domain={domain}
@@ -2677,7 +2686,7 @@ function TopBar({
   sidebarCollapsed,
   rightPanelOpen,
   coworkersPanelOpen,
-  hideRightPanelToggle = false,
+  hidePanelActions = false,
   onToggleSidebar,
   onToggleRightPanel,
   onToggleCoworkersPanel,
@@ -2688,7 +2697,7 @@ function TopBar({
   sidebarCollapsed: boolean;
   rightPanelOpen: boolean;
   coworkersPanelOpen: boolean;
-  hideRightPanelToggle?: boolean;
+  hidePanelActions?: boolean;
   onToggleSidebar: () => void;
   onToggleRightPanel: () => void;
   onToggleCoworkersPanel: () => void;
@@ -2794,7 +2803,7 @@ function TopBar({
       ) : (
         <div className="top-bar-title" data-tauri-drag-region>{domain.name}</div>
       )}
-      {!hideRightPanelToggle && (
+      {!hidePanelActions && (
         <div className="top-bar-actions">
           <div className="top-bar-panel-actions">
             <CoworkersToggleButton open={coworkersPanelOpen} onToggle={onToggleCoworkersPanel} />
@@ -3344,7 +3353,7 @@ function normalizeHttpUrl(value: string): string | null {
 
 function normalizeBrowserDockUrl(value: string): string | null {
   const trimmed = value.trim();
-  if (!trimmed || trimmed.startsWith('#')) return null;
+  if (!trimmed) return null;
   const filePath = localFilePath(trimmed);
   if (filePath) return localFileBrowserUrl(filePath);
   if (/^asset:\/\//i.test(trimmed)) return trimmed;
@@ -3366,7 +3375,7 @@ function normalizeBrowserDockUrl(value: string): string | null {
       return null;
     }
   }
-  return null;
+  return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
 }
 
 function browserDockDisplayUrl(value: string): string {
@@ -3745,7 +3754,13 @@ function RightDockWorkspace({
               <div key={tab.id} className={`right-dock-pane ${tab.id === activeId ? 'active' : ''}`} aria-hidden={tab.id !== activeId}>
                 {tab.kind === 'review' && <ReviewChangesPanel />}
                 {tab.kind === 'terminal' && <TerminalPanel theme={theme} dock visible={visible && tab.id === activeId} onClose={() => undefined} />}
-                {tab.kind === 'browser' && <BrowserDockPanel requestedUrl={tab.url} requestKey={tab.requestKey} />}
+                {tab.kind === 'browser' && (
+                  <BrowserDockPanel
+                    requestedUrl={tab.url}
+                    requestKey={tab.requestKey}
+                    active={visible && tab.id === activeId}
+                  />
+                )}
                 {tab.kind === 'files' && <FilesDockPanel filePath={tab.url} />}
                 {tab.kind === 'side-chat' && <SideChatPanel domain={domain} sidebarExpanded={expanded} />}
                 {tab.kind === 'research-workbench' && <ResearchWorkbenchPanel />}
@@ -4107,18 +4122,47 @@ type LocalHtmlPreview = {
   error?: string;
 };
 
-function BrowserDockPanel({ requestedUrl, requestKey }: { requestedUrl?: string; requestKey?: number }) {
+let browserWebviewSequence = 0;
+
+type BrowserDownloadStatus = {
+  message: string;
+  path?: string;
+  success?: boolean;
+};
+
+function BrowserDockPanel({
+  requestedUrl,
+  requestKey,
+  active,
+}: {
+  requestedUrl?: string;
+  requestKey?: number;
+  active: boolean;
+}) {
   const localUrl = useMemo(() => {
     if (typeof window === 'undefined') return 'http://localhost:1421';
     return window.location.protocol.startsWith('http') ? window.location.origin : 'http://localhost:1421';
   }, []);
+  const [nativeBrowserId] = useState(() => `dock-${++browserWebviewSequence}`);
+  const openBrowserTab = useBrowserDockOpener();
   const [draft, setDraft] = useState('');
   const [url, setUrl] = useState('');
+  const [activeDisplay, setActiveDisplay] = useState('');
   const [htmlPreview, setHtmlPreview] = useState<LocalHtmlPreview | null>(null);
   const [frameKey, setFrameKey] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [frameError, setFrameError] = useState('');
+  const [pageTitle, setPageTitle] = useState('');
+  const [downloadStatus, setDownloadStatus] = useState<BrowserDownloadStatus | null>(null);
+  const [, setHistoryVersion] = useState(0);
+  const addressRef = useRef<HTMLInputElement>(null);
+  const browserFrameRef = useRef<HTMLIFrameElement>(null);
+  const historyRef = useRef<string[]>([]);
+  const historyIndexRef = useRef(-1);
+  const pendingHistoryIndexRef = useRef<number | null>(null);
   const htmlPreviewRequestRef = useRef(0);
 
-  const openUrl = useCallback((value: string) => {
+  const loadUrl = useCallback((value: string) => {
     const displayUrl = browserDockDisplayUrl(value);
     const frameUrl = normalizeBrowserDockUrl(displayUrl);
     if (!frameUrl) return;
@@ -4126,10 +4170,15 @@ function BrowserDockPanel({ requestedUrl, requestKey }: { requestedUrl?: string;
     const shouldRenderLocalHtml = Boolean(localHtmlPath && isHtmlExt(extOf(localHtmlPath)) && isTauriRuntime());
     setUrl(frameUrl);
     setDraft(displayUrl);
+    setActiveDisplay(displayUrl);
+    setFrameError('');
+    setPageTitle('');
+    setIsLoading(true);
     setFrameKey((key) => key + 1);
     if (!localHtmlPath || !shouldRenderLocalHtml) {
       htmlPreviewRequestRef.current += 1;
       setHtmlPreview(null);
+      if (localHtmlPath && extOf(localHtmlPath) === 'pdf') setIsLoading(false);
       return;
     }
     const requestId = htmlPreviewRequestRef.current + 1;
@@ -4139,43 +4188,206 @@ function BrowserDockPanel({ requestedUrl, requestKey }: { requestedUrl?: string;
       .then((srcDoc) => {
         if (htmlPreviewRequestRef.current === requestId) {
           setHtmlPreview({ path: localHtmlPath, status: 'ready', srcDoc });
+          setIsLoading(false);
         }
       })
       .catch((error) => {
         if (htmlPreviewRequestRef.current === requestId) {
           setHtmlPreview({ path: localHtmlPath, status: 'error', error: stringifyError(error) });
+          setIsLoading(false);
         }
       });
   }, []);
 
-  const refreshFrame = useCallback(() => {
-    if (htmlPreview?.path) {
-      openUrl(htmlPreview.path);
-      return;
+  const openUrl = useCallback((value: string) => {
+    const displayUrl = browserDockDisplayUrl(value);
+    const normalizedUrl = normalizeBrowserDockUrl(displayUrl);
+    if (!normalizedUrl) return;
+    let historyUrl = displayUrl;
+    if (/^https?:\/\//i.test(normalizedUrl)) {
+      try {
+        historyUrl = new URL(normalizedUrl).href;
+      } catch {
+        historyUrl = normalizedUrl;
+      }
     }
-    setFrameKey((key) => key + 1);
-  }, [htmlPreview?.path, openUrl]);
+    const current = historyRef.current[historyIndexRef.current];
+    if (current !== historyUrl) {
+      const nextHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
+      nextHistory.push(historyUrl);
+      historyRef.current = nextHistory.slice(-100);
+      historyIndexRef.current = historyRef.current.length - 1;
+      setHistoryVersion((version) => version + 1);
+    }
+    loadUrl(displayUrl);
+  }, [loadUrl]);
+
+  const moveHistory = useCallback((offset: number) => {
+    const nextIndex = historyIndexRef.current + offset;
+    const nextUrl = historyRef.current[nextIndex];
+    if (!nextUrl || nextIndex < 0 || nextIndex >= historyRef.current.length) return;
+    historyIndexRef.current = nextIndex;
+    setHistoryVersion((version) => version + 1);
+    if (isTauriRuntime() && /^https?:\/\//i.test(url)) {
+      pendingHistoryIndexRef.current = nextIndex;
+      setIsLoading(true);
+      void browserWebviewAction(nativeBrowserId, offset < 0 ? 'back' : 'forward').catch(() => {
+        pendingHistoryIndexRef.current = null;
+        loadUrl(nextUrl);
+      });
+    } else {
+      loadUrl(nextUrl);
+    }
+  }, [loadUrl, nativeBrowserId, url]);
 
   const externalTarget = useMemo(() => {
-    const candidate = htmlPreview?.path || draft || url;
+    const candidate = htmlPreview?.path || activeDisplay || url;
     if (!candidate) return null;
     const displayUrl = browserDockDisplayUrl(candidate);
     const localPath = localFilePath(displayUrl);
     return localPath || normalizeBrowserDockUrl(displayUrl);
-  }, [draft, htmlPreview?.path, url]);
+  }, [activeDisplay, htmlPreview?.path, url]);
+
+  const localPdfPath = useMemo(() => {
+    const path = localFilePath(activeDisplay);
+    return path && extOf(path) === 'pdf' && isTauriRuntime() ? path : null;
+  }, [activeDisplay]);
+
+  const nativeHttpUrl = Boolean(
+    isTauriRuntime()
+    && /^https?:\/\//i.test(url)
+    && !htmlPreview
+    && !localPdfPath,
+  );
+
+  const refreshFrame = useCallback(() => {
+    if (nativeHttpUrl) {
+      setFrameError('');
+      setIsLoading(true);
+      void browserWebviewAction(nativeBrowserId, 'reload').catch(() => {
+        if (activeDisplay) loadUrl(activeDisplay);
+      });
+      return;
+    }
+    if (activeDisplay) {
+      loadUrl(activeDisplay);
+      return;
+    }
+    setFrameKey((key) => key + 1);
+  }, [activeDisplay, loadUrl, nativeBrowserId, nativeHttpUrl]);
+
+  const handleNativeBrowserEvent = useCallback((event: BrowserWebviewEvent) => {
+    if (event.type === 'title-changed') {
+      setPageTitle(event.title?.trim() || '');
+      return;
+    }
+    if (event.type === 'new-window') {
+      if (/^https?:\/\//i.test(event.url || '')) openBrowserTab?.(event.url as string);
+      else if (event.url && event.url !== 'about:blank') void openExternal(event.url);
+      return;
+    }
+    if (event.type === 'download-started') {
+      setDownloadStatus({
+        message: event.path ? `正在下载 ${basename(event.path)}` : '正在下载文件',
+        path: event.path,
+      });
+      return;
+    }
+    if (event.type === 'download-finished') {
+      setDownloadStatus({
+        message: event.success === false
+          ? '下载失败'
+          : event.path ? `${basename(event.path)} 下载完成` : '下载完成',
+        path: event.path,
+        success: event.success,
+      });
+      return;
+    }
+    if (!event.url) return;
+
+    const displayUrl = browserDockDisplayUrl(event.url);
+    setUrl(event.url);
+    setDraft(displayUrl);
+    setActiveDisplay(displayUrl);
+    setFrameError('');
+    if (event.type === 'load-started') {
+      setIsLoading(true);
+      const pendingIndex = pendingHistoryIndexRef.current;
+      if (pendingIndex !== null) {
+        pendingHistoryIndexRef.current = null;
+        historyRef.current[pendingIndex] = displayUrl;
+      } else if (historyRef.current[historyIndexRef.current] !== displayUrl) {
+        const nextHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
+        nextHistory.push(displayUrl);
+        historyRef.current = nextHistory.slice(-100);
+        historyIndexRef.current = historyRef.current.length - 1;
+      }
+      setHistoryVersion((version) => version + 1);
+    } else if (event.type === 'load-finished') {
+      setIsLoading(false);
+    }
+  }, [openBrowserTab]);
+
+  const handleNativeBrowserError = useCallback((error: unknown) => {
+    if (!active) return;
+    setIsLoading(false);
+    setFrameError(stringifyError(error));
+  }, [active]);
+
+  const canGoBack = historyIndexRef.current > 0;
+  const canGoForward = historyIndexRef.current >= 0 && historyIndexRef.current < historyRef.current.length - 1;
 
   useEffect(() => {
     if (!requestedUrl) return;
     openUrl(requestedUrl);
   }, [openUrl, requestedUrl, requestKey]);
 
+  useEffect(() => {
+    if (!downloadStatus || downloadStatus.success === undefined) return;
+    const timer = window.setTimeout(() => setDownloadStatus(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [downloadStatus]);
+
   return (
-    <section className="browser-dock-panel" aria-label="浏览器">
+    <section
+      className="browser-dock-panel"
+      aria-label="浏览器"
+      title={pageTitle || undefined}
+      onKeyDown={(event) => {
+        const key = event.key.toLowerCase();
+        if (event.metaKey && key === 'l') {
+          event.preventDefault();
+          addressRef.current?.focus();
+          addressRef.current?.select();
+        } else if (event.metaKey && key === 'r') {
+          event.preventDefault();
+          refreshFrame();
+        } else if ((event.altKey && event.key === 'ArrowLeft') || (event.metaKey && event.key === '[')) {
+          event.preventDefault();
+          moveHistory(-1);
+        } else if ((event.altKey && event.key === 'ArrowRight') || (event.metaKey && event.key === ']')) {
+          event.preventDefault();
+          moveHistory(1);
+        } else if (event.metaKey && key === 'p' && nativeHttpUrl) {
+          event.preventDefault();
+          void browserWebviewAction(nativeBrowserId, 'print');
+        }
+      }}
+    >
       <form className="browser-url-row" onSubmit={(event) => { event.preventDefault(); openUrl(draft); }}>
-        <button type="button" className="icon-mini" disabled aria-label="后退"><ChevronLeft size={14} /></button>
-        <button type="button" className="icon-mini" disabled aria-label="前进"><ChevronRight size={14} /></button>
+        <button type="button" className="icon-mini" disabled={!canGoBack} onClick={() => moveHistory(-1)} aria-label="后退" title="后退"><ChevronLeft size={14} /></button>
+        <button type="button" className="icon-mini" disabled={!canGoForward} onClick={() => moveHistory(1)} aria-label="前进" title="前进"><ChevronRight size={14} /></button>
         <div className="browser-address-field">
-          <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="输入 URL" spellCheck={false} />
+          <Globe className="browser-address-icon" size={13} aria-hidden="true" />
+          <input
+            ref={addressRef}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onClick={(event) => event.currentTarget.select()}
+            placeholder="搜索或输入网址"
+            spellCheck={false}
+            autoCapitalize="none"
+          />
           <button
             type="button"
             className="browser-external-open"
@@ -4191,11 +4403,37 @@ function BrowserDockPanel({ requestedUrl, requestKey }: { requestedUrl?: string;
             <ExternalLink size={14} />
           </button>
         </div>
-        <button type="button" className="icon-mini" disabled={!url} onClick={refreshFrame} aria-label="刷新浏览器" title="刷新">
-          <RefreshCw size={14} />
+        <button type="button" className="icon-mini" disabled={!url} onClick={() => {
+          if (isLoading && !localPdfPath && !htmlPreview) {
+            if (nativeHttpUrl) void browserWebviewAction(nativeBrowserId, 'stop');
+            else browserFrameRef.current?.contentWindow?.stop();
+            setIsLoading(false);
+          } else {
+            refreshFrame();
+          }
+        }} aria-label={isLoading ? '停止加载' : '刷新浏览器'} title={isLoading ? '停止' : '刷新'}>
+          {isLoading ? <X size={14} /> : <RefreshCw size={14} />}
         </button>
         <button type="submit" className="icon-mini" aria-label="打开 URL" title="打开"><ArrowUp size={14} /></button>
       </form>
+      {isLoading && !localPdfPath ? <div className="browser-load-progress" aria-hidden="true" /> : null}
+      {downloadStatus ? (
+        <div className={`browser-download-status ${downloadStatus.success === false ? 'error' : ''}`} role="status">
+          <Download size={13} />
+          <button
+            type="button"
+            disabled={!downloadStatus.path}
+            title={downloadStatus.path}
+            onClick={() => { if (downloadStatus.path) void revealPath(downloadStatus.path); }}
+          >
+            {downloadStatus.message}
+          </button>
+          <span className="spacer" />
+          <button type="button" className="icon-mini" onClick={() => setDownloadStatus(null)} aria-label="关闭下载提示">
+            <X size={12} />
+          </button>
+        </div>
+      ) : null}
       {htmlPreview?.status === 'loading' ? (
         <div className="browser-frame-status" role="status">
           <Loader2 size={18} className="spin" />
@@ -4213,9 +4451,36 @@ function BrowserDockPanel({ requestedUrl, requestKey }: { requestedUrl?: string;
           </button>
         </div>
       ) : htmlPreview?.status === 'ready' ? (
-        <iframe key={`${htmlPreview.path}-${frameKey}`} className="browser-frame" srcDoc={htmlPreview.srcDoc} title={draft || htmlPreview.path} />
+        <iframe key={`${htmlPreview.path}-${frameKey}`} className="browser-frame" srcDoc={htmlPreview.srcDoc} title={activeDisplay || htmlPreview.path} onLoad={() => setIsLoading(false)} />
+      ) : localPdfPath ? (
+        <BrowserPdfViewer path={localPdfPath} revision={frameKey} onOpenExternal={() => void openExternal(localPdfPath)} />
+      ) : frameError ? (
+        <div className="browser-frame-status error" role="alert">
+          <AlertCircle size={18} />
+          <strong>网页无法打开</strong>
+          <span>{frameError}</span>
+          <button type="button" className="generated-file-open" onClick={refreshFrame}><span>重试</span><RefreshCw size={13} /></button>
+        </div>
+      ) : nativeHttpUrl ? (
+        <NativeBrowserSurface
+          id={nativeBrowserId}
+          url={url}
+          visible={active}
+          onEvent={handleNativeBrowserEvent}
+          onError={handleNativeBrowserError}
+        />
       ) : url ? (
-        <iframe key={`${url}-${frameKey}`} className="browser-frame" src={url} title={draft || url} />
+        <iframe
+          ref={browserFrameRef}
+          key={`${url}-${frameKey}`}
+          className="browser-frame"
+          src={url}
+          title={activeDisplay || url}
+          onLoad={() => setIsLoading(false)}
+          onError={() => { setIsLoading(false); setFrameError('目标网页拒绝连接或当前网络不可用。'); }}
+          allow="clipboard-read; clipboard-write; fullscreen; geolocation"
+          referrerPolicy="strict-origin-when-cross-origin"
+        />
       ) : (
         <div className="browser-start">
           <div className="dock-section-label">本地</div>
@@ -9843,10 +10108,9 @@ function SettingsPage({
       <nav className="settings-page-nav">
         <div className="settings-page-traffic" data-tauri-drag-region />
         <button className="settings-back" type="button" onClick={onClose}><ChevronLeft size={16} /><span>返回应用</span></button>
-        <SettingsNavGroup label="个人" items={domain.navigation.personal} section={section} onSectionChange={onSectionChange} />
-        <SettingsNavGroup label="集成" items={domain.navigation.integrations} section={section} onSectionChange={onSectionChange} />
-        <SettingsNavGroup label="编码" items={domain.navigation.coding} section={section} onSectionChange={onSectionChange} />
-        <SettingsNavGroup label="已归档" items={domain.navigation.archived} section={section} onSectionChange={onSectionChange} />
+        <SettingsNavGroup label="基础与账户" items={domain.navigation.personal} section={section} onSectionChange={onSectionChange} />
+        <SettingsNavGroup label="金融数据" items={domain.navigation.integrations} section={section} onSectionChange={onSectionChange} />
+        <SettingsNavGroup label="数据管理" items={domain.navigation.archived} section={section} onSectionChange={onSectionChange} />
       </nav>
       <div className="settings-page-main">
         <div className="settings-page-head" data-tauri-drag-region />
@@ -9886,86 +10150,21 @@ function SettingsNavGroup({
 }
 
 function SettingsContent({ domain, section, theme, onThemeChange }: { domain: DomainConfig; section: SettingsSection; theme: Theme; onThemeChange: (theme: Theme) => void }) {
-  const speed = useChatStore((state) => state.speed);
-  const approvalMode = useChatStore((state) => state.approvalMode);
-  const setSpeed = useChatStore((state) => state.setSpeed);
-  const setApprovalMode = useChatStore((state) => state.setApprovalMode);
-
   if (section === 'archived') return <ArchivedSettings />;
-  if (section === 'models') return <ModelSettings />;
   if (section === 'jqdata') return <JqDataSettings />;
-  if (section === 'appearance') {
-    return (
-      <>
-        <ResearchPreview />
-        <SettingsGroup>
-          <SettingsRow title="主题" description="使用浅色、深色或匹配系统设置。">
-            <SettingsSegment value={theme} onChange={onThemeChange} options={[{ id: 'light', label: '浅色', icon: <Sun size={13} /> }, { id: 'dark', label: '深色', icon: <Moon size={13} /> }]} />
-          </SettingsRow>
-          <SettingsRow title="强调色" description="用于按钮、选中状态和风险提示。"><ColorSwatch value="#339CFF" /></SettingsRow>
-          <SettingsRow title="UI 字号" description="调整工作台界面的基础字号。"><span className="settings-static">14 px</span></SettingsRow>
-        </SettingsGroup>
-      </>
-    );
-  }
-  if (section === 'config') {
-    return (
-      <SettingsGroup>
-        <SettingsRow title="批准方式" description="选择 Alpha Studio 执行敏感操作前如何请求授权。">
-          <select className="settings-select" value={approvalMode} onChange={(event) => setApprovalMode(event.target.value as ApprovalMode)}>
-            {APPROVAL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.title}</option>)}
-          </select>
-        </SettingsRow>
-        <SettingsRow title="当前策略" description={approvalDescription(approvalMode)}>
-          <span className="settings-static">{approvalMode === 'request' ? '执行前弹出授权' : '自动执行'}</span>
-        </SettingsRow>
-      </SettingsGroup>
-    );
-  }
-  if (section === 'personalization') {
-    return (
-      <>
-        <SettingsGroup>
-          <SettingsRow title="个性" description="选择 Alpha Studio 回复的默认语气。"><span className="settings-static">亲和</span></SettingsRow>
-        </SettingsGroup>
-        <div className="settings-subtitle">自定义指令</div>
-        <textarea className="settings-textarea" placeholder="添加自定义指令..." />
-      </>
-    );
-  }
-  if (section === 'keyboard') return <KeyboardSettings />;
   if (section === 'usage') return <UsageSettings />;
-  if (section === 'git') return <GitSettings />;
-  if (section === 'environment') return <EnvironmentSettings />;
-  if (section === 'worktrees') return <WorktreeSettings />;
   if (section === 'profile') return <ProfileSettings />;
   if (section === 'general') {
     return (
-      <>
-        <SettingsGroup>
-          <SettingsRow title="默认权限" description="默认情况下，Alpha Studio 可以读取本地资料。"><Toggle checked /></SettingsRow>
-          <SettingsRow title="自动审核" description="自动审核额外访问和权限请求。"><Toggle checked /></SettingsRow>
-          <SettingsRow title="完全访问权限" description="允许处理资料目录并访问联网资源。"><Toggle checked /></SettingsRow>
-        </SettingsGroup>
-        <SettingsGroup>
-          <SettingsRow title="默认打开目标" description="默认打开资料和文件夹的位置。"><span className="settings-static">按研究主题</span></SettingsRow>
-          <SettingsRow title="语言" description="应用 UI 语言。"><span className="settings-static">自动检测</span></SettingsRow>
-          <SettingsRow title="速度" description="选择用于聊天、子智能体和压缩的推理层级。">
-            <SettingsSegment value={speed} onChange={(id) => setSpeed(id as Speed)} options={SPEED_OPTIONS.map((option) => ({ id: option.id, label: option.label, icon: option.fast ? <Zap size={13} /> : undefined }))} />
-          </SettingsRow>
-        </SettingsGroup>
-      </>
+      <SettingsGroup>
+        <SettingsRow title="界面主题" description="选择适合阅读研究报告和行情信息的显示方式。">
+          <SettingsSegment value={theme} onChange={onThemeChange} options={[{ id: 'light', label: '浅色', icon: <Sun size={13} /> }, { id: 'dark', label: '深色', icon: <Moon size={13} /> }]} />
+        </SettingsRow>
+        <SettingsRow title="界面语言" description="Alpha Studio 金融版默认使用简体中文。"><span className="settings-static">简体中文</span></SettingsRow>
+      </SettingsGroup>
     );
   }
-  if (section === 'mcp') return <PluginSettings />;
-  if (section === 'hooks' || section === 'connections' || section === 'snapshots' || section === 'browser' || section === 'computer') {
-    return <PlaceholderSettings domain={domain} section={section} />;
-	  }
-	  return (
-	    <SettingsGroup>
-	      <SettingsRow title={sectionLabel(section, domain)} description="公开源码版保留入口，商业垂直包可通过领域插件扩展这里。"><span className="settings-static">可扩展</span></SettingsRow>
-	    </SettingsGroup>
-	  );
+	return null;
 	}
 
 function JqDataSettings() {
@@ -9976,10 +10175,8 @@ function JqDataSettings() {
   const [apiUrl, setApiUrl] = useState('https://dataapi.joinquant.com/v2/apis');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [probe, setProbe] = useState<JqDataProbeResult | null>(null);
 
   const hydrate = useCallback((next: JqDataConfig) => {
     setConfig(next);
@@ -10008,11 +10205,6 @@ function JqDataSettings() {
   }, [hydrate]);
 
   const canSave = !enabled || Boolean(username.trim());
-  const canTest = Boolean(enabled && username.trim() && (password.trim() || config.passwordConfigured));
-  const configured = Boolean(config.enabled && config.username && config.passwordConfigured);
-  const status = loading ? 'checking' : configured ? 'ready' : 'missing';
-  const statusText = loading ? '检测中' : configured ? '已配置' : '未配置';
-  const sampleRows = Array.isArray(probe?.sample?.priceRows) ? probe.sample.priceRows.slice(0, 3) : [];
 
   const save = async () => {
     setSaving(true);
@@ -10043,48 +10235,10 @@ function JqDataSettings() {
     void save();
   };
 
-  const test = async () => {
-    if (!canTest || saving || testing) return;
-    const saved = await save();
-    if (!saved) return;
-    setTesting(true);
-    setError('');
-    setNotice('');
-    setProbe(null);
-    try {
-      const result = await testJqDataConnection();
-      setProbe(result);
-      if (result.ok) {
-        setNotice(result.message);
-      } else {
-        setError(result.message);
-      }
-    } catch (err) {
-      setError(stringifyError(err));
-    } finally {
-      setTesting(false);
-    }
-  };
-
   return (
     <>
-      <SettingsGroup>
-        <div className={`settings-status ${status}`}>
-          <span className="settings-status-icon">
-            {status === 'checking' ? <Loader2 size={16} className="spin" /> : <Database size={16} />}
-          </span>
-          <span className="settings-status-main">
-            <strong>JQData SDK/RPC 数据源</strong>
-            <span>{config.path}</span>
-          </span>
-          <span className={`settings-state-pill ${status}`}>
-            {statusText}
-          </span>
-        </div>
-      </SettingsGroup>
-
       <form className="jqdata-settings-form" onSubmit={submit}>
-        <div className="settings-subtitle">连接配置</div>
+        <div className="settings-subtitle">聚宽账号</div>
         <div className="jqdata-form-grid">
           <label>
             <span>启用数据源</span>
@@ -10105,10 +10259,6 @@ function JqDataSettings() {
         <div className="jqdata-form-actions">
           {notice && <span className="settings-state-pill ready">{notice}</span>}
           {error && <span className="settings-inline-error">{error}</span>}
-          <button className="settings-btn" type="button" disabled={!canTest || saving || testing} onClick={() => void test()}>
-            {testing ? <Loader2 size={13} className="spin" /> : <Database size={13} />}
-            测试连接
-          </button>
           <button className="settings-btn primary" type="submit" disabled={!canSave || saving}>
             {saving ? <Loader2 size={13} className="spin" /> : <Check size={13} />}
             保存
@@ -10116,49 +10266,6 @@ function JqDataSettings() {
         </div>
       </form>
 
-      <div className="settings-subtitle">数据能力</div>
-      <div className="jqdata-capability-grid">
-        {JQDATA_CAPABILITIES.map((item) => (
-          <article key={item.title} className="jqdata-capability-card">
-            <strong>{item.title}</strong>
-            <span>{item.detail}</span>
-          </article>
-        ))}
-      </div>
-
-      {probe && (
-        <>
-          <div className="settings-subtitle">探针结果</div>
-          <div className="jqdata-probe-card">
-            <div className="jqdata-probe-head">
-              <strong>{probe.ok ? '连接正常' : '连接失败'}</strong>
-              <span>{probe.message}</span>
-            </div>
-            {probe.queryCount !== undefined && (
-              <code>{JSON.stringify(probe.queryCount)}</code>
-            )}
-            {probe.sample?.tradeDays && (
-              <span className="jqdata-sample-line">交易日：{probe.sample.tradeDays.join(' / ')}</span>
-            )}
-            {probe.sample?.permissionNote && (
-              <span className="jqdata-sample-line">{probe.sample.permissionNote}</span>
-            )}
-            {probe.sample?.authMessage && (
-              <span className="jqdata-sample-line">{probe.sample.authMessage}</span>
-            )}
-            {sampleRows.length > 0 && (
-              <div className="jqdata-sample-table">
-                {sampleRows.map((row, index) => (
-                  <span key={index}>
-                    <strong>{String(row.index ?? row.time ?? row.date ?? `样例 ${index + 1}`)}</strong>
-                    <em>收盘 {String(row.close ?? '-')}</em>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      )}
     </>
   );
 }
@@ -11143,22 +11250,8 @@ function settingsIcon(section: SettingsSection): ReactNode {
   const icons: Record<SettingsSection, ReactNode> = {
     general: <SlidersHorizontal size={15} />,
     profile: <UserCircle size={15} />,
-	    appearance: <Sun size={15} />,
-	    config: <Box size={15} />,
-	    models: <Cpu size={15} />,
-	    personalization: <Sparkles size={15} />,
-    keyboard: <Keyboard size={15} />,
     usage: <History size={15} />,
-    snapshots: <Layers size={15} />,
     jqdata: <Database size={15} />,
-    mcp: <Plug size={15} />,
-    browser: <Globe size={15} />,
-    computer: <Monitor size={15} />,
-    hooks: <Workflow size={15} />,
-    connections: <Network size={15} />,
-    git: <GitBranch size={15} />,
-    environment: <Terminal size={15} />,
-    worktrees: <FolderGit2 size={15} />,
     archived: <Archive size={15} />,
   };
   return icons[section];

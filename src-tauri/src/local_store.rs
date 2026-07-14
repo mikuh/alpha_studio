@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 const DB_FILE_NAME: &str = "alpha-studio.sqlite3";
 
 #[derive(Debug, Clone)]
@@ -36,6 +36,9 @@ pub struct LocalStoreLoadResult {
     chat: Option<Value>,
     research: Option<Value>,
     premarket_theme_runs: Vec<Value>,
+    theme_tracking_events: Vec<Value>,
+    theme_reviews: Vec<Value>,
+    theme_backtest_runs: Vec<Value>,
     automation_tasks: Vec<Value>,
 }
 
@@ -45,6 +48,9 @@ pub struct LocalStoreCommitRequest {
     chat: Option<Value>,
     research: Option<Value>,
     premarket_theme_runs: Option<Vec<Value>>,
+    theme_tracking_events: Option<Vec<Value>>,
+    theme_reviews: Option<Vec<Value>>,
+    theme_backtest_runs: Option<Vec<Value>>,
     automation_tasks: Option<Vec<Value>>,
     audit: Option<LocalAuditInput>,
 }
@@ -64,6 +70,9 @@ pub struct LocalStoreImportLegacyRequest {
     chat: Option<Value>,
     research: Option<Value>,
     premarket_theme_runs: Option<Vec<Value>>,
+    theme_tracking_events: Option<Vec<Value>>,
+    theme_reviews: Option<Vec<Value>>,
+    theme_backtest_runs: Option<Vec<Value>>,
     automation_tasks: Option<Vec<Value>>,
     source_keys: Vec<String>,
 }
@@ -83,6 +92,9 @@ pub struct LocalStoreExportResult {
     chat: Option<Value>,
     research: Option<Value>,
     premarket_theme_runs: Vec<Value>,
+    theme_tracking_events: Vec<Value>,
+    theme_reviews: Vec<Value>,
+    theme_backtest_runs: Vec<Value>,
     automation_tasks: Vec<Value>,
     audit_events: Vec<Value>,
 }
@@ -178,6 +190,9 @@ pub fn local_store_export(app: AppHandle) -> Result<LocalStoreExportResult, Stri
         chat: loaded.chat,
         research: loaded.research,
         premarket_theme_runs: loaded.premarket_theme_runs,
+        theme_tracking_events: loaded.theme_tracking_events,
+        theme_reviews: loaded.theme_reviews,
+        theme_backtest_runs: loaded.theme_backtest_runs,
         automation_tasks: loaded.automation_tasks,
         audit_events: load_recent_audit_events(&conn, 500)?,
     })
@@ -413,6 +428,33 @@ fn migrate(conn: &Connection, version: i64) -> Result<(), String> {
           payload text not null
         );
 
+        create table if not exists theme_tracking_events (
+          id text primary key,
+          report_id text not null,
+          trigger_id text not null,
+          observed_at text not null,
+          status text not null,
+          deleted_at text,
+          payload text not null
+        );
+
+        create table if not exists theme_reviews (
+          id text primary key,
+          report_id text not null,
+          trade_date text not null,
+          generated_at text not null,
+          deleted_at text,
+          payload text not null
+        );
+
+        create table if not exists theme_backtest_runs (
+          id text primary key,
+          run_hash text not null unique,
+          created_at text not null,
+          deleted_at text,
+          payload text not null
+        );
+
         create table if not exists automation_tasks (
           id text primary key,
           title text not null,
@@ -464,8 +506,10 @@ fn migrate(conn: &Connection, version: i64) -> Result<(), String> {
         create index if not exists idx_messages_conversation on messages(conversation_id, timestamp);
         create index if not exists idx_audit_events_created on audit_events(created_at desc);
         create index if not exists idx_market_cache_lookup on market_cache_entries(source, scope, cache_key);
+        create index if not exists idx_theme_tracking_report on theme_tracking_events(report_id, observed_at desc);
+        create index if not exists idx_theme_reviews_report on theme_reviews(report_id, generated_at desc);
 
-        pragma user_version = 1;
+        pragma user_version = 2;
         commit;
         "#,
     )
@@ -487,6 +531,9 @@ fn has_data(conn: &Connection) -> Result<bool, String> {
               + (select count(*) from conversations)
               + (select count(*) from research_trades)
               + (select count(*) from premarket_theme_runs)
+              + (select count(*) from theme_tracking_events)
+              + (select count(*) from theme_reviews)
+              + (select count(*) from theme_backtest_runs)
               + (select count(*) from automation_tasks)
             "#,
             [],
@@ -507,6 +554,18 @@ fn load_snapshot(paths: &StorePaths, conn: &Connection) -> Result<LocalStoreLoad
             conn,
             "select payload from premarket_theme_runs where deleted_at is null order by imported_at desc, generated_at desc",
         )?,
+        theme_tracking_events: load_payload_rows(
+            conn,
+            "select payload from theme_tracking_events where deleted_at is null order by observed_at desc",
+        )?,
+        theme_reviews: load_payload_rows(
+            conn,
+            "select payload from theme_reviews where deleted_at is null order by generated_at desc",
+        )?,
+        theme_backtest_runs: load_payload_rows(
+            conn,
+            "select payload from theme_backtest_runs where deleted_at is null order by created_at desc",
+        )?,
         automation_tasks: load_payload_rows(
             conn,
             "select payload from automation_tasks where deleted_at is null order by created_at desc",
@@ -526,6 +585,15 @@ fn commit_snapshot(conn: &mut Connection, request: LocalStoreCommitRequest) -> R
     }
     if let Some(runs) = request.premarket_theme_runs {
         save_premarket_theme_runs(&tx, &runs)?;
+    }
+    if let Some(events) = request.theme_tracking_events {
+        save_theme_tracking_events(&tx, &events)?;
+    }
+    if let Some(reviews) = request.theme_reviews {
+        save_theme_reviews(&tx, &reviews)?;
+    }
+    if let Some(runs) = request.theme_backtest_runs {
+        save_theme_backtest_runs(&tx, &runs)?;
     }
     if let Some(tasks) = request.automation_tasks {
         save_automation_tasks(&tx, &tasks)?;
@@ -562,6 +630,18 @@ fn import_legacy(
     if let Some(runs) = request.premarket_theme_runs.as_ref() {
         save_premarket_theme_runs(&tx, runs)?;
         imported_domains.push("premarket_theme_runs");
+    }
+    if let Some(events) = request.theme_tracking_events.as_ref() {
+        save_theme_tracking_events(&tx, events)?;
+        imported_domains.push("theme_tracking_events");
+    }
+    if let Some(reviews) = request.theme_reviews.as_ref() {
+        save_theme_reviews(&tx, reviews)?;
+        imported_domains.push("theme_reviews");
+    }
+    if let Some(runs) = request.theme_backtest_runs.as_ref() {
+        save_theme_backtest_runs(&tx, runs)?;
+        imported_domains.push("theme_backtest_runs");
     }
     if let Some(tasks) = request.automation_tasks.as_ref() {
         save_automation_tasks(&tx, tasks)?;
@@ -1080,12 +1160,6 @@ fn save_custom_securities(tx: &Transaction<'_>, custom: &[(&str, &Value)]) -> Re
 }
 
 fn save_premarket_theme_runs(tx: &Transaction<'_>, runs: &[Value]) -> Result<(), String> {
-    let now = now_rfc3339();
-    let incoming = runs
-        .iter()
-        .filter_map(|run| string_field(run, "id"))
-        .collect::<HashSet<_>>();
-    soft_delete_missing(tx, "premarket_theme_runs", &incoming, &now)?;
     for run in runs {
         let id = string_field(run, "id").unwrap_or_else(|| generated_id("theme"));
         tx.execute(
@@ -1118,6 +1192,107 @@ fn save_premarket_theme_runs(tx: &Transaction<'_>, runs: &[Value]) -> Result<(),
         tx,
         "theme_research",
         "snapshot.commit",
+        None,
+        &json!({ "count": runs.len() }),
+    )?;
+    Ok(())
+}
+
+fn save_theme_tracking_events(tx: &Transaction<'_>, events: &[Value]) -> Result<(), String> {
+    for event in events {
+        let id = string_field(event, "id").unwrap_or_else(|| generated_id("trigger"));
+        tx.execute(
+            r#"
+            insert into theme_tracking_events (id, report_id, trigger_id, observed_at, status, deleted_at, payload)
+            values (?1, ?2, ?3, ?4, ?5, null, ?6)
+            on conflict(id) do update set
+              report_id = excluded.report_id,
+              trigger_id = excluded.trigger_id,
+              observed_at = excluded.observed_at,
+              status = excluded.status,
+              deleted_at = null,
+              payload = excluded.payload
+            "#,
+            params![
+                id,
+                string_field(event, "reportId").unwrap_or_default(),
+                string_field(event, "triggerId").unwrap_or_default(),
+                string_field(event, "observedAt").unwrap_or_else(now_rfc3339),
+                string_field(event, "status").unwrap_or_else(|| "data_missing".to_string()),
+                json_string(event)?,
+            ],
+        ).map_err(|e| format!("Failed to save theme tracking event: {e}"))?;
+    }
+    write_audit(
+        tx,
+        "theme_validation",
+        "tracking.snapshot.commit",
+        None,
+        &json!({ "count": events.len() }),
+    )?;
+    Ok(())
+}
+
+fn save_theme_reviews(tx: &Transaction<'_>, reviews: &[Value]) -> Result<(), String> {
+    for review in reviews {
+        let id = string_field(review, "id").unwrap_or_else(|| generated_id("review"));
+        tx.execute(
+            r#"
+            insert into theme_reviews (id, report_id, trade_date, generated_at, deleted_at, payload)
+            values (?1, ?2, ?3, ?4, null, ?5)
+            on conflict(id) do update set
+              report_id = excluded.report_id,
+              trade_date = excluded.trade_date,
+              generated_at = excluded.generated_at,
+              deleted_at = null,
+              payload = excluded.payload
+            "#,
+            params![
+                id,
+                string_field(review, "reportId").unwrap_or_default(),
+                string_field(review, "tradeDate").unwrap_or_default(),
+                string_field(review, "generatedAt").unwrap_or_else(now_rfc3339),
+                json_string(review)?,
+            ],
+        )
+        .map_err(|e| format!("Failed to save theme review: {e}"))?;
+    }
+    write_audit(
+        tx,
+        "theme_validation",
+        "reviews.snapshot.commit",
+        None,
+        &json!({ "count": reviews.len() }),
+    )?;
+    Ok(())
+}
+
+fn save_theme_backtest_runs(tx: &Transaction<'_>, runs: &[Value]) -> Result<(), String> {
+    for run in runs {
+        let id = string_field(run, "id").unwrap_or_else(|| generated_id("backtest"));
+        tx.execute(
+            r#"
+            insert into theme_backtest_runs (id, run_hash, created_at, deleted_at, payload)
+            values (?1, ?2, ?3, null, ?4)
+            on conflict(run_hash) do update set
+              id = excluded.id,
+              created_at = excluded.created_at,
+              deleted_at = null,
+              payload = excluded.payload
+            "#,
+            params![
+                id,
+                string_field(run, "runHash").unwrap_or_else(|| generated_id("hash")),
+                string_field(run, "createdAt").unwrap_or_else(now_rfc3339),
+                json_string(run)?,
+            ],
+        )
+        .map_err(|e| format!("Failed to save theme backtest run: {e}"))?;
+    }
+    write_audit(
+        tx,
+        "theme_validation",
+        "backtests.snapshot.commit",
         None,
         &json!({ "count": runs.len() }),
     )?;
@@ -1420,6 +1595,9 @@ fn id_column(table: &str) -> Result<&'static str, String> {
         | "research_portfolios"
         | "research_trades"
         | "premarket_theme_runs"
+        | "theme_tracking_events"
+        | "theme_reviews"
+        | "theme_backtest_runs"
         | "automation_tasks" => Ok("id"),
         "research_holdings" | "research_custom_securities" => Ok("code"),
         other => Err(format!("Unsupported soft-delete table: {other}")),
@@ -1613,6 +1791,9 @@ mod tests {
                     "customSecurities": {}
                 })),
                 premarket_theme_runs: None,
+                theme_tracking_events: None,
+                theme_reviews: None,
+                theme_backtest_runs: None,
                 automation_tasks: None,
                 audit: None,
             },
@@ -1621,6 +1802,89 @@ mod tests {
         let loaded = load_snapshot(&paths, &conn).unwrap();
         assert_eq!(loaded.chat.unwrap()["conversations"][0]["id"], "conv-1");
         assert_eq!(loaded.research.unwrap()["cash"], 1000);
+    }
+
+    #[test]
+    fn event_history_is_not_deleted_by_partial_commits() {
+        let paths = temp_paths("append-event-history");
+        let mut conn = open_store_at_paths(&paths).unwrap();
+
+        for (report_id, generated_at) in [
+            ("report-old", "2026-07-10T00:10:00Z"),
+            ("report-new", "2026-07-13T00:10:00Z"),
+        ] {
+            commit_snapshot(
+                &mut conn,
+                LocalStoreCommitRequest {
+                    chat: None,
+                    research: None,
+                    premarket_theme_runs: Some(vec![json!({
+                        "id": report_id,
+                        "schema": "alpha.premarket_theme.v2",
+                        "generatedAt": generated_at,
+                        "importedAt": generated_at,
+                        "reportMarkdown": format!("# {report_id}")
+                    })]),
+                    theme_tracking_events: None,
+                    theme_reviews: None,
+                    theme_backtest_runs: None,
+                    automation_tasks: None,
+                    audit: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let active_count: i64 = conn
+            .query_row(
+                "select count(*) from premarket_theme_runs where deleted_at is null",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_count, 2);
+        let loaded = load_snapshot(&paths, &conn).unwrap();
+        assert_eq!(loaded.premarket_theme_runs.len(), 2);
+    }
+
+    #[test]
+    fn migrates_v1_reports_without_losing_history() {
+        let paths = temp_paths("migrate-v1");
+        fs::create_dir_all(&paths.data_dir).unwrap();
+        let conn = Connection::open(&paths.db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            create table premarket_theme_runs (
+              id text primary key,
+              schema_name text not null,
+              generated_at text,
+              imported_at text,
+              report_markdown text,
+              deleted_at text,
+              payload text not null
+            );
+            insert into premarket_theme_runs values (
+              'legacy-report', 'alpha.premarket_theme.v1', '2026-07-01T01:00:00Z',
+              '2026-07-01T01:01:00Z', '# legacy', null, '{"id":"legacy-report"}'
+            );
+            pragma user_version = 1;
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let migrated = open_store_at_paths(&paths).unwrap();
+        assert_eq!(schema_version(&migrated).unwrap(), 2);
+        let loaded = load_snapshot(&paths, &migrated).unwrap();
+        assert_eq!(loaded.premarket_theme_runs[0]["id"], "legacy-report");
+        let new_tables: i64 = migrated
+            .query_row(
+                "select count(*) from sqlite_master where type = 'table' and name in ('theme_tracking_events', 'theme_reviews', 'theme_backtest_runs')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_tables, 3);
     }
 
     #[test]
@@ -1642,6 +1906,9 @@ mod tests {
                     "customSecurities": {}
                 })),
                 premarket_theme_runs: None,
+                theme_tracking_events: None,
+                theme_reviews: None,
+                theme_backtest_runs: None,
                 automation_tasks: None,
                 source_keys: vec!["alpha-studio.research-state.v2".to_string()],
             },

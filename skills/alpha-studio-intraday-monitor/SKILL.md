@@ -19,7 +19,29 @@ If no usable same-day report is present in the supplied context, stop and say th
 
 ## Output
 
-Keep scheduled updates compact:
+First output a fenced JSON block that the tracking panel can ingest. Use only the exact `reportId`, `reportContentHash`, `themeId`, and `triggerId` supplied in the structured report context. Do not invent IDs. Include only conditions that were actually evaluated in this run.
+
+```json
+{
+  "schema": "alpha.theme_monitor.v1",
+  "reportId": "exact supplied report id",
+  "reportContentHash": "exact supplied content hash",
+  "observedAt": "ISO-8601 timestamp with offset",
+  "events": [
+    {
+      "themeId": "exact supplied theme id",
+      "triggerId": "exact supplied trigger id",
+      "status": "not_due|not_triggered|partial|triggered|upgraded|downgraded|invalidated|data_missing|awaiting_manual",
+      "evidence": "concise evidence with observation time",
+      "source": "source name and URL when available",
+      "confidence": 0.0,
+      "marketPrice": 0.0
+    }
+  ]
+}
+```
+
+Then keep the human-readable scheduled update compact:
 
 ```text
 盘中监控｜{YYYY-MM-DD HH:mm Asia/Shanghai}

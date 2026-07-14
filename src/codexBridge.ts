@@ -233,6 +233,71 @@ export async function localTextFileRead(path: string): Promise<LocalTextFileResu
   return invoke<LocalTextFileResult>('local_text_file_read', { request: { path } });
 }
 
+export interface LocalPdfFileResult {
+  path: string;
+  data: string;
+  bytes: number;
+}
+
+export async function localPdfFileRead(path: string): Promise<LocalPdfFileResult> {
+  if (!path || !isTauriRuntime()) {
+    return { path, data: '', bytes: 0 };
+  }
+  return invoke<LocalPdfFileResult>('local_pdf_file_read', { request: { path } });
+}
+
+export type BrowserWebviewEventType =
+  | 'load-started'
+  | 'load-finished'
+  | 'title-changed'
+  | 'new-window'
+  | 'download-started'
+  | 'download-finished';
+
+export interface BrowserWebviewEvent {
+  id: string;
+  type: BrowserWebviewEventType;
+  url?: string;
+  title?: string;
+  path?: string;
+  success?: boolean;
+}
+
+export interface BrowserWebviewBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type BrowserWebviewAction = 'back' | 'forward' | 'reload' | 'stop' | 'focus' | 'print' | 'show' | 'hide';
+
+export async function browserWebviewCreate(id: string, url: string, bounds: BrowserWebviewBounds, visible: boolean): Promise<void> {
+  await invoke('browser_webview_create', { request: { id, url, ...bounds, visible } });
+}
+
+export async function browserWebviewNavigate(id: string, url: string): Promise<void> {
+  await invoke('browser_webview_navigate', { request: { id, url } });
+}
+
+export async function browserWebviewSetBounds(id: string, bounds: BrowserWebviewBounds, visible: boolean): Promise<void> {
+  await invoke('browser_webview_set_bounds', { request: { id, ...bounds, visible } });
+}
+
+export async function browserWebviewAction(id: string, action: BrowserWebviewAction): Promise<void> {
+  await invoke('browser_webview_action', { request: { id, action } });
+}
+
+export async function browserWebviewClose(id: string): Promise<void> {
+  await invoke('browser_webview_close', { request: { id } });
+}
+
+export async function subscribeBrowserWebviewEvents(
+  handler: (event: BrowserWebviewEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<BrowserWebviewEvent>('browser-webview-event', (event) => handler(event.payload));
+}
+
 export async function subscribeCodexEvents(
   handler: (event: CodexChatEvent) => void,
 ): Promise<UnlistenFn | null> {

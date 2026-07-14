@@ -175,6 +175,42 @@ vi.mock('@tauri-apps/api/core', () => ({
         const code = typeof request.params?.code === 'string' ? request.params.code : '000001.XSHE';
         return Promise.resolve({ ok: true, rows: [{ code, display_name: '测试标的', name: '测试标的' }] });
       }
+      if (request?.method === 'get_privilege') {
+        return Promise.resolve({
+          ok: true,
+          rows: ['VALUATION', 'INDICATOR', 'BALANCE', 'INCOME', 'CASH_FLOW', 'GET_MONEY_FLOW', 'GET_MTSS', 'GET_BILLBOARD_LIST', 'GET_INDUSTRY', 'GET_CONCEPT', 'GET_LOCKED_SHARES', 'GET_PREOPEN_INFOS', 'GET_ALL_SECURITIES'].map((privilege) => ({ privilege })),
+        });
+      }
+      if (request?.method === 'get_fundamentals_snapshot') {
+        return Promise.resolve({ ok: true, rows: [{ code: '000001.XSHE', pe_ratio: 5.8, pb_ratio: 0.58, roe: 10.4, net_profit_margin: 25.7, inc_revenue_year_on_year: 2.1, inc_net_profit_year_on_year: 4.8, total_assets: 5_300_000_000_000, total_liability: 4_860_000_000_000, net_operate_cash_flow: 64_210_000_000, net_profit: 54_400_000_000 }] });
+      }
+      if (request?.method === 'get_money_flow') {
+        return Promise.resolve({ ok: true, rows: [{ date: '2026-07-10', change_pct: 0.8, net_amount_main: 1200, net_pct_main: 3.2 }, { date: '2026-07-13', change_pct: -0.2, net_amount_main: -320, net_pct_main: -0.9 }] });
+      }
+      if (request?.method === 'get_mtss') {
+        return Promise.resolve({ ok: true, rows: [{ date: '2026-07-10', fin_value: 46_312_000_000, fin_buy_value: 843_100_000, sec_value: 73_200_000 }, { date: '2026-07-13', fin_value: 46_783_000_000, fin_buy_value: 921_000_000, sec_value: 69_800_000 }] });
+      }
+      if (request?.method === 'get_industry') {
+        return Promise.resolve({ ok: true, rows: [{ code: '000001.XSHE', category: '申万一级', industry_code: '801780', industry_name: '银行' }] });
+      }
+      if (request?.method === 'get_concept') {
+        return Promise.resolve({ ok: true, rows: [{ code: '000001.XSHE', concept_code: 'SC0098', name: '高股息' }] });
+      }
+      if (request?.method === 'get_locked_shares') {
+        return Promise.resolve({ ok: true, rows: [{ day: '2026-09-01', num: 20_000_000, rate1: 0.1, type: '首发原股东限售股份' }] });
+      }
+      if (request?.method === 'get_billboard_list') {
+        return Promise.resolve({ ok: true, rows: [{ day: '2026-07-01', direction: 'BUY', sales_depart_name: '机构专用', net_value: 18_000_000 }] });
+      }
+      if (request?.method === 'get_preopen_infos') {
+        return Promise.resolve({ ok: true, rows: [{ code: '000001.XSHE', high_limit: 12.54, low_limit: 10.26 }] });
+      }
+      if (request?.method === 'get_company_research') {
+        return Promise.resolve({ ok: true, rows: [{ section: 'northbound', day: '2026-07-13', share_number: 120_000_000, share_ratio: 0.62 }, { section: 'forecast', pub_date: '2026-07-08', type: '预增', profit_ratio_min: 3.2, profit_ratio_max: 6.8 }] });
+      }
+      if (request?.method === 'get_all_securities') {
+        return Promise.resolve({ ok: true, rows: [{ index: '000001.XSHE', display_name: '平安银行', start_date: '1991-04-03', end_date: '2200-01-01' }] });
+      }
       return Promise.resolve({ ok: true, rows: [] });
     }
     if (command === 'list_open_apps') return Promise.resolve(['finder']);
@@ -406,7 +442,9 @@ describe('right feature panel', () => {
 
   it('requires renewal when the stored activation has expired', async () => {
     seedClientLicenseSession(true, new Date(Date.now() - 60_000).toISOString());
-    vi.mocked(fetch).mockRejectedValueOnce(new Error('offline'));
+    vi.mocked(fetch)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new Error('offline'));
 
     const { container } = render(<App />);
 
@@ -515,16 +553,30 @@ describe('right feature panel', () => {
     const workbench = await screen.findByLabelText('投研工作台');
     expect(workbench).toBeInTheDocument();
     expect(within(workbench).getByRole('heading', { name: '投研工作台' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('tab', { name: '日报跟踪' })).toBeInTheDocument();
     await waitFor(() => expect(within(workbench).getAllByText(/实时/).length).toBeGreaterThan(0));
     expect(within(workbench).getByText('总资产')).toBeInTheDocument();
     expect(within(workbench).queryByText('聚宽数据雷达')).not.toBeInTheDocument();
     expect(within(workbench).queryByText('财务基本面')).not.toBeInTheDocument();
+    expect(within(workbench).getByRole('tab', { name: '研究数据' })).toBeInTheDocument();
     expect(within(workbench).getByRole('tab', { name: '市场' })).toHaveAttribute('aria-selected', 'true');
     expect(within(workbench).getByText('股票排行')).toBeInTheDocument();
     expect(within(workbench).getByText('上证指数')).toBeInTheDocument();
     expect(within(workbench).queryByRole('tab', { name: '盘前主题' })).not.toBeInTheDocument();
     expect(within(workbench).queryByText('盘前主题')).not.toBeInTheDocument();
     expect(workbench.querySelector('.rw-data-pill')).toHaveTextContent(/实时 \d{1,2}:\d{2}:\d{2}/);
+    await user.click(within(workbench).getByRole('tab', { name: '研究数据' }));
+    expect(within(workbench).getByLabelText('研究数据筛选')).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '基本面' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '资金交易' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '行业成分' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '公司事件' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '多资产' })).toBeInTheDocument();
+    await waitFor(() => expect(within(workbench).getByRole('heading', { name: '核心财务快照' })).toBeInTheDocument());
+    expect(within(workbench).getByText('净资产收益率（ROE）')).toBeInTheDocument();
+    expect(within(workbench).getByRole('heading', { name: '研究动作' })).toBeInTheDocument();
+    expect(within(workbench).queryByText('待接入')).not.toBeInTheDocument();
+    expect(within(workbench).queryByText('接口可查')).not.toBeInTheDocument();
     await user.click(within(workbench).getByRole('tab', { name: /行情/ }));
     await waitFor(() => expect(within(workbench).getByText('行情仪表盘')).toBeInTheDocument());
     expect(within(workbench).getByText('市场宽度')).toBeInTheDocument();
@@ -598,7 +650,7 @@ describe('right feature panel', () => {
     expect(within(workbench).getByRole('button', { name: /新建组合/ })).toBeInTheDocument();
   });
 
-  it('keeps the right sidebar close button visible after opening the skills page', async () => {
+  it('closes the right sidebar before opening the skills page', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
@@ -610,15 +662,12 @@ describe('right feature panel', () => {
     const skillsPage = container.querySelector('.skills-page') as HTMLElement;
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     expect(skillsPage).toBeInTheDocument();
-    expect(dock).not.toHaveClass('collapsed');
-
-    await user.click(screen.getByLabelText('关闭侧边栏'));
-
     expect(dock).toHaveClass('collapsed');
     expect(screen.queryByLabelText('关闭侧边栏')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('打开 AI 同事面板')).not.toBeInTheDocument();
   });
 
-  it('keeps one right sidebar close button above settings when the right sidebar is open', async () => {
+  it('closes the right sidebar and removes workspace toggles before opening settings', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
@@ -627,12 +676,10 @@ describe('right feature panel', () => {
 
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     expect(screen.getByRole('dialog', { name: '设置' })).toBeInTheDocument();
-    expect(screen.getAllByLabelText('关闭侧边栏')).toHaveLength(1);
-
-    await user.click(screen.getByLabelText('关闭侧边栏'));
-
     expect(dock).toHaveClass('collapsed');
     expect(screen.queryByLabelText('关闭侧边栏')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('打开侧边栏')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('打开 AI 同事面板')).not.toBeInTheDocument();
   });
 
   it('opens the AI coworkers panel from the top-right toggle', async () => {
@@ -678,6 +725,28 @@ describe('right feature panel', () => {
     expect(container.querySelector('.coworkers-panel')).not.toBeInTheDocument();
     expect(screen.getByLabelText('关闭侧边栏')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByLabelText('打开 AI 同事面板')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('restores the active right-dock tab after visiting AI coworkers', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
+    await user.click(within(featuresPanel).getByRole('button', { name: /浏览器/ }));
+
+    expect(container.querySelector('.right-dock-tab.active')).toHaveTextContent('浏览器');
+    expect(container.querySelector('.browser-dock-panel')).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText('打开 AI 同事面板'));
+    expect(container.querySelector('.coworkers-panel')).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+
+    expect(container.querySelector('.coworkers-panel')).not.toBeInTheDocument();
+    expect(container.querySelector('.right-dock-tab.active')).toHaveTextContent('浏览器');
+    expect(container.querySelector('.browser-dock-panel')).toBeInTheDocument();
+    expect(container.querySelectorAll('.right-dock-tab')).toHaveLength(1);
   });
 
   it('prefills the composer from an empty-state suggestion without sending', async () => {
@@ -1606,18 +1675,24 @@ describe('right feature panel', () => {
     expect(screen.queryByRole('menuitemradio', { name: 'GPT-5.5' })).not.toBeInTheDocument();
   });
 
-  it('keeps the work mode selector out of general settings', async () => {
+  it('keeps finance settings focused and removes user model configuration', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
     await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
 
     const settings = screen.getByRole('dialog', { name: '设置' });
-    expect(within(settings).getByRole('heading', { name: '常规' })).toBeInTheDocument();
-    expect(within(settings).getByText('默认权限')).toBeInTheDocument();
-    expect(within(settings).queryByRole('heading', { name: '投研协作' })).not.toBeInTheDocument();
-    expect(within(settings).queryByRole('radiogroup', { name: '工作模式' })).not.toBeInTheDocument();
-    expect(settings.querySelector('.work-mode-panel')).not.toBeInTheDocument();
+    expect(within(settings).getByRole('heading', { name: '显示偏好' })).toBeInTheDocument();
+    expect(within(settings).getByText('界面主题')).toBeInTheDocument();
+    expect(within(settings).getByRole('button', { name: '账户与授权' })).toBeInTheDocument();
+    expect(within(settings).getByRole('button', { name: '聚宽数据' })).toBeInTheDocument();
+    expect(within(settings).getByRole('button', { name: '已归档对话' })).toBeInTheDocument();
+    expect(within(settings).queryByRole('button', { name: '模型' })).not.toBeInTheDocument();
+    expect(within(settings).queryByText('自定义模型')).not.toBeInTheDocument();
+    expect(within(settings).queryByText('API Key')).not.toBeInTheDocument();
+    expect(within(settings).queryByRole('button', { name: '个性化' })).not.toBeInTheDocument();
+    expect(within(settings).queryByRole('button', { name: '键盘快捷键' })).not.toBeInTheDocument();
+    expect(within(settings).queryByRole('button', { name: '浏览器' })).not.toBeInTheDocument();
   });
 
   it('keeps client license details out of chat and allows logout from profile settings', async () => {
@@ -1629,7 +1704,7 @@ describe('right feature panel', () => {
 
     await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
     const settings = screen.getByRole('dialog', { name: '设置' });
-    await user.click(within(settings).getByRole('button', { name: '个人资料' }));
+    await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
 
     expect(within(settings).getByText('Codex 订阅账号')).toBeInTheDocument();
     expect(within(settings).getByText('codex-demo@alpha.local')).toBeInTheDocument();
@@ -1659,7 +1734,7 @@ describe('right feature panel', () => {
 
     await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
     const settings = screen.getByRole('dialog', { name: '设置' });
-    await user.click(within(settings).getByRole('button', { name: '个人资料' }));
+    await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
 
     const loginButton = within(settings).getByRole('button', { name: '授权 Codex CLI' });
     expect(invoke).not.toHaveBeenCalledWith('codex_login');
@@ -1704,7 +1779,7 @@ describe('right feature panel', () => {
 
     await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
     const settings = screen.getByRole('dialog', { name: '设置' });
-    await user.click(within(settings).getByRole('button', { name: '个人资料' }));
+    await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
 
     await waitFor(() => expect(within(settings).getByText('已授权')).toBeInTheDocument());
     expect(within(settings).queryByRole('button', { name: '授权 Codex CLI' })).not.toBeInTheDocument();
@@ -1750,7 +1825,7 @@ describe('right feature panel', () => {
 
     await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
     const settings = screen.getByRole('dialog', { name: '设置' });
-    await user.click(within(settings).getByRole('button', { name: '个人资料' }));
+    await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
 
     await user.click(await within(settings).findByRole('button', { name: '撤销授权' }));
 
@@ -2085,7 +2160,7 @@ describe('right feature panel', () => {
 
     await waitFor(() => expect(convertFileSrc).toHaveBeenCalledWith('/Users/geb/reports/daily-theme/index.html'));
     await waitFor(() => expect(container.querySelector('.browser-frame')).not.toBeNull());
-    expect(screen.getByPlaceholderText('输入 URL')).toHaveValue('/Users/geb/reports/daily-theme/index.html');
+    expect(screen.getByPlaceholderText('搜索或输入网址')).toHaveValue('/Users/geb/reports/daily-theme/index.html');
     const frame = container.querySelector('.browser-frame') as HTMLIFrameElement;
     await waitFor(() => expect(frame?.getAttribute('srcdoc')).toContain('HTML 报告内容'));
     expect(frame?.getAttribute('srcdoc')).toContain('<style>');
@@ -2122,7 +2197,7 @@ describe('right feature panel', () => {
 
     await waitFor(() => expect(convertFileSrc).toHaveBeenCalledWith('/Users/geb/reports/daily-theme/index.html'));
     await waitFor(() => expect(container.querySelector('.browser-frame')).not.toBeNull());
-    expect(screen.getByPlaceholderText('输入 URL')).toHaveValue('/Users/geb/reports/daily-theme/index.html');
+    expect(screen.getByPlaceholderText('搜索或输入网址')).toHaveValue('/Users/geb/reports/daily-theme/index.html');
     const frame = container.querySelector('.browser-frame') as HTMLIFrameElement;
     await waitFor(() => expect(frame?.getAttribute('srcdoc')).toContain('HTML 报告内容'));
     expect(frame?.getAttribute('srcdoc')).toContain('<style>');
@@ -2366,7 +2441,7 @@ describe('right feature panel', () => {
     const activeBrowser = container.querySelector('.right-dock-pane.active .browser-dock-panel') as HTMLElement;
     expect(browsers).toHaveLength(2);
     expect(within(dock).getAllByRole('tab', { name: '浏览器' })).toHaveLength(2);
-    expect(within(activeBrowser).getByPlaceholderText('输入 URL')).toHaveValue(secondUrl);
+    expect(within(activeBrowser).getByPlaceholderText('搜索或输入网址')).toHaveValue(secondUrl);
     expect(activeBrowser.querySelector('.browser-frame')).toHaveAttribute('src', secondUrl);
     expect(browsers[0].querySelector('.browser-frame')).toHaveAttribute('src', firstUrl);
   });
@@ -2401,6 +2476,56 @@ describe('right feature panel', () => {
     await user.click(externalOpen);
 
     expect(openSpy).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer');
+  });
+
+  it('supports address-bar search and browser history navigation', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    const launcher = container.querySelector('.features-panel') as HTMLElement;
+    await user.click(within(launcher).getByRole('button', { name: /浏览器/ }));
+
+    const browser = container.querySelector('.right-dock-pane.active .browser-dock-panel') as HTMLElement;
+    const address = within(browser).getByPlaceholderText('搜索或输入网址');
+    await user.type(address, 'alpha studio market research{Enter}');
+
+    expect(browser.querySelector('.browser-frame')).toHaveAttribute(
+      'src',
+      'https://www.google.com/search?q=alpha%20studio%20market%20research',
+    );
+
+    await user.clear(address);
+    await user.type(address, 'example.com{Enter}');
+    expect(browser.querySelector('.browser-frame')).toHaveAttribute('src', 'https://example.com');
+
+    const back = within(browser).getByRole('button', { name: '后退' });
+    expect(back).not.toBeDisabled();
+    await user.click(back);
+    expect(browser.querySelector('.browser-frame')).toHaveAttribute(
+      'src',
+      'https://www.google.com/search?q=alpha%20studio%20market%20research',
+    );
+    expect(within(browser).getByRole('button', { name: '前进' })).not.toBeDisabled();
+  });
+
+  it('selects the complete browser address when the address field is clicked', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开侧边栏'));
+    const launcher = container.querySelector('.features-panel') as HTMLElement;
+    await user.click(within(launcher).getByRole('button', { name: /浏览器/ }));
+
+    const browser = container.querySelector('.right-dock-pane.active .browser-dock-panel') as HTMLElement;
+    const address = within(browser).getByPlaceholderText('搜索或输入网址') as HTMLInputElement;
+    await user.type(address, 'example.com{Enter}');
+
+    address.setSelectionRange(4, 4);
+    await user.click(address);
+
+    expect(address.selectionStart).toBe(0);
+    expect(address.selectionEnd).toBe(address.value.length);
   });
 
   it('opens local browser addresses through the desktop external-open command', async () => {
@@ -2545,6 +2670,7 @@ describe('right feature panel', () => {
     const css = readFileSync(cssPath, 'utf8');
 
     expect(css).toMatch(/\.top-bar-actions\s*{[^}]*position:\s*fixed;[^}]*top:\s*8px;[^}]*right:\s*12px;[^}]*z-index:\s*90;/s);
+    expect(css).toMatch(/@media \(max-width:\s*900px\)\s*{[\s\S]*?\.top-bar-actions\s*{[^}]*z-index:\s*130;/s);
     expect(css).toMatch(/\.top-bar-env-actions,\s*\.top-bar-panel-actions\s*{[^}]*display:\s*inline-flex;[^}]*gap:\s*4px;/s);
     expect(css).toMatch(/\.app-shell\.right-panel-open\s+\.top-bar-env-actions\s*{[^}]*position:\s*fixed;[^}]*top:\s*8px;[^}]*right:\s*calc\(var\(--right-sidebar-width, 416px\) \+ 16px\);/s);
     expect(css).toMatch(/\.app-shell\.git-panel-open\s+\.top-bar-env-actions\s*{[^}]*right:\s*calc\(var\(--git-panel-width, 430px\) \+ 16px\);/s);

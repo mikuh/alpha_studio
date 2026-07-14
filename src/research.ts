@@ -41,6 +41,7 @@ export interface ResearchQuote {
   prevClose: number;
   changePct: number;
   changeAmt: number;
+  open?: number;
   high: number;
   low: number;
   /** 成交量（万手） */
@@ -264,6 +265,7 @@ export interface LivePriceOverride {
   date?: string;
   price: number;
   prevClose: number | null;
+  open?: number;
   high?: number;
   low?: number;
   volumeShares?: number;
@@ -326,6 +328,7 @@ export function buildQuoteMap(
         prevClose,
         changeAmt,
         changePct: prevClose > 0 ? (changeAmt / prevClose) * 100 : 0,
+        open: live.open,
         high: live.high && live.high > 0 ? live.high : Math.max(quote.high, live.price),
         low: live.low && live.low > 0 ? live.low : Math.min(quote.low, live.price),
         volume,

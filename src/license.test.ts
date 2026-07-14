@@ -298,6 +298,37 @@ describe('client license session', () => {
     );
   });
 
+  it('turns a network-level billing failure into an actionable error', async () => {
+    saveClientLicenseSession({
+      apiBaseUrl: 'https://billing.example.test',
+      activatedAt: 1,
+      ...activationResponse,
+    });
+    vi.mocked(fetch).mockRejectedValue(new TypeError('Load failed'));
+
+    await expect(fetchClientBillingSummary(loadClientLicenseSession()!)).rejects.toThrow(
+      '无法连接 Alpha Studio 服务（https://billing.example.test）。请确认后台服务已启动；请检查网络或服务地址。 原始错误：Load failed',
+    );
+  });
+
+  it('retries localhost through IPv4 when the first address cannot connect', async () => {
+    saveClientLicenseSession({
+      apiBaseUrl: 'http://localhost:18080',
+      activatedAt: 1,
+      ...activationResponse,
+    });
+    vi.mocked(fetch)
+      .mockRejectedValueOnce(new TypeError('Load failed'))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+    await expect(fetchClientBillingSummary(loadClientLicenseSession()!)).resolves.toEqual({ ok: true });
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:18080/api/client/billing-summary',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   it('refreshes stored gateway models when renewing the device lease returns a model catalog', async () => {
     saveClientLicenseSession({
       apiBaseUrl: 'http://localhost:18080',

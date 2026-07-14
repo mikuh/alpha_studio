@@ -21,6 +21,9 @@ export interface LocalStoreSnapshot {
   chat?: unknown;
   research?: unknown;
   premarketThemeRuns: unknown[];
+  themeTrackingEvents: unknown[];
+  themeReviews: unknown[];
+  themeBacktestRuns: unknown[];
   automationTasks: unknown[];
 }
 
@@ -28,6 +31,9 @@ export interface LocalStoreCommitRequest {
   chat?: unknown;
   research?: unknown;
   premarketThemeRuns?: unknown[];
+  themeTrackingEvents?: unknown[];
+  themeReviews?: unknown[];
+  themeBacktestRuns?: unknown[];
   automationTasks?: unknown[];
   audit?: {
     domain: string;

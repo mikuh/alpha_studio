@@ -54,6 +54,190 @@ export const JQDATA_CAPABILITIES = [
   { title: '宏观与因子', detail: '宏观数据、Alpha101/Alpha191、聚宽因子和风险模型' },
 ] as const;
 
+export type JqDataCatalogStatus = 'embedded' | 'queryable' | 'planned';
+
+export interface JqDataCatalogItem {
+  id: string;
+  domain: string;
+  group: '市场基础' | '股票研究' | '多资产' | '量化模型' | '另类数据';
+  methods: string[];
+  entry: string;
+  status: JqDataCatalogStatus;
+  summary: string;
+  freshness: string;
+  permission: string;
+  example: string;
+  agentPrompt: string;
+}
+
+const catalogItem = (
+  item: Omit<JqDataCatalogItem, 'agentPrompt'> & { researchUse: string },
+): JqDataCatalogItem => ({
+  ...item,
+  agentPrompt: [
+    `请使用聚宽 JQData 的「${item.domain}」能力完成研究。`,
+    `建议接口：${item.methods.join(' / ')}。`,
+    `研究用途：${item.researchUse}。`,
+    `数据时效：${item.freshness}；权限提示：${item.permission}。`,
+    '请先确认账号权限、日期口径、复权方式和是否存在未来函数，再给出可复现的查询代码、关键字段解释与投资结论。',
+  ].join('\n'),
+});
+
+// Official JQData domains, mapped to Alpha Studio's actual desktop bridge.
+// "embedded" means a visible workbench workflow exists; "queryable" means
+// get_price/get_security_info can query the asset but no dedicated workflow
+// exists; "planned" means the current Rust/Python bridge does not expose it.
+export const JQDATA_CATALOG: readonly JqDataCatalogItem[] = [
+  catalogItem({
+    id: 'bars', domain: '行情与 Bar', group: '市场基础', methods: ['get_price', 'get_bars'],
+    entry: '市场 → 个股 K 线', status: 'embedded',
+    summary: '股票、指数、基金、可转债、期货和期权的日线/分钟线；工作台当前用 get_price。',
+    freshness: '盘中源优先；聚宽日线盘后更新', permission: '基础行情权限',
+    example: "get_price('000001.XSHE', count=60, unit='1d', fields=['open','close','high','low','volume','money'])",
+    researchUse: '验证趋势、量价、波动率、涨跌停和停牌状态',
+  }),
+  catalogItem({
+    id: 'security', domain: '证券基础信息', group: '市场基础', methods: ['get_security_info'],
+    entry: '市场 → 搜索加股', status: 'embedded',
+    summary: '名称、类型、上市/退市日期等单标的元数据。',
+    freshness: '证券状态变更后更新', permission: '基础信息权限',
+    example: "get_security_info('000001.XSHE')",
+    researchUse: '核对代码、证券类型、上市时间和样本存续期',
+  }),
+  catalogItem({
+    id: 'calendar-universe', domain: '交易日历与标的池', group: '市场基础', methods: ['get_trade_days', 'get_all_securities', 'normalize_code'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '交易日、代码归一化，以及股票/基金/指数/期货等全量标的列表。',
+    freshness: '交易日历与证券列表定期更新', permission: '基础信息权限',
+    example: "get_all_securities(types=['stock'], date='2026-07-14')",
+    researchUse: '构建无幸存者偏差的历史股票池和回测交易日轴',
+  }),
+  catalogItem({
+    id: 'ticks-auction', domain: 'Tick 与集合竞价', group: '市场基础', methods: ['get_ticks', 'get_call_auction'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '逐笔成交与盘前集合竞价数据，用于微观结构和开盘确认。',
+    freshness: '盘后入库；集合竞价按官方口径', permission: 'Tick/特色数据可能需单独权限',
+    example: "get_ticks('000001.XSHE', end_dt='2026-07-14 15:00:00', count=1000)",
+    researchUse: '判断主动买卖、冲击成本、开盘抢筹与竞价异常',
+  }),
+  catalogItem({
+    id: 'industry-concept', domain: '行业、概念与成分', group: '股票研究', methods: ['get_industry', 'get_industries', 'get_concepts', 'get_industry_stocks', 'get_concept_stocks', 'get_index_stocks'],
+    entry: '个股画像（仅行业归属）', status: 'embedded',
+    summary: '当前已展示单股行业归属；板块列表、概念和历史成分股尚未桥接。',
+    freshness: '行业/概念通常日更，成分需按日期查询', permission: '行业概念权限',
+    example: "get_industry('000001.XSHE', date='2026-07-14')",
+    researchUse: '识别主线归属、行业暴露、概念扩散和历史成分偏差',
+  }),
+  catalogItem({
+    id: 'money-flow', domain: '个股资金流', group: '股票研究', methods: ['get_money_flow'],
+    entry: '市场 → 个股画像', status: 'embedded',
+    summary: '主力/超大单/大单/中单/小单净流入及占比。',
+    freshness: '盘后约 20:00 更新', permission: '交易统计权限',
+    example: "get_money_flow('000001.XSHE', start_date='2026-07-01', end_date='2026-07-14')",
+    researchUse: '区分价格上涨是资金驱动、存量博弈还是脉冲异动',
+  }),
+  catalogItem({
+    id: 'mtss', domain: '融资融券', group: '股票研究', methods: ['get_mtss', 'get_mtss_list'],
+    entry: '市场 → 个股画像', status: 'embedded',
+    summary: '融资余额、买入/偿还额、融券余额等杠杆交易数据。',
+    freshness: '交易日盘后更新', permission: '融资融券权限',
+    example: "get_mtss('000001.XSHE', start_date='2026-06-01', end_date='2026-07-14')",
+    researchUse: '识别杠杆拥挤、融资加速与去杠杆压力',
+  }),
+  catalogItem({
+    id: 'locked-company', domain: '解禁与公司事件', group: '股票研究', methods: ['get_locked_shares', 'finance.run_query'],
+    entry: '市场 → 个股画像（仅解禁）', status: 'embedded',
+    summary: '已展示限售解禁；股东、质押、分红、公告等上市公司表尚未桥接。',
+    freshness: '公告/事件数据按披露更新', permission: 'finance 数据库权限',
+    example: "get_locked_shares(['000001.XSHE'], start_date='2026-07-14', forward_count=180)",
+    researchUse: '评估未来供给、减持压力、质押风险和公司行为催化',
+  }),
+  catalogItem({
+    id: 'fundamentals', domain: '财务、估值与连续财务', group: '股票研究', methods: ['get_fundamentals', 'get_fundamentals_continuously', 'finance.run_query'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '估值、利润表、资产负债表、现金流量表、财务指标和报告期数据。',
+    freshness: '随财报披露更新；必须使用可见日期', permission: '财务数据库权限',
+    example: "get_fundamentals(query(valuation.code, valuation.pe_ratio, indicator.roe).filter(valuation.code=='000001.XSHE'), date='2026-07-14')",
+    researchUse: '验证盈利质量、现金流、资产负债表韧性、估值与预期差',
+  }),
+  catalogItem({
+    id: 'billboard-stats', domain: '龙虎榜与交易统计', group: '股票研究', methods: ['get_billboard_list', 'finance.run_query'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '龙虎榜、全市场成交概况及部分异常交易统计。',
+    freshness: '龙虎榜约 20:00/22:00 更新', permission: '交易统计权限',
+    example: "get_billboard_list(stock_list=['000001.XSHE'], start_date='2026-07-01', end_date='2026-07-14')",
+    researchUse: '识别席位结构、游资/机构参与度和交易拥挤',
+  }),
+  catalogItem({
+    id: 'connect', domain: '沪深港通', group: '股票研究', methods: ['finance.run_query'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '沪股通、深股通和港股通名单、持股与交易相关数据表。',
+    freshness: '交易日更新，具体以表口径为准', permission: 'finance 数据库权限',
+    example: "finance.run_query(query(finance.STK_EL_CONST_CHANGE).limit(50))",
+    researchUse: '跟踪北向持股变化、资格调整和跨市场资金偏好',
+  }),
+  ...[
+    ['index', '指数', '指数行情/成分', "get_price('000300.XSHG', count=60, unit='1d')", '比较基准、风格轮动和指数成分贡献'],
+    ['fund', '基金', '场内基金行情；场外净值/持仓尚无入口', "get_price('510300.XSHG', count=60, unit='1d')", '跟踪 ETF 资金代理、折溢价、净值与持仓结构'],
+    ['futures', '期货', '期货合约行情与持仓量', "get_price('IF2609.CCFX', count=60, unit='1d')", '观察基差、期限结构、展期和风险偏好'],
+    ['options', '期权', '金融/商品期权合约与行情', "get_price('10000001.XSHG', count=60, unit='1d')", '提取隐含波动、偏度和尾部风险定价'],
+    ['bonds', '债券与可转债', '债券/转债基础信息与行情', "get_price('110059.XSHG', count=60, unit='1d')", '评估信用/利率敏感度、转股溢价和双低机会'],
+  ].map(([id, domain, summary, example, researchUse]) => catalogItem({
+    id, domain, group: '多资产', methods: ['get_price', 'get_security_info'],
+    entry: '通用接口可查，尚无专属视图', status: 'queryable', summary,
+    freshness: '盘后行情；品种专项数据按表更新', permission: '对应品种行情权限',
+    example, researchUse,
+  })),
+  catalogItem({
+    id: 'money-flow-pro', domain: '资金流因子 Pro', group: '量化模型', methods: ['get_money_flow_pro'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '日/分钟级资金流特色数据与资金流因子。',
+    freshness: '分钟约 15:00，日级约 19:00', permission: '特色数据需单独采购/授权',
+    example: "get_money_flow_pro(['000001.XSHE'], end_date='2026-07-14', count=20, frequency='daily')",
+    researchUse: '量化主力资金持续性、反转/趋势与资金拥挤',
+  }),
+  catalogItem({
+    id: 'jq-factors', domain: '聚宽因子库', group: '量化模型', methods: ['get_all_factors', 'get_factor_values', 'get_factor_kanban_values'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '质量、情绪、风险、成长、基础和每股等数百个因子。',
+    freshness: '因子按各自定义更新', permission: '聚宽因子权限',
+    example: "get_factor_values(['000001.XSHE'], ['ROE_TTM'], end_date='2026-07-14', count=20)",
+    researchUse: '做横截面排名、因子暴露、IC/分层收益与组合归因',
+  }),
+  catalogItem({
+    id: 'alpha-technical', domain: 'Alpha101/191 与技术指标', group: '量化模型', methods: ['alpha_101', 'alpha_191', 'technical_analysis'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '经典 Alpha 因子与技术分析指标库。',
+    freshness: '随行情更新', permission: '相应因子/指标权限',
+    example: "alpha_191.alpha_001('000001.XSHE', '2026-07-14')",
+    researchUse: '构造可复现的信号，并检验换手、衰减和拥挤度',
+  }),
+  catalogItem({
+    id: 'risk-model', domain: '风险模型 CNE5/CNE6', group: '量化模型', methods: ['risk.run_query'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '风格因子收益、暴露、协方差和特异风险等风险模型数据。',
+    freshness: '交易日更新，CNE6 Pro 视权限', permission: '风险模型权限',
+    example: "risk.run_query(query(risk.STK_EXPOSURE).filter(risk.STK_EXPOSURE.code=='000001.XSHE'))",
+    researchUse: '拆解行业/风格暴露、风险贡献和非预期共振回撤',
+  }),
+  catalogItem({
+    id: 'sentiment', domain: '舆情数据', group: '另类数据', methods: ['finance.run_query'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '媒体/舆情相关数据表，范围以账号权限和官方字典为准。',
+    freshness: '按数据表更新', permission: '舆情数据权限',
+    example: "finance.run_query(query(finance.CCTV_NEWS).limit(50))",
+    researchUse: '验证叙事热度、催化传播、情绪拐点与事件风险',
+  }),
+  catalogItem({
+    id: 'macro', domain: '宏观数据', group: '另类数据', methods: ['macro.run_query'],
+    entry: '尚无工作台入口', status: 'planned',
+    summary: '国内重要宏观时间序列；官方文档提示部分宏观数据可能停止更新。',
+    freshness: '低频发布，需逐表核对最后更新时间', permission: '宏观数据库权限',
+    example: 'macro.run_query(query(macro.MAC_MONEY_SUPPLY_MONTH).limit(24))',
+    researchUse: '建立流动性、信用、增长和通胀的宏观情景约束',
+  }),
+] as const;
+
 export function emptyJqDataConfig(): JqDataConfig {
   return {
     version: 1,
@@ -122,6 +306,81 @@ export async function jqDataQuery(
   }
 }
 
+export interface JqResearchSnapshot {
+  code: string;
+  asOfDate: string;
+  privileges: string[];
+  fundamentals: Record<string, unknown> | null;
+  moneyFlow: Record<string, unknown>[];
+  mtss: Record<string, unknown>[];
+  industry: Record<string, unknown>[];
+  concepts: Record<string, unknown>[];
+  lockedShares: Record<string, unknown>[];
+  billboard: Record<string, unknown>[];
+  preopen: Record<string, unknown>[];
+  companyResearch: Record<string, unknown>[];
+  warnings: string[];
+}
+
+function daysBefore(dateText: string, days: number): string {
+  const date = new Date(`${dateText}T12:00:00`);
+  if (!Number.isFinite(date.getTime())) return dateText;
+  date.setDate(date.getDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
+export async function fetchJqResearchSnapshot(
+  code: string,
+  asOfDate: string,
+): Promise<JqResearchSnapshot> {
+  const startDate = daysBefore(asOfDate, 90);
+  const [privileges, fundamentals, moneyFlow, mtss, industry, concepts, lockedShares, billboard, preopen, companyResearch] =
+    await Promise.all([
+      jqDataQuery('get_privilege'),
+      jqDataQuery('get_fundamentals_snapshot', { code, date: asOfDate }),
+      jqDataQuery('get_money_flow', { code, end_date: asOfDate, count: 10 }),
+      jqDataQuery('get_mtss', { code, end_date: asOfDate, count: 10 }),
+      jqDataQuery('get_industry', { code, date: asOfDate }),
+      jqDataQuery('get_concept', { code, date: asOfDate }),
+      jqDataQuery('get_locked_shares', { code, start_date: asOfDate, forward_count: 365 }),
+      jqDataQuery('get_billboard_list', { code, start_date: startDate, end_date: asOfDate }),
+      jqDataQuery('get_preopen_infos', { code }),
+      jqDataQuery('get_company_research', { code, date: asOfDate }),
+    ]);
+
+  const results = [privileges, fundamentals, moneyFlow, mtss, industry, concepts, lockedShares, billboard, preopen, companyResearch];
+  const warnings = results
+    .filter((result) => !result.ok && result.message)
+    .map((result) => result.message as string);
+
+  return {
+    code,
+    asOfDate,
+    privileges: (privileges.rows ?? [])
+      .map((row) => String(row.privilege ?? ''))
+      .filter(Boolean),
+    fundamentals: fundamentals.rows?.[0] ?? null,
+    moneyFlow: moneyFlow.rows ?? [],
+    mtss: mtss.rows ?? [],
+    industry: industry.rows ?? [],
+    concepts: concepts.rows ?? [],
+    lockedShares: lockedShares.rows ?? [],
+    billboard: billboard.rows ?? [],
+    preopen: preopen.rows ?? [],
+    companyResearch: companyResearch.rows ?? [],
+    warnings,
+  };
+}
+
+export async function fetchJqSecurityUniverse(
+  type: 'stock' | 'fund' | 'index' | 'futures',
+  asOfDate: string,
+  limit = 120,
+): Promise<Record<string, unknown>[]> {
+  const result = await jqDataQuery('get_all_securities', { types: [type], date: asOfDate, limit });
+  return result.ok ? result.rows ?? [] : [];
+}
+
 export interface JqDailyBar {
   date: string;
   open: number;
@@ -135,6 +394,10 @@ export interface JqDailyBar {
   preClose?: number;
   highLimit?: number;
   lowLimit?: number;
+}
+
+export interface JqHistoricalBar extends JqDailyBar {
+  time: string;
 }
 
 function normalizeRowKey(key: string): string {
@@ -202,6 +465,31 @@ function parseDailyBars(rows: Record<string, unknown>[] | undefined): JqDailyBar
     .filter((bar) => bar.date && Number.isFinite(bar.close));
 }
 
+function parseHistoricalBars(rows: Record<string, unknown>[] | undefined): JqHistoricalBar[] {
+  if (!rows?.length) return [];
+  return rows
+    .map((row) => {
+      const time = rowString(row, 'index', 'time', 'datetime', 'date');
+      return {
+        time,
+        date: time.slice(0, 10),
+        open: rowNumber(row, 'open'),
+        close: rowNumber(row, 'close'),
+        high: rowNumber(row, 'high'),
+        low: rowNumber(row, 'low'),
+        volume: rowNumber(row, 'volume'),
+        money: finiteOrUndefined(rowNumber(row, 'money')),
+        paused: rowBoolean(row, 'paused'),
+        avg: finiteOrUndefined(rowNumber(row, 'avg')),
+        preClose: finiteOrUndefined(rowNumber(row, 'pre_close', 'pre close', 'preclose')),
+        highLimit: finiteOrUndefined(rowNumber(row, 'high_limit', 'high limit', 'highlimit')),
+        lowLimit: finiteOrUndefined(rowNumber(row, 'low_limit', 'low limit', 'lowlimit')),
+      };
+    })
+    .filter((bar) => bar.time && Number.isFinite(bar.open) && Number.isFinite(bar.close))
+    .sort((a, b) => a.time.localeCompare(b.time));
+}
+
 interface CachedJqLivePrice extends JqLivePrice {
   code: string;
 }
@@ -250,6 +538,46 @@ export async function fetchJqDailyBars(
       normalizedPayload: bars,
       tradeDate: bars[bars.length - 1]?.date,
       asOf: bars[bars.length - 1]?.date,
+      fetchedAt: new Date().toISOString(),
+      expiresAt: marketCacheExpiresAt('daily_bars'),
+    }).catch(() => undefined);
+  }
+  return bars.length ? bars : null;
+}
+
+export async function fetchJqHistoricalBars(
+  code: string,
+  startDate: string,
+  endDate: string,
+  unit: '1d' | '1m' = '1d',
+  options: { forceRefresh?: boolean; fq?: 'pre' | 'post' | 'none' } = {},
+): Promise<JqHistoricalBar[] | null> {
+  const fq = options.fq ?? 'pre';
+  const cacheKey = stableCacheKey([code, unit, startDate, endDate, fq]);
+  const scope = unit === '1m' ? 'minute_bars_history' : 'daily_bars_history';
+  const cached = await loadMarketCache<JqHistoricalBar[]>('jqdata', scope, cacheKey);
+  if (!options.forceRefresh && cached?.normalizedPayload?.length) return cached.normalizedPayload;
+  const result = await jqDataQuery('get_price', {
+    code,
+    start_date: unit === '1m' ? `${startDate} 09:30:00` : startDate,
+    end_date: unit === '1m' ? `${endDate} 15:00:00` : endDate,
+    unit,
+    fq,
+    skip_paused: false,
+    fill_paused: true,
+    fields: ['open', 'close', 'high', 'low', 'volume', 'money', 'paused', 'high_limit', 'low_limit'],
+  });
+  if (!result.ok || !result.rows?.length) return cached?.normalizedPayload ?? null;
+  const bars = parseHistoricalBars(result.rows);
+  if (bars.length) {
+    void saveMarketCache({
+      source: 'jqdata',
+      scope,
+      cacheKey,
+      code,
+      normalizedPayload: bars,
+      tradeDate: bars[bars.length - 1].date,
+      asOf: bars[bars.length - 1].time,
       fetchedAt: new Date().toISOString(),
       expiresAt: marketCacheExpiresAt('daily_bars'),
     }).catch(() => undefined);

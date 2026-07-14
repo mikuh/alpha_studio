@@ -24,6 +24,7 @@ mod local_store;
 
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
 const TERMINAL_EVENT: &str = "terminal-event";
+const BROWSER_WEBVIEW_EVENT: &str = "browser-webview-event";
 const CODEX_DEVICE_AUTHORIZATION_MARKER: &str = ".alpha-studio-device-authorized";
 const FALLBACK_REASONING_CONTENT: &str =
     "Reasoning content was not available in the persisted transcript.";
@@ -355,8 +356,10 @@ def _jsonable(value):
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else None
-    if isinstance(value, (_dt.datetime, _dt.date)):
-        return value.isoformat()[:10]
+    if isinstance(value, _dt.datetime):
+        return value.isoformat(sep=" ")
+    if isinstance(value, _dt.date):
+        return value.isoformat()
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
@@ -413,6 +416,11 @@ def _fields(params):
     fields = params.get("fields")
     return fields if fields else None
 
+def _fq(value):
+    if value in (None, "", "none", "raw"):
+        return None
+    return value
+
 def _security_info_row(info, code):
     if not info:
         return []
@@ -446,6 +454,85 @@ def _industry_rows(data):
             })
     return rows
 
+def _mapping_rows(data, code, value_key):
+    if not isinstance(data, dict):
+        return []
+    rows = []
+    for key, value in data.items():
+        if isinstance(value, dict):
+            item = {str(k): _jsonable(v) for k, v in value.items()}
+            item.setdefault(value_key, str(key))
+        else:
+            item = {value_key: str(key), "name": _jsonable(value)}
+        item.setdefault("code", code)
+        rows.append(item)
+    return rows
+
+def _concept_rows(data, code):
+    if not isinstance(data, dict):
+        return []
+    rows = []
+    for security, groups in data.items():
+        if not isinstance(groups, dict):
+            continue
+        for category, concepts in groups.items():
+            if not isinstance(concepts, list):
+                continue
+            for concept in concepts:
+                if not isinstance(concept, dict):
+                    continue
+                item = {str(k): _jsonable(v) for k, v in concept.items()}
+                item["code"] = security or code
+                item["category"] = category
+                rows.append(item)
+    return rows
+
+def _fundamentals_query(jq, code):
+    return jq.query(
+        jq.valuation.code,
+        jq.valuation.pe_ratio,
+        jq.valuation.pb_ratio,
+        jq.valuation.ps_ratio,
+        jq.valuation.pcf_ratio,
+        jq.valuation.market_cap,
+        jq.valuation.circulating_market_cap,
+        jq.indicator.roe,
+        jq.indicator.roa,
+        jq.indicator.gross_profit_margin,
+        jq.indicator.net_profit_margin,
+        jq.indicator.inc_revenue_year_on_year,
+        jq.indicator.inc_net_profit_year_on_year,
+        jq.balance.total_assets,
+        jq.balance.total_liability,
+        jq.cash_flow.net_operate_cash_flow,
+        jq.income.operating_revenue,
+        jq.income.net_profit,
+    ).filter(jq.valuation.code == code)
+
+def _company_research_rows(jq, code, date):
+    from jqdatasdk import finance as _finance
+    specs = [
+        ("shareholders", _finance.STK_SHAREHOLDER_TOP10, "pub_date", 20),
+        ("pledge", _finance.STK_SHARES_PLEDGE, "pub_date", 20),
+        ("northbound", _finance.STK_HK_HOLD_INFO, "day", 30),
+        ("forecast", _finance.STK_FIN_FORCAST, "pub_date", 20),
+        ("performance", _finance.STK_PERFORMANCE_LETTERS, "pub_date", 12),
+    ]
+    rows = []
+    for section, table, date_field, limit in specs:
+        try:
+            field = getattr(table, date_field)
+            query_object = jq.query(table).filter(table.code == code)
+            if date:
+                query_object = query_object.filter(field <= date)
+            df = _finance.run_query(query_object.order_by(field.desc()).limit(limit))
+            for row in _df_rows(df):
+                row["section"] = section
+                rows.append(row)
+        except Exception:
+            continue
+    return rows
+
 def _handle(jq, method, params):
     if method == "__probe":
         query_count = _jsonable(jq.get_query_count())
@@ -461,6 +548,95 @@ def _handle(jq, method, params):
     if method == "get_query_count":
         return {"ok": True, "rows": [_jsonable(jq.get_query_count())]}
 
+    if method == "get_privilege":
+        value = str(jq.get_privilege() or "")
+        return {"ok": True, "rows": [{"privilege": item} for item in value.split("|") if item]}
+
+    if method == "get_trade_days":
+        values = jq.get_trade_days(
+            start_date=params.get("start_date"),
+            end_date=params.get("end_date"),
+            count=params.get("count"),
+        )
+        return {"ok": True, "rows": [{"date": _jsonable(value)} for value in values]}
+
+    if method == "get_all_securities":
+        security_types = params.get("types") or params.get("security_types") or ["stock"]
+        if isinstance(security_types, str):
+            security_types = [security_types]
+        df = jq.get_all_securities(types=security_types, date=params.get("date"))
+        rows = _df_rows(df)
+        limit = int(params.get("limit") or 0)
+        return {"ok": True, "rows": rows[:limit] if limit > 0 else rows}
+
+    if method == "get_fundamentals_snapshot":
+        code = params.get("code") or params.get("security")
+        if not code:
+            return {"ok": False, "message": "财务快照缺少 code 参数。"}
+        df = jq.get_fundamentals(
+            _fundamentals_query(jq, code),
+            date=params.get("date"),
+            statDate=params.get("stat_date"),
+        )
+        return {"ok": True, "rows": _df_rows(df)}
+
+    if method == "get_company_research":
+        code = params.get("code") or params.get("security")
+        if not code:
+            return {"ok": False, "message": "公司研究缺少 code 参数。"}
+        return {"ok": True, "rows": _company_research_rows(jq, code, params.get("date"))}
+
+    if method == "get_industries":
+        df = jq.get_industries(name=params.get("name") or "sw_l1", date=params.get("date"))
+        return {"ok": True, "rows": _df_rows(df)}
+
+    if method == "get_concepts":
+        return {"ok": True, "rows": _df_rows(jq.get_concepts())}
+
+    if method == "get_concept":
+        code = params.get("code") or params.get("security")
+        if not code:
+            return {"ok": False, "message": "概念归属缺少 code 参数。"}
+        data = jq.get_concept(code, date=params.get("date"))
+        return {"ok": True, "rows": _concept_rows(data, code)}
+
+    if method == "get_constituents":
+        kind = str(params.get("kind") or "industry")
+        target = params.get("target") or params.get("code")
+        if not target:
+            return {"ok": False, "message": "成分查询缺少 target 参数。"}
+        if kind == "concept":
+            values = jq.get_concept_stocks(target, date=params.get("date"))
+        elif kind == "index":
+            values = jq.get_index_stocks(target, date=params.get("date"))
+        else:
+            values = jq.get_industry_stocks(target, date=params.get("date"))
+        return {"ok": True, "rows": [{"code": value} for value in values]}
+
+    if method == "get_index_weights":
+        target = params.get("code") or params.get("index")
+        if not target:
+            return {"ok": False, "message": "指数权重缺少 code 参数。"}
+        return {"ok": True, "rows": _df_rows(jq.get_index_weights(target, date=params.get("date")))}
+
+    if method == "get_billboard_list":
+        stock_list = params.get("stock_list") or params.get("codes") or params.get("code")
+        if isinstance(stock_list, str):
+            stock_list = [stock_list]
+        df = jq.get_billboard_list(
+            stock_list=stock_list,
+            start_date=params.get("start_date"),
+            end_date=params.get("end_date"),
+            count=params.get("count"),
+        )
+        return {"ok": True, "rows": _df_rows(df)}
+
+    if method == "get_preopen_infos":
+        security = _security_param(params)
+        if not security:
+            return {"ok": False, "message": "盘前信息缺少 code/codes 参数。"}
+        return {"ok": True, "rows": _df_rows(jq.get_preopen_infos(security, fields=_fields(params) or ("paused", "factor", "high_limit", "low_limit")))}
+
     if method == "get_price":
         security = _security_param(params)
         if not security:
@@ -473,7 +649,7 @@ def _handle(jq, method, params):
             frequency=_frequency(params.get("frequency") or params.get("unit")),
             fields=_fields(params),
             skip_paused=bool(params.get("skip_paused", False)),
-            fq=params.get("fq", "pre"),
+            fq=_fq(params.get("fq", "pre")),
             count=params.get("count"),
             panel=False if is_batch else True,
             fill_paused=bool(params.get("fill_paused", True)),
@@ -627,6 +803,55 @@ pub struct LocalTextFileReadRequest {
 
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalPdfFileReadRequest {
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserWebviewCreateRequest {
+    id: String,
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    visible: bool,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserWebviewTargetRequest {
+    id: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserWebviewNavigateRequest {
+    id: String,
+    url: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserWebviewBoundsRequest {
+    id: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    visible: bool,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserWebviewActionRequest {
+    id: String,
+    action: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct HtmlToPdfRequest {
     html_path: String,
     pdf_path: Option<String>,
@@ -640,6 +865,30 @@ pub struct LocalTextFileReadResult {
     content: String,
     bytes: u64,
     truncated: bool,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalPdfFileReadResult {
+    path: String,
+    data: String,
+    bytes: u64,
+}
+
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserWebviewEvent {
+    id: String,
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    success: Option<bool>,
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -2434,6 +2683,292 @@ async fn local_text_file_read(
         bytes: metadata.len(),
         truncated,
     })
+}
+
+#[tauri::command]
+async fn local_pdf_file_read(
+    request: LocalPdfFileReadRequest,
+) -> Result<LocalPdfFileReadResult, String> {
+    let path = request.path.trim();
+    if path.is_empty() {
+        return Err("PDF path is required.".to_string());
+    }
+
+    let path_ref = Path::new(path);
+    let metadata =
+        fs::metadata(path_ref).map_err(|e| format!("Failed to read PDF metadata: {e}"))?;
+    if !metadata.is_file() {
+        return Err(format!("Path is not a file: {path}"));
+    }
+    if path_ref
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| !value.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(true)
+    {
+        return Err("Only PDF files can be opened by the PDF reader.".to_string());
+    }
+
+    const MAX_PDF_BYTES: u64 = 80 * 1024 * 1024;
+    if metadata.len() > MAX_PDF_BYTES {
+        return Err("PDF is larger than the 80 MB in-app preview limit.".to_string());
+    }
+
+    let bytes = fs::read(path_ref).map_err(|e| format!("Failed to read PDF: {e}"))?;
+    if !bytes.starts_with(b"%PDF-") {
+        return Err("The selected file does not have a valid PDF header.".to_string());
+    }
+
+    Ok(LocalPdfFileReadResult {
+        path: path_ref.to_string_lossy().to_string(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        bytes: metadata.len(),
+    })
+}
+
+fn browser_webview_label(id: &str) -> Result<String, String> {
+    let id = id.trim();
+    if id.is_empty()
+        || id.len() > 96
+        || !id
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '-' || value == '_')
+    {
+        return Err("Invalid browser webview id.".to_string());
+    }
+    Ok(format!("browser-{id}"))
+}
+
+fn browser_webview_url(value: &str) -> Result<tauri::Url, String> {
+    let url = value
+        .trim()
+        .parse::<tauri::Url>()
+        .map_err(|e| format!("Invalid browser URL: {e}"))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err("Native browser only supports HTTP and HTTPS URLs.".to_string());
+    }
+    Ok(url)
+}
+
+fn emit_browser_webview_event(app: &AppHandle, event: BrowserWebviewEvent) {
+    let _ = app.emit(BROWSER_WEBVIEW_EVENT, event);
+}
+
+#[tauri::command]
+fn browser_webview_create(
+    app: AppHandle,
+    request: BrowserWebviewCreateRequest,
+) -> Result<(), String> {
+    let label = browser_webview_label(&request.id)?;
+    let url = browser_webview_url(&request.url)?;
+    let width = request.width.max(1.0);
+    let height = request.height.max(1.0);
+
+    if let Some(webview) = app.get_webview(&label) {
+        webview
+            .set_position(tauri::LogicalPosition::new(request.x, request.y))
+            .map_err(|e| format!("Failed to position browser: {e}"))?;
+        webview
+            .set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|e| format!("Failed to size browser: {e}"))?;
+        if request.visible {
+            webview
+                .show()
+                .map_err(|e| format!("Failed to show browser: {e}"))?;
+        } else {
+            webview
+                .hide()
+                .map_err(|e| format!("Failed to hide browser: {e}"))?;
+        }
+        return Ok(());
+    }
+
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "Main window is unavailable.".to_string())?;
+
+    let page_app = app.clone();
+    let page_id = request.id.clone();
+    let title_app = app.clone();
+    let title_id = request.id.clone();
+    let download_app = app.clone();
+    let download_id = request.id.clone();
+    let popup_app = app.clone();
+    let popup_id = request.id.clone();
+
+    let builder = tauri::WebviewBuilder::new(label, tauri::WebviewUrl::External(url))
+        .on_page_load(move |_webview, payload| {
+            let event_type = match payload.event() {
+                tauri::webview::PageLoadEvent::Started => "load-started",
+                tauri::webview::PageLoadEvent::Finished => "load-finished",
+            };
+            emit_browser_webview_event(
+                &page_app,
+                BrowserWebviewEvent {
+                    id: page_id.clone(),
+                    event_type: event_type.to_string(),
+                    url: Some(payload.url().to_string()),
+                    title: None,
+                    path: None,
+                    success: None,
+                },
+            );
+        })
+        .on_document_title_changed(move |_webview, title| {
+            emit_browser_webview_event(
+                &title_app,
+                BrowserWebviewEvent {
+                    id: title_id.clone(),
+                    event_type: "title-changed".to_string(),
+                    url: None,
+                    title: Some(title),
+                    path: None,
+                    success: None,
+                },
+            );
+        })
+        .on_download(move |_webview, event| {
+            match event {
+                tauri::webview::DownloadEvent::Requested { url, destination } => {
+                    emit_browser_webview_event(
+                        &download_app,
+                        BrowserWebviewEvent {
+                            id: download_id.clone(),
+                            event_type: "download-started".to_string(),
+                            url: Some(url.to_string()),
+                            title: None,
+                            path: Some(destination.to_string_lossy().to_string()),
+                            success: None,
+                        },
+                    );
+                }
+                tauri::webview::DownloadEvent::Finished { url, path, success } => {
+                    emit_browser_webview_event(
+                        &download_app,
+                        BrowserWebviewEvent {
+                            id: download_id.clone(),
+                            event_type: "download-finished".to_string(),
+                            url: Some(url.to_string()),
+                            title: None,
+                            path: path.map(|value| value.to_string_lossy().to_string()),
+                            success: Some(success),
+                        },
+                    );
+                }
+                _ => {}
+            }
+            true
+        })
+        .on_new_window(move |url, _features| {
+            emit_browser_webview_event(
+                &popup_app,
+                BrowserWebviewEvent {
+                    id: popup_id.clone(),
+                    event_type: "new-window".to_string(),
+                    url: Some(url.to_string()),
+                    title: None,
+                    path: None,
+                    success: None,
+                },
+            );
+            tauri::webview::NewWindowResponse::Deny
+        });
+
+    let webview = window
+        .add_child(
+            builder,
+            tauri::LogicalPosition::new(request.x, request.y),
+            tauri::LogicalSize::new(width, height),
+        )
+        .map_err(|e| format!("Failed to create native browser: {e}"))?;
+    if !request.visible {
+        webview
+            .hide()
+            .map_err(|e| format!("Failed to hide browser: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn browser_webview_navigate(
+    app: AppHandle,
+    request: BrowserWebviewNavigateRequest,
+) -> Result<(), String> {
+    let label = browser_webview_label(&request.id)?;
+    let url = browser_webview_url(&request.url)?;
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "Browser webview is unavailable.".to_string())?;
+    webview
+        .navigate(url)
+        .map_err(|e| format!("Failed to navigate browser: {e}"))
+}
+
+#[tauri::command]
+fn browser_webview_set_bounds(
+    app: AppHandle,
+    request: BrowserWebviewBoundsRequest,
+) -> Result<(), String> {
+    let label = browser_webview_label(&request.id)?;
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "Browser webview is unavailable.".to_string())?;
+    webview
+        .set_position(tauri::LogicalPosition::new(request.x, request.y))
+        .map_err(|e| format!("Failed to position browser: {e}"))?;
+    webview
+        .set_size(tauri::LogicalSize::new(
+            request.width.max(1.0),
+            request.height.max(1.0),
+        ))
+        .map_err(|e| format!("Failed to size browser: {e}"))?;
+    if request.visible {
+        webview
+            .show()
+            .map_err(|e| format!("Failed to show browser: {e}"))?;
+    } else {
+        webview
+            .hide()
+            .map_err(|e| format!("Failed to hide browser: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn browser_webview_action(
+    app: AppHandle,
+    request: BrowserWebviewActionRequest,
+) -> Result<(), String> {
+    let label = browser_webview_label(&request.id)?;
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "Browser webview is unavailable.".to_string())?;
+    match request.action.as_str() {
+        "back" => webview.eval("window.history.back()"),
+        "forward" => webview.eval("window.history.forward()"),
+        "reload" => webview.reload(),
+        "stop" => webview.eval("window.stop()"),
+        "focus" => webview.set_focus(),
+        "print" => webview.print(),
+        "show" => webview.show(),
+        "hide" => webview.hide(),
+        other => return Err(format!("Unsupported browser action: {other}")),
+    }
+    .map_err(|e| format!("Browser action failed: {e}"))
+}
+
+#[tauri::command]
+fn browser_webview_close(
+    app: AppHandle,
+    request: BrowserWebviewTargetRequest,
+) -> Result<(), String> {
+    let label = browser_webview_label(&request.id)?;
+    if let Some(webview) = app.get_webview(&label) {
+        webview
+            .close()
+            .map_err(|e| format!("Failed to close browser: {e}"))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -7438,6 +7973,12 @@ pub fn run() {
             open_external_target,
             local_image_data_url,
             local_text_file_read,
+            local_pdf_file_read,
+            browser_webview_create,
+            browser_webview_navigate,
+            browser_webview_set_bounds,
+            browser_webview_action,
+            browser_webview_close,
             html_to_pdf,
             terminal_start,
             terminal_write,
@@ -9369,5 +9910,24 @@ mod tests {
         assert_eq!(commits[0].author, "Ada");
         assert_eq!(commits[0].relative_date, "2 hours ago");
         assert_eq!(commits[1].subject, "Fix branch checkout");
+    }
+
+    #[test]
+    fn validates_native_browser_labels_and_urls() {
+        assert_eq!(
+            browser_webview_label("dock-12").as_deref(),
+            Ok("browser-dock-12")
+        );
+        assert!(browser_webview_label("../main").is_err());
+        assert!(browser_webview_label("").is_err());
+
+        assert_eq!(
+            browser_webview_url("https://example.com/path")
+                .expect("https URL")
+                .as_str(),
+            "https://example.com/path",
+        );
+        assert!(browser_webview_url("file:///tmp/report.pdf").is_err());
+        assert!(browser_webview_url("javascript:alert(1)").is_err());
     }
 }

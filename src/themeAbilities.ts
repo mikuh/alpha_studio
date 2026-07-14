@@ -1,4 +1,5 @@
 import type { Conversation, SkillSelection } from './types';
+import { loadPremarketThemeRuns } from './themeResearch';
 
 export const ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID = 'alpha-studio-intraday-monitor';
 export const ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_TITLE = 'Alpha Studio 盘中监控';
@@ -40,6 +41,10 @@ export function addThemeAbilityContext(
   }
 
   const report = latestDailyReport(conversations, now);
+  const structuredReport = loadPremarketThemeRuns().find((item) => {
+    const generatedAt = Date.parse(item.generatedAt);
+    return Number.isFinite(generatedAt) && shanghaiDay(generatedAt) === shanghaiDay(now);
+  });
   const monitorHistory = skillId === ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID
     ? latestMonitorOutputs(conversations, now)
     : [];
@@ -51,6 +56,9 @@ export function addThemeAbilityContext(
     report
       ? `\n[今日基线报告]\n来源对话：${report.conversationTitle}\n生成时间：${new Date(report.timestamp).toLocaleString('zh-CN', { hour12: false })}${report.filePaths.length ? `\n报告文件：${report.filePaths.join('、')}` : ''}${report.text ? `\n\n${report.text}` : ''}`
       : '\n[今日基线报告]\n未找到今日生成的研究报告。不要自行生成替代报告。',
+    structuredReport
+      ? `\n[结构化报告标识]\nreportId: ${structuredReport.id}\nreportContentHash: ${structuredReport.contentHash}\ntriggerIds: ${structuredReport.themes.flatMap((theme) => theme.triggerSpecs.map((trigger) => `${theme.id}/${trigger.id}`)).join('、')}`
+      : '\n[结构化报告标识]\n未匹配到跟踪库快照，不得伪造 reportId 或 triggerId。',
     ...(monitorHistory.length
       ? ['\n[今日盘中监控记录]', ...monitorHistory.map((item, index) => `\n#${index + 1} ${item}`)]
       : skillId === ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID
@@ -87,6 +95,7 @@ function latestDailyReport(conversations: Conversation[], now: number): DailyRep
       const looksLikeDailyReport =
         (text.includes('今日执行闸门') && text.includes('今日资金进攻路径')) ||
         text.includes('alpha.premarket_theme.v1') ||
+        text.includes('alpha.premarket_theme.v2') ||
         filePaths.length > 0;
       if (!looksLikeDailyReport) continue;
       candidates.push({
