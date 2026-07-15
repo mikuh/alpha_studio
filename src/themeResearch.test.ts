@@ -184,6 +184,37 @@ describe('themeResearch', () => {
     expect(draft?.reportMode).toBe('legacy_import');
   });
 
+  it('extracts ranked theme metrics from HTML table text without mistaking execution rows for themes', () => {
+    const draft = extractLegacyPremarketThemeDraft(`
+Generated: 2026-07-15 10:46 CST
+| 项目 | 结论 | 执行含义 |
+| 全局状态 | 只观察 | 不主动新开 |
+| 今日只做 | 只验证主线核心 | 看容量与宽度 |
+| 今日不做 | 四板追高 | 不追后排 |
+| 触发再做 | 留待确认 | 午后宽度不降 |
+| 失效动作 | 降级 | 核心炸板则退出 |
+| 层级 | 资金进攻路径 | 今日进攻概率 | 为什么现在 | 失效路线 |
+| 主路径 | 医药双核共振 | 45.1% | 催化与容量确认 | 核心炸板 |
+| 备选 | 电网低位启动 | 43.9% | 政策催化 | 中军不确认 |
+| 评级 | 主题 | 生命周期 | 资金类型 | 今日进攻概率 | 1–3日研究概率 | 观察权重 | 今日结论 |
+| A | 创新药/CRO/医药 | 发酵 | 混合 | 45.1% | 52.0% | 14.3% | 只看不做 |
+| 主题 | 已运行 | 预计剩余窗口 | 默认持有协议 | 延长条件 | 缩短/退出条件 |
+| 创新药/CRO/医药 | 3日 | 1–6日，模型估计 | 收盘复核 | 宽度延续 | 核心炸板 |
+| 题材 | 角色 | 标的 | 角色逻辑 | 确认/失效 |
+| 创新药/CRO | 趋势核心 | 昭衍新药（A）603127.SH | 容量核心 | 放量/回落 |
+| 时点 | 观察对象 | 确认条件 | 失败动作 |
+| 13:00 | 创新药主路径 | 宽度维持 | 降级观察 |
+`, 'index');
+
+    expect(draft?.themes.map((theme) => theme.name)).toEqual(['创新药/CRO/医药']);
+    expect(draft?.themes[0]).toMatchObject({
+      grade: 'A', todayAttackProbability: '45.1%', researchProbability: '52.0%', observationWeight: '14.3%',
+    });
+    expect(draft?.themes[0].stocks[0]).toMatchObject({ code: '603127.XSHG', role: '趋势核心', authenticity: 'A' });
+    expect(draft?.capitalAttackPath.primaryRoute).toBe('医药双核共振');
+    expect(draft?.executionGate.state).toBe('只观察');
+  });
+
   it('hashes semantically identical structured content deterministically', () => {
     expect(stableThemeContentHash({ b: 2, a: { y: 2, x: 1 } }))
       .toBe(stableThemeContentHash({ a: { x: 1, y: 2 }, b: 2 }));
@@ -218,5 +249,22 @@ ${JSON.stringify(validThemeJson(), null, 2)}
     expect(window.localStorage.getItem(PREMARKET_THEME_RUNS_KEY)).toContain('AI算力');
     expect(loaded).toHaveLength(1);
     expect(loaded[0].themes[0].stocks[0].name).toBe('中际旭创');
+  });
+
+  it('replaces an incomplete legacy draft when the complete same-day sidecar arrives', () => {
+    const run = parsePremarketThemeResult(validReply()).run as PremarketThemeRun;
+    savePremarketThemeRun({
+      ...run,
+      id: 'legacy-same-day',
+      sourceSchema: PREMARKET_THEME_SCHEMA_V1,
+      reportMode: 'legacy_import',
+      contentHash: 'legacy-same-day',
+    });
+
+    const saved = savePremarketThemeRun(run);
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0].sourceSchema).toBe(PREMARKET_THEME_SCHEMA);
+    expect(saved[0].reportMode).toBe('pre_market');
   });
 });

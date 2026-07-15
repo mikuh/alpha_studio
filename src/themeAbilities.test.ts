@@ -6,6 +6,7 @@ import {
   addThemeAbilityContext,
   inferThemeAbilitySkill,
 } from './themeAbilities';
+import { ALPHA_STUDIO_DAILY_THEME_SKILL_ID } from './themeResearch';
 
 const now = new Date('2026-07-13T08:00:00.000Z').getTime();
 
@@ -22,7 +23,8 @@ function conversation(id: string, messages: Conversation['messages']): Conversat
 }
 
 describe('theme follow-up abilities', () => {
-  it('infers the independent monitor and review skills from card prompts', () => {
+  it('infers the daily report, monitor, and review skills from card prompts', () => {
+    expect(inferThemeAbilitySkill(`使用 ${ALPHA_STUDIO_DAILY_THEME_SKILL_ID} 生成今日报告`)?.id).toBe(ALPHA_STUDIO_DAILY_THEME_SKILL_ID);
     expect(inferThemeAbilitySkill(`使用 ${ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID}`)?.id).toBe(ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID);
     expect(inferThemeAbilitySkill(`使用 ${ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID}`)?.id).toBe(ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID);
   });

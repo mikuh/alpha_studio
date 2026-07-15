@@ -7,6 +7,8 @@ import {
   buildConversationTitle,
   isDraftConversation,
   migratePersistedState,
+  parseDailyThemeReportCompletion,
+  reconcileDailyThemeTrackingFromConversations,
   useChatStore,
   visibleConversations,
 } from './store';
@@ -168,6 +170,60 @@ describe('archive semantics', () => {
     useChatStore.getState().setWorkModeId('finance-research');
 
     expect(useChatStore.getState().workModeId).toBe('finance-research');
+  });
+});
+
+describe('daily theme report completion', () => {
+  it('discovers the tracking sidecar beside generated HTML and parses it for automatic import', async () => {
+    const payload = {
+      schema: 'alpha.premarket_theme.v2',
+      tradeDate: '2026-07-15',
+      generatedAt: '2026-07-15T02:46:00.000Z',
+      dataCutoff: '2026-07-15T02:46:00.000Z',
+      reportMode: 'intraday',
+      title: '7月15日盘中主题研究',
+      executionGate: { state: '只观察', todayOnlyDo: ['验证核心'], todayDoNotDo: ['不追高'], triggerBeforeAction: ['宽度确认'], failureAction: '保持观察' },
+      capitalAttackPath: { primaryRoute: '创新药双核', backupRoute: '电网低位启动', invalidationRoute: '核心炸板', todayAttackProbability: '45.1%', rationale: '容量确认', actionCondition: '宽度延续' },
+      marketSentiment: 'defensive + 防御修复',
+      previousContinuity: [{ name: '医药', status: '继续', action: '保留观察', evidence: '容量与宽度延续' }],
+      risks: ['高位拥挤'],
+      sourceNotes: ['东方财富盘中快照'],
+      themes: [{
+        id: 'theme-pharma', rank: 1, name: '创新药', grade: 'A', conclusion: '只看不做', lifecycle: 'fermentation', capitalType: 'mixed', attackPath: '双核共振',
+        todayAttackProbability: '45.1%', researchProbability: '52.0%', observationWeight: '14.3%',
+        holdingWindow: { elapsedTradingDays: '3日', estimatedRemainingWindow: '1-6日，模型估计', defaultProtocol: '收盘复核', extensionConditions: ['宽度延续'], exitConditions: ['核心炸板'] },
+        todayOnlyDo: ['验证容量核心'], todayDoNotDo: ['不追后排'], invalidation: '核心炸板', risk: '一致性过高',
+        triggerSpecs: [{ id: 'pharma-width', label: '宽度维持', evaluator: 'manual', confirmForSeconds: 0, dataSource: 'eastmoney', actionOnTrigger: '继续观察', actionOnFailure: '降级' }],
+        stocks: [{ name: '昭衍新药', code: '603127.XSHG', role: '趋势核心', roleRank: 1, authenticity: 'A' }],
+      }],
+    };
+    const read = vi.fn(async (path: string) => ({ content: path.endsWith('alpha-studio-tracking.json') ? JSON.stringify(payload) : '' }));
+
+    const parsed = await parseDailyThemeReportCompletion([
+      { type: 'text', content: '[HTML 报告](/Users/geb/reports/2026-07-15/index.html)' },
+    ], read);
+
+    expect(read).toHaveBeenCalledWith('/Users/geb/reports/2026-07-15/.alpha-studio-tracking.json');
+    expect(parsed.ok).toBe(true);
+    expect(parsed.run?.themes[0].researchProbability).toBe('52.0%');
+
+    const imported = await reconcileDailyThemeTrackingFromConversations([
+      conversation('daily-report', {
+        messages: [
+          {
+            id: 'daily-user', role: 'user', timestamp: 1,
+            selectedSkill: { id: 'alpha-studio-daily-theme-research', title: '每日主题研究' },
+            blocks: [{ type: 'text', content: '生成今日报告' }],
+          },
+          {
+            id: 'daily-assistant', role: 'assistant', timestamp: 2,
+            blocks: [{ type: 'text', content: '[HTML 报告](/Users/geb/reports/2026-07-15/index.html)' }],
+          },
+        ],
+      }),
+    ], read);
+
+    expect(imported).toBe(1);
   });
 });
 

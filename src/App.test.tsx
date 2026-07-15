@@ -23,7 +23,7 @@ const codexCatalogMockState = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
-  invoke: vi.fn((command: string, args?: { request?: { method?: string; name?: string; currentPath?: string; path?: string; params?: Record<string, unknown>; codes?: string[]; tickCode?: string; tickCount?: number; fullMarket?: boolean; pageSize?: number } }) => {
+  invoke: vi.fn((command: string, args?: { request?: { method?: string; name?: string; data?: string; currentPath?: string; path?: string; params?: Record<string, unknown>; codes?: string[]; tickCode?: string; tickCount?: number; fullMarket?: boolean; pageSize?: number } }) => {
     if (command === 'plugin:window|is_fullscreen') return Promise.resolve(windowMockState.fullscreen);
     if (command === 'codex_check') {
       return Promise.resolve({ ...codexCatalogMockState.status });
@@ -54,6 +54,9 @@ vi.mock('@tauri-apps/api/core', () => ({
       return Promise.resolve({
         path: `/Users/demo/.alphastudio/projects/${args?.request?.name || 'Research Topic'}`,
       });
+    }
+    if (command === 'clipboard_attachment_save') {
+      return Promise.resolve(`/Users/demo/.alpha-studio/attachments/clipboard/${args?.request?.name || 'attachment.bin'}`);
     }
     if (command === 'jqdata_config_load') {
       return Promise.resolve({
@@ -206,14 +209,14 @@ vi.mock('@tauri-apps/api/core', () => ({
         return Promise.resolve({ ok: true, rows: [{ code: '000001.XSHE', high_limit: 12.54, low_limit: 10.26 }] });
       }
       if (request?.method === 'get_company_research') {
-        return Promise.resolve({ ok: true, rows: [{ section: 'northbound', day: '2026-07-13', share_number: 120_000_000, share_ratio: 0.62 }, { section: 'forecast', pub_date: '2026-07-08', type: '预增', profit_ratio_min: 3.2, profit_ratio_max: 6.8 }] });
+        return Promise.resolve({ ok: true, rows: [{ section: 'northbound', day: '2026-07-13', share_number: 120_000_000, share_ratio: 0.62 }, { section: 'forecast', pub_date: '2026-07-08', type: '预增', profit_ratio_min: 3.2, profit_ratio_max: 6.8 }, { section: 'shareholders', end_date: '2026-03-31', shareholder_name: '测试股东', share_ratio: 8.2, share_pledge_freeze: 0 }, { section: 'pledge', pub_date: '2026-06-01', pledge_number: 12_000_000, pledge_total_ratio: 0.06 }] });
       }
       if (request?.method === 'get_all_securities') {
         return Promise.resolve({ ok: true, rows: [{ index: '000001.XSHE', display_name: '平安银行', start_date: '1991-04-03', end_date: '2200-01-01' }] });
       }
       return Promise.resolve({ ok: true, rows: [] });
     }
-    if (command === 'list_open_apps') return Promise.resolve(['finder']);
+    if (command === 'list_open_apps') return Promise.resolve(['finder', 'preview']);
     if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
     if (command === 'local_text_file_read') {
       const path = args?.request?.path || '/tmp/file.md';
@@ -575,6 +578,16 @@ describe('right feature panel', () => {
     await waitFor(() => expect(within(workbench).getByRole('heading', { name: '核心财务快照' })).toBeInTheDocument());
     expect(within(workbench).getByText('净资产收益率（ROE）')).toBeInTheDocument();
     expect(within(workbench).getByRole('heading', { name: '研究动作' })).toBeInTheDocument();
+    expect(workbench.querySelectorAll('.rw-research-draggable[draggable="true"]').length).toBeGreaterThanOrEqual(14);
+    await user.click(within(workbench).getByRole('button', { name: '资金交易' }));
+    expect(within(workbench).getByRole('heading', { name: '资金流向' })).toBeInTheDocument();
+    expect(workbench.querySelectorAll('.rw-capital-lens .rw-research-draggable[draggable="true"]').length).toBeGreaterThanOrEqual(8);
+    await user.click(within(workbench).getByRole('button', { name: '行业成分' }));
+    expect(workbench.querySelectorAll('.rw-industry-lens .rw-research-draggable[draggable="true"]').length).toBeGreaterThanOrEqual(2);
+    await user.click(within(workbench).getByRole('button', { name: '公司事件' }));
+    expect(workbench.querySelectorAll('.rw-events-lens .rw-research-draggable[draggable="true"]').length).toBeGreaterThanOrEqual(8);
+    await user.click(within(workbench).getByRole('button', { name: '多资产' }));
+    await waitFor(() => expect(workbench.querySelector('.rw-assets-lens .rw-research-draggable[draggable="true"]')).not.toBeNull());
     expect(within(workbench).queryByText('待接入')).not.toBeInTheDocument();
     expect(within(workbench).queryByText('接口可查')).not.toBeInTheDocument();
     await user.click(within(workbench).getByRole('tab', { name: /行情/ }));
@@ -776,6 +789,27 @@ describe('right feature panel', () => {
     expect(screen.getByRole('button', { name: /盘中监控/ }).querySelector('.lucide-activity')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /晚间复盘/ }).querySelector('.lucide-moon-star')).toBeInTheDocument();
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('pastes images and files into the composer as readable desktop attachments', async () => {
+    (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const { container } = render(<App />);
+    const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
+    const textbox = within(composerCard).getByRole('textbox');
+    const image = new File([new Uint8Array([137, 80, 78, 71])], 'chart.png', { type: 'image/png' });
+    const document = new File(['research notes'], 'notes.pdf', { type: 'application/pdf' });
+
+    fireEvent.paste(textbox, { clipboardData: { files: [image, document], items: [] } });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('clipboard_attachment_save', {
+      request: { name: 'chart.png', data: 'iVBORw==' },
+    }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('clipboard_attachment_save', {
+      request: { name: 'notes.pdf', data: 'cmVzZWFyY2ggbm90ZXM=' },
+    }));
+    expect(await within(composerCard).findByAltText('chart.png')).toBeInTheDocument();
+    expect(within(composerCard).getByText('notes.pdf')).toBeInTheDocument();
+    expect(within(composerCard).getByLabelText('发送')).toBeEnabled();
   });
 
   it('shows the background context window usage in the composer', () => {
@@ -2109,13 +2143,71 @@ describe('right feature panel', () => {
 
     expect(within(card).getByText('cat-illustration.png')).toBeInTheDocument();
     expect(within(card).getByText('图像 · PNG')).toBeInTheDocument();
-    await user.click(within(card).getByRole('button', { name: 'cat-illustration.png 打开方式' }));
+    const openMenuButton = within(card).getByRole('button', { name: 'cat-illustration.png 打开方式' });
+    await user.click(openMenuButton);
 
     expect(await screen.findByRole('menuitem', { name: '侧边栏预览' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Default app' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Cursor' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Terminal' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: '在 Finder 中显示' })).toBeInTheDocument();
+
+    await user.click(openMenuButton);
+    fireEvent.contextMenu(card, { clientX: 420, clientY: 320 });
+
+    expect(screen.getByRole('menuitem', { name: '打开文件' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '在 Preview 中打开' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '复制路径' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '复制文件内容' })).toBeInTheDocument();
+  });
+
+  it('shows a Codex-style local file menu on right click and decodes Chinese paths', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-pdf-link',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'text',
+                  content: '[PDF 文件](/Users/geb/.alphastudio/projects/投研/reports/report.pdf)',
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    render(<App />);
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === 'list_open_apps') return Promise.resolve(['finder', 'preview']);
+      return Promise.resolve(undefined);
+    });
+    const link = screen.getByRole('link', { name: /PDF 文件/ });
+
+    fireEvent.contextMenu(link, { clientX: 420, clientY: 320 });
+
+    expect(await screen.findByRole('menuitem', { name: '打开文件' })).toBeInTheDocument();
+    expect(await screen.findByRole('menuitem', { name: '在 Preview 中打开' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '打开方式' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '复制路径' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '复制文件内容' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '在 Finder 中显示' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('menuitem', { name: '在 Preview 中打开' }));
+
+    expect(invoke).toHaveBeenCalledWith('open_in_app', {
+      request: {
+        app: 'preview',
+        path: '/Users/geb/.alphastudio/projects/投研/reports/report.pdf',
+      },
+    });
   });
 
   it('opens generated HTML files in the browser dock instead of raw source preview', async () => {

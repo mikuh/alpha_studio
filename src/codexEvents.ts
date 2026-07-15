@@ -613,7 +613,8 @@ function fileResultFromToolEvent(event: CodexChatEvent, toolId: string): FileRes
     ...extractGeneratedFileCandidatesFromText(event.text || ''),
     ...extractGeneratedFileCandidatesFromUnknown(event.raw),
   ];
-  const unique = uniqueFileCandidates(candidates);
+  const unique = uniqueFileCandidates(candidates)
+    .filter((candidate) => !/(?:^|\/)\.alpha-studio-tracking\.json$/i.test(candidate.path));
   if (unique.length === 0) return null;
   return {
     type: 'file_result',

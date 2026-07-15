@@ -4,6 +4,7 @@ import { BrowserPdfViewer } from './BrowserPdfViewer';
 import { localPdfFileRead } from './codexBridge';
 
 const pdfMocks = vi.hoisted(() => {
+  const WorkerMessageHandler = {};
   const renderPage = vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() }));
   const page = {
     getViewport: ({ scale }: { scale: number }) => ({ width: 600 * scale, height: 840 * scale }),
@@ -14,19 +15,21 @@ const pdfMocks = vi.hoisted(() => {
     getPage: vi.fn(() => Promise.resolve(page)),
     destroy: vi.fn(() => Promise.resolve()),
   };
-  return { document, renderPage };
+  return { document, renderPage, WorkerMessageHandler };
 });
 
 vi.mock('./codexBridge', () => ({
   localPdfFileRead: vi.fn(),
 }));
 
-vi.mock('pdfjs-dist', () => ({
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
   GlobalWorkerOptions: { workerSrc: '' },
   getDocument: vi.fn(() => ({ promise: Promise.resolve(pdfMocks.document) })),
 }));
 
-vi.mock('pdfjs-dist/build/pdf.worker.min.mjs?url', () => ({ default: '/pdf.worker.mjs' }));
+vi.mock('pdfjs-dist/legacy/build/pdf.worker.min.mjs', () => ({
+  WorkerMessageHandler: pdfMocks.WorkerMessageHandler,
+}));
 
 class TestResizeObserver {
   constructor(private readonly callback: ResizeObserverCallback) {}
@@ -43,6 +46,7 @@ class TestResizeObserver {
 
 describe('BrowserPdfViewer', () => {
   beforeEach(() => {
+    delete (globalThis as typeof globalThis & { pdfjsWorker?: unknown }).pdfjsWorker;
     vi.stubGlobal('ResizeObserver', TestResizeObserver);
     vi.mocked(localPdfFileRead).mockResolvedValue({
       path: '/tmp/report.pdf',
@@ -71,6 +75,9 @@ describe('BrowserPdfViewer', () => {
     expect(canvas.style.width).toBe('672px');
     expect(canvas.style.height).toBe('940px');
     expect(document.querySelectorAll('[data-pdf-page]')).toHaveLength(10);
+    expect((globalThis as typeof globalThis & {
+      pdfjsWorker?: { WorkerMessageHandler: unknown };
+    }).pdfjsWorker?.WorkerMessageHandler).toBe(pdfMocks.WorkerMessageHandler);
   });
 
   it('updates the toolbar page while scrolling through the continuous document', async () => {

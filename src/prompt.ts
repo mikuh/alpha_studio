@@ -85,14 +85,15 @@ export function buildCodingInstructions(
       modeLines.push(
         `当前指定 Skill：${skill.title} (${skill.id})。必须优先使用这个 Skill 的说明、工作流和工具路线来完成任务；如果任务明显不适合该 Skill，先简短说明原因，再用最合适的方式继续。`,
       );
-      if (skill.id === 'alpha-studio-daily-theme-research') {
-        modeLines.push(
-          'Alpha Studio 盘前主题协议：这个 Skill 的研究规则、报告结构、输出深度、评分、连续跟踪、产业链真实性、执行闸门和校验要求必须与 `neostream-daily-theme-research` 保持一致；仅将名称/品牌/Logo 替换为 Alpha Studio / Alpha Studio Research。',
-          '默认生成正式日报而不是简版。除非用户明确要求快报或 9:25 集合竞价确认，报告必须包含 `今日执行闸门`、`今日资金进攻路径`、`今日进攻概率`、`情绪指标仪表盘`、`隔夜全球线索`、`全球线索到A股题材映射`、`上一期主题连续跟踪`、`题材分级与生命周期`、`题材持续时间与持有复核`、`龙头 / 中军 / 趋势核心 / 补涨矩阵`、`来源与风险提示`。',
-          '角色矩阵默认不要拆成 `ROLE MATRIX I/II`。使用一张五列紧凑表：`题材 / 角色 / 标的 / 角色逻辑 / 确认/失效`；不要添加 `持有复核`、`今日处理` 等列，相关内容放在表后 callout 或单独 `角色限制` 表。',
-          '输出先给 `alpha.premarket_theme.v1` fenced JSON，再给完整 Markdown/HTML 报告。JSON 也必须包含全局 `capitalAttackPath`，并为每个 S/A/B 主题写出今日进攻概率、研究概率、观察权重、持有窗口和触发/失效条件。',
-        );
-      }
+    }
+    if (skill.id === 'alpha-studio-daily-theme-research') {
+      modeLines.push(
+        'Alpha Studio 盘前主题协议：这个 Skill 的研究规则、报告结构、输出深度、评分、连续跟踪、产业链真实性、执行闸门和校验要求必须与 `neostream-daily-theme-research` 保持一致；仅将名称/品牌/Logo 替换为 Alpha Studio / Alpha Studio Research。',
+        '默认生成正式日报而不是简版。除非用户明确要求快报或 9:25 集合竞价确认，报告必须包含 `今日执行闸门`、`今日资金进攻路径`、`今日进攻概率`、`情绪指标仪表盘`、`隔夜全球线索`、`全球线索到A股题材映射`、`上一期主题连续跟踪`、`题材分级与生命周期`、`题材持续时间与持有复核`、`龙头 / 中军 / 趋势核心 / 补涨矩阵`、`来源与风险提示`。',
+        '角色矩阵默认不要拆成 `ROLE MATRIX I/II`。使用一张五列紧凑表：`题材 / 角色 / 标的 / 角色逻辑 / 确认/失效`；不要添加 `持有复核`、`今日处理` 等列，相关内容放在表后 callout 或单独 `角色限制` 表。',
+        '自动入库是完成条件：必须在 HTML/PDF 同目录静默生成完整的 `alpha.premarket_theme.v2` 文件 `.alpha-studio-tracking.json`，且在文件成功生成并自检前不得宣称报告完成。不要在最终回复中展示、链接或解释这个内部 JSON；最终回复只交付用户可读的 HTML/PDF。',
+        '`.alpha-studio-tracking.json` 是投研工作台的唯一自动入库数据源，HTML 只负责阅读，客户端不得依赖 HTML 的字段位置或表格结构。JSON 必须包含全局 `executionGate`、`capitalAttackPath`、`marketSentiment`、`previousContinuity`、`risks`、`sourceNotes`，以及每个主题的结论、生命周期、资金类型、概率、观察权重、持有窗口、只做/不做、失效、风险、证券代码、角色、真实性和完整 `triggerSpecs`；不得用“未给出/待确认/待验证”占位。',
+      );
     }
     if (skill.id === 'imagegen') {
       modeLines.push(

@@ -335,7 +335,7 @@ export interface GhAuthStatus {
   account?: string;
 }
 
-export type OpenAppId = 'finder' | 'terminal' | 'vscode' | 'cursor' | 'pycharm' | 'xcode';
+export type OpenAppId = 'finder' | 'preview' | 'terminal' | 'vscode' | 'cursor' | 'pycharm' | 'xcode';
 
 export interface TerminalEvent {
   type: 'output' | 'exit';

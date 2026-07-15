@@ -139,6 +139,90 @@ export interface PremarketThemeParseResult {
   error?: string;
 }
 
+export function automaticPremarketThemeImportError(run: PremarketThemeRun): string | null {
+  const missing: string[] = [];
+  const absent = (value: unknown) => typeof value !== 'string'
+    || !value.trim()
+    || /^(?:未给出|待确认|待验证)$/i.test(value.trim());
+  const requireText = (label: string, value: unknown) => {
+    if (absent(value)) missing.push(label);
+  };
+  requireText('交易日', run.tradeDate);
+  requireText('生成时间', run.generatedAt);
+  requireText('数据截止时间', run.dataCutoff);
+  requireText('报告模式', run.reportMode);
+  requireText('报告标题', run.title);
+  if (run.sourceSchema !== PREMARKET_THEME_SCHEMA) missing.push('v2结构化协议');
+  requireText('执行闸门', run.executionGate.state);
+  if (!run.executionGate.todayOnlyDo.length) missing.push('全局今日只做');
+  if (!run.executionGate.todayDoNotDo.length) missing.push('全局今日不做');
+  if (!run.executionGate.triggerBeforeAction.length) missing.push('全局触发再做');
+  requireText('全局失效动作', run.executionGate.failureAction);
+  requireText('主路径', run.capitalAttackPath.primaryRoute);
+  requireText('备选路径', run.capitalAttackPath.backupRoute);
+  requireText('失效路径', run.capitalAttackPath.invalidationRoute);
+  requireText('全局今日进攻概率', run.capitalAttackPath.todayAttackProbability);
+  requireText('资金路径理由', run.capitalAttackPath.rationale);
+  requireText('资金路径行动条件', run.capitalAttackPath.actionCondition);
+  requireText('市场情绪', run.marketSentiment);
+  if (!run.previousContinuity.length || run.previousContinuity.some((row) => [row.name, row.status, row.action, row.evidence].some(absent))) {
+    missing.push('上一期连续跟踪');
+  }
+  if (!run.risks.length || run.risks.some(absent)) missing.push('全局风险');
+  if (!run.sourceNotes.length || run.sourceNotes.some(absent)) missing.push('数据来源');
+  for (const theme of run.themes) {
+    const prefix = `题材“${theme.name}”`;
+    requireText(`${prefix}结论`, theme.conclusion);
+    requireText(`${prefix}生命周期`, theme.lifecycle);
+    requireText(`${prefix}资金类型`, theme.capitalType);
+    requireText(`${prefix}进攻路径`, theme.attackPath);
+    requireText(`${prefix}今日进攻概率`, theme.todayAttackProbability);
+    requireText(`${prefix}研究概率`, theme.researchProbability);
+    requireText(`${prefix}观察权重`, theme.observationWeight);
+    if (!theme.todayOnlyDo.length) missing.push(`${prefix}今日只做`);
+    if (!theme.todayDoNotDo.length) missing.push(`${prefix}今日不做`);
+    requireText(`${prefix}失效条件`, theme.invalidation);
+    requireText(`${prefix}风险`, theme.risk);
+    const holding = theme.holdingWindow;
+    if (!holding
+      || [holding.elapsedTradingDays, holding.estimatedRemainingWindow, holding.defaultProtocol].some(absent)
+      || !holding.extensionConditions.length
+      || holding.extensionConditions.some(absent)
+      || !holding.exitConditions.length
+      || holding.exitConditions.some(absent)) {
+      missing.push(`${prefix}完整持有窗口`);
+    }
+    if (!theme.triggerSpecs.length) {
+      missing.push(`${prefix}触发条件`);
+    } else {
+      for (const trigger of theme.triggerSpecs) {
+        const triggerPrefix = `${prefix}触发“${trigger.label || trigger.id}”`;
+        if ([trigger.id, trigger.label, trigger.dataSource, trigger.actionOnTrigger, trigger.actionOnFailure].some(absent)) {
+          missing.push(`${triggerPrefix}基础字段`);
+        }
+        if (trigger.evaluator === 'quote' && (absent(trigger.subjectCode) || absent(trigger.field))) {
+          missing.push(`${triggerPrefix}标的/指标`);
+        }
+        if ((trigger.evaluator === 'quote' || trigger.evaluator === 'breadth')
+          && (!trigger.operator || trigger.threshold === undefined || trigger.threshold === '')) {
+          missing.push(`${triggerPrefix}运算符/阈值`);
+        }
+        if (trigger.evaluator === 'time' && (!trigger.operator || (trigger.threshold === undefined && absent(trigger.windowStart)))) {
+          missing.push(`${triggerPrefix}时间规则`);
+        }
+      }
+    }
+    if (!theme.stocks.length || theme.stocks.some((stock) => absent(stock.name)
+      || absent(stock.code)
+      || absent(stock.role)
+      || stock.roleRank <= 0
+      || absent(stock.authenticity))) {
+      missing.push(`${prefix}证券代码/角色/真实性`);
+    }
+  }
+  return missing.length ? `结构化跟踪数据不完整：${missing.slice(0, 8).join('、')}${missing.length > 8 ? '等' : ''}。` : null;
+}
+
 export const PREMARKET_THEME_STATUS_LABELS: Record<PremarketThemeStatus, string> = {
   pending: '待确认',
   watching: '观察中',
@@ -485,60 +569,108 @@ export function extractLegacyPremarketThemeDraft(text: string, title = '导入�
     .map((line) => line.trim())
     .filter((line) => line.includes('|') && !/^\|?\s*:?-{2,}/.test(line))
     .map((line) => line.split('|').map((cell) => cell.trim()).filter(Boolean))
-    .filter((cells) => cells.some((cell) => /(中军|趋势核心|龙头|补涨)/.test(cell)));
-  const themes = new Map<string, { rank: number; stocks: PremarketThemeStock[] }>();
-  for (const cells of rows) {
-    const roleIndex = cells.findIndex((cell) => /(中军|趋势核心|龙头|补涨)/.test(cell));
-    if (roleIndex < 0) continue;
-    const role = cells[roleIndex].match(/(中军|趋势核心|龙头|补涨)/)?.[1] || '待确认';
-    const themeName = cells[Math.max(0, roleIndex - 1)] || `题材 ${themes.size + 1}`;
-    if (/^(题材|主题)$/.test(themeName)) continue;
-    const stockCell = cells[roleIndex + 1] || '';
-    const entry = themes.get(themeName) || { rank: themes.size + 1, stocks: [] };
+    .filter((cells) => cells.length > 1);
+  const table = (headers: string[]) => {
+    const start = rows.findIndex((cells) => headers.every((header) => cells.includes(header)));
+    if (start < 0) return [] as string[][];
+    const width = rows[start].length;
+    const body: string[][] = [];
+    for (const cells of rows.slice(start + 1)) {
+      if (cells.length !== width) break;
+      body.push(cells);
+    }
+    return body;
+  };
+  const gradeRows = table(['评级', '主题', '生命周期', '今日进攻概率', '观察权重']);
+  const roleRows = table(['题材', '角色', '标的']).filter((cells) => /\d{6}/.test(cells[2] || ''));
+  if (!roleRows.length) return null;
+  const normalizedTokens = (value: string) => value.split(/[\/／]/).map((item) => item.replace(/医药医疗|医药/g, '医药').trim()).filter(Boolean);
+  const matchScore = (left: string, right: string) => {
+    const leftTokens = normalizedTokens(left);
+    const rightTokens = normalizedTokens(right);
+    return leftTokens.reduce((score, token) => score + (rightTokens.some((item) => item.includes(token) || token.includes(item)) ? 1 : 0), 0);
+  };
+  const themeRows = gradeRows.length
+    ? gradeRows.map((cells, index) => ({
+      rank: index + 1,
+      grade: normalizeGrade(cells[0]),
+      name: cells[1],
+      lifecycle: cells[2] || '待确认',
+      capitalType: cells[3] || '待确认',
+      todayAttackProbability: cells[4] || '未给出',
+      researchProbability: cells[5] || '未给出',
+      observationWeight: cells[6] || '未给出',
+      conclusion: cells[7] || '由历史报告抽取，待用户确认。',
+    }))
+    : Array.from(new Set(roleRows.map((cells) => cells[0]))).map((name, index) => ({
+      rank: index + 1, grade: 'C' as const, name, lifecycle: '待确认', capitalType: '待确认',
+      todayAttackProbability: '未给出', researchProbability: '未给出', observationWeight: '未给出',
+      conclusion: '由历史报告表格抽取，待用户确认。',
+    }));
+  const stockMap = new Map(themeRows.map((theme) => [theme.name, [] as PremarketThemeStock[]]));
+  for (const cells of roleRows) {
+    const [roleTheme, role, stockCell] = cells;
+    const target = [...themeRows].sort((left, right) => matchScore(right.name, roleTheme) - matchScore(left.name, roleTheme))[0];
+    if (!target || matchScore(target.name, roleTheme) === 0) continue;
     const chunks = stockCell.split(/[、,，/]/).map((item) => item.trim()).filter(Boolean);
     for (const [index, chunk] of chunks.entries()) {
       const code = legacySecurityCode(chunk);
+      const authenticity = chunk.match(/[（(]([ABCD](?:[+-])?)[）)]/i)?.[1]?.toUpperCase();
       const name = chunk
-        .replace(/\(?\d{6}(?:\.(?:XSHG|XSHE))?\)?/gi, '')
-        .replace(/[（(][ABCD][）)]/g, '')
+        .replace(/\(?\d{6}(?:\.(?:XSHG|XSHE|SH|SZ))?\)?/gi, '')
+        .replace(/[（(][ABCD](?:[+-])?[）)]/gi, '')
         .trim();
       if (!name && !code) continue;
-      entry.stocks.push({ name: name || code as string, code, role, roleRank: index + 1 });
+      stockMap.get(target.name)?.push({ name: name || code as string, code, role, roleRank: index + 1, authenticity });
     }
-    themes.set(themeName, entry);
   }
-  if (!themes.size) return null;
   const generatedAt = legacyTimestamp(text);
   const dateMatch = text.match(/20\d{2}[-/]\d{2}[-/]\d{2}/)?.[0]?.split('/').join('-');
   const tradeDate = dateMatch || (generatedAt ? shanghaiDate(generatedAt) : '');
+  const displayTitle = /^(?:index|导入的历史日报)$/i.test(title) && tradeDate
+    ? `${Number(tradeDate.slice(5, 7))}月${Number(tradeDate.slice(8, 10))}日${/盘中/.test(text) ? '盘中' : '历史'}主题研究`
+    : title;
   const canEstablishTiming = Boolean(generatedAt && tradeDate);
-  const draftThemes: PremarketTheme[] = Array.from(themes.entries()).map(([name, value]) => ({
-    id: `legacy-theme-${value.rank}`,
-    rank: value.rank,
-    name,
-    grade: 'C',
-    conclusion: '由历史报告表格抽取，待用户确认。',
-    lifecycle: '待确认',
-    capitalType: '待确认',
-    attackPath: '待确认',
-    todayAttackProbability: '未给出',
-    researchProbability: '未给出',
-    observationWeight: '未给出',
-    todayOnlyDo: [],
-    todayDoNotDo: [],
-    triggers: ['历史报告触发条件需人工确认'],
-    triggerSpecs: [{
-      id: `legacy-theme-${value.rank}-trigger-1`,
-      label: '历史报告触发条件需人工确认',
-      evaluator: 'manual',
-      confirmForSeconds: 0,
-      dataSource: '导入报告',
-      actionOnTrigger: '用户确认后继续跟踪',
-      actionOnFailure: '仅用于阅读与复盘',
-    }],
-    invalidation: '', risk: '历史抽取信息不完整', stocks: value.stocks, status: 'pending',
-  }));
-  const hashBasis = { title, tradeDate, generatedAt, themes: draftThemes, text };
+  const executionRows = table(['项目', '结论', '执行含义']);
+  const execution = new Map(executionRows.map((cells) => [cells[0], cells]));
+  const pathRows = table(['层级', '资金进攻路径', '今日进攻概率', '为什么现在', '失效路线']);
+  const primaryPath = pathRows.find((cells) => /主路径/.test(cells[0])) || pathRows[0];
+  const backupPath = pathRows.find((cells) => /备选/.test(cells[0]));
+  const holdingRows = table(['主题', '已运行', '预计剩余窗口', '默认持有协议', '延长条件', '缩短/退出条件']);
+  const triggerRows = table(['时点', '观察对象', '确认条件', '失败动作']);
+  const draftThemes: PremarketTheme[] = themeRows.map((value) => {
+    const holding = [...holdingRows].sort((left, right) => matchScore(right[0], value.name) - matchScore(left[0], value.name))[0];
+    const matchedTriggers = triggerRows.filter((cells) => matchScore(cells[1], value.name) > 0);
+    const effectiveTriggers = matchedTriggers.length ? matchedTriggers : value.rank === 1 ? triggerRows.slice(0, 1) : [];
+    return {
+      id: `legacy-theme-${value.rank}`,
+      rank: value.rank,
+      name: value.name,
+      grade: value.grade,
+      conclusion: value.conclusion,
+      lifecycle: value.lifecycle,
+      capitalType: value.capitalType,
+      attackPath: value.rank === 1 ? primaryPath?.[1] || '观察路径' : value.rank === 2 ? backupPath?.[1] || '观察路径' : '观察路径',
+      todayAttackProbability: value.todayAttackProbability,
+      researchProbability: value.researchProbability,
+      observationWeight: value.observationWeight,
+      holdingWindow: holding && matchScore(holding[0], value.name) > 0 ? {
+        elapsedTradingDays: holding[1], estimatedRemainingWindow: holding[2], defaultProtocol: holding[3],
+        extensionConditions: [holding[4]].filter(Boolean), exitConditions: [holding[5]].filter(Boolean),
+      } : undefined,
+      todayOnlyDo: [execution.get('今日只做')?.[2] || '仅按报告条件观察'].filter(Boolean),
+      todayDoNotDo: [execution.get('今日不做')?.[2] || '不事后补写触发'].filter(Boolean),
+      triggers: effectiveTriggers.map((cells) => cells[2]),
+      triggerSpecs: effectiveTriggers.map((cells, index) => ({
+        id: `legacy-theme-${value.rank}-trigger-${index + 1}`,
+        label: `${cells[0]} ${cells[2]}`.trim(), evaluator: 'manual' as const, confirmForSeconds: 0,
+        dataSource: '导入报告', actionOnTrigger: '用户确认后继续跟踪', actionOnFailure: cells[3] || '继续观察',
+      })),
+      invalidation: effectiveTriggers.map((cells) => cells[3]).filter(Boolean).join('；'),
+      risk: '历史 HTML/Markdown 抽取结果需人工确认', stocks: stockMap.get(value.name) || [], status: 'pending',
+    };
+  });
+  const hashBasis = { title: displayTitle, tradeDate, generatedAt, themes: draftThemes, text };
   return {
     schema: PREMARKET_THEME_SCHEMA,
     sourceSchema: PREMARKET_THEME_SCHEMA_V1,
@@ -549,9 +681,19 @@ export function extractLegacyPremarketThemeDraft(text: string, title = '导入�
     dataCutoff: generatedAt || '',
     importedAt: new Date().toISOString(),
     reportMode: canEstablishTiming ? 'legacy_import' : 'legacy_import_missing_time',
-    title,
-    executionGate: { state: '只观察', todayOnlyDo: [], todayDoNotDo: [], triggerBeforeAction: [], failureAction: '仅用于阅读与复盘。' },
-    capitalAttackPath: { primaryRoute: '', backupRoute: '', invalidationRoute: '', todayAttackProbability: '未给出', rationale: '', actionCondition: '' },
+    title: displayTitle,
+    executionGate: {
+      state: execution.get('全局状态')?.[1] || '只观察',
+      todayOnlyDo: [execution.get('今日只做')?.[2] || execution.get('今日只做')?.[1]].filter((item): item is string => Boolean(item)),
+      todayDoNotDo: [execution.get('今日不做')?.[2] || execution.get('今日不做')?.[1]].filter((item): item is string => Boolean(item)),
+      triggerBeforeAction: [execution.get('触发再做')?.[2] || execution.get('触发再做')?.[1]].filter((item): item is string => Boolean(item)),
+      failureAction: execution.get('失效动作')?.[2] || execution.get('失效动作')?.[1] || '仅用于阅读与复盘。',
+    },
+    capitalAttackPath: {
+      primaryRoute: primaryPath?.[1] || '', backupRoute: backupPath?.[1] || '',
+      invalidationRoute: primaryPath?.[4] || '', todayAttackProbability: primaryPath?.[2] || '未给出',
+      rationale: primaryPath?.[3] || '', actionCondition: execution.get('触发再做')?.[2] || '',
+    },
     marketSentiment: '待确认', previousContinuity: [], themes: draftThemes,
     risks: ['历史 Markdown/HTML 由本地启发式抽取，未经确认不得用于回测。'],
     sourceNotes: ['legacy heuristic extraction'], reportMarkdown: text,
@@ -639,12 +781,20 @@ export function normalizePremarketThemeRun(value: unknown): PremarketThemeRun | 
   if (raw.schema !== PREMARKET_THEME_SCHEMA && raw.schema !== PREMARKET_THEME_SCHEMA_V1) return null;
   const parsed = parsePremarketThemeResult(`\`\`\`json\n${JSON.stringify(raw)}\n\`\`\``, { requireCompleteReport: false });
   if (!parsed.ok || !parsed.run) return null;
+  const sourceSchema = raw.sourceSchema === PREMARKET_THEME_SCHEMA_V1 || raw.source_schema === PREMARKET_THEME_SCHEMA_V1
+    ? PREMARKET_THEME_SCHEMA_V1
+    : parsed.run.sourceSchema;
+  const storedMarkdown = stringValue(raw.reportMarkdown || raw.report_markdown) || parsed.run.reportMarkdown;
+  const legacyDraft = sourceSchema === PREMARKET_THEME_SCHEMA_V1 && storedMarkdown
+    ? extractLegacyPremarketThemeDraft(storedMarkdown, stringValue(raw.title, parsed.run.title))
+    : null;
   return {
-    ...parsed.run,
+    ...(legacyDraft || parsed.run),
     id: stringValue(raw.id) || parsed.run.id,
+    sourceSchema,
     importedAt: stringValue(raw.importedAt || raw.imported_at) || parsed.run.importedAt,
     contentHash: stringValue(raw.contentHash || raw.content_hash) || parsed.run.contentHash,
-    reportMarkdown: stringValue(raw.reportMarkdown || raw.report_markdown) || parsed.run.reportMarkdown,
+    reportMarkdown: storedMarkdown,
   };
 }
 
@@ -665,7 +815,14 @@ export function savePremarketThemeRun(run: PremarketThemeRun): PremarketThemeRun
   if (typeof window === 'undefined') return [run];
   const next = [
     run,
-    ...loadPremarketThemeRuns().filter((item) => item.contentHash !== run.contentHash && item.id !== run.id),
+    ...loadPremarketThemeRuns().filter((item) => {
+      if (item.contentHash === run.contentHash || item.id === run.id) return false;
+      const replacesLegacyDraft = run.sourceSchema === PREMARKET_THEME_SCHEMA
+        && item.sourceSchema === PREMARKET_THEME_SCHEMA_V1
+        && item.reportMode === 'legacy_import'
+        && item.tradeDate === run.tradeDate;
+      return !replacesLegacyDraft;
+    }),
   ];
   window.localStorage.setItem(PREMARKET_THEME_RUNS_KEY, JSON.stringify(next));
   window.dispatchEvent(new CustomEvent(PREMARKET_THEME_RUNS_CHANGED_EVENT, { detail: next }));

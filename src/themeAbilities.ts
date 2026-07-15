@@ -1,5 +1,9 @@
 import type { Conversation, SkillSelection } from './types';
-import { loadPremarketThemeRuns } from './themeResearch';
+import {
+  ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
+  ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE,
+  loadPremarketThemeRuns,
+} from './themeResearch';
 
 export const ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID = 'alpha-studio-intraday-monitor';
 export const ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_TITLE = 'Alpha Studio 盘中监控';
@@ -13,6 +17,13 @@ export const REPORT_REVIEW_CARD_PROMPT =
   '使用 alpha-studio-report-review 复盘今日生成的报告，对照实际行情、盘中触发和失效情况，完成偏差归因与次日调整。';
 
 export function inferThemeAbilitySkill(prompt: string): SkillSelection | null {
+  if (prompt.includes(ALPHA_STUDIO_DAILY_THEME_SKILL_ID)) {
+    return {
+      id: ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
+      title: ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE,
+      description: '生成可自动进入日报跟踪的结构化主题研究。',
+    };
+  }
   if (prompt.includes(ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID)) {
     return {
       id: ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,

@@ -406,7 +406,7 @@ export async function ghAuthStatus(): Promise<GhAuthStatus> {
 }
 
 export async function listOpenApps(): Promise<OpenAppId[]> {
-  if (!isTauriRuntime()) return ['finder', 'terminal', 'vscode', 'cursor'];
+  if (!isTauriRuntime()) return ['finder', 'preview', 'terminal', 'vscode', 'cursor'];
   return invoke<OpenAppId[]>('list_open_apps');
 }
 
@@ -414,6 +414,15 @@ export async function openInApp(app: OpenAppId, path: string): Promise<void> {
   if (!path) throw new Error('当前对话还没有绑定工作目录。');
   if (!isTauriRuntime()) return;
   await invoke('open_in_app', { request: { app, path } });
+}
+
+export async function copyLocalFileToClipboard(path: string): Promise<void> {
+  if (!path) throw new Error('文件路径不能为空。');
+  if (!isTauriRuntime()) {
+    await navigator.clipboard?.writeText(path);
+    return;
+  }
+  await invoke('copy_file_to_clipboard', { request: { path } });
 }
 
 export async function terminalStart(cwd?: string, rows?: number, cols?: number): Promise<string> {

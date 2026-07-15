@@ -2,6 +2,7 @@ import { Fragment, createContext, useCallback, useContext, useEffect, useLayoutE
 import type {
   AnchorHTMLAttributes,
   ChangeEvent,
+  ClipboardEvent as ReactClipboardEvent,
   CSSProperties,
   DragEvent as ReactDragEvent,
   FormEvent,
@@ -143,6 +144,7 @@ import {
   gitUnstage,
   createProjectFolder,
   browserWebviewAction,
+  copyLocalFileToClipboard,
   isTauriRuntime,
   listOpenApps,
   localImageDataUrl,
@@ -2616,8 +2618,8 @@ function ContextMenu({ menu, onClose }: { menu: SidebarMenu; onClose: () => void
     if (!rect) return;
     const pad = 10;
     setPos({
-      left: Math.min(menu.x, window.innerWidth - rect.width - pad),
-      top: Math.min(menu.y, window.innerHeight - rect.height - pad),
+      left: Math.max(pad, Math.min(menu.x, window.innerWidth - rect.width - pad)),
+      top: Math.max(pad, Math.min(menu.y, window.innerHeight - rect.height - pad)),
     });
   }, [menu]);
   useEffect(() => {
@@ -2820,13 +2822,14 @@ const OPEN_APP_META: Record<OpenAppId, { label: string; color: string; glyph: st
   vscode: { label: 'VS Code', color: '#2f93e0', glyph: '〈〉' },
   cursor: { label: 'Cursor', color: '#111317', glyph: '▮' },
   finder: { label: 'Finder', color: '#1f9bff', glyph: '☺' },
+  preview: { label: 'Preview', color: '#287bd1', glyph: '⌕' },
   terminal: { label: 'Terminal', color: '#3a3a3a', glyph: '>_' },
   pycharm: { label: 'PyCharm', color: '#21d789', glyph: 'PC' },
   xcode: { label: 'Xcode', color: '#1688f0', glyph: '⌘' },
 };
 
 const OPEN_APP_ORDER: OpenAppId[] = ['vscode', 'cursor', 'finder', 'terminal', 'pycharm'];
-const FILE_OPEN_APP_ORDER: OpenAppId[] = ['cursor', 'vscode', 'xcode', 'pycharm'];
+const FILE_OPEN_APP_ORDER: OpenAppId[] = ['preview', 'cursor', 'vscode', 'xcode', 'pycharm'];
 
 function OpenInAppMenu({ cwd }: { cwd: string }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -6626,6 +6629,8 @@ function Composer({
 }) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
+  const [pendingAttachmentBatches, setPendingAttachmentBatches] = useState(0);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<SkillCatalogItem | null>(null);
   const [selectedCoworkers, setSelectedCoworkers] = useState<CoworkerSelection[]>([]);
   const [coworkerDragOver, setCoworkerDragOver] = useState(false);
@@ -6735,8 +6740,28 @@ function Composer({
   const addAttachments = (items: MessageAttachment[]) => {
     setAttachments((prev) => mergeAttachments(prev, items));
   };
+  const handlePaste = async (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const files = filesFromClipboard(event.clipboardData);
+    if (files.length === 0) return;
+    event.preventDefault();
+    setAttachmentError(null);
+    setPendingAttachmentBatches((count) => count + 1);
+    try {
+      const results = await Promise.allSettled(files.map((file, index) => buildAttachmentFromPastedFile(file, index)));
+      const added = results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+      if (added.length > 0) addAttachments(added);
+      const failedCount = results.length - added.length;
+      if (failedCount > 0) {
+        setAttachmentError(`${failedCount} 个附件粘贴失败，请重试或使用“添加照片和文件”`);
+      }
+    } finally {
+      setPendingAttachmentBatches((count) => Math.max(0, count - 1));
+      textareaRef.current?.focus();
+    }
+  };
   const removeAttachment = (id: string) => setAttachments((prev) => prev.filter((item) => item.id !== id));
-  const canSend = Boolean(value.trim() || attachments.length);
+  const isAddingAttachments = pendingAttachmentBatches > 0;
+  const canSend = !isAddingAttachments && Boolean(value.trim() || attachments.length);
   const submit = () => {
     if (!canSend || disabled) return;
     const outgoing = attachments;
@@ -6806,12 +6831,18 @@ function Composer({
             ))}
           </div>
         )}
+        {(isAddingAttachments || attachmentError) && (
+          <div className={`composer-attachment-status ${attachmentError ? 'error' : ''}`} role="status" aria-live="polite">
+            {isAddingAttachments ? <><Loader2 size={13} className="spin" />正在添加粘贴的附件…</> : <><AlertCircle size={13} />{attachmentError}</>}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           className="composer-textarea"
           value={value}
           disabled={disabled}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setValue(event.target.value)}
+          onPaste={(event) => void handlePaste(event)}
           onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
@@ -7131,8 +7162,8 @@ function createAttachmentId(): string {
 
 // Browser-preview fallback: the file picker yields File objects, so we can build
 // an object URL for instant image thumbnails.
-function buildAttachmentFromFile(file: File): MessageAttachment {
-  const name = file.name;
+function buildAttachmentFromFile(file: File, displayName = file.name): MessageAttachment {
+  const name = displayName;
   const ext = extOf(name);
   const kind: MessageAttachment['kind'] = file.type.startsWith('image/') || isImageExt(ext) ? 'image' : 'file';
   return {
@@ -7143,6 +7174,64 @@ function buildAttachmentFromFile(file: File): MessageAttachment {
     path: name,
     previewUrl: kind === 'image' ? URL.createObjectURL(file) : undefined,
   };
+}
+
+const PASTED_MIME_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+  'application/pdf': 'pdf',
+  'text/plain': 'txt',
+  'text/csv': 'csv',
+};
+
+function filesFromClipboard(clipboardData: DataTransfer): File[] {
+  const files = Array.from(clipboardData.files ?? []);
+  if (files.length > 0) return files;
+  return Array.from(clipboardData.items ?? [])
+    .filter((item) => item.kind === 'file')
+    .flatMap((item) => {
+      const file = item.getAsFile();
+      return file ? [file] : [];
+    });
+}
+
+function pastedFileName(file: File, index: number): string {
+  const existing = file.name.trim();
+  if (existing) return existing;
+  const ext = PASTED_MIME_EXTENSIONS[file.type.toLowerCase()] || 'bin';
+  const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '-');
+  const prefix = file.type.startsWith('image/') ? 'pasted-image' : 'pasted-file';
+  return `${prefix}-${timestamp}${index > 0 ? `-${index + 1}` : ''}.${ext}`;
+}
+
+function fileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('无法读取剪贴板附件'));
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const separator = result.indexOf(',');
+      if (separator < 0) {
+        reject(new Error('无法编码剪贴板附件'));
+        return;
+      }
+      resolve(result.slice(separator + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Clipboard File objects do not expose a usable absolute path. On desktop we
+// persist their bytes first so Codex receives a real local image/file path.
+async function buildAttachmentFromPastedFile(file: File, index: number): Promise<MessageAttachment> {
+  const name = pastedFileName(file, index);
+  if (!isTauriRuntime()) return buildAttachmentFromFile(file, name);
+  const data = await fileAsBase64(file);
+  const path = await invoke<string>('clipboard_attachment_save', { request: { name, data } });
+  return buildAttachmentFromPath(path);
 }
 
 // Desktop: the dialog returns absolute paths; images get an asset URL the
@@ -7317,10 +7406,12 @@ function MarkdownLink({
   node: _node,
   className,
   onClick,
+  onContextMenu,
   ...props
 }: AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) {
   const openBrowserUrl = useBrowserDockOpener();
   const openFileInDock = useFileDockOpener();
+  const [contextMenuAnchor, setContextMenuAnchor] = useState<MenuAnchor | null>(null);
   const target = typeof href === 'string' ? href : '';
   const fileExt = markdownLinkFileExt(target);
   const localPath = target ? localFilePath(target) || (target.startsWith('/') ? target : null) : null;
@@ -7343,12 +7434,32 @@ function MarkdownLink({
     event.preventDefault();
     openBrowserUrl(target);
   };
+  const handleContextMenu = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    onContextMenu?.(event);
+    if (event.defaultPrevented || !localPath) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenuAnchor(anchorFromCursor(event));
+  };
 
   return (
-    <a {...props} href={href} className={linkClassName} onClick={handleClick}>
-      {fileLink && fileExt ? <span className={`markdown-file-icon tone-${fileTone(fileExt)}`}>{fileGlyph(fileExt, 15)}</span> : null}
-      {fileLink ? <span className="markdown-link-text">{children}</span> : children}
-    </a>
+    <>
+      <a {...props} href={href} className={linkClassName} onClick={handleClick} onContextMenu={handleContextMenu}>
+        {fileLink && fileExt ? <span className={`markdown-file-icon tone-${fileTone(fileExt)}`}>{fileGlyph(fileExt, 15)}</span> : null}
+        {fileLink ? <span className="markdown-link-text">{children}</span> : children}
+      </a>
+      {contextMenuAnchor && localPath ? (
+        <FileContextMenu
+          anchor={contextMenuAnchor}
+          path={localPath}
+          name={basename(localPath)}
+          ext={fileExt}
+          openFileInDock={openFileInDock}
+          openBrowserUrl={openBrowserUrl}
+          onClose={() => setContextMenuAnchor(null)}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -7494,9 +7605,132 @@ function GeneratedFileResultView({ block }: { block: Extract<MessageBlock, { typ
   );
 }
 
+const PREVIEW_APP_EXTENSIONS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'heic']);
+const TEXT_CLIPBOARD_EXTENSIONS = new Set([
+  'txt', 'md', 'markdown', 'json', 'jsonl', 'csv', 'tsv', 'html', 'htm', 'css', 'js', 'jsx', 'ts', 'tsx',
+  'py', 'rs', 'go', 'java', 'kt', 'swift', 'sh', 'zsh', 'bash', 'yaml', 'yml', 'toml', 'xml', 'sql', 'log',
+]);
+
+function FileContextMenu({
+  anchor,
+  path,
+  name,
+  ext,
+  openFileInDock,
+  openBrowserUrl,
+  onClose,
+}: {
+  anchor: MenuAnchor;
+  path: string;
+  name: string;
+  ext: string;
+  openFileInDock?: ((path: string) => void) | null;
+  openBrowserUrl?: ((url: string) => void) | null;
+  onClose: () => void;
+}) {
+  const [apps, setApps] = useState<OpenAppId[]>([]);
+  const remote = /^https?:\/\//i.test(path);
+
+  useEffect(() => {
+    if (remote) return;
+    let cancelled = false;
+    void listOpenApps()
+      .then((list) => {
+        if (!cancelled) setApps(list);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [remote]);
+
+  const runAsync = (action: () => void | Promise<void>) => () => {
+    void Promise.resolve(action()).catch((error) => {
+      console.warn(`File action failed for ${name}:`, error);
+    });
+  };
+  const openFile = async () => {
+    if (remote) {
+      await openExternal(path);
+      return;
+    }
+    if (isBrowserPreviewExt(ext) && openBrowserUrl) {
+      openBrowserUrl(path);
+      return;
+    }
+    if (openFileInDock) {
+      openFileInDock(path);
+      return;
+    }
+    if (!(await openLocalPath(path))) await openExternal(path);
+  };
+  const copyContents = async () => {
+    if (remote) {
+      await copyToClipboard(path);
+      return;
+    }
+    if (TEXT_CLIPBOARD_EXTENSIONS.has(ext.toLowerCase())) {
+      const file = await localTextFileRead(path);
+      if (file.truncated) throw new Error('文件超过 2 MB，无法完整复制内容。');
+      await copyToClipboard(file.content);
+      return;
+    }
+    await copyLocalFileToClipboard(path);
+  };
+
+  const previewAvailable = !remote && PREVIEW_APP_EXTENSIONS.has(ext.toLowerCase());
+  const appTargets = FILE_OPEN_APP_ORDER.filter((id) => apps.includes(id) || (id === 'preview' && previewAvailable));
+  const items: MenuNode[] = [
+    { kind: 'item', icon: <File size={15} />, label: '打开文件', onSelect: runAsync(openFile) },
+  ];
+  if (previewAvailable) {
+    items.push({
+      kind: 'item',
+      icon: <span className="open-app-icon compact" style={{ background: OPEN_APP_META.preview.color }} aria-hidden="true">{OPEN_APP_META.preview.glyph}</span>,
+      label: '在 Preview 中打开',
+      onSelect: runAsync(() => openInApp('preview', path)),
+    });
+  }
+  if (!remote && appTargets.length > 0) {
+    items.push({
+      kind: 'submenu',
+      icon: <AppWindow size={15} />,
+      label: '打开方式',
+      children: appTargets.map((id) => ({
+        kind: 'item',
+        icon: <span className="open-app-icon compact" style={{ background: OPEN_APP_META[id].color }} aria-hidden="true">{OPEN_APP_META[id].glyph}</span>,
+        label: OPEN_APP_META[id].label,
+        onSelect: runAsync(() => openInApp(id, path)),
+      })),
+    });
+  }
+  items.push(
+    { kind: 'separator' },
+    { kind: 'item', icon: <Copy size={15} />, label: remote ? '复制链接' : '复制路径', onSelect: runAsync(() => copyToClipboard(path)) },
+    { kind: 'item', icon: <FileText size={15} />, label: '复制文件内容', onSelect: runAsync(copyContents) },
+  );
+  if (!remote) {
+    items.push({
+      kind: 'item',
+      icon: <FolderOpen size={15} />,
+      label: '在 Finder 中显示',
+      onSelect: runAsync(async () => { await revealPath(path); }),
+    });
+  }
+
+  return createPortal(
+    <ContextMenu
+      menu={{ owner: `file-context:${path}`, x: anchor.x, y: anchor.y, items }}
+      onClose={onClose}
+    />,
+    document.body,
+  );
+}
+
 function GeneratedFileCard({ file }: { file: GeneratedFile }) {
   const openFileInDock = useFileDockOpener();
   const openBrowserUrl = useBrowserDockOpener();
+  const [contextMenuAnchor, setContextMenuAnchor] = useState<MenuAnchor | null>(null);
   const openDefault = () => {
     void openGeneratedFileDefault(file, openFileInDock, openBrowserUrl);
   };
@@ -7512,6 +7746,11 @@ function GeneratedFileCard({ file }: { file: GeneratedFile }) {
       tabIndex={0}
       aria-label={`打开 ${file.name}`}
       onClick={openDefault}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenuAnchor(anchorFromCursor(event));
+      }}
       onKeyDown={handleKeyDown}
     >
       <span className={`generated-file-icon tone-${fileTone(file.ext)}`}>
@@ -7522,6 +7761,17 @@ function GeneratedFileCard({ file }: { file: GeneratedFile }) {
         <span>{generatedFileTypeLabel(file)}</span>
       </span>
       <GeneratedFileOpenMenu file={file} openFileInDock={openFileInDock} openBrowserUrl={openBrowserUrl} />
+      {contextMenuAnchor ? (
+        <FileContextMenu
+          anchor={contextMenuAnchor}
+          path={localFilePath(file.path) || file.path}
+          name={file.name}
+          ext={file.ext}
+          openFileInDock={openFileInDock}
+          openBrowserUrl={openBrowserUrl}
+          onClose={() => setContextMenuAnchor(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -11508,12 +11758,20 @@ function pathToFileUrl(path: string): string {
 }
 
 function localFilePath(src: string): string | null {
-  if (src.startsWith('/')) return src;
+  if (src.startsWith('/')) return decodeLocalPath(src);
   if (!src.startsWith('file://')) return null;
   try {
     return decodeURIComponent(new URL(src).pathname);
   } catch {
     return null;
+  }
+}
+
+function decodeLocalPath(path: string): string {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
   }
 }
 

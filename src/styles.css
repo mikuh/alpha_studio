@@ -1054,6 +1054,32 @@ code {
   flex: 1;
 }
 
+.cmenu-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.cmenu-icon:empty {
+  visibility: hidden;
+}
+
+.cmenu-icon .open-app-icon.compact {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  font-size: 8px;
+}
+
+.cmenu-shortcut,
+.cmenu-chevron {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
 .model-profile-item span {
   min-width: 0;
   display: grid;
@@ -6485,6 +6511,22 @@ button.plus-menu-item:hover {
   padding: 2px 2px 2px;
 }
 
+.composer-attachment-status {
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  padding: 0 3px;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.composer-attachment-status.error {
+  color: var(--danger);
+}
+
 .att-card {
   position: relative;
   display: inline-flex;
@@ -10749,6 +10791,28 @@ button.environment-row:hover {
 .rw-research-action strong { color: var(--text-primary); font-size: 11px; }
 .rw-research-action em { color: var(--text-muted); font-size: 9px; font-style: normal; line-height: 1.4; }
 .rw-research-action > svg { color: var(--text-muted); }
+
+.rw-research-draggable {
+  cursor: grab;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.rw-research-draggable:hover {
+  background-color: color-mix(in srgb, var(--control-accent) 7%, var(--surface-raised));
+  box-shadow: inset 2px 0 0 var(--control-accent);
+}
+
+.rw-research-draggable:active {
+  cursor: grabbing;
+}
+
+.rw-concept-chips > .rw-research-draggable:hover,
+.rw-industry-grid > .rw-research-draggable:hover,
+.rw-capital-cards > .rw-research-draggable:hover,
+.rw-event-summary > .rw-research-draggable:hover,
+.rw-fundamental-metrics > .rw-research-draggable:hover {
+  border-color: color-mix(in srgb, var(--control-accent) 55%, var(--border-subtle));
+}
 
 .rw-research-data-source { margin-top: 8px; color: var(--text-muted); font-size: 10px; }
 .rw-data-loading,

@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ChevronLeft, ChevronRight, ExternalLink, Loader2, Minus, Plus } from 'lucide-react';
-import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { localPdfFileRead } from './codexBridge';
 
 type BrowserPdfViewerProps = {
@@ -11,6 +10,12 @@ type BrowserPdfViewerProps = {
 };
 
 type PdfStatus = 'loading' | 'ready' | 'error';
+
+type PdfJsWorkerGlobal = typeof globalThis & {
+  pdfjsWorker?: {
+    WorkerMessageHandler: unknown;
+  };
+};
 
 type BrowserPdfPageProps = {
   document: PDFDocumentProxy;
@@ -141,10 +146,20 @@ export function BrowserPdfViewer({ path, revision, onOpenExternal }: BrowserPdfV
     setDocument(null);
     setPageNumber(1);
 
-    void Promise.all([import('pdfjs-dist'), localPdfFileRead(path)])
-      .then(async ([pdfjs, file]) => {
+    void Promise.all([
+      import('pdfjs-dist/legacy/build/pdf.mjs'),
+      import('pdfjs-dist/legacy/build/pdf.worker.min.mjs'),
+      localPdfFileRead(path),
+    ])
+      .then(async ([pdfjs, pdfWorker, file]) => {
         if (!file.data) throw new Error('无法读取 PDF 文件内容。');
-        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+        // WKWebView cannot reliably import PDF.js' emitted `.mjs` module as a
+        // module Worker from Tauri's custom application protocol. Registering
+        // the bundled handler lets PDF.js use its in-process transport instead
+        // of attempting the unsupported external Worker/fallback import.
+        (globalThis as PdfJsWorkerGlobal).pdfjsWorker = {
+          WorkerMessageHandler: pdfWorker.WorkerMessageHandler,
+        };
         const loadingTask = pdfjs.getDocument({ data: base64Bytes(file.data) });
         const pdf = await loadingTask.promise;
         if (disposed) {

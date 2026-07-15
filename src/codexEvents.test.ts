@@ -412,6 +412,25 @@ describe('applyCodexEventToConversation', () => {
     });
   });
 
+  it('keeps the daily-theme tracking sidecar hidden from generated file cards', () => {
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'report-1',
+      title: 'command_execution',
+      text: [
+        'Generated file: /Users/geb/reports/index.html',
+        'Generated file: /Users/geb/reports/.alpha-studio-tracking.json',
+      ].join('\n'),
+    });
+
+    const fileBlock = completed.messages[0].blocks.find((block) => block.type === 'file_result');
+    expect(fileBlock).toMatchObject({
+      files: [{ path: '/Users/geb/reports/index.html' }],
+    });
+  });
+
   it('does not surface existing files from read-only tool metadata', () => {
     const completed = applyCodexEventToConversation(baseConversation(), {
       type: 'tool_completed',

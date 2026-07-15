@@ -228,6 +228,13 @@ pub struct ProjectFolderCreateResult {
     path: String,
 }
 
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardAttachmentSaveRequest {
+    name: String,
+    data: String,
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct JqDataConfigFile {
@@ -791,6 +798,12 @@ pub struct OpenExternalTargetRequest {
 
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct CopyFileToClipboardRequest {
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalImageDataUrlRequest {
     path: String,
 }
@@ -1253,6 +1266,17 @@ fn project_folder_rename(
     Ok(ProjectFolderCreateResult {
         path: path.to_string_lossy().to_string(),
     })
+}
+
+#[tauri::command]
+fn clipboard_attachment_save(request: ClipboardAttachmentSaveRequest) -> Result<String, String> {
+    let home = home_dir().ok_or_else(|| "Cannot resolve home directory.".to_string())?;
+    let root = Path::new(&home)
+        .join(".alpha-studio")
+        .join("attachments")
+        .join("clipboard");
+    save_clipboard_attachment(&root, &request.name, &request.data)
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -2534,6 +2558,7 @@ async fn list_open_apps() -> Result<Vec<String>, String> {
     #[cfg(target_os = "macos")]
     {
         available.push("finder".to_string());
+        available.push("preview".to_string());
         available.push("terminal".to_string());
         let candidates: &[(&str, &[&str])] = &[
             ("vscode", &["Visual Studio Code.app", "VSCode.app"]),
@@ -2565,6 +2590,7 @@ async fn open_in_app(request: OpenInAppRequest) -> Result<(), String> {
         let terminal_path = terminal_open_target(path);
         let args: Vec<String> = match request.app.as_str() {
             "finder" => vec!["-R".to_string(), path.to_string()],
+            "preview" => vec!["-a".to_string(), "Preview".to_string(), path.to_string()],
             "terminal" => vec![
                 "-a".to_string(),
                 "Terminal".to_string(),
@@ -2600,6 +2626,36 @@ async fn open_in_app(request: OpenInAppRequest) -> Result<(), String> {
     {
         let _ = path;
         Err("Opening in external apps is only supported on macOS in this build.".to_string())
+    }
+}
+
+#[tauri::command]
+async fn copy_file_to_clipboard(request: CopyFileToClipboardRequest) -> Result<(), String> {
+    let path = validate_open_path(&request.path)?;
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"on run argv
+set the clipboard to (POSIX file (item 1 of argv))
+end run"#;
+        let output = Command::new("osascript")
+            .args(["-e", script, "--", path])
+            .output()
+            .await
+            .map_err(|e| format!("Failed to copy file to clipboard: {e}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Failed to copy file to clipboard.".to_string()
+        } else {
+            stderr
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Err("Copying files to the clipboard is only supported on macOS in this build.".to_string())
     }
 }
 
@@ -4137,6 +4193,32 @@ fn sanitize_project_folder_name(name: &str) -> String {
     } else {
         sanitized.to_string()
     }
+}
+
+fn save_clipboard_attachment(root: &Path, name: &str, data: &str) -> Result<PathBuf, String> {
+    const MAX_CLIPBOARD_ATTACHMENT_BYTES: usize = 100 * 1024 * 1024;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .map_err(|error| format!("Failed to decode clipboard attachment: {error}"))?;
+    if bytes.len() > MAX_CLIPBOARD_ATTACHMENT_BYTES {
+        return Err("Clipboard attachment exceeds the 100 MB limit.".to_string());
+    }
+    fs::create_dir_all(root)
+        .map_err(|error| format!("Failed to create clipboard attachment directory: {error}"))?;
+    let source_name = Path::new(name.trim())
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("attachment.bin");
+    let safe_name = sanitize_project_folder_name(source_name);
+    let safe_name = if safe_name.is_empty() {
+        "attachment.bin".to_string()
+    } else {
+        safe_name
+    };
+    let path = root.join(format!("{}-{safe_name}", generate_id("clipboard")));
+    fs::write(&path, bytes)
+        .map_err(|error| format!("Failed to save clipboard attachment: {error}"))?;
+    Ok(path)
 }
 
 impl Default for JqDataConfigFile {
@@ -7952,6 +8034,7 @@ pub fn run() {
             model_config_save,
             project_folder_create,
             project_folder_rename,
+            clipboard_attachment_save,
             jqdata_config_load,
             jqdata_config_save,
             jqdata_test_connection,
@@ -7970,6 +8053,7 @@ pub fn run() {
             coworkers_sync,
             list_open_apps,
             open_in_app,
+            copy_file_to_clipboard,
             open_external_target,
             local_image_data_url,
             local_text_file_read,
@@ -8924,6 +9008,29 @@ mod tests {
         assert!(duplicate.is_dir());
         assert!(sanitized.is_dir());
         assert!(fallback.is_dir());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saves_clipboard_attachments_with_safe_unique_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "alpha-studio-clipboard-attachment-test-{}",
+            generate_run_id()
+        ));
+
+        let first = save_clipboard_attachment(&root, "../chart.png", "iVBORw==").unwrap();
+        let second = save_clipboard_attachment(&root, "../chart.png", "bm90ZXM=").unwrap();
+
+        assert_eq!(fs::read(&first).unwrap(), vec![137, 80, 78, 71]);
+        assert_eq!(fs::read(&second).unwrap(), b"notes");
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(root.as_path()));
+        assert!(first
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with("-chart.png"));
 
         let _ = fs::remove_dir_all(root);
     }

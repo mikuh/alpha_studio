@@ -47,8 +47,11 @@ describe('finance research domain', () => {
 
     expect(instructions).toContain('原生 skill input');
     expect(instructions).toContain('CLI 载入的 SKILL.md');
-    expect(instructions).not.toContain('ROLE MATRIX I/II');
-    expect(instructions).not.toContain('alpha.premarket_theme.v1');
+    expect(instructions).toContain('alpha.premarket_theme.v2');
+    expect(instructions).toContain('alpha-studio-tracking.json');
+    expect(instructions).toContain('自动入库是完成条件');
+    expect(instructions).toContain('不要在最终回复中展示、链接');
+    expect(instructions).toContain('HTML 只负责阅读');
   });
 
   it('tells Image Gen turns to expose progress and renderable outputs', () => {
@@ -83,7 +86,8 @@ describe('finance research domain', () => {
     expect(instructions).toContain('题材持续时间与持有复核');
     expect(instructions).toContain('ROLE MATRIX I/II');
     expect(instructions).toContain('题材 / 角色 / 标的 / 角色逻辑 / 确认/失效');
-    expect(instructions).toContain('alpha.premarket_theme.v1');
+    expect(instructions).toContain('alpha.premarket_theme.v2');
+    expect(instructions).toContain('alpha-studio-tracking.json');
     expect(instructions).toContain('capitalAttackPath');
   });
 

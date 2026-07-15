@@ -11,12 +11,14 @@ import {
   CONTEXT_COMPACTION_TOOL_TITLE,
 } from './codexEvents';
 import { buildCodingInstructions, buildReviewPrompt } from './prompt';
-import { checkCodex, isTauriRuntime, listCodexModels, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
+import { checkCodex, isTauriRuntime, listCodexModels, localTextFileRead, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
 import { addThemeAbilityContext, inferThemeAbilitySkill } from './themeAbilities';
 import {
+  ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
   PREMARKET_THEME_IMPORT_EVENT,
+  automaticPremarketThemeImportError,
   loadPremarketThemeRuns,
   parsePremarketThemeResult,
   savePremarketThemeRun,
@@ -1290,14 +1292,31 @@ export const useChatStore = create<ChatState>()(
             return next;
           }),
         }));
+        const completedConversation = event.type === 'completed' && event.conversationId
+          ? get().conversations.find((item) => item.id === event.conversationId)
+          : undefined;
         for (const conversationId of Array.from(new Set(readyConversationIds))) {
           startNextQueuedMessage(conversationId);
         }
-        if (event.type === 'completed' && event.conversationId) {
-          const conversation = get().conversations.find((item) => item.id === event.conversationId);
+        if (completedConversation) {
+          const conversation = completedConversation;
           const assistant = [...(conversation?.messages ?? [])].reverse().find((message) => message.role === 'assistant');
           const text = assistant ? messageBlocksToText(assistant.blocks) : '';
-          if (text.includes('alpha.premarket_theme.v1') || text.includes('alpha.premarket_theme.v2')) {
+          const latestUser = [...conversation.messages].reverse().find((message) => message.role === 'user');
+          const dailyThemeTurn = latestUser?.selectedSkill?.id === ALPHA_STUDIO_DAILY_THEME_SKILL_ID
+            || Boolean(latestUser?.blocks.some((block) => block.type === 'text' && block.content.includes(ALPHA_STUDIO_DAILY_THEME_SKILL_ID)));
+          if (dailyThemeTurn && assistant) {
+            void parseDailyThemeReportCompletion(assistant.blocks).then((parsed) => {
+              if (parsed.ok && parsed.run) savePremarketThemeRun(parsed.run);
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent(PREMARKET_THEME_IMPORT_EVENT, {
+                  detail: parsed.ok
+                    ? { ok: true, reportId: parsed.run?.id }
+                    : { ok: false, error: parsed.error || '报告已生成，但结构化跟踪数据未进入工作台。' },
+                }));
+              }
+            });
+          } else if (text.includes('alpha.premarket_theme.v1') || text.includes('alpha.premarket_theme.v2')) {
             const parsed = parsePremarketThemeResult(text);
             if (parsed.ok && parsed.run) savePremarketThemeRun(parsed.run);
             if (typeof window !== 'undefined') {
@@ -1374,6 +1393,7 @@ async function hydrateChatFromLocalStore(): Promise<void> {
             : active[0]?.id ?? null,
         error: null,
       });
+      await reconcileDailyThemeTrackingFromConversations(conversations);
     }
   } catch (error) {
     useChatStore.setState({ error: stringifyError(error) });
@@ -1737,6 +1757,114 @@ function messageBlocksToText(blocks: ChatMessage['blocks']): string {
     .filter(Boolean)
     .join('\n\n')
     .trim();
+}
+
+type DailyThemeTextReader = (path: string) => Promise<{ content: string }>;
+
+export async function parseDailyThemeReportCompletion(
+  blocks: ChatMessage['blocks'],
+  readText: DailyThemeTextReader = localTextFileRead,
+) {
+  const visibleText = blocks
+    .filter((block) => block.type === 'text')
+    .map((block) => block.content)
+    .join('\n\n');
+  const inline = parsePremarketThemeResult(visibleText);
+  if (inline.ok && inline.run) {
+    const incomplete = automaticPremarketThemeImportError(inline.run);
+    if (!incomplete) return inline;
+  }
+
+  let lastError = inline.error;
+  for (const path of dailyThemeTrackingCandidatePaths(blocks)) {
+    try {
+      const file = await readText(path);
+      const parsed = parsePremarketThemeResult(file.content, { requireCompleteReport: false });
+      if (!parsed.ok || !parsed.run) {
+        lastError = parsed.error || lastError;
+        continue;
+      }
+      const incomplete = automaticPremarketThemeImportError(parsed.run);
+      if (incomplete) {
+        lastError = incomplete;
+        continue;
+      }
+      return parsed;
+    } catch {
+      // Generated-file discovery is best effort; try the next candidate.
+    }
+  }
+
+  return {
+    ok: false,
+    error: lastError || '报告已生成，但没有找到完整的后台跟踪 JSON。',
+  };
+}
+
+export async function reconcileDailyThemeTrackingFromConversations(
+  conversations: Conversation[],
+  readText: DailyThemeTextReader = localTextFileRead,
+): Promise<number> {
+  const completions: Array<{ timestamp: number; blocks: ChatMessage['blocks'] }> = [];
+  for (const conversation of conversations) {
+    let dailyThemeTurn = false;
+    for (const message of conversation.messages) {
+      if (message.role === 'user') {
+        dailyThemeTurn = message.selectedSkill?.id === ALPHA_STUDIO_DAILY_THEME_SKILL_ID
+          || message.blocks.some((block) => block.type === 'text' && block.content.includes(ALPHA_STUDIO_DAILY_THEME_SKILL_ID));
+      } else if (message.role === 'assistant' && dailyThemeTurn) {
+        completions.push({ timestamp: message.timestamp, blocks: message.blocks });
+        dailyThemeTurn = false;
+      }
+    }
+  }
+
+  let imported = 0;
+  for (const completion of completions.sort((left, right) => right.timestamp - left.timestamp)) {
+    const parsed = await parseDailyThemeReportCompletion(completion.blocks, readText);
+    if (!parsed.ok || !parsed.run) continue;
+    const exists = loadPremarketThemeRuns().some((item) => (
+      item.id === parsed.run?.id || item.contentHash === parsed.run?.contentHash
+    ));
+    if (exists) continue;
+    savePremarketThemeRun(parsed.run);
+    imported += 1;
+  }
+  return imported;
+}
+
+export function dailyThemeTrackingCandidatePaths(blocks: ChatMessage['blocks']): string[] {
+  const directPaths = blocks
+    .filter((block) => block.type === 'file_result')
+    .flatMap((block) => block.files.map((file) => file.path));
+  const markdownPaths = Array.from(messageBlocksToText(blocks).matchAll(/\]\(<?(\/[^)\n>]+)>?\)/g))
+    .map((match) => match[1]);
+  const paths = Array.from(new Set([...directPaths, ...markdownPaths].map((path) => {
+    try {
+      return decodeURIComponent(path);
+    } catch {
+      return path;
+    }
+  })));
+  const reportDirectories = paths
+    .filter((path) => /\.html?$/i.test(path))
+    .map((path) => path.slice(0, path.lastIndexOf('/') + 1));
+  const companionPaths = reportDirectories.flatMap((directory) => [
+    `${directory}.alpha-studio-tracking.json`,
+    `${directory}alpha-studio-tracking.json`,
+  ]);
+  const candidates = Array.from(new Set([...paths, ...companionPaths]));
+  const priority = (path: string) => {
+    if (/(?:^|\/)\.alpha-studio-tracking\.json$/i.test(path)) return 0;
+    if (/alpha-studio-tracking\.json$/i.test(path)) return 1;
+    if (/\.json$/i.test(path)) return 2;
+    if (/\.(?:md|markdown)$/i.test(path)) return 3;
+    if (/\.html?$/i.test(path)) return 4;
+    return 5;
+  };
+  return candidates
+    .filter((path) => /\.(?:json|md|markdown|html|htm)$/i.test(path))
+    .sort((left, right) => priority(left) - priority(right));
 }
 
 function simulateBrowserReply(conversationId: string, dispatch: (event: CodexChatEvent) => void): void {

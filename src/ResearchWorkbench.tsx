@@ -149,6 +149,22 @@ function startNestedResearchDrag(event: ReactDragEvent<HTMLElement>, prompt: str
   startResearchDrag(event, prompt);
 }
 
+function startResearchDatumDrag(
+  event: ReactDragEvent<HTMLElement>,
+  context: string,
+  label: string,
+  detail: string,
+  question: string,
+) {
+  startResearchDrag(event, [
+    context,
+    `拖入的数据：${label}`,
+    `当前内容：${detail}`,
+    question,
+    '请先解释数据口径和时点，再判断投资含义、可能的误读、反证条件与下一步验证动作。',
+  ].join('\n'));
+}
+
 function realQuoteSourceLabel(source: ResearchQuote['source']): string {
   if (source === 'eastmoney') return '东方财富实时快照';
   if (source === 'jqdata') return '聚宽日线快照';
@@ -888,10 +904,13 @@ function JqDataResearchTab({ jqReady, state }: { jqReady: boolean; state: Resear
     );
   }
 
-  const promptContext = [
+  const baseResearchContext = [
     `研究标的：${security?.name ?? code}（${code}）`,
     `数据截止：${asOfDate}`,
     `当前研究视角：${RESEARCH_DATA_LENSES.find((item) => item.id === lens)?.label ?? lens}`,
+  ].join('\n');
+  const promptContext = [
+    baseResearchContext,
     snapshot?.fundamentals ? `财务快照：${JSON.stringify(snapshot.fundamentals)}` : '',
     snapshot?.industry.length ? `行业：${snapshot.industry.map((row) => researchRowText(row, 'industry_name', 'name')).join(' / ')}` : '',
     '请只使用给定日期可见的数据，先核对口径与异常值，再给出投资含义、反证条件和下一步验证清单。',
@@ -927,15 +946,16 @@ function JqDataResearchTab({ jqReady, state }: { jqReady: boolean; state: Resear
       {loading && !snapshot ? <div className="rw-data-loading"><Loader2 size={17} className="spin" />正在读取研究数据…</div> : (
         <div className="rw-research-data-layout">
           <main>
-            {lens === 'fundamentals' && <FundamentalsLens row={snapshot?.fundamentals ?? null} />}
-            {lens === 'capital' && <CapitalLens snapshot={snapshot} />}
-            {lens === 'industry' && <IndustryLens snapshot={snapshot} />}
-            {lens === 'events' && <EventsLens snapshot={snapshot} />}
+            {lens === 'fundamentals' && <FundamentalsLens row={snapshot?.fundamentals ?? null} context={baseResearchContext} />}
+            {lens === 'capital' && <CapitalLens snapshot={snapshot} context={baseResearchContext} />}
+            {lens === 'industry' && <IndustryLens snapshot={snapshot} context={baseResearchContext} />}
+            {lens === 'events' && <EventsLens snapshot={snapshot} context={baseResearchContext} />}
             {lens === 'assets' && (
               <AssetsLens
                 assetType={assetType}
                 rows={assetRows}
                 loading={assetLoading}
+                context={baseResearchContext}
                 onAssetTypeChange={setAssetType}
               />
             )}
@@ -948,7 +968,7 @@ function JqDataResearchTab({ jqReady, state }: { jqReady: boolean; state: Resear
   );
 }
 
-function FundamentalsLens({ row }: { row: Record<string, unknown> | null }) {
+function FundamentalsLens({ row, context }: { row: Record<string, unknown> | null; context: string }) {
   const pe = researchRowNumber(row, 'pe_ratio');
   const pb = researchRowNumber(row, 'pb_ratio');
   const roe = researchRowNumber(row, 'roe');
@@ -981,20 +1001,40 @@ function FundamentalsLens({ row }: { row: Record<string, unknown> | null }) {
   return (
     <section className="rw-fundamentals-lens" aria-label="基本面研究">
       <div className="rw-fundamental-metrics">
-        {metrics.map(([label, value, note]) => <article key={label}><span>{label}</span><strong>{value}</strong><em>{note}</em></article>)}
+        {metrics.map(([label, value, note]) => (
+          <article
+            key={label}
+            className="rw-research-draggable"
+            draggable
+            title={`拖给 Agent 分析${label}`}
+            onDragStart={(event) => startResearchDatumDrag(event, context, label, `${value}；${note}`, `请判断${label}处于什么水平，并说明它与估值、盈利质量和风险之间的关系。`)}
+          >
+            <span>{label}</span><strong>{value}</strong><em>{note}</em>
+          </article>
+        ))}
       </div>
       <div className="rw-research-table-card">
         <header><h3>核心财务快照</h3><span>估值 · 盈利 · 成长 · 偿债 · 现金流</span></header>
         <div className="rw-research-table rw-fundamental-table">
           <div className="head"><span>维度</span><span>指标</span><span>当前值</span><span>投资判断</span></div>
-          {rows.map(([dimension, metric, value, reading]) => <div key={metric}><span>{dimension}</span><strong>{metric}</strong><span>{value}</span><p>{reading}</p></div>)}
+          {rows.map(([dimension, metric, value, reading]) => (
+            <div
+              key={metric}
+              className="rw-research-draggable"
+              draggable
+              title={`拖给 Agent 深挖${metric}`}
+              onDragStart={(event) => startResearchDatumDrag(event, context, `${dimension} · ${metric}`, `${value}；当前提示：${reading}`, `请深挖这个指标的驱动因素，并与历史、同行和现金流口径交叉验证。`)}
+            >
+              <span>{dimension}</span><strong>{metric}</strong><span>{value}</span><p>{reading}</p>
+            </div>
+          ))}
         </div>
       </div>
     </section>
   );
 }
 
-function CapitalLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
+function CapitalLens({ snapshot, context }: { snapshot: JqResearchSnapshot | null; context: string }) {
   const moneyRows = snapshot?.moneyFlow ?? [];
   const mtssRows = snapshot?.mtss ?? [];
   const latestMoney = latestResearchRow(moneyRows);
@@ -1007,20 +1047,38 @@ function CapitalLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
   ];
   return (
     <section className="rw-capital-lens" aria-label="资金交易研究">
-      <div className="rw-capital-cards">{cards.map(([label, value]) => <article key={label}><span>{label}</span><strong>{value}</strong></article>)}</div>
+      <div className="rw-capital-cards">{cards.map(([label, value]) => (
+        <article
+          key={label}
+          className="rw-research-draggable"
+          draggable
+          title={`拖给 Agent 分析${label}`}
+          onDragStart={(event) => startResearchDatumDrag(event, context, label, value, '请判断资金或杠杆变化的持续性、拥挤程度以及与股价趋势是否背离。')}
+        >
+          <span>{label}</span><strong>{value}</strong>
+        </article>
+      ))}</div>
       <div className="rw-research-split">
         <div className="rw-research-table-card">
           <header><h3>资金流向</h3><span>近 10 个交易日</span></header>
           <div className="rw-research-table compact">
             <div className="head"><span>日期</span><span>涨跌</span><span>主力净流入</span><span>主力占比</span></div>
-            {moneyRows.slice(-10).reverse().map((row, index) => <div key={`${researchRowText(row, 'date')}-${index}`}><span>{researchRowText(row, 'date')}</span><span>{researchMetric(researchRowNumber(row, 'change_pct'), 'ratio')}</span><strong>{researchMetric(researchRowNumber(row, 'net_amount_main'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'net_pct_main'), 'ratio')}</span></div>)}
+            {moneyRows.slice(-10).reverse().map((row, index) => {
+              const date = researchRowText(row, 'date');
+              const detail = `涨跌 ${researchMetric(researchRowNumber(row, 'change_pct'), 'ratio')}；主力净流入 ${researchMetric(researchRowNumber(row, 'net_amount_main'), 'money')}；主力占比 ${researchMetric(researchRowNumber(row, 'net_pct_main'), 'ratio')}`;
+              return <div key={`${date}-${index}`} className="rw-research-draggable" draggable title={`拖给 Agent 分析 ${date} 资金流`} onDragStart={(event) => startResearchDatumDrag(event, context, `${date} 资金流`, detail, '请结合前后交易日判断这是持续性资金行为、事件脉冲还是价格噪声。')}><span>{date}</span><span>{researchMetric(researchRowNumber(row, 'change_pct'), 'ratio')}</span><strong>{researchMetric(researchRowNumber(row, 'net_amount_main'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'net_pct_main'), 'ratio')}</span></div>;
+            })}
           </div>
         </div>
         <div className="rw-research-table-card">
           <header><h3>杠杆交易</h3><span>融资融券变化</span></header>
           <div className="rw-research-table compact">
             <div className="head"><span>日期</span><span>融资余额</span><span>融资买入</span><span>融券余额</span></div>
-            {mtssRows.slice(-10).reverse().map((row, index) => <div key={`${researchRowText(row, 'date')}-${index}`}><span>{researchRowText(row, 'date')}</span><strong>{researchMetric(researchRowNumber(row, 'fin_value'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'fin_buy_value'), 'money')}</span><span>{researchMetric(researchRowNumber(row, 'sec_value'), 'money')}</span></div>)}
+            {mtssRows.slice(-10).reverse().map((row, index) => {
+              const date = researchRowText(row, 'date');
+              const detail = `融资余额 ${researchMetric(researchRowNumber(row, 'fin_value'), 'money')}；融资买入 ${researchMetric(researchRowNumber(row, 'fin_buy_value'), 'money')}；融券余额 ${researchMetric(researchRowNumber(row, 'sec_value'), 'money')}`;
+              return <div key={`${date}-${index}`} className="rw-research-draggable" draggable title={`拖给 Agent 分析 ${date} 两融`} onDragStart={(event) => startResearchDatumDrag(event, context, `${date} 融资融券`, detail, '请判断杠杆资金是在加仓、兑现还是被动去杠杆，并分析潜在压力。')}><span>{date}</span><strong>{researchMetric(researchRowNumber(row, 'fin_value'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'fin_buy_value'), 'money')}</span><span>{researchMetric(researchRowNumber(row, 'sec_value'), 'money')}</span></div>;
+            })}
           </div>
         </div>
       </div>
@@ -1029,7 +1087,7 @@ function CapitalLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
   );
 }
 
-function IndustryLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
+function IndustryLens({ snapshot, context }: { snapshot: JqResearchSnapshot | null; context: string }) {
   const industries = snapshot?.industry ?? [];
   const concepts = snapshot?.concepts ?? [];
   return (
@@ -1037,14 +1095,22 @@ function IndustryLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
       <div className="rw-research-table-card">
         <header><h3>行业归属</h3><span>按截止日期还原</span></header>
         <div className="rw-industry-grid">
-          {industries.map((row, index) => <article key={`${researchRowText(row, 'industry_code')}-${index}`}><Building2 size={16} /><span>{researchRowText(row, 'category')}</span><strong>{researchRowText(row, 'industry_name', 'name')}</strong><em>{researchRowText(row, 'industry_code')}</em></article>)}
+          {industries.map((row, index) => {
+            const name = researchRowText(row, 'industry_name', 'name');
+            const category = researchRowText(row, 'category');
+            const industryCode = researchRowText(row, 'industry_code');
+            return <article key={`${industryCode}-${index}`} className="rw-research-draggable" draggable title={`拖给 Agent 研究${name}行业`} onDragStart={(event) => startResearchDatumDrag(event, context, `行业归属 · ${name}`, `${category}；行业代码 ${industryCode}`, '请构造合理的同行对照组，比较行业景气、估值中枢、盈利能力和主要风险。')}><Building2 size={16} /><span>{category}</span><strong>{name}</strong><em>{industryCode}</em></article>;
+          })}
           {!industries.length && <div className="rw-empty">没有返回行业归属。</div>}
         </div>
       </div>
       <div className="rw-research-table-card">
         <header><h3>概念标签</h3><span>用于寻找主题映射与对照组</span></header>
         <div className="rw-concept-chips">
-          {concepts.map((row, index) => <span key={`${researchRowText(row, 'concept_code')}-${index}`}>{researchRowText(row, 'name', 'concept_name', 'concept_code')}</span>)}
+          {concepts.map((row, index) => {
+            const concept = researchRowText(row, 'name', 'concept_name', 'concept_code');
+            return <span key={`${researchRowText(row, 'concept_code')}-${index}`} className="rw-research-draggable" draggable title={`拖给 Agent 验证${concept}概念`} onDragStart={(event) => startResearchDatumDrag(event, context, `概念标签 · ${concept}`, `概念代码 ${researchRowText(row, 'concept_code')}`, '请验证这个概念是否真正影响收入、利润或估值，避免只按题材标签下结论。')}>{concept}</span>;
+          })}
           {!concepts.length && <div className="rw-empty">所选标的没有返回概念标签。</div>}
         </div>
       </div>
@@ -1052,7 +1118,7 @@ function IndustryLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
   );
 }
 
-function EventsLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
+function EventsLens({ snapshot, context }: { snapshot: JqResearchSnapshot | null; context: string }) {
   const locked = snapshot?.lockedShares ?? [];
   const billboard = snapshot?.billboard ?? [];
   const preopen = snapshot?.preopen?.[0] ?? null;
@@ -1066,31 +1132,38 @@ function EventsLens({ snapshot }: { snapshot: JqResearchSnapshot | null }) {
   return (
     <section className="rw-events-lens" aria-label="公司事件研究">
       <div className="rw-event-summary">
-        <article><span>未来一年解禁批次</span><strong>{locked.length}</strong><em>检查潜在供给压力</em></article>
-        <article><span>近 90 日龙虎榜记录</span><strong>{billboard.length}</strong><em>识别席位与交易拥挤</em></article>
-        <article><span>北向持股比例</span><strong>{researchMetric(researchRowNumber(latestNorthbound, 'share_ratio'), 'percent')}</strong><em>{researchRowText(latestNorthbound, 'day')}</em></article>
-        <article><span>最新业绩预告</span><strong>{researchRowText(latestForecast, 'type')}</strong><em>{researchRowText(latestForecast, 'pub_date')}</em></article>
+        <article className="rw-research-draggable" draggable title="拖给 Agent 分析解禁压力" onDragStart={(event) => startResearchDatumDrag(event, context, '未来一年解禁', `${locked.length} 批`, '请计算潜在解禁规模、流通盘占比，并判断是否构成阶段性供给压力。')}><span>未来一年解禁批次</span><strong>{locked.length}</strong><em>检查潜在供给压力</em></article>
+        <article className="rw-research-draggable" draggable title="拖给 Agent 分析龙虎榜" onDragStart={(event) => startResearchDatumDrag(event, context, '近 90 日龙虎榜', `${billboard.length} 条记录`, '请分析上榜原因、机构与营业部结构，并判断交易是否拥挤。')}><span>近 90 日龙虎榜记录</span><strong>{billboard.length}</strong><em>识别席位与交易拥挤</em></article>
+        <article className="rw-research-draggable" draggable title="拖给 Agent 分析北向持股" onDragStart={(event) => startResearchDatumDrag(event, context, '北向持股', `持股比例 ${researchMetric(researchRowNumber(latestNorthbound, 'share_ratio'), 'percent')}；日期 ${researchRowText(latestNorthbound, 'day')}`, '请结合历史变化和股价表现，判断外资持仓是领先信号还是滞后结果。')}><span>北向持股比例</span><strong>{researchMetric(researchRowNumber(latestNorthbound, 'share_ratio'), 'percent')}</strong><em>{researchRowText(latestNorthbound, 'day')}</em></article>
+        <article className="rw-research-draggable" draggable title="拖给 Agent 分析业绩预告" onDragStart={(event) => startResearchDatumDrag(event, context, '最新业绩预告', `${researchRowText(latestForecast, 'type')}；披露日 ${researchRowText(latestForecast, 'pub_date')}；利润变动 ${researchMetric(researchRowNumber(latestForecast, 'profit_ratio_min'), 'ratio')} 至 ${researchMetric(researchRowNumber(latestForecast, 'profit_ratio_max'), 'ratio')}`, '请判断预告相对市场预期是超预期还是低于预期，并列出需要核对的一次性因素。')}><span>最新业绩预告</span><strong>{researchRowText(latestForecast, 'type')}</strong><em>{researchRowText(latestForecast, 'pub_date')}</em></article>
       </div>
       <div className="rw-research-split">
-        <div className="rw-research-table-card"><header><h3>限售解禁</h3><span>未来 365 天</span></header><div className="rw-research-table compact"><div className="head"><span>日期</span><span>解禁股数</span><span>占总股本</span><span>类型</span></div>{locked.slice(0, 12).map((row, index) => <div key={index}><span>{researchRowText(row, 'day', 'date')}</span><strong>{researchMetric(researchRowNumber(row, 'num'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'rate1'), 'percent')}</span><span>{researchRowText(row, 'type')}</span></div>)}</div></div>
-        <div className="rw-research-table-card"><header><h3>龙虎榜</h3><span>近 90 天</span></header><div className="rw-research-table compact"><div className="head"><span>日期</span><span>方向</span><span>席位</span><span>净额</span></div>{billboard.slice(0, 12).map((row, index) => <div key={index}><span>{researchRowText(row, 'day', 'date')}</span><span>{researchRowText(row, 'direction')}</span><strong>{researchRowText(row, 'sales_depart_name')}</strong><span>{researchMetric(researchRowNumber(row, 'net_value'), 'money')}</span></div>)}</div></div>
+        <div className="rw-research-table-card"><header><h3>限售解禁</h3><span>未来 365 天</span></header><div className="rw-research-table compact"><div className="head"><span>日期</span><span>解禁股数</span><span>占总股本</span><span>类型</span></div>{locked.slice(0, 12).map((row, index) => <div key={index} className="rw-research-draggable" draggable title="拖给 Agent 分析本次解禁" onDragStart={(event) => startResearchDatumDrag(event, context, `限售解禁 · ${researchRowText(row, 'day', 'date')}`, `解禁 ${researchMetric(researchRowNumber(row, 'num'), 'money')}；占比 ${researchMetric(researchRowNumber(row, 'rate1'), 'percent')}；${researchRowText(row, 'type')}`, '请判断本次解禁对真实流通供给、减持概率和阶段性价格压力的影响。')}><span>{researchRowText(row, 'day', 'date')}</span><strong>{researchMetric(researchRowNumber(row, 'num'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'rate1'), 'percent')}</span><span>{researchRowText(row, 'type')}</span></div>)}</div></div>
+        <div className="rw-research-table-card"><header><h3>龙虎榜</h3><span>近 90 天</span></header><div className="rw-research-table compact"><div className="head"><span>日期</span><span>方向</span><span>席位</span><span>净额</span></div>{billboard.slice(0, 12).map((row, index) => <div key={index} className="rw-research-draggable" draggable title="拖给 Agent 分析龙虎榜席位" onDragStart={(event) => startResearchDatumDrag(event, context, `龙虎榜 · ${researchRowText(row, 'day', 'date')}`, `${researchRowText(row, 'direction')}；${researchRowText(row, 'sales_depart_name')}；净额 ${researchMetric(researchRowNumber(row, 'net_value'), 'money')}`, '请识别席位类型、行为模式与上榜原因，并判断是否存在短线兑现风险。')}><span>{researchRowText(row, 'day', 'date')}</span><span>{researchRowText(row, 'direction')}</span><strong>{researchRowText(row, 'sales_depart_name')}</strong><span>{researchMetric(researchRowNumber(row, 'net_value'), 'money')}</span></div>)}</div></div>
       </div>
       <div className="rw-research-split">
-        <div className="rw-research-table-card"><header><h3>主要股东</h3><span>最近披露口径</span></header><div className="rw-research-table compact"><div className="head"><span>报告期</span><span>股东</span><span>持股比例</span><span>质押/冻结</span></div>{shareholders.slice(0, 10).map((row, index) => <div key={index}><span>{researchRowText(row, 'end_date')}</span><strong>{researchRowText(row, 'shareholder_name')}</strong><span>{researchMetric(researchRowNumber(row, 'share_ratio'), 'percent')}</span><span>{researchMetric(researchRowNumber(row, 'share_pledge_freeze'), 'money')}</span></div>)}</div></div>
-        <div className="rw-research-table-card"><header><h3>质押与交易边界</h3><span>风险核对</span></header><div className="rw-research-table compact"><div className="head"><span>事项</span><span>日期</span><span>数量/价格</span><span>占比</span></div>{pledges.slice(0, 8).map((row, index) => <div key={index}><span>股权质押</span><span>{researchRowText(row, 'pub_date')}</span><strong>{researchMetric(researchRowNumber(row, 'pledge_number'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'pledge_total_ratio'), 'percent')}</span></div>)}<div><span>涨停参考</span><span>{researchRowText(preopen, 'date')}</span><strong>{researchMetric(researchRowNumber(preopen, 'high_limit'))}</strong><span>—</span></div><div><span>跌停参考</span><span>{researchRowText(preopen, 'date')}</span><strong>{researchMetric(researchRowNumber(preopen, 'low_limit'))}</strong><span>—</span></div></div></div>
+        <div className="rw-research-table-card"><header><h3>主要股东</h3><span>最近披露口径</span></header><div className="rw-research-table compact"><div className="head"><span>报告期</span><span>股东</span><span>持股比例</span><span>质押/冻结</span></div>{shareholders.slice(0, 10).map((row, index) => <div key={index} className="rw-research-draggable" draggable title="拖给 Agent 研究股东行为" onDragStart={(event) => startResearchDatumDrag(event, context, `主要股东 · ${researchRowText(row, 'shareholder_name')}`, `报告期 ${researchRowText(row, 'end_date')}；持股 ${researchMetric(researchRowNumber(row, 'share_ratio'), 'percent')}；质押/冻结 ${researchMetric(researchRowNumber(row, 'share_pledge_freeze'), 'money')}`, '请分析股东属性、持仓稳定性、潜在增减持动机及治理影响。')}><span>{researchRowText(row, 'end_date')}</span><strong>{researchRowText(row, 'shareholder_name')}</strong><span>{researchMetric(researchRowNumber(row, 'share_ratio'), 'percent')}</span><span>{researchMetric(researchRowNumber(row, 'share_pledge_freeze'), 'money')}</span></div>)}</div></div>
+        <div className="rw-research-table-card"><header><h3>质押与交易边界</h3><span>风险核对</span></header><div className="rw-research-table compact"><div className="head"><span>事项</span><span>日期</span><span>数量/价格</span><span>占比</span></div>{pledges.slice(0, 8).map((row, index) => <div key={index} className="rw-research-draggable" draggable title="拖给 Agent 分析股权质押" onDragStart={(event) => startResearchDatumDrag(event, context, `股权质押 · ${researchRowText(row, 'pub_date')}`, `数量 ${researchMetric(researchRowNumber(row, 'pledge_number'), 'money')}；占比 ${researchMetric(researchRowNumber(row, 'pledge_total_ratio'), 'percent')}`, '请评估质押集中度、补仓和平仓风险，并核对质押方及到期安排。')}><span>股权质押</span><span>{researchRowText(row, 'pub_date')}</span><strong>{researchMetric(researchRowNumber(row, 'pledge_number'), 'money')}</strong><span>{researchMetric(researchRowNumber(row, 'pledge_total_ratio'), 'percent')}</span></div>)}<div className="rw-research-draggable" draggable title="拖给 Agent 生成交易边界" onDragStart={(event) => startResearchDatumDrag(event, context, '涨跌停交易边界', `涨停 ${researchMetric(researchRowNumber(preopen, 'high_limit'))}；跌停 ${researchMetric(researchRowNumber(preopen, 'low_limit'))}`, '请结合波动、流动性和催化剂，给出观察价位、失效条件与风险控制方案。')}><span>交易边界</span><span>{researchRowText(preopen, 'date')}</span><strong>{researchMetric(researchRowNumber(preopen, 'high_limit'))}</strong><span>{researchMetric(researchRowNumber(preopen, 'low_limit'))}</span></div></div></div>
       </div>
     </section>
   );
 }
 
-function AssetsLens({ assetType, rows, loading, onAssetTypeChange }: { assetType: ResearchAssetType; rows: Record<string, unknown>[]; loading: boolean; onAssetTypeChange: (type: ResearchAssetType) => void }) {
+function AssetsLens({ assetType, rows, loading, context, onAssetTypeChange }: { assetType: ResearchAssetType; rows: Record<string, unknown>[]; loading: boolean; context: string; onAssetTypeChange: (type: ResearchAssetType) => void }) {
   const types: Array<[ResearchAssetType, string]> = [['stock', '股票'], ['fund', '基金'], ['index', '指数'], ['futures', '期货']];
   return (
     <section className="rw-assets-lens" aria-label="多资产标的库">
       <div className="rw-asset-tabs" role="group" aria-label="资产类型">{types.map(([id, label]) => <button key={id} type="button" className={assetType === id ? 'active' : ''} onClick={() => onAssetTypeChange(id)}>{label}</button>)}</div>
       <div className="rw-research-table-card">
         <header><h3>{types.find(([id]) => id === assetType)?.[1]}标的库</h3><span>{loading ? '读取中…' : `${rows.length.toLocaleString('zh-CN')} 个可研究标的`}</span></header>
-        <div className="rw-research-table rw-assets-table"><div className="head"><span>代码</span><span>名称</span><span>上市日期</span><span>存续状态</span></div>{rows.slice(0, 80).map((row, index) => <div key={`${researchRowText(row, 'index', 'code')}-${index}`}><strong>{researchRowText(row, 'index', 'code')}</strong><span>{researchRowText(row, 'display_name', 'name')}</span><span>{researchRowText(row, 'start_date')}</span><span>{researchRowText(row, 'end_date') === '2200-01-01' ? '存续' : researchRowText(row, 'end_date')}</span></div>)}</div>
+        <div className="rw-research-table rw-assets-table"><div className="head"><span>代码</span><span>名称</span><span>上市日期</span><span>存续状态</span></div>{rows.slice(0, 80).map((row, index) => {
+          const securityCode = researchRowText(row, 'index', 'code');
+          const securityName = researchRowText(row, 'display_name', 'name');
+          const startDate = researchRowText(row, 'start_date');
+          const endDate = researchRowText(row, 'end_date');
+          const active = endDate === '2200-01-01' ? '存续' : endDate;
+          return <div key={`${securityCode}-${index}`} className="rw-research-draggable" draggable title={`拖给 Agent 研究${securityName}`} onDragStart={(event) => startResearchDatumDrag(event, context, `${securityName}（${securityCode}）`, `${types.find(([id]) => id === assetType)?.[1]}；上市 ${startDate}；${active}`, '请建立一份标的研究起点：补充行情、基本面、行业/品种对照、关键催化和主要风险。')}><strong>{securityCode}</strong><span>{securityName}</span><span>{startDate}</span><span>{active}</span></div>;
+        })}</div>
       </div>
     </section>
   );
