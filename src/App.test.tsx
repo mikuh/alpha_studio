@@ -2796,7 +2796,7 @@ describe('right feature panel', () => {
     const css = readFileSync(cssPath, 'utf8');
 
     expect(css).toMatch(/\.right-dock-tabbar\s*{[^}]*height:\s*44px;[^}]*border-bottom:\s*1px solid var\(--border\);/s);
-    expect(css).toMatch(/\.right-dock-tab\.active\s*{[^}]*background:\s*var\(--bg-soft\);[^}]*font-weight:\s*600;/s);
+    expect(css).toMatch(/\.right-dock-tab\.active\s*{[^}]*background:\s*var\(--accent-soft\);[^}]*font-weight:\s*600;/s);
     expect(css).toMatch(/\.right-dock-workspace\.collapsed\s*{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.review-status-menu\s*{[^}]*min-width:\s*212px;[^}]*border-radius:\s*13px;/s);
     expect(css).toMatch(/\.review-file-list-toggle\.active\s*{[^}]*background:\s*var\(--bg-soft\);/s);

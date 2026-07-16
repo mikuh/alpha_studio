@@ -245,6 +245,7 @@ import {
   visibleConversations,
 } from './store';
 import { RESEARCH_DRAG_MIME } from './research';
+import { registerComposerInsertHandler } from './composerBridge';
 import { ResearchWorkbenchPanel } from './ResearchWorkbench';
 import {
   ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
@@ -6694,6 +6695,12 @@ function Composer({
     if (!trimmed) return;
     setValue((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${trimmed}` : trimmed));
   }, []);
+  // Let panels (research workbench quick tasks, etc.) push prompts into this
+  // composer with one click instead of drag-only.
+  useEffect(() => registerComposerInsertHandler((text) => {
+    appendComposerText(text);
+    textareaRef.current?.focus();
+  }), [appendComposerText]);
   useEffect(() => {
     if (!queuedCoworkerTask) return;
     addCoworkers(queuedCoworkerTask.coworkers);

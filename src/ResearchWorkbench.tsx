@@ -23,11 +23,13 @@ import {
 } from 'lightweight-charts';
 import {
   ArrowDownToLine,
+  ArrowLeftRight,
   ArrowUpFromLine,
   Activity,
   Building2,
   ChartCandlestick,
   ChevronRight,
+  ClipboardCheck,
   Database,
   GitCompareArrows,
   GripVertical,
@@ -42,6 +44,7 @@ import {
   Trash2,
   Wallet,
   X,
+  type LucideIcon,
 } from 'lucide-react';
 import {
   emptyJqDataConfig,
@@ -106,6 +109,7 @@ import {
   type ResearchTrade,
 } from './research';
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
+import { insertIntoComposer } from './composerBridge';
 import { ResearchValidationPanel } from './ResearchValidation';
 
 type WorkbenchTab = 'market' | 'overview' | 'watchlist' | 'holdings' | 'trade' | 'portfolios' | 'data' | 'validation';
@@ -130,6 +134,17 @@ const TAB_LABELS: Record<WorkbenchTab, string> = {
   portfolios: '组合',
   data: '研究数据',
   validation: '日报跟踪',
+};
+
+const TAB_ICONS: Record<WorkbenchTab, LucideIcon> = {
+  market: ChartCandlestick,
+  overview: Activity,
+  watchlist: Star,
+  holdings: Wallet,
+  trade: ArrowLeftRight,
+  portfolios: ListTree,
+  data: Database,
+  validation: ClipboardCheck,
 };
 
 interface TradePrefill {
@@ -584,7 +599,7 @@ export function ResearchWorkbenchPanel() {
       <header className="rw-head">
         <div className="rw-head-title">
           <h2>投研工作台</h2>
-          <span>模拟账户 · 卡片可拖入对话框交给 Agent</span>
+          <span>模拟账户 · 卡片可拖拽，快捷任务点击即交给 Agent</span>
         </div>
         <div className="rw-head-actions">
           <span className={`rw-data-pill ${dataPill.tone}`} title={dataPill.title}>
@@ -635,22 +650,26 @@ export function ResearchWorkbenchPanel() {
       </div>
 
       <nav className="rw-tabs" role="tablist" aria-label="投研工作台页签">
-        {(Object.keys(TAB_LABELS) as WorkbenchTab[]).map((key) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={tab === key}
-            className={`rw-tab ${tab === key ? 'active' : ''}`}
-            onClick={() => setTab(key)}
-          >
-            {TAB_LABELS[key]}
-            {key === 'overview' && fullMarketQuotes.length > 0 && <em>{fullMarketQuotes.length}</em>}
-            {key === 'watchlist' && state.watchlist.length > 0 && <em>{state.watchlist.length}</em>}
-            {key === 'holdings' && state.holdings.length > 0 && <em>{state.holdings.length}</em>}
-            {key === 'portfolios' && state.portfolios.length > 0 && <em>{state.portfolios.length}</em>}
-          </button>
-        ))}
+        {(Object.keys(TAB_LABELS) as WorkbenchTab[]).map((key) => {
+          const TabIcon = TAB_ICONS[key];
+          return (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={tab === key}
+              className={`rw-tab ${tab === key ? 'active' : ''}`}
+              onClick={() => setTab(key)}
+            >
+              <TabIcon size={13} aria-hidden />
+              {TAB_LABELS[key]}
+              {key === 'overview' && fullMarketQuotes.length > 0 && <em>{fullMarketQuotes.length}</em>}
+              {key === 'watchlist' && state.watchlist.length > 0 && <em>{state.watchlist.length}</em>}
+              {key === 'holdings' && state.holdings.length > 0 && <em>{state.holdings.length}</em>}
+              {key === 'portfolios' && state.portfolios.length > 0 && <em>{state.portfolios.length}</em>}
+            </button>
+          );
+        })}
       </nav>
 
       <div className="rw-body">
@@ -726,18 +745,20 @@ export function ResearchWorkbenchPanel() {
       </div>
 
       <footer className="rw-quick" aria-label="AI 分析任务">
-        <span className="rw-quick-label"><Sparkles size={12} />拖给 Agent</span>
+        <span className="rw-quick-label"><Sparkles size={12} />交给 Agent</span>
         <div className="rw-quick-chips">
           {RESEARCH_ANALYSIS_TASKS.map((task) => (
-            <span
+            <button
               key={task.id}
+              type="button"
               className="rw-quick-chip"
               draggable
               onDragStart={(event) => startResearchDrag(event, `${task.prompt}\n\n${accountDragPrompt}`)}
-              title={task.prompt}
+              onClick={() => insertIntoComposer(`${task.prompt}\n\n${accountDragPrompt}`)}
+              title={`点击填入对话框（也可拖拽）：${task.prompt}`}
             >
               {task.title}
-            </span>
+            </button>
           ))}
         </div>
         {footerRefreshAt && (
@@ -1179,7 +1200,7 @@ function ResearchDataActions({ code, name, promptContext }: { code: string; name
   return (
     <aside className="rw-research-actions" aria-label="研究动作">
       <header><Sparkles size={14} /><h3>研究动作</h3></header>
-      {actions.map((action) => <span key={action.title} className="rw-research-action" draggable onDragStart={(event) => startResearchDrag(event, action.prompt)} title={`拖给 Agent 研究 ${name}（${code}）`}><i>{action.icon}</i><span><strong>{action.title}</strong><em>{action.detail}</em></span><ChevronRight size={14} /></span>)}
+      {actions.map((action) => <button key={action.title} type="button" className="rw-research-action" draggable onDragStart={(event) => startResearchDrag(event, action.prompt)} onClick={() => insertIntoComposer(action.prompt)} title={`点击填入对话框（也可拖拽），研究 ${name}（${code}）`}><i>{action.icon}</i><span><strong>{action.title}</strong><em>{action.detail}</em></span><ChevronRight size={14} /></button>)}
     </aside>
   );
 }
