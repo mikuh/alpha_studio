@@ -706,11 +706,11 @@ describe('right feature panel', () => {
 
     const panel = container.querySelector('.coworkers-panel') as HTMLElement;
     expect(panel).toBeInTheDocument();
-    expect(within(panel).getByText('AI 同事')).toBeInTheDocument();
-    expect(within(panel).queryByText('9 位在线')).not.toBeInTheDocument();
+    expect(within(panel).getByText('AI 投研团队')).toBeInTheDocument();
+    expect(within(panel).getByText('9 位在线')).toBeInTheDocument();
     expect(container.querySelectorAll('.coworker-card')).toHaveLength(9);
-    const workflowsToggle = within(panel).getByRole('button', { name: /协作模板/ });
-    expect(workflowsToggle).toHaveAttribute('aria-expanded', 'false');
+    const workflowsToggle = within(panel).getByRole('tab', { name: /协作模板/ });
+    expect(workflowsToggle).toHaveAttribute('aria-selected', 'false');
     expect(within(panel).queryByText('盘前投资委员会')).not.toBeInTheDocument();
     expect(within(panel).getByText('市场策略官')).toBeInTheDocument();
     expect(within(panel).getByText('基金经理副官')).toBeInTheDocument();
@@ -829,10 +829,10 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByLabelText('打开 AI 同事面板'));
     const panel = container.querySelector('.coworkers-panel') as HTMLElement;
-    const head = within(panel).getByRole('button', { name: /市场策略官/ });
+    const head = within(panel).getByRole('button', { name: /①市场策略官/ });
     await user.click(head);
     const card = head.closest('.coworker-card') as HTMLElement;
-    await user.click(within(card).getAllByRole('button', { name: '导入' })[0]);
+    await user.click(within(card).getByRole('button', { name: /今日市场主线/ }));
 
     const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
     expect(within(composerCard).getByText('市场策略官')).toBeInTheDocument();
@@ -846,9 +846,9 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByLabelText('打开 AI 同事面板'));
     const panel = container.querySelector('.coworkers-panel') as HTMLElement;
-    await user.click(within(panel).getByRole('button', { name: /协作模板/ }));
+    await user.click(within(panel).getByRole('tab', { name: /协作模板/ }));
     const workflow = within(panel).getByText('盘前投资委员会').closest('.coworker-workflow') as HTMLElement;
-    await user.click(within(workflow).getByRole('button', { name: '导入' }));
+    await user.click(within(workflow).getByRole('button', { name: /召集/ }));
 
     const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
     expect(composerCard.querySelectorAll('.composer-coworker-chip')).toHaveLength(6);
@@ -865,14 +865,11 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByLabelText('打开 AI 同事面板'));
     const panel = container.querySelector('.coworkers-panel') as HTMLElement;
-    const riskHead = within(panel).getByRole('button', { name: /风险控制官/ });
-    await user.click(riskHead);
-    const riskCard = riskHead.closest('.coworker-card') as HTMLElement;
-    await user.click(within(riskCard).getByRole('button', { name: '召集到对话框' }));
+    await user.click(within(panel).getByRole('button', { name: '召集 风险控制官 到对话框' }));
 
-    await user.click(within(panel).getByRole('button', { name: /协作模板/ }));
+    await user.click(within(panel).getByRole('tab', { name: /协作模板/ }));
     const workflow = within(panel).getByText('盘前投资委员会').closest('.coworker-workflow') as HTMLElement;
-    await user.click(within(workflow).getByRole('button', { name: '导入' }));
+    await user.click(within(workflow).getByRole('button', { name: /召集/ }));
 
     const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
     expect(composerCard.querySelectorAll('.composer-coworker-chip')).toHaveLength(6);

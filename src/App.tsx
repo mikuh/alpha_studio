@@ -174,9 +174,11 @@ import {
   COWORKER_CATALOG,
   COWORKER_GROUP_LABELS,
   COWORKER_WORKFLOW_PRESETS,
+  coworkerById,
   coworkerSelectionsByIds,
   coworkerAgentDefinitions,
   toCoworkerSelection,
+  type CoworkerGroup,
   type CoworkerProfile,
 } from './coworkers';
 import {
@@ -3954,12 +3956,38 @@ function FeaturesPanel({
   );
 }
 
-// Right-side panel listing workflow presets and the nine AI coworkers. Cards
-// can be dragged into the composer and presets can be imported with one click.
+// Each coworker gets a stable icon so the roster reads like a real team of
+// specialist seats instead of a numbered list.
+const COWORKER_ICONS: Record<string, ReactNode> = {
+  mainline: <Target size={15} />,
+  theme: <Network size={15} />,
+  sentiment: <Activity size={15} />,
+  value_a: <FileChartColumn size={15} />,
+  value_b: <LineChart size={15} />,
+  value_c: <Layers size={15} />,
+  risk: <ShieldCheck size={15} />,
+  pm_deputy: <ListChecks size={15} />,
+  compliance: <Archive size={15} />,
+};
+
+const COWORKER_GROUP_ORDER: CoworkerGroup[] = ['strategy', 'research', 'portfolio', 'guard', 'decision', 'audit'];
+
+function CoworkerAvatar({ coworker, size = 'md' }: { coworker: CoworkerProfile; size?: 'sm' | 'md' }) {
+  return (
+    <span className={`coworker-avatar coworker-avatar-${size}`} data-group={coworker.group} aria-hidden>
+      {COWORKER_ICONS[coworker.id] ?? <Users size={15} />}
+      <span className="coworker-avatar-dot" />
+    </span>
+  );
+}
+
+// Right-side panel: the nine-seat AI research team plus committee-style
+// collaboration playbooks. Cards drag into the composer; playbooks import a
+// full multi-coworker prompt with one click.
 function CoworkersPanel() {
   const { queueCoworkerTask } = useSkillRuntime();
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [workflowsOpen, setWorkflowsOpen] = useState(false);
+  const [view, setView] = useState<'team' | 'workflows'>('team');
 
   const startDrag = (event: ReactDragEvent<HTMLElement>, coworker: CoworkerProfile) => {
     const selection = toCoworkerSelection(coworker);
@@ -3968,127 +3996,164 @@ function CoworkersPanel() {
     event.dataTransfer.effectAllowed = 'copy';
   };
 
+  const groupedCatalog = COWORKER_GROUP_ORDER
+    .map((group) => ({ group, coworkers: COWORKER_CATALOG.filter((coworker) => coworker.group === group) }))
+    .filter((entry) => entry.coworkers.length > 0);
+
   return (
     <div className="coworkers-panel" aria-label="AI 同事">
       <header className="coworkers-panel-head" data-tauri-drag-region>
         <div className="coworkers-panel-title" data-tauri-drag-region>
-          <Users size={15} />
-          <span>AI 同事</span>
+          <span className="coworkers-panel-title-icon"><Users size={14} /></span>
+          <span>AI 投研团队</span>
         </div>
+        <span className="coworkers-panel-presence">
+          <span className="coworkers-panel-presence-dot" />
+          {COWORKER_CATALOG.length} 位在线
+        </span>
       </header>
-      <p className="coworkers-panel-hint">拖动同事到对话框,或展开协作模板一键导入。</p>
-      <div className="coworkers-list">
-        <section className={`coworker-workflows ${workflowsOpen ? 'expanded' : ''}`} aria-label="协作模板">
-          <button
-            type="button"
-            className="coworker-workflows-toggle"
-            onClick={() => setWorkflowsOpen((open) => !open)}
-            aria-expanded={workflowsOpen}
-          >
-            <span className="coworker-workflows-toggle-main">
-              <Workflow size={13} />
-              <span>协作模板</span>
-            </span>
-            <span className="coworker-workflows-toggle-meta">
-              <span>{COWORKER_WORKFLOW_PRESETS.length} 个</span>
-              {workflowsOpen ? <ChevronsDownUp size={13} /> : <ChevronsUpDown size={13} />}
-            </span>
-          </button>
-          {workflowsOpen && (
-            <div className="coworker-workflow-list">
-              {COWORKER_WORKFLOW_PRESETS.map((workflow) => {
-                const workflowCoworkers = coworkerSelectionsByIds(workflow.coworkerIds);
+      <div className="coworkers-panel-switch" role="tablist" aria-label="AI 同事视图">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'team'}
+          className={`coworkers-switch-btn ${view === 'team' ? 'active' : ''}`}
+          onClick={() => setView('team')}
+        >
+          <Users size={13} />
+          团队席位
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'workflows'}
+          className={`coworkers-switch-btn ${view === 'workflows' ? 'active' : ''}`}
+          onClick={() => setView('workflows')}
+        >
+          <Workflow size={13} />
+          协作模板
+          <span className="coworkers-switch-count">{COWORKER_WORKFLOW_PRESETS.length}</span>
+        </button>
+      </div>
+      {view === 'team' ? (
+        <div className="coworkers-list" key="team">
+          <p className="coworkers-panel-hint">拖动同事进对话框指派任务,点击查看预设任务。</p>
+          {groupedCatalog.map(({ group, coworkers }) => (
+            <section key={group} className="coworker-group-section" aria-label={COWORKER_GROUP_LABELS[group]}>
+              <h3 className="coworker-group-title" data-group={group}>
+                <span className="coworker-group-title-dot" />
+                {COWORKER_GROUP_LABELS[group]}
+                <span className="coworker-group-title-count">{coworkers.length}</span>
+              </h3>
+              {coworkers.map((coworker) => {
+                const expanded = expandedId === coworker.id;
                 return (
-                  <article key={workflow.id} className="coworker-workflow">
-                    <div className="coworker-workflow-copy">
-                      <span className="coworker-workflow-title">{workflow.title}</span>
-                      <span className="coworker-workflow-desc">{workflow.description}</span>
-                      <span className="coworker-workflow-roster" aria-label={`${workflow.title} 参与同事`}>
-                        {workflowCoworkers.map((coworker) => (
-                          <span key={coworker.id} className="coworker-workflow-chip" title={coworker.name}>
-                            {coworker.no}
-                          </span>
-                        ))}
-                      </span>
-                    </div>
+                  <article
+                    key={coworker.id}
+                    className={`coworker-card ${expanded ? 'expanded' : ''}`}
+                    data-group={coworker.group}
+                    draggable
+                    onDragStart={(event) => startDrag(event, coworker)}
+                  >
                     <button
                       type="button"
-                      className="coworker-workflow-import"
-                      onClick={() => queueCoworkerTask(workflowCoworkers, workflow.prompt)}
-                      title="导入协作模板到对话框"
+                      className="coworker-card-head"
+                      onClick={() => setExpandedId(expanded ? null : coworker.id)}
+                      aria-expanded={expanded}
                     >
-                      导入
+                      <CoworkerAvatar coworker={coworker} />
+                      <span className="coworker-card-main">
+                        <span className="coworker-card-name">
+                          <span className="coworker-card-no">{coworker.no}</span>
+                          {coworker.name}
+                        </span>
+                        <span className="coworker-card-desc">{coworker.description}</span>
+                      </span>
+                      <span className="coworker-card-side">
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          className="coworker-summon-mini"
+                          title="召集到对话框"
+                          aria-label={`召集 ${coworker.name} 到对话框`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            queueCoworkerTask(toCoworkerSelection(coworker));
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              queueCoworkerTask(toCoworkerSelection(coworker));
+                            }
+                          }}
+                        >
+                          <MessageSquarePlus size={14} />
+                        </span>
+                        <ChevronDown size={13} className={`coworker-card-chevron ${expanded ? 'open' : ''}`} />
+                      </span>
                     </button>
+                    {expanded && (
+                      <div className="coworker-card-body">
+                        {coworker.presetTasks.map((task) => (
+                          <button
+                            key={task.id}
+                            type="button"
+                            className="coworker-task"
+                            onClick={() => queueCoworkerTask(toCoworkerSelection(coworker), task.prompt)}
+                            title="导入任务到对话框"
+                          >
+                            <span className="coworker-task-copy">
+                              <span className="coworker-task-title">{task.title}</span>
+                              <span className="coworker-task-prompt">{task.prompt}</span>
+                            </span>
+                            <span className="coworker-task-go"><CornerDownRight size={13} /></span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </article>
                 );
               })}
-            </div>
-          )}
-        </section>
-        {COWORKER_CATALOG.map((coworker) => {
-          const expanded = expandedId === coworker.id;
-          return (
-            <article
-              key={coworker.id}
-              className={`coworker-card ${expanded ? 'expanded' : ''}`}
-              draggable
-              onDragStart={(event) => startDrag(event, coworker)}
-            >
-              <button
-                type="button"
-                className="coworker-card-head"
-                onClick={() => setExpandedId(expanded ? null : coworker.id)}
-                aria-expanded={expanded}
-              >
-                <span className="coworker-badge">{coworker.no}</span>
-                <span className="coworker-card-main">
-                  <span className="coworker-card-name">
-                    {coworker.name}
-                    <span className={`coworker-group coworker-group-${coworker.group}`}>
-                      {COWORKER_GROUP_LABELS[coworker.group]}
-                    </span>
-                  </span>
-                  <span className="coworker-card-desc">{coworker.description}</span>
-                </span>
-                <span className="coworker-card-side">
-                  <span className="coworker-status" title="在线"><span className="coworker-status-dot" />在线</span>
-                  {expanded ? <ChevronsDownUp size={13} /> : <ChevronsUpDown size={13} />}
-                </span>
-              </button>
-              {expanded && (
-                <div className="coworker-card-body">
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="coworkers-list" key="workflows">
+          <p className="coworkers-panel-hint">按投研场景一键召集多位同事,自动带入协作提示词。</p>
+          {COWORKER_WORKFLOW_PRESETS.map((workflow) => {
+            const workflowCoworkers = coworkerSelectionsByIds(workflow.coworkerIds);
+            const roster = workflow.coworkerIds
+              .map((id) => coworkerById(id))
+              .filter((coworker): coworker is CoworkerProfile => Boolean(coworker));
+            return (
+              <article key={workflow.id} className="coworker-workflow">
+                <div className="coworker-workflow-top">
+                  <span className="coworker-workflow-title">{workflow.title}</span>
                   <button
                     type="button"
-                    className="coworker-summon"
-                    onClick={() => queueCoworkerTask(toCoworkerSelection(coworker))}
+                    className="coworker-workflow-import"
+                    onClick={() => queueCoworkerTask(workflowCoworkers, workflow.prompt)}
+                    title="导入协作模板到对话框"
                   >
-                    <MessageSquarePlus size={13} />
-                    召集到对话框
+                    <Zap size={12} />
+                    召集
                   </button>
-                  <div className="coworker-task-list">
-                    {coworker.presetTasks.map((task) => (
-                      <div key={task.id} className="coworker-task">
-                        <div className="coworker-task-copy">
-                          <span className="coworker-task-title">{task.title}</span>
-                          <span className="coworker-task-prompt">{task.prompt}</span>
-                        </div>
-                        <button
-                          type="button"
-                          className="coworker-task-import"
-                          onClick={() => queueCoworkerTask(toCoworkerSelection(coworker), task.prompt)}
-                          title="导入任务到对话框"
-                        >
-                          导入
-                        </button>
-                      </div>
-                    ))}
-                  </div>
                 </div>
-              )}
-            </article>
-          );
-        })}
-      </div>
+                <span className="coworker-workflow-desc">{workflow.description}</span>
+                <span className="coworker-workflow-roster" aria-label={`${workflow.title} 参与同事`}>
+                  {roster.map((coworker) => (
+                    <span key={coworker.id} className="coworker-workflow-chip" data-group={coworker.group} title={`${coworker.no} ${coworker.name}`}>
+                      {COWORKER_ICONS[coworker.id] ?? coworker.no}
+                    </span>
+                  ))}
+                  <span className="coworker-workflow-roster-count">{roster.length} 位同事</span>
+                </span>
+              </article>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -6256,7 +6321,7 @@ function MessageCoworkersLabel({ coworkers }: { coworkers: CoworkerSelection[] }
     <span className="message-coworkers-label" title={`召集同事：${coworkers.map((item) => `${item.no} ${item.name}`).join('、')}`}>
       <Users size={12} />
       {coworkers.map((coworker) => (
-        <span key={coworker.id} className="message-coworker-chip">
+        <span key={coworker.id} className="message-coworker-chip" data-group={coworkerById(coworker.id)?.group}>
           {coworker.no} {coworker.name}
         </span>
       ))}
@@ -6804,7 +6869,7 @@ function Composer({
               {selectedCoworkers.length > 1 ? '召集同事协同' : '召集同事'}
             </span>
             {selectedCoworkers.map((coworker) => (
-              <span key={coworker.id} className="composer-coworker-chip">
+              <span key={coworker.id} className="composer-coworker-chip" data-group={coworkerById(coworker.id)?.group}>
                 <span className="composer-coworker-no">{coworker.no}</span>
                 {coworker.name}
                 <button
