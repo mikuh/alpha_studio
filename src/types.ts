@@ -197,6 +197,8 @@ export interface Conversation {
   updatedAt: number;
   status: 'idle' | 'streaming' | 'error';
   runId?: string;
+  /** Turn finished while the user was elsewhere and hasn't been opened since. */
+  unread?: boolean;
   pinned?: boolean;
   archivedAt?: number;
   archiveBatchId?: string;

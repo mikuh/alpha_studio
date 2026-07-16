@@ -412,6 +412,51 @@ describe('applyCodexEventToConversation', () => {
     });
   });
 
+  it('does not mistake source web pages containing the word 文件 for generated files', () => {
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'report-edit-1',
+      title: 'fileChange',
+      text: '<a href="https://www.mofcom.gov.cn/art/2026/art_c9b4c4851de94b18809007ff90d9cce0.html">国务院文件</a>',
+    });
+
+    expect(completed.messages[0].blocks).toEqual([
+      {
+        type: 'tool',
+        id: 'report-edit-1',
+        title: 'fileChange',
+        status: 'completed',
+        output: '<a href="https://www.mofcom.gov.cn/art/2026/art_c9b4c4851de94b18809007ff90d9cce0.html">国务院文件</a>',
+      },
+    ]);
+  });
+
+  it('still surfaces a remote file when the tool explicitly says it generated it', () => {
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'remote-report-1',
+      title: 'export_report',
+      text: 'Generated file: https://cdn.example.com/research/report.pdf',
+    });
+
+    expect(completed.messages[0].blocks).toContainEqual({
+      type: 'file_result',
+      id: 'remote-report-1-files',
+      title: '生成文件',
+      files: [{
+        id: 'remote-report-1-files-0',
+        path: 'https://cdn.example.com/research/report.pdf',
+        name: 'report.pdf',
+        ext: 'pdf',
+        kind: 'file',
+      }],
+    });
+  });
+
   it('keeps the daily-theme tracking sidecar hidden from generated file cards', () => {
     const completed = applyCodexEventToConversation(baseConversation(), {
       type: 'tool_completed',

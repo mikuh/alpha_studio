@@ -531,7 +531,15 @@ export const useChatStore = create<ChatState>()(
       },
 
       setCurrentConversation: (id: string) => {
-        set({ currentConversationId: id, error: null });
+        set((state) => ({
+          currentConversationId: id,
+          error: null,
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === id && conversation.unread
+              ? { ...conversation, unread: false }
+              : conversation,
+          ),
+        }));
       },
 
       archiveConversation: (id: string) => {
@@ -543,6 +551,7 @@ export const useChatStore = create<ChatState>()(
                   ...conversation,
                   archivedAt: conversation.archivedAt ?? now,
                   pinned: false,
+                  unread: false,
                   status: conversation.status === 'streaming' ? 'idle' : conversation.status,
                   runId: undefined,
                 }
@@ -1279,7 +1288,7 @@ export const useChatStore = create<ChatState>()(
         set((state) => ({
           conversations: state.conversations.map((conversation) => {
             const wasStreaming = conversation.status === 'streaming';
-            const next = applyCodexEventToConversation(conversation, event);
+            let next = applyCodexEventToConversation(conversation, event);
             if (
               shouldStartQueuedMessage &&
               wasStreaming &&
@@ -1288,6 +1297,15 @@ export const useChatStore = create<ChatState>()(
               ((next.guidedQueuedMessages?.length ?? 0) > 0 || (next.queuedMessages?.length ?? 0) > 0)
             ) {
               readyConversationIds.push(next.id);
+            }
+            // A turn that finishes while the user is looking at another
+            // conversation gets an unread dot until it is opened again.
+            if (
+              wasStreaming &&
+              next.status !== 'streaming' &&
+              next.id !== state.currentConversationId
+            ) {
+              next = { ...next, unread: true };
             }
             return next;
           }),

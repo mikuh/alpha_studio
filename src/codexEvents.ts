@@ -537,6 +537,7 @@ const MARKDOWN_FILE_LINK_PATTERN = /\[[^\]\n]+\]\((<[^>]+>|[^)\s]+)(?:\s+["'][^"
 const URL_FILE_PATTERN = new RegExp('\\b(?:https?:\\/\\/|file:\\/\\/\\/)[^\\s"\'<>`|]+?\\.' + FILE_EXT_PATTERN + '(?:[?#][^\\s"\'<>`|)]*)?(?=$|[\\s"\'<>`|)])', 'gi');
 const ABSOLUTE_FILE_PATH_PATTERN = new RegExp('(?:^|[\\s"\'(])((?:~|\\/)[^\\s"\'<>`|]+?\\.' + FILE_EXT_PATTERN + '(?:[?#][^\\s"\'<>`|)]*)?)(?=$|[\\s"\'<>`|)])', 'gi');
 const GENERATED_FILE_HINT_PATTERN = /\b(?:generated|created|saved|wrote|written|exported|output|file|path)\b|(?:生成|已生成|创建|已创建|保存|已保存|输出|文件|保存位置)/i;
+const GENERATED_REMOTE_FILE_HINT_PATTERN = /\b(?:(?:generated|created|saved|exported|downloaded)\s+(?:file|document|report|artifact|output)|(?:file|document|report|artifact|output)\s+(?:generated|created|saved|exported))\b|(?:已生成|已创建|已保存|已导出|生成文件|创建文件|保存文件|导出文件|交付文件|下载文件|文件已生成|文件已保存|保存位置)/i;
 
 function imageResultFromToolEvent(event: CodexChatEvent, toolId: string): ImageResultBlock | null {
   const candidates = [
@@ -726,7 +727,11 @@ function extractGeneratedFileCandidatesFromText(text: string): FileCandidate[] {
   const candidates: FileCandidate[] = [];
   for (const line of text.split(/\r?\n/)) {
     if (!GENERATED_FILE_HINT_PATTERN.test(line)) continue;
-    candidates.push(...extractFileCandidatesFromText(line));
+    const lineCandidates = extractFileCandidatesFromText(line);
+    const explicitlyGeneratedRemote = GENERATED_REMOTE_FILE_HINT_PATTERN.test(line);
+    candidates.push(...lineCandidates.filter((candidate) => (
+      !/^https?:\/\//i.test(candidate.path) || explicitlyGeneratedRemote
+    )));
   }
   return candidates;
 }

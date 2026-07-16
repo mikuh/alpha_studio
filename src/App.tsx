@@ -92,7 +92,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PanelRight,
-  PanelRightClose,
   Paperclip,
   Pencil,
   Pin,
@@ -1371,18 +1370,6 @@ function AppWorkspace() {
     };
   }, [activeRightDockTabId, currentRightPanel]);
 
-  const showRegularRightPanel = useCallback(() => {
-    const saved = lastRegularRightPanelRef.current;
-    const savedTab = saved.activeTabId
-      ? rightDockTabs.find((tab) => tab.id === saved.activeTabId) ?? null
-      : null;
-    setActiveRightDockTabId(savedTab?.id ?? null);
-    setRightPanel(savedTab?.kind ?? (saved.panel === 'git' ? 'git' : 'features'));
-    setRightDockExpanded(false);
-    setRightDockMounted(true);
-    setRightPanelVisible(true);
-  }, [rightDockTabs]);
-
   const addRightDockTab = useCallback((kind: RightDockKind, url?: string) => {
     nextRightDockTabRef.current += 1;
     const tab: RightDockTab = {
@@ -1419,6 +1406,23 @@ function AppWorkspace() {
     setRightPanelVisible(true);
   }, [rightDockTabs]);
 
+  const toggleRightDockKind = useCallback((kind: 'browser' | 'research-workbench') => {
+    if (rightPanelVisible && currentRightPanel === kind) {
+      setRightDockExpanded(false);
+      setRightPanelVisible(false);
+      return;
+    }
+
+    const existingTab = [...rightDockTabs].reverse().find((tab) => tab.kind === kind);
+    if (existingTab) {
+      selectRightDockTab(existingTab.id);
+      setRightDockExpanded(false);
+      return;
+    }
+
+    addRightDockTab(kind);
+  }, [addRightDockTab, currentRightPanel, rightPanelVisible, rightDockTabs, selectRightDockTab]);
+
   const closeRightDockTab = useCallback((id: string) => {
     const index = rightDockTabs.findIndex((tab) => tab.id === id);
     if (index === -1) return;
@@ -1428,30 +1432,16 @@ function AppWorkspace() {
       const nextActive = next[Math.min(index, next.length - 1)] ?? null;
       setActiveRightDockTabId(nextActive?.id ?? null);
       setRightPanel(nextActive?.kind ?? 'features');
-      if (!nextActive) setRightDockExpanded(false);
+      if (!nextActive) {
+        setRightDockExpanded(false);
+        setRightPanelVisible(false);
+      }
     }
   }, [activeRightDockTabId, rightDockTabs]);
 
   const coworkersPanelOpen = rightPanelVisible && currentRightPanel === 'coworkers';
-  const rightPanelToggleOpen = rightPanelVisible && currentRightPanel !== 'coworkers';
-
-  const toggleRightPanel = useCallback(() => {
-    setRightDockMounted(true);
-    if (rightPanelVisible) {
-      if (currentRightPanel === 'coworkers') {
-        showRegularRightPanel();
-        return;
-      }
-      setRightDockExpanded(false);
-      setRightPanelVisible(false);
-      return;
-    }
-    if (currentRightPanel === 'coworkers') {
-      showRegularRightPanel();
-      return;
-    }
-    setRightPanelVisible(true);
-  }, [currentRightPanel, rightPanelVisible, showRegularRightPanel]);
+  const researchWorkbenchOpen = rightPanelVisible && currentRightPanel === 'research-workbench';
+  const browserOpen = rightPanelVisible && currentRightPanel === 'browser';
 
   const toggleCoworkersPanel = useCallback(() => {
     if (coworkersPanelOpen) {
@@ -1473,7 +1463,6 @@ function AppWorkspace() {
   }, [activeRightDockTabId, coworkersPanelOpen, currentRightPanel]);
 
   const compactRightPanel =
-    currentRightPanel === 'features' ||
     currentRightPanel === 'coworkers' ||
     currentRightPanel === 'terminal' ||
     currentRightPanel === 'browser' ||
@@ -1548,7 +1537,7 @@ function AppWorkspace() {
       <BrowserDockContext.Provider value={openBrowserUrl}>
         <FileDockContext.Provider value={openFileInDock}>
           <div
-            className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && rightDockExpanded ? 'right-dock-expanded' : ''} ${rightPanelVisible && currentRightPanel === 'features' ? 'features-panel-open' : ''} ${coworkersPanelOpen ? 'coworkers-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'} ${windowFullscreen ? 'window-fullscreen' : ''}`}
+            className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && rightDockExpanded ? 'right-dock-expanded' : ''} ${coworkersPanelOpen ? 'coworkers-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'} ${windowFullscreen ? 'window-fullscreen' : ''}`}
             data-work-mode={domain.id}
             style={
               {
@@ -1585,12 +1574,14 @@ function AppWorkspace() {
                 <TopBar
                   domain={domain}
                   sidebarCollapsed={sidebarCollapsed}
-                  rightPanelOpen={rightPanelToggleOpen}
                   coworkersPanelOpen={coworkersPanelOpen}
+                  researchWorkbenchOpen={researchWorkbenchOpen}
+                  browserOpen={browserOpen}
                   hidePanelActions={settingsOpen}
                   onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-                  onToggleRightPanel={toggleRightPanel}
                   onToggleCoworkersPanel={toggleCoworkersPanel}
+                  onToggleResearchWorkbench={() => toggleRightDockKind('research-workbench')}
+                  onToggleBrowser={() => toggleRightDockKind('browser')}
                   onOpenSideChat={() => addRightDockTab('side-chat')}
                   onOpenSettings={() => openSettings('general')}
                 />
@@ -1631,8 +1622,6 @@ function AppWorkspace() {
                 onAddTab={addRightDockTab}
                 expanded={rightDockExpanded}
                 onToggleExpanded={() => setRightDockExpanded((expanded) => !expanded)}
-                onOpenBrowser={() => addRightDockTab('browser')}
-                onOpenResearchWorkbench={() => addRightDockTab('research-workbench')}
                 onCloseGit={() => {
                   setRightDockExpanded(false);
                   setRightPanelVisible(false);
@@ -1699,23 +1688,26 @@ function CoworkersToggleButton({
   );
 }
 
-function RightPanelToggleButton({
+function RightDockToggleButton({
+  kind,
   open,
   onToggle,
 }: {
+  kind: 'browser' | 'research-workbench';
   open: boolean;
   onToggle: () => void;
 }) {
+  const label = RIGHT_DOCK_META[kind].label;
   return (
     <button
       className={`icon-btn ${open ? 'active' : ''}`}
       type="button"
       onClick={onToggle}
-      aria-label={open ? '关闭侧边栏' : '打开侧边栏'}
+      aria-label={`${open ? '关闭' : '打开'}${label}`}
       aria-pressed={open}
-      title={open ? '关闭侧边栏' : '侧边栏'}
+      title={label}
     >
-      {open ? <PanelRightClose size={16} /> : <PanelRight size={16} />}
+      {rightDockIcon(kind, 16)}
     </button>
   );
 }
@@ -2343,6 +2335,7 @@ function ConversationRow({
           {streaming ? <Loader2 size={12} className="spin" /> : formatRelative(conversation.updatedAt)}
         </span>
       )}
+      {!editing && !streaming && conversation.unread && <span className="conv-unread-dot" aria-label="未读" />}
       {!editing && (
         <span className="conv-actions" onClick={(event) => event.stopPropagation()}>
           <button className="row-icon-btn" type="button" onClick={() => toggleConversationPin(conversation.id)} aria-label="置顶对话" title={conversation.pinned ? '取消置顶' : '置顶'}>
@@ -2689,23 +2682,27 @@ function sortSubmenu(value: ProjectSort, onChange: (sort: ProjectSort) => void):
 function TopBar({
   domain,
   sidebarCollapsed,
-  rightPanelOpen,
   coworkersPanelOpen,
+  researchWorkbenchOpen,
+  browserOpen,
   hidePanelActions = false,
   onToggleSidebar,
-  onToggleRightPanel,
   onToggleCoworkersPanel,
+  onToggleResearchWorkbench,
+  onToggleBrowser,
   onOpenSideChat,
   onOpenSettings,
 }: {
   domain: DomainConfig;
   sidebarCollapsed: boolean;
-  rightPanelOpen: boolean;
   coworkersPanelOpen: boolean;
+  researchWorkbenchOpen: boolean;
+  browserOpen: boolean;
   hidePanelActions?: boolean;
   onToggleSidebar: () => void;
-  onToggleRightPanel: () => void;
   onToggleCoworkersPanel: () => void;
+  onToggleResearchWorkbench: () => void;
+  onToggleBrowser: () => void;
   onOpenSideChat: () => void;
   onOpenSettings: () => void;
 }) {
@@ -2812,7 +2809,12 @@ function TopBar({
         <div className="top-bar-actions">
           <div className="top-bar-panel-actions">
             <CoworkersToggleButton open={coworkersPanelOpen} onToggle={onToggleCoworkersPanel} />
-            <RightPanelToggleButton open={rightPanelOpen} onToggle={onToggleRightPanel} />
+            <RightDockToggleButton
+              kind="research-workbench"
+              open={researchWorkbenchOpen}
+              onToggle={onToggleResearchWorkbench}
+            />
+            <RightDockToggleButton kind="browser" open={browserOpen} onToggle={onToggleBrowser} />
           </div>
         </div>
       )}
@@ -3719,8 +3721,6 @@ function RightDockWorkspace({
   onAddTab,
   expanded,
   onToggleExpanded,
-  onOpenBrowser,
-  onOpenResearchWorkbench,
   onCloseGit,
 }: {
   visible: boolean;
@@ -3734,8 +3734,6 @@ function RightDockWorkspace({
   onAddTab: (kind: RightDockKind) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
-  onOpenBrowser: () => void;
-  onOpenResearchWorkbench: () => void;
   onCloseGit: () => void;
 }) {
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? null;
@@ -3779,11 +3777,7 @@ function RightDockWorkspace({
       ) : mode === 'coworkers' ? (
         <CoworkersPanel />
       ) : (
-        <FeaturesPanel
-          domain={domain}
-          onOpenBrowser={onOpenBrowser}
-          onOpenResearchWorkbench={onOpenResearchWorkbench}
-        />
+        null
       )}
     </aside>
   );
@@ -3891,68 +3885,6 @@ function RightDockTabBar({
         </button>
       </div>
     </header>
-  );
-}
-
-function FeaturesPanel({
-  domain,
-  onOpenBrowser,
-  onOpenResearchWorkbench,
-}: {
-  domain: DomainConfig;
-  onOpenBrowser: () => void;
-  onOpenResearchWorkbench: () => void;
-}) {
-  const featureActions: Array<{
-    id: string;
-    label: string;
-    icon: ReactNode;
-    shortcut?: string;
-    disabled?: boolean;
-    active?: boolean;
-    title?: string;
-    onClick: () => void;
-  }> = [
-    {
-      id: 'research-workbench',
-      label: '投研工作台',
-      icon: <LineChart size={14} />,
-      title: '打开基础投研面板',
-      onClick: onOpenResearchWorkbench,
-    },
-    {
-      id: 'browser',
-      label: '浏览器',
-      icon: <Globe size={14} />,
-      shortcut: '⌘T',
-      title: '打开行情、公告或研究资料',
-      onClick: onOpenBrowser,
-    },
-  ];
-
-  return (
-    <div className="features-panel" aria-label={domain.ui.rightPanelTitle}>
-      <div className="features-panel-body">
-        <div className="features-list">
-          {featureActions.map((feature) => (
-            <button
-              key={feature.id}
-              type="button"
-              className={`feature-card ${feature.active ? 'active' : ''}`}
-              disabled={feature.disabled}
-              onClick={feature.onClick}
-              title={feature.title}
-            >
-              <span className="feature-card-main">
-                <span className="feature-card-icon">{feature.icon}</span>
-                <span className="feature-card-title">{feature.label}</span>
-              </span>
-              {feature.shortcut && <span className="feature-card-key">{feature.shortcut}</span>}
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -6475,11 +6407,17 @@ function ToolBlockView({ block }: { block: Extract<MessageBlock, { type: 'tool' 
   const failed = block.status === 'failed';
   const verb = running ? tool.running : failed ? tool.failed : tool.done;
   const inferredTarget = inferredSpawnAgentToolTarget(block);
-  const target = block.target || inferredTarget || firstLine(block.input);
-  const targetIsRawInput = Boolean(!block.target && !inferredTarget && target);
+  const editDetails = tool.kind === 'file-edit' ? fileEditDetails(block) : null;
+  const editTarget = editDetails ? fileEditTarget(editDetails) : '';
+  const target = block.target || inferredTarget || editTarget || firstLine(block.input);
+  const targetIsRawInput = Boolean(!block.target && !inferredTarget && !editTarget && target);
   const isCommand = tool.kind === 'command';
   const plainBody = isCommand ? '' : cleanCommandOutput(block.output || block.input || '');
-  const hasBody = isCommand ? Boolean(block.input || block.output) : Boolean(plainBody) && plainBody !== target;
+  const hasBody = tool.kind === 'file-edit'
+    ? true
+    : isCommand
+      ? Boolean(block.input || block.output)
+      : Boolean(plainBody) && plainBody !== target;
   return (
     <EventDetails
       className={`tool-block event-block ${block.status} kind-${tool.kind}`}
@@ -6501,12 +6439,187 @@ function ToolBlockView({ block }: { block: Extract<MessageBlock, { type: 'tool' 
         <div className="event-body">
           {isCommand ? (
             <CommandCard command={block.input} output={block.output} status={block.status} />
+          ) : editDetails ? (
+            <FileEditCard details={editDetails} />
           ) : (
             <pre className="event-output">{plainBody}</pre>
           )}
         </div>
       )}
     </EventDetails>
+  );
+}
+
+type FileEditKind = 'add' | 'update' | 'delete' | 'rename' | 'unknown';
+
+interface FileEditEntry {
+  path: string;
+  kind: FileEditKind;
+}
+
+interface FileEditDetails {
+  files: FileEditEntry[];
+  additions: number;
+  deletions: number;
+  diff: string;
+  raw: string;
+}
+
+function fileEditDetails(block: Extract<MessageBlock, { type: 'tool' }>): FileEditDetails {
+  const sources = [...new Set([block.output, block.input].map(cleanCommandOutput).filter(Boolean))];
+  const files = new Map<string, FileEditKind>();
+  let additions = 0;
+  let deletions = 0;
+  let diff = '';
+
+  const rememberFile = (pathValue: unknown, kindValue?: unknown) => {
+    if (typeof pathValue !== 'string') return;
+    const path = pathValue.trim().replace(/^['"`]|['"`]$/g, '');
+    if (!path || path === '/dev/null' || /^https?:\/\//i.test(path)) return;
+    const kind = normalizeFileEditKind(kindValue);
+    const previous = files.get(path);
+    files.set(path, previous && previous !== 'unknown' ? previous : kind);
+  };
+
+  const inspect = (value: unknown, key = '') => {
+    if (Array.isArray(value)) {
+      value.forEach((entry) => inspect(entry, key));
+      return;
+    }
+    if (!value || typeof value !== 'object') {
+      if (typeof value === 'string' && /^(?:diff|patch|changes?|input|output|result)$/i.test(key)) {
+        const nested = parseJsonValue(value);
+        if (nested !== null) inspect(nested, key);
+        if (/^(?:diff|patch)$/i.test(key) && looksLikeDiff(value)) diff ||= value.trim();
+      }
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    const path = record.path ?? record.filePath ?? record.file_path ?? record.filename;
+    const kind = record.kind ?? record.changeType ?? record.change_type ?? record.operation;
+    if (path) rememberFile(path, kind);
+    const added = numberValue(record.additions ?? record.linesAdded ?? record.lines_added);
+    const removed = numberValue(record.deletions ?? record.linesDeleted ?? record.lines_deleted);
+    if (added !== null) additions += added;
+    if (removed !== null) deletions += removed;
+    Object.entries(record).forEach(([childKey, child]) => inspect(child, childKey));
+  };
+
+  sources.forEach((source) => {
+    const parsed = parseJsonValue(source);
+    if (parsed !== null) inspect(parsed);
+    for (const match of source.matchAll(/^\*\*\*\s+(Add|Update|Delete) File:\s*(.+)$/gm)) {
+      rememberFile(match[2], match[1]);
+    }
+    for (const match of source.matchAll(/^diff --git\s+a\/(.+?)\s+b\/(.+)$/gm)) {
+      rememberFile(match[2], 'update');
+    }
+    for (const match of source.matchAll(/^(?:File|Path|文件|路径)\s*:\s*(.+)$/gim)) {
+      rememberFile(match[1]);
+    }
+    if (!diff && looksLikeDiff(source)) diff = source;
+  });
+
+  if (diff) {
+    const stats = diffLineStats(diff);
+    if (additions === 0) additions = stats.additions;
+    if (deletions === 0) deletions = stats.deletions;
+  }
+
+  return { files: [...files.entries()].map(([path, kind]) => ({ path, kind })), additions, deletions, diff, raw: sources[0] || '' };
+}
+
+function parseJsonValue(value: string): unknown | null {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function numberValue(value: unknown): number | null {
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isFinite(number) ? Math.max(0, Math.round(number)) : null;
+}
+
+function normalizeFileEditKind(value: unknown): FileEditKind {
+  const normalized = String(value || '').toLowerCase();
+  if (/add|create|new/.test(normalized)) return 'add';
+  if (/delete|remove/.test(normalized)) return 'delete';
+  if (/rename|move/.test(normalized)) return 'rename';
+  if (/update|edit|modify|change|write/.test(normalized)) return 'update';
+  return 'unknown';
+}
+
+function looksLikeDiff(value: string): boolean {
+  return /^diff --git\s/m.test(value) || /^\*\*\*\s+(?:Begin Patch|Add File:|Update File:|Delete File:)/m.test(value);
+}
+
+function diffLineStats(value: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  value.split('\n').forEach((line) => {
+    if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
+    if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
+  });
+  return { additions, deletions };
+}
+
+function fileEditTarget(details: FileEditDetails): string {
+  const stats = fileEditStatsLabel(details);
+  if (details.files.length === 1) return `${shortenPath(details.files[0].path)}${stats ? ` · ${stats}` : ''}`;
+  if (details.files.length > 1) return `${details.files.length} 个文件${stats ? ` · ${stats}` : ''}`;
+  return stats;
+}
+
+function fileEditStatsLabel(details: Pick<FileEditDetails, 'additions' | 'deletions'>): string {
+  return [details.additions > 0 ? `+${details.additions}` : '', details.deletions > 0 ? `−${details.deletions}` : ''].filter(Boolean).join(' ');
+}
+
+function fileEditKindLabel(kind: FileEditKind): string {
+  if (kind === 'add') return '新增';
+  if (kind === 'delete') return '删除';
+  if (kind === 'rename') return '重命名';
+  if (kind === 'update') return '修改';
+  return '变更';
+}
+
+function FileEditCard({ details }: { details: FileEditDetails }) {
+  const stats = fileEditStatsLabel(details);
+  const showRaw = !details.diff && details.files.length === 0 && details.raw;
+  return (
+    <div className="file-edit-card">
+      <div className="file-edit-card-head">
+        <span><FileDiff size={13} />变更明细</span>
+        <span className="file-edit-card-stats">
+          {details.files.length > 0 && `${details.files.length} 个文件`}
+          {stats && <>
+            {details.additions > 0 && <em className="added">+{details.additions}</em>}
+            {details.deletions > 0 && <em className="deleted">−{details.deletions}</em>}
+          </>}
+        </span>
+      </div>
+      {details.files.length > 0 && (
+        <div className="file-edit-files">
+          {details.files.map((file) => (
+            <div className="file-edit-file" key={file.path} title={file.path}>
+              <FileCode2 size={13} />
+              <span className="file-edit-file-path">{shortenPath(file.path)}</span>
+              <span className={`file-edit-kind ${file.kind}`}>{fileEditKindLabel(file.kind)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {details.diff ? (
+        <pre className="file-edit-diff">{details.diff}</pre>
+      ) : showRaw ? (
+        <pre className="file-edit-raw">{details.raw}</pre>
+      ) : details.files.length === 0 ? (
+        <div className="file-edit-empty"><Info size={14} /><span>编辑工具未返回变更明细，可在右侧 Git 面板查看工作区差异。</span></div>
+      ) : null}
+    </div>
   );
 }
 
@@ -7667,14 +7780,23 @@ function GeneratedImagePreview({ image, markdown }: { image: GeneratedImage; mar
 }
 
 function GeneratedFileResultView({ block }: { block: Extract<MessageBlock, { type: 'file_result' }> }) {
-  if (block.files.length === 0) return null;
+  // Remote HTML pages are web links, not generated local artifacts. Older
+  // persisted conversations may already contain false-positive file blocks for
+  // source pages whose titles included words such as “文件”. Hide them here as
+  // well as preventing new ones in codexEvents.ts.
+  const files = block.files.filter((file) => !isRemoteHtmlPage(file));
+  if (files.length === 0) return null;
   return (
     <section className="generated-file-result" aria-label={block.title}>
       <div className="generated-file-list">
-        {block.files.map((file) => <GeneratedFileCard key={file.id} file={file} />)}
+        {files.map((file) => <GeneratedFileCard key={file.id} file={file} />)}
       </div>
     </section>
   );
+}
+
+function isRemoteHtmlPage(file: GeneratedFile): boolean {
+  return /^https?:\/\//i.test(file.path) && ['html', 'htm'].includes(file.ext.toLowerCase());
 }
 
 const PREVIEW_APP_EXTENSIONS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'heic']);

@@ -463,38 +463,35 @@ describe('right feature panel', () => {
     expect(screen.queryByLabelText('环境信息')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('用其他软件打开')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('打开下方终端')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('打开侧边栏')).toBeInTheDocument();
+    expect(screen.getByLabelText('打开投研工作台')).toBeInTheDocument();
+    expect(screen.getByLabelText('打开浏览器')).toBeInTheDocument();
     expect(container.querySelector('.open-app-trigger-icon')).not.toBeInTheDocument();
     expect(document.querySelector('.app-shell')).toHaveAttribute('data-work-mode', 'finance-research');
   });
 
-  it('opens the finance right sidebar without coding actions', async () => {
+  it('exposes the two finance tools as direct right-top actions', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
-    const rightPanelToggle = screen.getByLabelText('打开侧边栏');
+    const workbenchToggle = screen.getByLabelText('打开投研工作台');
+    const browserToggle = screen.getByLabelText('打开浏览器');
 
-    expect(rightPanelToggle).toHaveAttribute('aria-pressed', 'false');
-    expect(rightPanelToggle.querySelector('svg')).toHaveClass('lucide-panel-right');
+    expect(workbenchToggle).toHaveAttribute('aria-pressed', 'false');
+    expect(workbenchToggle.querySelector('svg')).toHaveClass('lucide-chart-line');
+    expect(browserToggle).toHaveAttribute('aria-pressed', 'false');
+    expect(browserToggle.querySelector('svg')).toHaveClass('lucide-globe');
+    expect(container.querySelector('.features-panel')).not.toBeInTheDocument();
 
-    await user.click(rightPanelToggle);
+    await user.click(browserToggle);
 
-    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
-    expect(featuresPanel).toBeInTheDocument();
-    expect(featuresPanel).toHaveAccessibleName('投研侧栏');
-    expect(within(featuresPanel).getByRole('button', { name: /浏览器/ })).toBeInTheDocument();
-    expect(within(featuresPanel).queryByRole('button', { name: /侧边聊天/ })).not.toBeInTheDocument();
-    expect(within(featuresPanel).queryByRole('button', { name: /审查/ })).not.toBeInTheDocument();
-    expect(within(featuresPanel).queryByRole('button', { name: /^终端$/ })).not.toBeInTheDocument();
-    expect(within(featuresPanel).queryByRole('button', { name: /文件/ })).not.toBeInTheDocument();
-    expect(screen.getAllByLabelText('关闭侧边栏')[0]).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getAllByLabelText('关闭侧边栏')[0].querySelector('svg')).toHaveClass('lucide-panel-right-close');
+    expect(container.querySelector('.browser-dock-panel')).toBeInTheDocument();
+    expect(screen.getByLabelText('关闭浏览器')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByLabelText('打开投研工作台')).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('keeps the side-chat composer multiline before the sidebar is expanded', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
     fireEvent.keyDown(window, { metaKey: true, altKey: true, code: 'KeyS' });
 
     expect(container.querySelector('.app-shell')).not.toHaveClass('right-dock-expanded');
@@ -549,9 +546,7 @@ describe('right feature panel', () => {
     (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(featuresPanel).getByRole('button', { name: /投研工作台/ }));
+    await user.click(screen.getByLabelText('打开投研工作台'));
 
     const workbench = await screen.findByLabelText('投研工作台');
     expect(workbench).toBeInTheDocument();
@@ -616,9 +611,7 @@ describe('right feature panel', () => {
     (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(featuresPanel).getByRole('button', { name: /投研工作台/ }));
+    await user.click(screen.getByLabelText('打开投研工作台'));
 
     const workbench = await screen.findByLabelText('投研工作台');
     await waitFor(() => expect(within(workbench).getByText('赛力斯')).toBeInTheDocument());
@@ -642,9 +635,7 @@ describe('right feature panel', () => {
     (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(featuresPanel).getByRole('button', { name: /投研工作台/ }));
+    await user.click(screen.getByLabelText('打开投研工作台'));
 
     const workbench = await screen.findByLabelText('投研工作台');
     await user.click(within(workbench).getByRole('tab', { name: /交易/ }));
@@ -667,8 +658,8 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    expect(container.querySelector('.features-panel')).toBeInTheDocument();
+    await user.click(screen.getByLabelText('打开浏览器'));
+    expect(container.querySelector('.browser-dock-panel')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '技能' }));
 
@@ -676,7 +667,7 @@ describe('right feature panel', () => {
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     expect(skillsPage).toBeInTheDocument();
     expect(dock).toHaveClass('collapsed');
-    expect(screen.queryByLabelText('关闭侧边栏')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('关闭浏览器')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('打开 AI 同事面板')).not.toBeInTheDocument();
   });
 
@@ -684,14 +675,14 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
+    await user.click(screen.getByLabelText('打开浏览器'));
     await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
 
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     expect(screen.getByRole('dialog', { name: '设置' })).toBeInTheDocument();
     expect(dock).toHaveClass('collapsed');
-    expect(screen.queryByLabelText('关闭侧边栏')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('打开侧边栏')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('关闭浏览器')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('打开浏览器')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('打开 AI 同事面板')).not.toBeInTheDocument();
   });
 
@@ -728,15 +719,13 @@ describe('right feature panel', () => {
     await user.click(screen.getByLabelText('打开 AI 同事面板'));
 
     expect(container.querySelector('.coworkers-panel')).toBeInTheDocument();
-    expect(screen.getByLabelText('打开侧边栏')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByLabelText('打开浏览器')).toHaveAttribute('aria-pressed', 'false');
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
+    await user.click(screen.getByLabelText('打开浏览器'));
 
-    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
-    expect(featuresPanel).toBeInTheDocument();
-    expect(featuresPanel).toHaveAccessibleName('投研侧栏');
+    expect(container.querySelector('.browser-dock-panel')).toBeInTheDocument();
     expect(container.querySelector('.coworkers-panel')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('关闭侧边栏')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByLabelText('关闭浏览器')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByLabelText('打开 AI 同事面板')).toHaveAttribute('aria-pressed', 'false');
   });
 
@@ -744,9 +733,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const featuresPanel = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(featuresPanel).getByRole('button', { name: /浏览器/ }));
+    await user.click(screen.getByLabelText('打开浏览器'));
 
     expect(container.querySelector('.right-dock-tab.active')).toHaveTextContent('浏览器');
     expect(container.querySelector('.browser-dock-panel')).toBeInTheDocument();
@@ -754,7 +741,7 @@ describe('right feature panel', () => {
     await user.click(screen.getByLabelText('打开 AI 同事面板'));
     expect(container.querySelector('.coworkers-panel')).toBeInTheDocument();
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
+    await user.click(screen.getByLabelText('打开浏览器'));
 
     expect(container.querySelector('.coworkers-panel')).not.toBeInTheDocument();
     expect(container.querySelector('.right-dock-tab.active')).toHaveTextContent('浏览器');
@@ -950,9 +937,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const launcher = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(launcher).getByRole('button', { name: /浏览器/ }));
+    await user.click(screen.getByLabelText('打开浏览器'));
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     await user.click(within(dock).getByLabelText('添加侧边栏标签'));
     const tabMenu = container.querySelector('.right-dock-tab-menu') as HTMLElement;
@@ -2158,6 +2143,44 @@ describe('right feature panel', () => {
     expect(screen.getByRole('menuitem', { name: '复制文件内容' })).toBeInTheDocument();
   });
 
+  it('hides remote HTML source pages from persisted generated-file cards', () => {
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-source-page',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'file_result',
+                  id: 'false-positive-source-page',
+                  title: '生成文件',
+                  files: [
+                    {
+                      id: 'mofcom-source',
+                      path: 'https://www.mofcom.gov.cn/art/2026/art_c9b4c4851de94b18809007ff90d9cce0.html',
+                      name: 'art_c9b4c4851de94b18809007ff90d9cce0.html',
+                      ext: 'html',
+                      kind: 'file',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const messageList = container.querySelector('.message-list') as HTMLElement;
+
+    expect(within(messageList).queryByRole('button', { name: '打开 art_c9b4c4851de94b18809007ff90d9cce0.html' })).not.toBeInTheDocument();
+    expect(messageList.querySelector('.generated-file-result')).toBeNull();
+  });
+
   it('shows a Codex-style local file menu on right click and decodes Chinese paths', async () => {
     const user = userEvent.setup();
     useChatStore.setState({
@@ -2404,11 +2427,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const launcher = container.querySelector('.features-panel') as HTMLElement;
-    expect(launcher).toBeInTheDocument();
-
-    await user.click(within(launcher).getByRole('button', { name: /浏览器/ }));
+    await user.click(screen.getByLabelText('打开浏览器'));
 
     const browser = container.querySelector('.browser-dock-panel') as HTMLElement;
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
@@ -2430,7 +2449,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
+    await user.click(screen.getByLabelText('打开浏览器'));
 
     const shell = container.querySelector('.app-shell') as HTMLElement;
     expect(shell.style.getPropertyValue('--right-sidebar-width')).toBe('1040px');
@@ -2454,9 +2473,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const launcher = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(launcher).getByRole('button', { name: /浏览器/ }));
+    await user.click(screen.getByLabelText('打开浏览器'));
 
     const shell = container.querySelector('.app-shell') as HTMLElement;
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
@@ -2480,9 +2497,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const launcher = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(launcher).getByRole('button', { name: /浏览器/ }));
+    await user.click(screen.getByLabelText('打开浏览器'));
 
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     await user.click(within(dock).getByRole('button', { name: '展开侧边栏' }));
@@ -2571,9 +2586,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const launcher = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(launcher).getByRole('button', { name: /浏览器/ }));
+    await user.click(screen.getByLabelText('打开浏览器'));
 
     const browser = container.querySelector('.right-dock-pane.active .browser-dock-panel') as HTMLElement;
     const address = within(browser).getByPlaceholderText('搜索或输入网址');
@@ -2602,9 +2615,7 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
-    const launcher = container.querySelector('.features-panel') as HTMLElement;
-    await user.click(within(launcher).getByRole('button', { name: /浏览器/ }));
+    await user.click(screen.getByLabelText('打开浏览器'));
 
     const browser = container.querySelector('.right-dock-pane.active .browser-dock-panel') as HTMLElement;
     const address = within(browser).getByPlaceholderText('搜索或输入网址') as HTMLInputElement;
@@ -2686,25 +2697,94 @@ describe('right feature panel', () => {
     expect(within(group).getByText('CGT 征求意见 国家药监局')).toBeInTheDocument();
   });
 
-  it('collapses and reopens the right sidebar without unmounting dock tabs', async () => {
+  it('shows edited file names and change details instead of an empty disclosure', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-file-edits',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'tool',
+                  id: 'edit-1',
+                  title: 'fileChange',
+                  status: 'completed',
+                  output: JSON.stringify([
+                    { path: '/Users/geb/codes/alpha_studio/src/App.tsx', kind: 'update', additions: 12, deletions: 3 },
+                    { path: '/Users/geb/codes/alpha_studio/src/styles.css', kind: 'update', additions: 24, deletions: 0 },
+                  ]),
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const messageList = container.querySelector('.message-list') as HTMLElement;
+    const editLabel = within(messageList).getByText('已编辑');
+    const editDetails = editLabel.closest('details') as HTMLElement;
+
+    expect(within(editDetails).getByText('2 个文件 · +36 −3')).toBeInTheDocument();
+    expect(within(editDetails).queryByText('变更明细')).not.toBeInTheDocument();
+
+    await user.click(editLabel);
+
+    expect(within(editDetails).getByText('变更明细')).toBeInTheDocument();
+    expect(within(editDetails).getByText('…/src/App.tsx')).toBeInTheDocument();
+    expect(within(editDetails).getByText('…/src/styles.css')).toBeInTheDocument();
+    expect(within(editDetails).getAllByText('修改')).toHaveLength(2);
+  });
+
+  it('explains when an edit tool returned no change details', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-empty-edit',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [{ type: 'tool', id: 'edit-empty', title: 'fileChange', status: 'completed' }],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const messageList = container.querySelector('.message-list') as HTMLElement;
+    await user.click(within(messageList).getByText('已编辑'));
+
+    expect(within(messageList).getByText('编辑工具未返回变更明细，可在右侧 Git 面板查看工作区差异。')).toBeInTheDocument();
+  });
+
+  it('collapses and reopens a finance tool without duplicating its dock tab', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
-    fireEvent.keyDown(window, { metaKey: true, altKey: true, code: 'KeyS' });
+    await user.click(screen.getByLabelText('打开浏览器'));
 
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
-    const sideChat = container.querySelector('.side-chat-panel') as HTMLElement;
-    expect(sideChat).toBeInTheDocument();
-    expect(within(dock).getByRole('tab', { name: '侧边聊天' })).toHaveAttribute('aria-selected', 'true');
+    const browser = container.querySelector('.browser-dock-panel') as HTMLElement;
+    expect(browser).toBeInTheDocument();
+    expect(within(dock).getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true');
 
-    await user.click(screen.getByLabelText('关闭侧边栏'));
+    await user.click(screen.getByLabelText('关闭浏览器'));
     expect(dock).toHaveClass('collapsed');
-    expect(container.querySelector('.side-chat-panel')).toBe(sideChat);
+    expect(container.querySelector('.browser-dock-panel')).toBe(browser);
 
-    await user.click(screen.getByLabelText('打开侧边栏'));
+    await user.click(screen.getByLabelText('打开浏览器'));
     expect(dock).not.toHaveClass('collapsed');
-    expect(container.querySelector('.side-chat-panel')).toBe(sideChat);
-    expect(within(dock).getByRole('tab', { name: '侧边聊天' })).toHaveAttribute('aria-selected', 'true');
+    expect(container.querySelector('.browser-dock-panel')).toBe(browser);
+    expect(within(dock).getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(dock).getAllByRole('tab', { name: '浏览器' })).toHaveLength(1);
   });
 
   it('closes right dock tabs from the hover-only tab close button', async () => {
@@ -2719,7 +2799,7 @@ describe('right feature panel', () => {
     await user.click(within(dock).getByLabelText('关闭侧边聊天标签'));
 
     expect(container.querySelector('.side-chat-panel')).not.toBeInTheDocument();
-    expect(container.querySelector('.features-panel')).toBeInTheDocument();
+    expect(dock).toHaveClass('collapsed');
     expect(within(dock).queryByRole('tab', { name: '侧边聊天' })).not.toBeInTheDocument();
   });
 
@@ -2770,8 +2850,10 @@ describe('right feature panel', () => {
     expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.main-stage\s*{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.right-dock-workspace\s*{[^}]*width:\s*auto;[^}]*flex:\s*1 1 auto;/s);
     expect(css).toMatch(/\.right-dock-expand-btn\s*{[^}]*width:\s*30px;[^}]*height:\s*30px;/s);
-    expect(css).toMatch(/\.right-dock-tabs\s*{[^}]*padding:\s*0 120px 0 8px;/s);
-    expect(css).toMatch(/\.right-dock-tabbar-actions\s*{[^}]*right:\s*84px;/s);
+    expect(css).toMatch(/\.right-dock-tabs\s*{[^}]*padding:\s*0 154px 0 8px;/s);
+    expect(css).toMatch(/\.right-dock-tabbar-actions\s*{[^}]*right:\s*118px;/s);
+    expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.right-dock-tabs\s*{[^}]*padding-right:\s*50px;/s);
+    expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.right-dock-tabbar-actions\s*{[^}]*right:\s*12px;/s);
     expect(css).toMatch(/\.environment-menu\s*{[^}]*position:\s*fixed;[^}]*top:\s*48px;[^}]*right:\s*16px;[^}]*width:\s*304px;/s);
     expect(css).toMatch(/\.app-shell\.right-panel-open\s+\.environment-menu\s*{[^}]*right:\s*calc\(var\(--right-sidebar-width, 416px\) \+ 16px\);/s);
     expect(css).toMatch(/\.top-bar-actions\s+button:focus\s*{[^}]*outline:\s*none;/s);

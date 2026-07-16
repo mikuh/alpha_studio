@@ -7894,6 +7894,7 @@ fn extract_tool_input(item: &Value) -> Option<String> {
             .or_else(|| item.get("args"))
             .map(|value| value.to_string())
     })
+    .or_else(|| extract_file_change_details(item))
 }
 
 fn extract_tool_output(item: &Value) -> Option<String> {
@@ -7911,6 +7912,15 @@ fn extract_tool_output(item: &Value) -> Option<String> {
         ],
     )
     .or_else(|| item.get("content").map(|value| value.to_string()))
+    .or_else(|| extract_file_change_details(item))
+}
+
+fn extract_file_change_details(item: &Value) -> Option<String> {
+    let changes = item.get("changes")?;
+    if changes.is_null() || changes.as_array().is_some_and(Vec::is_empty) {
+        return None;
+    }
+    serde_json::to_string(changes).ok()
 }
 
 fn extract_text_content(value: &Value) -> String {
@@ -8851,6 +8861,38 @@ mod tests {
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].event_type, "tool_failed");
         assert_eq!(failed[0].text.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn app_server_preserves_file_change_details() {
+        let mut streamed = HashSet::new();
+        let changes = serde_json::json!([
+            { "path": "/tmp/src/App.tsx", "kind": "update" },
+            { "path": "/tmp/src/styles.css", "kind": "update" }
+        ]);
+        let events = map_app_server_notification(
+            "item/completed",
+            &serde_json::json!({
+                "item": {
+                    "id": "edit-1",
+                    "type": "fileChange",
+                    "status": "completed",
+                    "changes": changes
+                }
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "tool_completed");
+        assert_eq!(events[0].title.as_deref(), Some("fileChange"));
+        let rendered_changes: Value = serde_json::from_str(
+            events[0].text.as_deref().expect("file change details"),
+        )
+        .unwrap();
+        assert_eq!(rendered_changes, changes);
     }
 
     #[test]

@@ -3168,6 +3168,19 @@ button {
   color: var(--accent);
 }
 
+.conv-unread-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.conv-row:hover .conv-unread-dot,
+.conv-row.menu-open .conv-unread-dot {
+  visibility: hidden;
+}
+
 .project-actions,
 .conv-actions {
   position: absolute;
@@ -5572,6 +5585,134 @@ details[open] > summary .event-chevron {
   word-break: break-word;
   max-height: 260px;
   overflow: auto;
+}
+
+/* File edits should explain what changed instead of opening into an empty row. */
+.file-edit-card {
+  margin: 6px 0 3px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-sidebar-inactive) 58%, var(--bg));
+}
+
+.file-edit-card-head,
+.file-edit-file {
+  display: flex;
+  align-items: center;
+}
+
+.file-edit-card-head {
+  min-height: 32px;
+  padding: 0 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.file-edit-card-head > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.file-edit-card-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.file-edit-card-stats em {
+  font-style: normal;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.file-edit-card-stats .added {
+  color: var(--success);
+}
+
+.file-edit-card-stats .deleted {
+  color: var(--warning);
+}
+
+.file-edit-files {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.file-edit-file {
+  min-height: 28px;
+  gap: 7px;
+  padding: 0 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.file-edit-file-path {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.file-edit-kind {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-elev-1);
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.file-edit-kind.add {
+  color: var(--success);
+}
+
+.file-edit-kind.delete {
+  color: var(--warning);
+}
+
+.file-edit-kind.update,
+.file-edit-kind.rename {
+  color: var(--control-accent);
+}
+
+.file-edit-diff,
+.file-edit-raw {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  padding: 9px 10px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.file-edit-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 10px;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.file-edit-empty svg {
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
 /* terminal output card — reads like an embedded terminal pane */
@@ -8971,7 +9112,8 @@ button.environment-row:hover {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 0 120px 0 8px;
+  /* Reserve room for the expand button plus the three global panel actions. */
+  padding: 0 154px 0 8px;
   overflow: visible;
 }
 
@@ -9050,11 +9192,21 @@ button.environment-row:hover {
 .right-dock-tabbar-actions {
   position: absolute;
   top: 7px;
-  right: 84px;
+  /* 12px page inset + 98px global action group + 8px visual gap. */
+  right: 118px;
   z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.app-shell.right-dock-expanded .right-dock-tabs {
+  /* Expanded mode has no neighboring global action group to reserve space for. */
+  padding-right: 50px;
+}
+
+.app-shell.right-dock-expanded .right-dock-tabbar-actions {
+  right: 12px;
 }
 
 .right-dock-expand-btn {
@@ -9874,113 +10026,6 @@ button.environment-row:hover {
 
 .side-chat-composer .composer-meta {
   justify-content: flex-start;
-}
-
-/* ---- Features sidebar ---- */
-.features-panel {
-  width: 100%;
-  min-height: 0;
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-}
-
-.features-panel-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 18px 23px;
-}
-
-.features-list {
-  width: min(100%, 536px);
-  flex: 0 0 auto;
-  min-height: unset;
-  overflow: visible;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 0;
-  transform: translateY(42px);
-}
-
-.feature-card {
-  min-height: 39px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--bg-elev-1);
-  color: var(--text);
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 0 9px 0 12px;
-  cursor: pointer;
-  text-align: left;
-  transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
-}
-
-.feature-card:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-
-.feature-card:disabled {
-  opacity: 0.62;
-  cursor: default;
-}
-
-.feature-card.active {
-  background: var(--bg-elev-1);
-}
-
-.feature-card-main {
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.feature-card-icon {
-  width: 16px;
-  height: 16px;
-  display: inline-grid;
-  place-items: center;
-  color: var(--text-muted);
-  margin: 0;
-  flex: 0 0 auto;
-}
-
-.feature-card-title {
-  min-width: 0;
-  font-size: 13px;
-  line-height: 1.2;
-  font-weight: 500;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.feature-card-key {
-  min-height: 20px;
-  max-width: 72px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0;
-  border-radius: 999px;
-  background: var(--bg-hover);
-  padding: 0 7px;
-  font-size: 11px;
-  line-height: 1;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  flex: 0 0 auto;
 }
 
 /* ---- Research workbench (投研工作台) ---- */
@@ -14838,7 +14883,6 @@ button.environment-row:hover {
     z-index: 130;
   }
 
-  .app-shell.features-panel-open .right-panel-resizer,
   .app-shell.coworkers-panel-open .right-panel-resizer {
     display: none;
   }
