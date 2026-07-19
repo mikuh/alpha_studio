@@ -1,8 +1,8 @@
 # Alpha Studio
 
-Alpha Studio is a source-available, noncommercial local coding workspace that wraps the OpenAI Codex CLI in a desktop-style UI.
+Alpha Studio is a source-available, noncommercial local GPT workspace in a desktop-style UI.
 
-This public edition keeps the core product general-purpose: chats, projects, local work directories, Codex event streaming, archive-first history management, settings, and Git workflows. Vertical domain packs are intentionally separated so commercial editions can extend the same shell without changing the public core.
+This public edition keeps the core product general-purpose: chats, projects, local work directories, GPT event streaming, archive-first history management, settings, and Git workflows. Vertical domain packs are intentionally separated so commercial editions can extend the same shell without changing the public core.
 
 ## License
 
@@ -16,7 +16,7 @@ This is a source-available noncommercial project, not an OSI-approved open sourc
 
 - Node.js and npm
 - Rust toolchain for Tauri development
-- OpenAI Codex CLI installed; authorize it from Alpha Studio with the Codex CLI device authorization button
+- GPT engine installed; authorize it from Alpha Studio with the GPT device authorization button
 - Git for repository features
 
 ## Development
@@ -66,17 +66,17 @@ The admin app now covers the commercial operating loop:
 - create and update customer tenants, balances, subscription dates, and machine limits
 - generate customer authorization codes for first-device activation by company name
 - configure upstream provider keys, model aliases, endpoint paths, prices, and markup
-- assign Codex subscription accounts to customers for monthly or yearly subscription access
+- assign GPT subscription accounts to customers for monthly or yearly subscription access
 - inspect audit logs and usage-ledger totals
 
 ## Product Shape
 
-- Codex-style chat UI with local CLI event streaming
+- GPT chat UI with local event streaming
 - Project-bound working directories
 - Archive-first conversations and projects
 - Git status, diff, stage, unstage, commit, branch, pull, and push
 - Settings sections for personal, integrations, coding, and archived content
-- Light-first visual design inspired by Codex settings screenshots
+- Light-first visual design for the GPT workspace
 
 ## Extension Model
 
@@ -92,4 +92,4 @@ The public core should stay domain-neutral and avoid embedding vertical commerci
 
 ## Notice
 
-Alpha Studio uses its own brand, text, icons, and assets. The UI is a Codex-style reference implementation intended to feel familiar to Codex users, but it does not copy Codex trademarks, logos, or proprietary assets.
+Alpha Studio uses its own brand, text, icons, and assets. The UI is a GPT workspace implementation and does not expose underlying engine branding to customers.

@@ -75,6 +75,8 @@ interface CodexAccount {
   id: string;
   tenantId?: string | null;
   tenantName?: string | null;
+  tenantIds?: string[];
+  tenantNames?: string[];
   email: string;
   loginSecretConfigured: boolean;
   loginSecretMask?: string | null;
@@ -158,7 +160,7 @@ const emptyModelForm = {
 
 const emptyCodexForm = {
   id: '',
-  tenantId: '',
+  tenantIds: [] as string[],
   email: '',
   loginSecret: '',
   loginHint: '',
@@ -172,7 +174,7 @@ const navItems: Array<[Tab, string]> = [
   ['overview', '总览'],
   ['tenants', '客户'],
   ['gateway', '模型网关'],
-  ['codex', 'Codex 账号'],
+  ['codex', 'GPT 账号'],
   ['audit', '审计'],
 ];
 
@@ -302,7 +304,10 @@ function App() {
       setCodexAccounts(codexData.accounts || []);
       setLogs(auditData.logs || []);
       setCodeForm((form) => ({ ...form, tenantId: selectExistingTenantId(loadedTenants, form.tenantId) }));
-      setCodexForm((form) => ({ ...form, tenantId: selectExistingTenantId(loadedTenants, form.tenantId) }));
+      setCodexForm((form) => ({
+        ...form,
+        tenantIds: form.tenantIds.filter((tenantId) => loadedTenants.some((tenant) => tenant.id === tenantId)),
+      }));
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败');
     } finally {
@@ -511,12 +516,11 @@ function App() {
         body: JSON.stringify({
           ...codexForm,
           id: codexForm.id || undefined,
-          tenantId: codexForm.tenantId || null,
           expiresAt: toIsoOrNull(codexForm.expiresAt),
         }),
       });
       setCodexForm(emptyCodexForm);
-      setNotice('Codex 账号已保存');
+      setNotice('GPT 账号已保存');
       await load();
     });
   };
@@ -529,27 +533,26 @@ function App() {
         body: JSON.stringify({
           ...form,
           status,
-          tenantId: form.tenantId || null,
           expiresAt: toIsoOrNull(form.expiresAt),
         }),
       });
-      setNotice(status === 'active' ? 'Codex 账号已启用' : 'Codex 账号已停用');
+      setNotice(status === 'active' ? 'GPT 账号已启用' : 'GPT 账号已停用');
       await load();
     });
   };
 
   const deleteCodexAccount = async (account: CodexAccount) => {
     setConfirmDialog({
-      title: '删除 Codex 账号',
+      title: '删除 GPT 账号',
       message: `确定删除 ${account.email}？`,
-      detail: account.tenantName ? `当前分配客户：${account.tenantName}` : '当前未分配给客户。',
+      detail: codexAccountTenantNames(account).length > 0 ? `当前分配客户：${codexAccountTenantNames(account).join('、')}` : '当前未分配给客户。',
       confirmLabel: '删除账号',
       onConfirm: () => mutate(async () => {
         await api(`/api/admin/codex-accounts/${encodeURIComponent(account.id)}`, token, {
           method: 'DELETE',
         });
         if (codexForm.id === account.id) setCodexForm(emptyCodexForm);
-        setNotice('Codex 账号已删除');
+        setNotice('GPT 账号已删除');
         await load();
       }),
     });
@@ -804,10 +807,10 @@ function TenantForm({ form, setForm, onSubmit, loading }: {
         <Field label="API 到期时间" type="datetime-local" value={form.subscriptionExpiresAt} onChange={(subscriptionExpiresAt) => setForm({ ...form, subscriptionExpiresAt })} />
         <label className="check-row">
           <input type="checkbox" checked={form.codexSubscriptionEnabled} onChange={(event) => setForm({ ...form, codexSubscriptionEnabled: event.target.checked })} />
-          启用 Codex 订阅服务
+          启用 GPT 订阅服务
         </label>
-        <Select label="Codex 套餐" value={form.codexSubscriptionPlan} onChange={(codexSubscriptionPlan) => setForm({ ...form, codexSubscriptionPlan })} options={['monthly', 'yearly']} />
-        <Field label="Codex 到期时间" type="datetime-local" value={form.codexSubscriptionExpiresAt} onChange={(codexSubscriptionExpiresAt) => setForm({ ...form, codexSubscriptionExpiresAt })} />
+        <Select label="GPT 套餐" value={form.codexSubscriptionPlan} onChange={(codexSubscriptionPlan) => setForm({ ...form, codexSubscriptionPlan })} options={['monthly', 'yearly']} />
+        <Field label="GPT 到期时间" type="datetime-local" value={form.codexSubscriptionExpiresAt} onChange={(codexSubscriptionExpiresAt) => setForm({ ...form, codexSubscriptionExpiresAt })} />
       </div>
       <div className="form-actions">
         <button type="submit" disabled={loading}>{loading ? '保存中...' : '保存客户'}</button>
@@ -989,7 +992,7 @@ function modelFormFromRoute(model: ModelRoute): typeof emptyModelForm {
 function codexFormFromAccount(account: CodexAccount): typeof emptyCodexForm {
   return {
     id: account.id,
-    tenantId: account.tenantId || '',
+    tenantIds: codexAccountTenantIds(account),
     email: account.email,
     loginSecret: '',
     loginHint: account.loginHint,
@@ -998,6 +1001,14 @@ function codexFormFromAccount(account: CodexAccount): typeof emptyCodexForm {
     seatLimit: account.seatLimit,
     expiresAt: toLocalInput(account.expiresAt),
   };
+}
+
+function codexAccountTenantIds(account: CodexAccount): string[] {
+  return account.tenantIds?.length ? account.tenantIds : account.tenantId ? [account.tenantId] : [];
+}
+
+function codexAccountTenantNames(account: CodexAccount): string[] {
+  return account.tenantNames?.length ? account.tenantNames : account.tenantName ? [account.tenantName] : [];
 }
 
 function selectExistingTenantId(tenants: Tenant[], tenantId: string) {
@@ -1148,7 +1159,7 @@ function CodexWorkspace({
     const matchesStatus = status === 'all' || account.status === status;
     const haystack = [
       account.email,
-      account.tenantName || '',
+      ...codexAccountTenantNames(account),
       account.loginHint,
       account.plan,
       account.id,
@@ -1156,14 +1167,14 @@ function CodexWorkspace({
     return matchesStatus && (!normalizedQuery || haystack.includes(normalizedQuery));
   });
   const activeCount = accounts.filter((account) => account.status === 'active').length;
-  const assignedCount = accounts.filter((account) => account.tenantId).length;
+  const assignedCount = accounts.filter((account) => codexAccountTenantIds(account).length > 0).length;
 
   return (
     <div className="management-layout codex-layout">
       <section className="panel management-list">
         <div className="panel-head">
           <div>
-            <h2>Codex 账号池</h2>
+            <h2>GPT 账号池</h2>
             <span>{accounts.length} 个账号，{activeCount} 个可用，{assignedCount} 个已分配</span>
           </div>
           <button type="button" onClick={() => setForm(emptyCodexForm)}>新增账号</button>
@@ -1175,14 +1186,14 @@ function CodexWorkspace({
         </div>
         <div className="workspace-toolbar">
           <input
-            aria-label="搜索 Codex 账号"
+            aria-label="搜索 GPT 账号"
             className="toolbar-input"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="搜索邮箱、客户或登录提示"
           />
           <select
-            aria-label="筛选 Codex 状态"
+            aria-label="筛选 GPT 状态"
             className="toolbar-select"
             value={status}
             onChange={(event) => setStatus(event.target.value)}
@@ -1309,12 +1320,26 @@ function CodexAccountForm({ form, setForm, tenants, onSubmit, loading }: {
   return (
     <form className="panel form-panel" onSubmit={onSubmit}>
       <div className="panel-head compact">
-        <h2>{form.id ? '编辑 Codex 账号' : '新增 Codex 账号'}</h2>
+        <h2>{form.id ? '编辑 GPT 账号' : '新增 GPT 账号'}</h2>
         {form.id && <button type="button" className="secondary" onClick={() => setForm(emptyCodexForm)}>新建</button>}
       </div>
       <div className="form-grid">
-        <Select label="分配客户" value={form.tenantId} onChange={(tenantId) => setForm({ ...form, tenantId })} options={['', ...tenants.map((tenant) => tenant.id)]} optionLabels={{ '': '未分配', ...Object.fromEntries(tenants.map((tenant) => [tenant.id, tenant.name])) }} />
-        <Field label="Codex 登录邮箱" value={form.email} onChange={(email) => setForm({ ...form, email })} />
+        <label>
+          <span>分配客户（可多选）</span>
+          <select
+            multiple
+            aria-label="分配客户（可多选）"
+            value={form.tenantIds}
+            onChange={(event) => setForm({
+              ...form,
+              tenantIds: Array.from(event.currentTarget.selectedOptions, (option) => option.value),
+            })}
+          >
+            {tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
+          </select>
+          <small>按住 Command（macOS）或 Ctrl（Windows）可选择多个客户；不选择表示暂不分配。</small>
+        </label>
+        <Field label="GPT 登录邮箱" value={form.email} onChange={(email) => setForm({ ...form, email })} />
         <Field label="登录凭据/一次性说明" type="password" value={form.loginSecret} onChange={(loginSecret) => setForm({ ...form, loginSecret })} placeholder="留空保留原值" />
         <Field label="登录提示" value={form.loginHint} onChange={(loginHint) => setForm({ ...form, loginHint })} />
         <Select label="套餐" value={form.plan} onChange={(plan) => setForm({ ...form, plan })} options={['monthly', 'yearly']} />
@@ -1338,7 +1363,7 @@ function TenantTable({ tenants, onEdit, onDelete, onManageCodes, selectedTenantI
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>客户</th><th>设备</th><th>余额</th><th>Codex</th><th>状态</th><th /></tr></thead>
+        <thead><tr><th>客户</th><th>设备</th><th>余额</th><th>GPT</th><th>状态</th><th /></tr></thead>
         <tbody>
           {tenants.map((tenant) => (
             <tr className={tenant.id === selectedTenantId ? 'selected-row' : ''} key={tenant.id}>
@@ -1463,7 +1488,7 @@ function CodexAccountTable({ accounts, onEdit, onDelete, onSetStatus }: {
   onDelete: (account: CodexAccount) => void;
   onSetStatus: (account: CodexAccount, status: string) => void;
 }) {
-  if (accounts.length === 0) return <div className="empty">暂无 Codex 账号。</div>;
+  if (accounts.length === 0) return <div className="empty">暂无 GPT 账号。</div>;
   return (
     <div className="table-wrap">
       <table>
@@ -1472,7 +1497,7 @@ function CodexAccountTable({ accounts, onEdit, onDelete, onSetStatus }: {
           {accounts.map((account) => (
             <tr key={account.id}>
               <td><strong>{account.email}</strong><span>{account.loginHint || account.id}</span></td>
-              <td>{account.tenantName || '未分配'}</td>
+              <td>{codexAccountTenantNames(account).length > 0 ? codexAccountTenantNames(account).join('、') : '未分配'}</td>
               <td>{account.plan} / {formatDate(account.expiresAt)}</td>
               <td>{account.loginSecretConfigured ? account.loginSecretMask : '未配置'}</td>
               <td><Status value={account.status} /></td>
@@ -1637,7 +1662,7 @@ function tabTitle(tab: Tab) {
     overview: '运营总览',
     tenants: '客户与授权',
     gateway: '模型网关',
-    codex: 'Codex 订阅账号',
+    codex: 'GPT 订阅账号',
     audit: '审计日志',
   }[tab];
 }
@@ -1647,7 +1672,7 @@ function tabSubtitle(tab: Tab) {
     overview: '客户、设备、模型网关和用量账本状态。',
     tenants: '维护基金公司客户，并在客户上下文中生成和管理授权码。',
     gateway: '在后台配置上游 key、模型别名、价格和加价规则。',
-    codex: '管理我们提供给客户使用的 Codex 订阅账号。',
+    codex: '管理我们提供给客户使用的 GPT 订阅账号。',
     audit: '查看资金、授权、模型和账号配置变更。',
   }[tab];
 }

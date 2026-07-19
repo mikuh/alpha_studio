@@ -118,6 +118,8 @@ const codexAccounts = [
     id: 'codex_alpha',
     tenantId: 'tenant_alpha',
     tenantName: 'Alpha Fund',
+    tenantIds: ['tenant_alpha'],
+    tenantNames: ['Alpha Fund'],
     email: 'codex-alpha@example.com',
     loginSecretConfigured: true,
     loginSecretMask: 'one-******cret',
@@ -203,16 +205,39 @@ describe('admin model gateway', () => {
   it('deletes a Codex account from the account pool', async () => {
     await import('./main');
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Codex 账号' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'GPT 账号' }));
     await screen.findByText('codex-alpha@example.com');
 
     fireEvent.click(screen.getByRole('button', { name: '删除账号' }));
-    const dialog = await screen.findByRole('dialog', { name: '删除 Codex 账号' });
+    const dialog = await screen.findByRole('dialog', { name: '删除 GPT 账号' });
     fireEvent.click(within(dialog).getByRole('button', { name: '删除账号' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/admin/codex-accounts/codex_alpha',
       expect.objectContaining({ method: 'DELETE' }),
+    ));
+  });
+
+  it('assigns one GPT account to multiple customers', async () => {
+    currentTenants = [tenants[0], betaTenant];
+    await import('./main');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'GPT 账号' }));
+    await screen.findByText('codex-alpha@example.com');
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+
+    const customerSelect = screen.getByLabelText('分配客户（可多选）') as HTMLSelectElement;
+    customerSelect.options[0].selected = true;
+    customerSelect.options[1].selected = true;
+    fireEvent.change(customerSelect);
+    fireEvent.click(screen.getByRole('button', { name: '保存账号' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/admin/codex-accounts',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"tenantIds":["tenant_alpha","tenant_beta"]'),
+      }),
     ));
   });
 

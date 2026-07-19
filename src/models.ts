@@ -39,8 +39,8 @@ export const BUILTIN_MODEL_PROFILES: ModelProfile[] = [
   { id: 'gpt-5.5', label: 'GPT-5.5', providerId: 'openai', model: 'gpt-5.5', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
   { id: 'gpt-5.4', label: 'GPT-5.4', providerId: 'openai', model: 'gpt-5.4', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
   { id: 'gpt-5.4-mini', label: 'GPT-5.4-Mini', providerId: 'openai', model: 'gpt-5.4-mini', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
-  { id: 'gpt-5.3-codex', label: 'GPT-5.3-Codex', providerId: 'openai', model: 'gpt-5.3-codex', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
-  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Codex-Spark', providerId: 'openai', model: 'gpt-5.3-codex-spark', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
+  { id: 'gpt-5.3-codex', label: 'GPT-5.3', providerId: 'openai', model: 'gpt-5.3-codex', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
+  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Spark', providerId: 'openai', model: 'gpt-5.3-codex-spark', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
   { id: 'gpt-5.2', label: 'GPT-5.2', providerId: 'openai', model: 'gpt-5.2', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
 ];
 
@@ -60,7 +60,7 @@ export function modelProfilesFromCodexCatalog(
     .filter((item) => !item.hidden && item.id.trim() && item.displayName.trim())
     .map((item) => ({
       id: item.id.trim(),
-      label: item.displayName.trim(),
+      label: publicModelLabel(item.displayName),
       providerId: 'openai',
       model: item.id.trim(),
       wireApi: 'responses' as const,
@@ -72,6 +72,15 @@ export function modelProfilesFromCodexCatalog(
       supportedReasoningEfforts: item.supportedReasoningEfforts.map((effort) => ({ ...effort })),
     }));
   return dynamic.length > 0 ? dynamic : defaultModelProfiles();
+}
+
+export function publicModelLabel(value: string): string {
+  return value
+    .trim()
+    .replace(/\bcodex\b/gi, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 export interface ReconciledModelSelection {

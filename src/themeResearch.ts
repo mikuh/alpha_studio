@@ -122,6 +122,9 @@ export interface PremarketThemeRun {
   risks: string[];
   sourceNotes: string[];
   reportMarkdown: string;
+  sourceConversationId?: string;
+  sourceMessageId?: string;
+  sourceBoundAt?: string;
 }
 
 export interface PremarketThemePromptInput {
@@ -795,6 +798,22 @@ export function normalizePremarketThemeRun(value: unknown): PremarketThemeRun | 
     importedAt: stringValue(raw.importedAt || raw.imported_at) || parsed.run.importedAt,
     contentHash: stringValue(raw.contentHash || raw.content_hash) || parsed.run.contentHash,
     reportMarkdown: storedMarkdown,
+    sourceConversationId: stringValue(raw.sourceConversationId || raw.source_conversation_id) || undefined,
+    sourceMessageId: stringValue(raw.sourceMessageId || raw.source_message_id) || undefined,
+    sourceBoundAt: stringValue(raw.sourceBoundAt || raw.source_bound_at) || undefined,
+  };
+}
+
+export function bindPremarketThemeRun(
+  run: PremarketThemeRun,
+  sourceConversationId: string,
+  sourceMessageId?: string,
+): PremarketThemeRun {
+  return {
+    ...run,
+    sourceConversationId,
+    sourceMessageId,
+    sourceBoundAt: new Date().toISOString(),
   };
 }
 
@@ -813,14 +832,18 @@ export function loadPremarketThemeRuns(): PremarketThemeRun[] {
 
 export function savePremarketThemeRun(run: PremarketThemeRun): PremarketThemeRun[] {
   if (typeof window === 'undefined') return [run];
+  const existingRuns = loadPremarketThemeRuns();
+  const storedRun = existingRuns.some((item) => item.id === run.id && item.contentHash !== run.contentHash)
+    ? { ...run, id: `${run.id}-${run.contentHash.slice(0, 10)}` }
+    : run;
   const next = [
-    run,
-    ...loadPremarketThemeRuns().filter((item) => {
-      if (item.contentHash === run.contentHash || item.id === run.id) return false;
-      const replacesLegacyDraft = run.sourceSchema === PREMARKET_THEME_SCHEMA
+    storedRun,
+    ...existingRuns.filter((item) => {
+      if (item.contentHash === storedRun.contentHash || item.id === storedRun.id) return false;
+      const replacesLegacyDraft = storedRun.sourceSchema === PREMARKET_THEME_SCHEMA
         && item.sourceSchema === PREMARKET_THEME_SCHEMA_V1
         && item.reportMode === 'legacy_import'
-        && item.tradeDate === run.tradeDate;
+        && item.tradeDate === storedRun.tradeDate;
       return !replacesLegacyDraft;
     }),
   ];

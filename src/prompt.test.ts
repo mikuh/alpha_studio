@@ -46,7 +46,7 @@ describe('finance research domain', () => {
     });
 
     expect(instructions).toContain('原生 skill input');
-    expect(instructions).toContain('CLI 载入的 SKILL.md');
+    expect(instructions).toContain('本地引擎载入的 SKILL.md');
     expect(instructions).toContain('alpha.premarket_theme.v2');
     expect(instructions).toContain('alpha-studio-tracking.json');
     expect(instructions).toContain('自动入库是完成条件');
@@ -162,6 +162,9 @@ describe('coworker orchestration protocol', () => {
     expect(instructions).toContain('coworker-notes');
     expect(instructions).toContain('唯一长文出口');
     expect(instructions).toContain('最终《纪要》文件的路径');
+    expect(instructions).toContain('任一同事返回“已完成”只代表子任务完成');
+    expect(instructions).toContain('结构化协议优先');
+    expect(instructions).toContain('JSON 不能只写入文件');
   });
 
   it('lets the PM deputy own the merged conclusion when summoned', () => {

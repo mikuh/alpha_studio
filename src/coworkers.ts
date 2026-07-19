@@ -222,6 +222,18 @@ function workflowPrompt(...lines: string[]): string {
 
 export const COWORKER_WORKFLOW_PRESETS: readonly CoworkerWorkflowPreset[] = [
   {
+    id: 'theme-decision-meeting',
+    title: '主题/标的决策会',
+    description: '围绕日报中的主题或标的，由主线、风险和基金经理副官形成研究建议。',
+    coworkerIds: ['mainline', 'risk', 'pm_deputy'],
+    prompt: workflowPrompt(
+      '请围绕指定日报主题或标的召开决策会。本流程只形成研究建议，不代表真实下单或正式风控通过。',
+      '同事分工:① 市场策略官判断主线地位、生命周期、催化、持续性和证伪条件;⑦ 风险控制官评估组合暴露、拥挤、流动性、事件风险和数据缺口;⑧ 基金经理副官汇总分歧并形成研究动作、触发条件、失效条件和建议卡草稿。',
+      '固定输出结构:一、研究对象与数据时点;二、①主线判断;三、⑦AI风险分析;四、⑧综合结论;五、分歧;六、行动倾向;七、触发与失效条件;八、结构化 JSON。',
+      '最终结果必须遵守调用方提供的 alpha.joint_research.v1 结构化输出协议。',
+    ),
+  },
+  {
     id: 'premarket-committee',
     title: '盘前投资委员会',
     description: '开盘前统一市场主线、题材机会、情绪风险和行动清单。',

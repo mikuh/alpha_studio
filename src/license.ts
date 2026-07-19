@@ -1,8 +1,9 @@
-import { defaultModelProfiles, type ModelProfile } from './models';
+import { defaultModelProfiles, publicModelLabel, type ModelProfile } from './models';
 
 const SESSION_KEY = 'alpha:client-license-session';
 const DEVICE_FINGERPRINT_KEY = 'alpha:device-fingerprint';
 export const ALPHA_GATEWAY_PROVIDER_ID = 'alpha-gateway';
+export const ENTERPRISE_AUTHORIZATION_CHECK_INTERVAL_MS = 5 * 24 * 60 * 60 * 1000;
 
 export interface ClientTenant {
   id: string;
@@ -28,6 +29,24 @@ export interface ClientDevice {
   leaseExpiresAt: string;
 }
 
+export interface ClientManagedDevice {
+  id: string;
+  name: string;
+  status: 'active' | 'revoked' | string;
+  isCurrent: boolean;
+  isAdministrator: boolean;
+  createdAt: string;
+  lastSeenAt?: string | null;
+  leaseExpiresAt?: string | null;
+}
+
+export interface ClientDeviceSummary {
+  activeDevices: number;
+  maxDevices: number;
+  isAdministrator: boolean;
+  devices: ClientManagedDevice[];
+}
+
 export interface ClientModel {
   id: string;
   label: string;
@@ -39,7 +58,6 @@ export interface ClientModel {
 export interface ClientCodexAccount {
   id: string;
   email: string;
-  loginSecret?: string;
   loginHint?: string;
   plan: string;
   seatLimit: number;
@@ -49,6 +67,7 @@ export interface ClientCodexAccount {
 export interface ClientLicenseSession {
   apiBaseUrl: string;
   activatedAt: number;
+  lastValidatedAt?: number;
   tenant: ClientTenant;
   user: ClientUser;
   device: ClientDevice;
@@ -188,6 +207,7 @@ export async function activateClient(input: ClientActivateInput): Promise<Client
     ...data,
     apiBaseUrl,
     activatedAt: Date.now(),
+    lastValidatedAt: Date.now(),
   };
   saveClientLicenseSession(session);
   return session;
@@ -208,6 +228,7 @@ export async function renewClientLease(session: ClientLicenseSession): Promise<C
   });
   const renewed = {
     ...session,
+    lastValidatedAt: Date.now(),
     device: {
       ...session.device,
       leaseExpiresAt: data.leaseExpiresAt,
@@ -218,6 +239,76 @@ export async function renewClientLease(session: ClientLicenseSession): Promise<C
   };
   saveClientLicenseSession(renewed);
   return renewed;
+}
+
+export async function validateCodexAuthorization(
+  session: ClientLicenseSession,
+  email: string,
+): Promise<{ authorized: true; accountId: string; email: string }> {
+  return alphaFetch(session.apiBaseUrl, '/api/client/codex-authorization', {
+    method: 'POST',
+    body: JSON.stringify({
+      tenantId: session.tenant.id,
+      deviceId: session.device.id,
+      fingerprint: getOrCreateDeviceFingerprint(),
+      email: email.trim(),
+    }),
+  }, { retryLoopback: true });
+}
+
+export function isCodexAccountAllowed(
+  session: ClientLicenseSession | null | undefined,
+  email: string | null | undefined,
+): boolean {
+  const normalized = email?.trim().toLowerCase();
+  return Boolean(
+    session?.tenant.codexSubscriptionEnabled
+    && normalized
+    && session.codexAccounts.some((account) => account.email.trim().toLowerCase() === normalized),
+  );
+}
+
+export function isEnterpriseAuthorizationFresh(
+  session: ClientLicenseSession,
+  now = Date.now(),
+): boolean {
+  return enterpriseAuthorizationValidUntil(session) > now + 15_000;
+}
+
+export function enterpriseAuthorizationValidUntil(session: ClientLicenseSession): number {
+  const validatedAt = session.lastValidatedAt ?? session.activatedAt;
+  const leaseExpiresAt = new Date(session.device.leaseExpiresAt).getTime();
+  if (!Number.isFinite(validatedAt) || !Number.isFinite(leaseExpiresAt)) return 0;
+  return Math.min(
+    validatedAt + ENTERPRISE_AUTHORIZATION_CHECK_INTERVAL_MS,
+    leaseExpiresAt,
+  );
+}
+
+export async function fetchClientDevices(session: ClientLicenseSession): Promise<ClientDeviceSummary> {
+  return alphaFetch<ClientDeviceSummary>(session.apiBaseUrl, '/api/client/devices', {
+    method: 'POST',
+    body: JSON.stringify({
+      tenantId: session.tenant.id,
+      deviceId: session.device.id,
+      fingerprint: getOrCreateDeviceFingerprint(),
+    }),
+  }, { retryLoopback: true });
+}
+
+export async function revokeClientDevice(
+  session: ClientLicenseSession,
+  targetDeviceId: string,
+): Promise<ClientDeviceSummary> {
+  return alphaFetch<ClientDeviceSummary>(session.apiBaseUrl, '/api/client/devices/revoke', {
+    method: 'POST',
+    body: JSON.stringify({
+      tenantId: session.tenant.id,
+      deviceId: session.device.id,
+      fingerprint: getOrCreateDeviceFingerprint(),
+      targetDeviceId,
+    }),
+  }, { retryLoopback: true });
 }
 
 export async function createGatewayRun(modelId: string, budgetYuan = 5): Promise<GatewayRunConfig> {
@@ -256,7 +347,7 @@ export function modelProfilesFromClientLicense(
   session: ClientLicenseSession,
   availableSubscriptionProfiles: readonly ModelProfile[] = defaultModelProfiles(),
 ): ModelProfile[] {
-  const subscriptionProfiles = session.tenant.codexSubscriptionEnabled
+  const subscriptionProfiles = session.tenant.codexSubscriptionEnabled && session.codexAccounts.length > 0
     ? availableSubscriptionProfiles.map((profile) => ({ ...profile }))
     : [];
   const occupied = new Set(subscriptionProfiles.map((profile) => profile.id));
@@ -267,7 +358,7 @@ export function modelProfilesFromClientLicense(
       occupied.add(id);
       return {
         id,
-        label: model.label,
+        label: publicModelLabel(model.label),
         providerId: ALPHA_GATEWAY_PROVIDER_ID,
         model: model.id,
         wireApi: 'responses' as const,
@@ -318,7 +409,10 @@ async function alphaFetch<T>(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(apiErrorMessage(text) || `Alpha Studio API ${response.status}`);
+    throw new AlphaApiError(
+      apiErrorMessage(text) || `Alpha Studio API ${response.status}`,
+      response.status,
+    );
   }
 
   try {
@@ -326,6 +420,20 @@ async function alphaFetch<T>(
   } catch {
     throw new Error(`Alpha Studio 服务返回了无效数据（${path}）。`);
   }
+}
+
+export class AlphaApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'AlphaApiError';
+    this.status = status;
+  }
+}
+
+export function isClientAuthorizationError(error: unknown): boolean {
+  return error instanceof AlphaApiError && (error.status === 401 || error.status === 403);
 }
 
 function apiBaseUrlCandidates(value: string): string[] {

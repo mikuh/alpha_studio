@@ -11,6 +11,7 @@ import {
   CONTEXT_COMPACTION_TOOL_TITLE,
 } from './codexEvents';
 import { buildCodingInstructions, buildReviewPrompt } from './prompt';
+import { coworkerSelectionsByIds } from './coworkers';
 import { checkCodex, isTauriRuntime, listCodexModels, localTextFileRead, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
@@ -19,10 +20,25 @@ import {
   ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
   PREMARKET_THEME_IMPORT_EVENT,
   automaticPremarketThemeImportError,
+  bindPremarketThemeRun,
   loadPremarketThemeRuns,
   parsePremarketThemeResult,
   savePremarketThemeRun,
+  savePremarketThemeRuns,
 } from './themeResearch';
+import {
+  buildJointResearchEvidenceRepairPrompt,
+  buildJointResearchSynthesisPrompt,
+  failJointResearch,
+  hydrateDailyDecisionState,
+  ingestJointResearchEvidence,
+  ingestJointResearchResult,
+  ingestRiskAssessmentResult,
+  loadDailyDecisionState,
+  markOutdatedRecommendations,
+  requestJointResearchEvidenceRepair,
+  requestJointResearchSynthesis,
+} from './dailyDecision';
 import {
   THEME_MONITOR_EVENT_SCHEMA,
   THEME_REVIEW_SCHEMA,
@@ -32,6 +48,7 @@ import {
 import {
   ALPHA_GATEWAY_PROVIDER_ID,
   createGatewayRun,
+  isCodexAccountAllowed,
   loadClientLicenseSession,
   modelProfilesFromClientLicense,
   type ClientLicenseSession,
@@ -869,10 +886,20 @@ export const useChatStore = create<ChatState>()(
       setClientLicenseSession: (session) => {
         const state = get();
         const modelProfiles = modelProfilesForCurrentLicense(session, state.modelProfiles, state.codexModelCatalog);
+        const codexStatus = state.codexStatus?.loggedIn && !isCodexAccountAllowed(session, state.codexStatus.accountEmail)
+          ? {
+              ...state.codexStatus,
+              loggedIn: false,
+              error: state.codexStatus.accountEmail
+                ? `当前 GPT 登录账号 ${state.codexStatus.accountEmail} 未由企业管理后台授权。`
+                : '无法识别当前 GPT 登录账号，请重新授权。',
+            }
+          : state.codexStatus;
         const preserve = state.codexModelCatalog === null && session?.tenant.codexSubscriptionEnabled !== false && state.selectedModelProfileId.trim().length > 0 && !modelProfiles.some((p) => p.id === state.selectedModelProfileId);
         const selection = preserve ? { selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort } : reconcileModelSelection({ profiles: modelProfiles, selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort, previousSelectedProfile: state.modelProfiles.find((p) => p.id === state.selectedModelProfileId) });
         set({
           clientLicenseSession: session,
+          codexStatus,
           modelProfiles,
           ...selection,
         });
@@ -898,7 +925,7 @@ export const useChatStore = create<ChatState>()(
         set({ isRefreshingCodexModels: true, codexModelCatalogError: null });
         try {
           const catalog = await listCodexModels(forceRefetch);
-          if (!catalog.length) throw new Error('Codex app-server returned no visible valid models.');
+          if (!catalog.length) throw new Error('GPT 服务未返回可用模型。');
           set((state) => {
             const previous = state.modelProfiles.find((p) => p.id === state.selectedModelProfileId);
             const modelProfiles = modelProfilesForCurrentLicense(state.clientLicenseSession, state.modelProfiles, catalog);
@@ -918,7 +945,16 @@ export const useChatStore = create<ChatState>()(
         const previous = get().codexStatus;
         set({ isCheckingCodex: true, error: null });
         try {
-          const status = await checkCodex();
+          const checked = await checkCodex();
+          const status: CodexStatus = checked.loggedIn && !isCodexAccountAllowed(get().clientLicenseSession, checked.accountEmail)
+            ? {
+                ...checked,
+                loggedIn: false,
+                error: checked.accountEmail
+                  ? `当前 GPT 登录账号 ${checked.accountEmail} 未由企业管理后台授权。`
+                  : '无法识别当前 GPT 登录账号，请重新授权。',
+              }
+            : checked;
           if (!status.loggedIn) {
             set((state) => { const profiles = modelProfilesForCurrentLicense(state.clientLicenseSession, state.modelProfiles, null); const selectable = profiles.some(p => !p.builtIn) ? profiles.filter(p => !p.builtIn) : profiles; return { codexStatus: status, isCheckingCodex: false, codexModelCatalog: null, modelProfiles: profiles, ...reconcileModelSelection({ profiles: selectable, selectedModelProfileId: state.selectedModelProfileId, reasoningEffort: state.reasoningEffort }) }; });
             return;
@@ -1313,19 +1349,24 @@ export const useChatStore = create<ChatState>()(
         const completedConversation = event.type === 'completed' && event.conversationId
           ? get().conversations.find((item) => item.id === event.conversationId)
           : undefined;
-        for (const conversationId of Array.from(new Set(readyConversationIds))) {
-          startNextQueuedMessage(conversationId);
-        }
         if (completedConversation) {
           const conversation = completedConversation;
           const assistant = [...(conversation?.messages ?? [])].reverse().find((message) => message.role === 'assistant');
           const text = assistant ? messageBlocksToText(assistant.blocks) : '';
+          const visibleAssistantText = assistant?.blocks
+            .filter((block) => block.type === 'text')
+            .map((block) => block.content)
+            .join('\n\n') ?? '';
           const latestUser = [...conversation.messages].reverse().find((message) => message.role === 'user');
           const dailyThemeTurn = latestUser?.selectedSkill?.id === ALPHA_STUDIO_DAILY_THEME_SKILL_ID
             || Boolean(latestUser?.blocks.some((block) => block.type === 'text' && block.content.includes(ALPHA_STUDIO_DAILY_THEME_SKILL_ID)));
           if (dailyThemeTurn && assistant) {
             void parseDailyThemeReportCompletion(assistant.blocks).then((parsed) => {
-              if (parsed.ok && parsed.run) savePremarketThemeRun(parsed.run);
+              if (parsed.ok && parsed.run) {
+                const bound = bindPremarketThemeRun(parsed.run, conversation.id, assistant.id);
+                savePremarketThemeRun(bound);
+                markOutdatedRecommendations(conversation.id, bound.contentHash);
+              }
               if (typeof window !== 'undefined') {
                 window.dispatchEvent(new CustomEvent(PREMARKET_THEME_IMPORT_EVENT, {
                   detail: parsed.ok
@@ -1336,7 +1377,11 @@ export const useChatStore = create<ChatState>()(
             });
           } else if (text.includes('alpha.premarket_theme.v1') || text.includes('alpha.premarket_theme.v2')) {
             const parsed = parsePremarketThemeResult(text);
-            if (parsed.ok && parsed.run) savePremarketThemeRun(parsed.run);
+            if (parsed.ok && parsed.run && assistant) {
+              const bound = bindPremarketThemeRun(parsed.run, conversation.id, assistant.id);
+              savePremarketThemeRun(bound);
+              markOutdatedRecommendations(conversation.id, bound.contentHash);
+            }
             if (typeof window !== 'undefined') {
               window.dispatchEvent(new CustomEvent(PREMARKET_THEME_IMPORT_EVENT, {
                 detail: parsed.ok
@@ -1351,6 +1396,58 @@ export const useChatStore = create<ChatState>()(
           if (text.includes(THEME_REVIEW_SCHEMA)) {
             ingestThemeReviewResult(text, loadPremarketThemeRuns());
           }
+          const runningJointResearch = loadDailyDecisionState().jointResearchRuns.find((run) => run.conversationId === conversation.id && (run.status === 'pending' || run.status === 'running'));
+          if (assistant && runningJointResearch) {
+            if (runningJointResearch.phase === 'analyst_research') {
+              const parsedEvidence = ingestJointResearchEvidence(visibleAssistantText, conversation.id, assistant.id);
+              if (parsedEvidence.ok) {
+                const synthesisRun = loadDailyDecisionState().jointResearchRuns.find((run) => run.id === runningJointResearch.id);
+                if (synthesisRun) {
+                  void get().sendMessageToConversation(
+                    conversation.id,
+                    buildJointResearchSynthesisPrompt(synthesisRun),
+                    undefined,
+                    undefined,
+                    coworkerSelectionsByIds(['pm_deputy']),
+                  );
+                }
+              } else if ((runningJointResearch.evidenceRepairAttempt ?? 0) < 1) {
+                const repairRun = requestJointResearchEvidenceRepair(runningJointResearch.id, parsedEvidence.error || '①⑦证据包无效。');
+                if (repairRun) {
+                  void get().sendMessageToConversation(
+                    conversation.id,
+                    buildJointResearchEvidenceRepairPrompt(repairRun, parsedEvidence.error || '①⑦证据包无效。'),
+                  );
+                }
+              } else {
+                failJointResearch(runningJointResearch.id, `${parsedEvidence.error || '①⑦证据包无效。'} 已自动修复一次，仍未通过第一阶段验收。`);
+              }
+            } else {
+              const parsed = ingestJointResearchResult(visibleAssistantText, conversation.id, assistant.id);
+              if (!parsed.ok) {
+                if ((runningJointResearch.synthesisAttempt ?? 0) < 1) {
+                  const synthesisRun = requestJointResearchSynthesis(runningJointResearch.id, parsed.error || '⑧号结构化结果无效。');
+                  if (synthesisRun) {
+                    void get().sendMessageToConversation(
+                      conversation.id,
+                      buildJointResearchSynthesisPrompt(synthesisRun, parsed.error || '⑧号结构化结果无效。'),
+                      undefined,
+                      undefined,
+                      coworkerSelectionsByIds(['pm_deputy']),
+                    );
+                  }
+                } else {
+                  failJointResearch(runningJointResearch.id, `${parsed.error || '⑧号结构化结果无效。'} 已自动请求⑧修复一次，仍未通过第二阶段验收。`);
+                }
+              }
+            }
+          }
+          if (visibleAssistantText.includes('alpha.recommendation_risk.v1')) {
+            ingestRiskAssessmentResult(visibleAssistantText, conversation.id);
+          }
+        }
+        for (const conversationId of Array.from(new Set(readyConversationIds))) {
+          startNextQueuedMessage(conversationId);
         }
       },
       };
@@ -1398,6 +1495,9 @@ if (isTauriRuntime()) {
 async function hydrateChatFromLocalStore(): Promise<void> {
   try {
     const snapshot = await loadLocalStoreSnapshot();
+    if (snapshot?.premarketThemeRuns?.length) {
+      savePremarketThemeRuns(snapshot.premarketThemeRuns as import('./themeResearch').PremarketThemeRun[]);
+    }
     if (snapshot?.chat) {
       const migrated = migratePersistedState(snapshot.chat);
       const conversations = migrated.conversations.map(recoverInterruptedConversation);
@@ -1412,6 +1512,25 @@ async function hydrateChatFromLocalStore(): Promise<void> {
         error: null,
       });
       await reconcileDailyThemeTrackingFromConversations(conversations);
+    }
+    if (snapshot) {
+      hydrateDailyDecisionState({
+        jointResearchRuns: snapshot.jointResearchRuns,
+        recommendations: snapshot.researchRecommendations,
+        riskAssessments: snapshot.aiRiskAssessments,
+        recommendationEvents: snapshot.recommendationEvents,
+      });
+      const latestByConversation = new Map<string, { contentHash: string; generatedAt: string }>();
+      for (const report of loadPremarketThemeRuns()) {
+        if (!report.sourceConversationId) continue;
+        const current = latestByConversation.get(report.sourceConversationId);
+        if (!current || Date.parse(report.generatedAt) > Date.parse(current.generatedAt)) {
+          latestByConversation.set(report.sourceConversationId, { contentHash: report.contentHash, generatedAt: report.generatedAt });
+        }
+      }
+      for (const [conversationId, latest] of latestByConversation) {
+        markOutdatedRecommendations(conversationId, latest.contentHash);
+      }
     }
   } catch (error) {
     useChatStore.setState({ error: stringifyError(error) });
@@ -1729,7 +1848,7 @@ function localContextCompactionBlock(conversation: Conversation): MessageBlock |
     title: CONTEXT_COMPACTION_TOOL_TITLE,
     status: 'completed',
     target: `已压缩前 ${background.sourceMessageCount} 条历史上下文`,
-    output: 'Alpha Studio 已将较早的可见对话整理为背景摘要，并随本轮消息交给 Codex 继续使用。',
+    output: 'Alpha Studio 已将较早的可见对话整理为背景摘要，并随本轮消息交给 GPT 继续使用。',
   };
 }
 
@@ -1823,7 +1942,7 @@ export async function reconcileDailyThemeTrackingFromConversations(
   conversations: Conversation[],
   readText: DailyThemeTextReader = localTextFileRead,
 ): Promise<number> {
-  const completions: Array<{ timestamp: number; blocks: ChatMessage['blocks'] }> = [];
+  const completions: Array<{ timestamp: number; conversationId: string; messageId: string; blocks: ChatMessage['blocks'] }> = [];
   for (const conversation of conversations) {
     let dailyThemeTurn = false;
     for (const message of conversation.messages) {
@@ -1831,7 +1950,7 @@ export async function reconcileDailyThemeTrackingFromConversations(
         dailyThemeTurn = message.selectedSkill?.id === ALPHA_STUDIO_DAILY_THEME_SKILL_ID
           || message.blocks.some((block) => block.type === 'text' && block.content.includes(ALPHA_STUDIO_DAILY_THEME_SKILL_ID));
       } else if (message.role === 'assistant' && dailyThemeTurn) {
-        completions.push({ timestamp: message.timestamp, blocks: message.blocks });
+        completions.push({ timestamp: message.timestamp, conversationId: conversation.id, messageId: message.id, blocks: message.blocks });
         dailyThemeTurn = false;
       }
     }
@@ -1841,12 +1960,12 @@ export async function reconcileDailyThemeTrackingFromConversations(
   for (const completion of completions.sort((left, right) => right.timestamp - left.timestamp)) {
     const parsed = await parseDailyThemeReportCompletion(completion.blocks, readText);
     if (!parsed.ok || !parsed.run) continue;
-    const exists = loadPremarketThemeRuns().some((item) => (
+    const existing = loadPremarketThemeRuns().find((item) => (
       item.id === parsed.run?.id || item.contentHash === parsed.run?.contentHash
     ));
-    if (exists) continue;
-    savePremarketThemeRun(parsed.run);
-    imported += 1;
+    if (existing?.sourceConversationId && existing.sourceMessageId) continue;
+    savePremarketThemeRun(bindPremarketThemeRun(existing ?? parsed.run, completion.conversationId, completion.messageId));
+    if (!existing) imported += 1;
   }
   return imported;
 }
@@ -1983,7 +2102,7 @@ function simulateBrowserReview(
     ],
   };
 
-  const prose = '这是浏览器预览模式下的模拟审查结果。桌面应用会调用真实的 Codex 审查器来分析改动。\n\n';
+  const prose = '这是浏览器预览模式下的模拟审查结果。桌面应用会调用真实的 GPT 审查器来分析改动。\n\n';
   for (const chunk of [prose, '```json\n', `${JSON.stringify(report, null, 2)}\n`, '```']) {
     push({ type: 'text_delta', runId, conversationId, text: chunk });
     delay += 200;

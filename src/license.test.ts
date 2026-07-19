@@ -6,10 +6,16 @@ import {
   createGatewayRun,
   defaultAlphaApiBaseUrl,
   fetchClientBillingSummary,
+  fetchClientDevices,
+  isCodexAccountAllowed,
+  isClientAuthorizationError,
+  isEnterpriseAuthorizationFresh,
   loadClientLicenseSession,
   modelProfilesFromClientLicense,
   renewClientLease,
+  revokeClientDevice,
   saveClientLicenseSession,
+  validateCodexAuthorization,
 } from './license';
 import { modelProfilesFromCodexCatalog } from './models';
 import type { CodexModelCatalogItem } from './types';
@@ -68,6 +74,13 @@ const catalog: CodexModelCatalogItem[] = [
     ],
   },
 ];
+
+const assignedCodexAccount = {
+  id: 'codex_demo',
+  email: 'managed@demo.local',
+  plan: 'monthly',
+  seatLimit: 2,
+};
 
 describe('client license session', () => {
   beforeEach(() => {
@@ -133,6 +146,7 @@ describe('client license session', () => {
         codexSubscriptionEnabled: true,
         codexSubscriptionPlan: 'monthly',
       },
+      codexAccounts: [assignedCodexAccount],
     });
 
     expect(profiles.some((profile) => profile.providerId === 'openai' && profile.builtIn)).toBe(true);
@@ -148,6 +162,7 @@ describe('client license session', () => {
         ...activationResponse.tenant,
         codexSubscriptionEnabled: true,
       },
+      codexAccounts: [assignedCodexAccount],
     });
     const session = loadClientLicenseSession()!;
     const dynamic = modelProfilesFromCodexCatalog(catalog);
@@ -170,6 +185,7 @@ describe('client license session', () => {
         ...activationResponse.tenant,
         codexSubscriptionEnabled: true,
       },
+      codexAccounts: [assignedCodexAccount],
     });
     const session = loadClientLicenseSession()!;
     session.models = [{
@@ -202,6 +218,78 @@ describe('client license session', () => {
 
     expect(profiles.some((profile) => profile.builtIn)).toBe(false);
     expect(profiles.some((profile) => profile.providerId === ALPHA_GATEWAY_PROVIDER_ID)).toBe(true);
+  });
+
+  it('does not expose Codex subscription models until an administrator assigns an account', () => {
+    const profiles = modelProfilesFromClientLicense({
+      apiBaseUrl: defaultAlphaApiBaseUrl(),
+      activatedAt: 1,
+      ...activationResponse,
+      tenant: {
+        ...activationResponse.tenant,
+        codexSubscriptionEnabled: true,
+      },
+      codexAccounts: [],
+    }, modelProfilesFromCodexCatalog(catalog));
+
+    expect(profiles.some((profile) => profile.builtIn)).toBe(false);
+  });
+
+  it('matches the local Codex identity only to a backend-assigned account', () => {
+    const session = {
+      apiBaseUrl: defaultAlphaApiBaseUrl(),
+      activatedAt: 1,
+      ...activationResponse,
+      tenant: { ...activationResponse.tenant, codexSubscriptionEnabled: true },
+      codexAccounts: [assignedCodexAccount],
+    };
+
+    expect(isCodexAccountAllowed(session, ' MANAGED@demo.local ')).toBe(true);
+    expect(isCodexAccountAllowed(session, 'other@demo.local')).toBe(false);
+  });
+
+  it('expires the cached enterprise authorization after five days', () => {
+    const validatedAt = Date.UTC(2026, 6, 1);
+    const session = {
+      apiBaseUrl: defaultAlphaApiBaseUrl(),
+      activatedAt: validatedAt,
+      lastValidatedAt: validatedAt,
+      ...activationResponse,
+      device: {
+        ...activationResponse.device,
+        leaseExpiresAt: '2026-07-10T00:00:00.000Z',
+      },
+    };
+
+    expect(isEnterpriseAuthorizationFresh(session, validatedAt + 4 * 24 * 60 * 60 * 1000)).toBe(true);
+    expect(isEnterpriseAuthorizationFresh(session, validatedAt + 5 * 24 * 60 * 60 * 1000)).toBe(false);
+  });
+
+  it('asks the backend to authorize the exact signed-in Codex account', async () => {
+    saveClientLicenseSession({
+      apiBaseUrl: 'http://localhost:18080',
+      activatedAt: 1,
+      ...activationResponse,
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+      authorized: true,
+      accountId: 'codex_demo',
+      email: 'managed@demo.local',
+    }));
+
+    const result = await validateCodexAuthorization(
+      loadClientLicenseSession()!,
+      'managed@demo.local',
+    );
+
+    expect(result.authorized).toBe(true);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/client/codex-authorization',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"email":"managed@demo.local"'),
+      }),
+    );
   });
 
   it('creates a gateway run token for the current tenant device and selected model', async () => {
@@ -296,6 +384,81 @@ describe('client license session', () => {
         body: expect.stringContaining('"deviceId":"dev_demo"'),
       }),
     );
+  });
+
+  it('loads all devices and revokes another device through the administrator device', async () => {
+    saveClientLicenseSession({
+      apiBaseUrl: 'http://localhost:18080',
+      activatedAt: 1,
+      ...activationResponse,
+    });
+    const summary = {
+      activeDevices: 2,
+      maxDevices: 2,
+      isAdministrator: true,
+      devices: [
+        {
+          id: 'dev_demo',
+          name: 'Alpha Studio MacIntel',
+          status: 'active',
+          isCurrent: true,
+          isAdministrator: true,
+          createdAt: '2026-07-01T00:00:00.000Z',
+        },
+        {
+          id: 'dev_other',
+          name: 'Alpha Studio Win32',
+          status: 'active',
+          isCurrent: false,
+          isAdministrator: false,
+          createdAt: '2026-07-02T00:00:00.000Z',
+        },
+      ],
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(summary))
+      .mockResolvedValueOnce(jsonResponse({
+        ...summary,
+        activeDevices: 1,
+        devices: summary.devices.map((device) => (
+          device.id === 'dev_other' ? { ...device, status: 'revoked' } : device
+        )),
+      }));
+
+    const devices = await fetchClientDevices(loadClientLicenseSession()!);
+    const revoked = await revokeClientDevice(loadClientLicenseSession()!, 'dev_other');
+
+    expect(devices.isAdministrator).toBe(true);
+    expect(devices.devices).toHaveLength(2);
+    expect(revoked.activeDevices).toBe(1);
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://localhost:18080/api/client/devices/revoke',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"targetDeviceId":"dev_other"'),
+      }),
+    );
+  });
+
+  it('classifies a forbidden lease response as a client authorization failure', async () => {
+    saveClientLicenseSession({
+      apiBaseUrl: 'http://localhost:18080',
+      activatedAt: 1,
+      ...activationResponse,
+    });
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      text: () => Promise.resolve(JSON.stringify({
+        error: { message: 'device is not active for this tenant' },
+      })),
+    } as Response);
+
+    const error = await renewClientLease(loadClientLicenseSession()!).catch((caught) => caught);
+
+    expect(isClientAuthorizationError(error)).toBe(true);
+    expect(error).toMatchObject({ status: 403 });
   });
 
   it('turns a network-level billing failure into an actionable error', async () => {

@@ -25,6 +25,10 @@ export interface LocalStoreSnapshot {
   themeReviews: unknown[];
   themeBacktestRuns: unknown[];
   automationTasks: unknown[];
+  jointResearchRuns: unknown[];
+  researchRecommendations: unknown[];
+  aiRiskAssessments: unknown[];
+  recommendationEvents: unknown[];
 }
 
 export interface LocalStoreCommitRequest {
@@ -35,6 +39,10 @@ export interface LocalStoreCommitRequest {
   themeReviews?: unknown[];
   themeBacktestRuns?: unknown[];
   automationTasks?: unknown[];
+  jointResearchRuns?: unknown[];
+  researchRecommendations?: unknown[];
+  aiRiskAssessments?: unknown[];
+  recommendationEvents?: unknown[];
   audit?: {
     domain: string;
     action: string;
@@ -194,6 +202,10 @@ function readLegacyPayloads(): {
   research?: unknown;
   premarketThemeRuns?: unknown[];
   automationTasks?: unknown[];
+  jointResearchRuns?: unknown[];
+  researchRecommendations?: unknown[];
+  aiRiskAssessments?: unknown[];
+  recommendationEvents?: unknown[];
   sourceKeys: string[];
 } {
   const sourceKeys: string[] = [];
@@ -201,17 +213,28 @@ function readLegacyPayloads(): {
   const research = readLocalJson(RESEARCH_STATE_KEY);
   const premarketThemeRuns = readLocalJson(PREMARKET_THEME_RUNS_KEY);
   const automationTasks = readLocalJson(AUTOMATION_TASKS_KEY);
+  const dailyDecision = readLocalJson('alpha-studio.daily-decision.v1') as {
+    jointResearchRuns?: unknown[];
+    recommendations?: unknown[];
+    riskAssessments?: unknown[];
+    recommendationEvents?: unknown[];
+  } | undefined;
 
   if (chat !== undefined) sourceKeys.push(CHAT_STATE_KEY);
   if (research !== undefined) sourceKeys.push(RESEARCH_STATE_KEY);
   if (premarketThemeRuns !== undefined) sourceKeys.push(PREMARKET_THEME_RUNS_KEY);
   if (automationTasks !== undefined) sourceKeys.push(AUTOMATION_TASKS_KEY);
+  if (dailyDecision !== undefined) sourceKeys.push('alpha-studio.daily-decision.v1');
 
   return {
     chat: unwrapZustandState(chat),
     research,
     premarketThemeRuns: Array.isArray(premarketThemeRuns) ? premarketThemeRuns : undefined,
     automationTasks: Array.isArray(automationTasks) ? automationTasks : undefined,
+    jointResearchRuns: Array.isArray(dailyDecision?.jointResearchRuns) ? dailyDecision.jointResearchRuns : undefined,
+    researchRecommendations: Array.isArray(dailyDecision?.recommendations) ? dailyDecision.recommendations : undefined,
+    aiRiskAssessments: Array.isArray(dailyDecision?.riskAssessments) ? dailyDecision.riskAssessments : undefined,
+    recommendationEvents: Array.isArray(dailyDecision?.recommendationEvents) ? dailyDecision.recommendationEvents : undefined,
     sourceKeys,
   };
 }

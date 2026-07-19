@@ -48,6 +48,8 @@ export function buildCoworkerOrchestrationLines(coworkers: CoworkerSelection[]):
   lines.push(
     '- 唯一长文出口:整个对话里只有你(调度者)输出这份最终《纪要》长文;其余同事一律不在聊天区写长文,以保证正文不被并发输出打断或串行错乱。',
     '- 最终答复必须是面向用户的干净成稿:不要把技能说明全文、工具日志、检索过程、spawn 过程、sub-agent 原始输出或半句草稿粘贴进正文;先收集各同事文件里的要点,再一次性整合。',
+    '- 完成闸门:任一同事返回“已完成”只代表子任务完成,绝不代表本轮用户任务完成。你必须等待所有已启动同事结束,读取已有产物,然后由你输出最终整合答复;严禁把“⑦风险控制官:已完成”等状态行作为最后一句并结束本轮。',
+    '- 结构化协议优先:如果用户任务指定了 JSON schema、固定 runId/reportId 或机器可读字段,最终答复正文必须直接包含合格 JSON 代码块。JSON 不能只写入文件、不能只返回路径,也不能被 TODO、文件落盘或纪要格式替代;发送前必须逐项检查 schema 与必填字段。',
     '- 最终成稿必须让用户直接读懂结论、机会、风险和下一步动作;归档、合规、来源和缺口只能作为正文后部或附录,不得替代结论与行动清单。',
     '- 如果用户导入的是协作模板,优先遵守模板中的输出结构;除非用户明确要求正式报告/HTML/PDF,不要自动扩展成多页正式报告。',
     '- 对复杂协作任务,先在最终答复开头给出「本次 TODO」清单,再按 TODO 顺序整合各同事结论;结尾用「完成核对」逐项标注已完成/未完成和缺口,防止偏离主任务。',
@@ -79,7 +81,7 @@ export function buildCodingInstructions(
     const skill = options.selectedSkill;
     if (options.nativeSkillInput) {
       modeLines.push(
-        `当前指定 Skill：${skill.title} (${skill.id}) 已作为 Codex app-server 原生 skill input 传入；按 CLI 载入的 SKILL.md、工具规则和依赖说明执行。若 CLI 未能提供该 Skill 的说明，简短说明原因，再用最合适的方式继续。`,
+        `当前指定 Skill：${skill.title} (${skill.id}) 已作为 GPT 原生 skill input 传入；按本地引擎载入的 SKILL.md、工具规则和依赖说明执行。若引擎未能提供该 Skill 的说明，简短说明原因，再用最合适的方式继续。`,
       );
     } else {
       modeLines.push(

@@ -54,6 +54,7 @@ describe('automation intent detection', () => {
     const recentlyRun = { ...task, lastRunAt: new Date('2026-07-13T01:20:00.000Z').getTime() };
     expect(isScheduledAutomationTaskDue(recentlyRun, new Date('2026-07-13T01:29:00.000Z'))).toBe(false);
     expect(isScheduledAutomationTaskDue(recentlyRun, new Date('2026-07-13T01:30:00.000Z'))).toBe(true);
+    expect(isScheduledAutomationTaskDue({ ...task, paused: true }, new Date('2026-07-13T01:30:00.000Z'))).toBe(false);
   });
 
   it('stores stable model metadata for new tasks', () => {

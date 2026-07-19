@@ -68,7 +68,9 @@ describe('coworker catalog', () => {
   });
 
   it('defines importable multi-coworker workflow presets', () => {
-    expect(COWORKER_WORKFLOW_PRESETS).toHaveLength(8);
+    expect(COWORKER_WORKFLOW_PRESETS).toHaveLength(9);
+    expect(COWORKER_WORKFLOW_PRESETS.find((workflow) => workflow.id === 'theme-decision-meeting')?.coworkerIds)
+      .toEqual(['mainline', 'risk', 'pm_deputy']);
 
     for (const workflow of COWORKER_WORKFLOW_PRESETS) {
       expect(workflow.title.trim()).not.toBe('');

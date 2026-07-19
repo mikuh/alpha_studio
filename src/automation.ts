@@ -79,6 +79,7 @@ export interface AutomationFormState {
 export interface ScheduledAutomationTask extends AutomationFormState {
   id: string;
   createdAt: number;
+  paused?: boolean;
 }
 
 export function blankAutomationForm(): AutomationFormState {
@@ -203,6 +204,7 @@ export function updateScheduledAutomationTask(
 }
 
 export function isScheduledAutomationTaskDue(task: ScheduledAutomationTask, now = new Date()): boolean {
+  if (task.paused) return false;
   if (task.kind !== 'intraday-monitor' || !task.activeWindow) return false;
   const zoned = zonedClock(now, task.activeWindow.timezone);
   if (!task.activeWindow.weekdays.includes(zoned.weekday)) return false;
@@ -241,6 +243,7 @@ function isScheduledAutomationTask(task: Partial<ScheduledAutomationTask>): task
     (task.skillId === undefined || typeof task.skillId === 'string') &&
     (task.skillTitle === undefined || typeof task.skillTitle === 'string') &&
     (task.lastRunAt === undefined || typeof task.lastRunAt === 'number') &&
+    (task.paused === undefined || typeof task.paused === 'boolean') &&
     (task.activeWindow === undefined || isAutomationActiveWindow(task.activeWindow)) &&
     typeof task.createdAt === 'number' &&
     (task.conversationId === undefined || typeof task.conversationId === 'string'),

@@ -3,16 +3,16 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
-  CheckCircle2,
   Clock3,
+  Crosshair,
   FileInput,
+  Layers,
   Loader2,
   Play,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
 } from 'lucide-react';
-import { fetchEastmoneyRealtimeBatch } from './eastmoney';
 import { fetchJqHistoricalBars, loadJqDataConfig } from './jqdata';
 import {
   AUTOMATION_TASKS_CHANGED_EVENT,
@@ -36,21 +36,21 @@ import {
   parsePremarketThemeResult,
   savePremarketThemeRun,
   savePremarketThemeRuns,
+  type PremarketTheme,
   type PremarketThemeRun,
   type PremarketThemeTrigger,
 } from './themeResearch';
 import {
   DEFAULT_THEME_BACKTEST_CONFIG,
+  IMPORTANT_TRIGGER_STATES,
   TRIGGER_STATUS_LABELS,
   THEME_TRACKING_CHANGED_EVENT,
   THEME_REVIEWS_CHANGED_EVENT,
   createDailyReview,
-  evaluateThemeTrigger,
   hydrateThemeValidationFromLocalStore,
   loadThemeBacktestRuns,
   loadThemeReviews,
   loadThemeTrackingEvents,
-  mergeTrackingEvaluations,
   overrideTrackingEvent,
   runThemeBacktest,
   eligibleOpenReports,
@@ -66,18 +66,37 @@ import {
   type ThemeTrackingEvent,
   type TriggerEvaluationStatus,
 } from './themeValidation';
+import {
+  buildThemeLedger,
+  summarizeLedger,
+  type ThemeDayOutcome,
+  type ThemeLedgerEntry,
+} from './themeLedger';
+import {
+  THEME_ENGINE_TICK_EVENT,
+  THEME_SYSTEM_NOTIFICATIONS_KEY,
+  runTrackingTick,
+  shanghaiTradeDate,
+  type ThemeEngineTickDetail,
+} from './themeTrackingEngine';
 import { loadLocalStoreSnapshot } from './localStore';
 
-type ValidationView = 'monitor' | 'review' | 'backtest';
+type ValidationView = 'cockpit' | 'ledger' | 'review' | 'backtest';
 
 const VIEW_LABELS: Record<ValidationView, string> = {
-  monitor: '实时监控',
+  cockpit: '今日作战',
+  ledger: '主题台账',
   review: '收盘复盘',
-  backtest: '策略回测',
+  backtest: '净值回测',
 };
 
-const IMPORTANT_TRIGGER_STATES = new Set<TriggerEvaluationStatus>(['triggered', 'upgraded', 'invalidated']);
-const THEME_SYSTEM_NOTIFICATIONS_KEY = 'alpha-studio.theme-system-notifications.v1';
+const ROLE_ORDER = ['龙头', '情绪龙头', '中军', '容量核心', '趋势核心', '先锋', '补涨', '情绪扩散'];
+
+function roleOrderIndex(role: string | undefined): number {
+  if (!role) return ROLE_ORDER.length;
+  const index = ROLE_ORDER.findIndex((item) => role.includes(item));
+  return index < 0 ? ROLE_ORDER.length : index;
+}
 
 function latestByTrigger(events: ThemeTrackingEvent[], reportId: string): Map<string, ThemeTrackingEvent> {
   const map = new Map<string, ThemeTrackingEvent>();
@@ -95,54 +114,13 @@ function formatDateTime(value: string): string {
     : value || '未知';
 }
 
-function shanghaiTradeDate(value = new Date()): string {
-  return value.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+function formatShortDate(value: string): string {
+  return value ? `${Number(value.slice(5, 7))}/${Number(value.slice(8, 10))}` : '';
 }
 
 function formatPercent(value: number): string {
   const prefix = value > 0 ? '+' : '';
   return `${prefix}${value.toFixed(2)}%`;
-}
-
-function reportCodes(report: PremarketThemeRun | null): string[] {
-  if (!report) return [];
-  return Array.from(new Set(report.themes.flatMap((theme) => theme.stocks.map((stock) => stock.code).filter((code): code is string => Boolean(code)))));
-}
-
-function reportQuoteMap(report: PremarketThemeRun, prices: Awaited<ReturnType<typeof fetchEastmoneyRealtimeBatch>>['prices']): Map<string, ResearchQuote> {
-  const stocks = new Map(report.themes.flatMap((theme) => theme.stocks).filter((stock) => stock.code).map((stock) => [stock.code as string, stock]));
-  const quotes = new Map<string, ResearchQuote>();
-  for (const [code, live] of prices) {
-    const stock = stocks.get(code);
-    const prevClose = live.prevClose && live.prevClose > 0 ? live.prevClose : live.price;
-    quotes.set(code, {
-      code,
-      name: stock?.name || code,
-      board: code.endsWith('.XSHG') ? '沪市' : '深市',
-      sector: report.themes.find((theme) => theme.stocks.some((item) => item.code === code))?.name || '报告标的',
-      price: live.price,
-      prevClose,
-      changePct: prevClose > 0 ? (live.price / prevClose - 1) * 100 : 0,
-      changeAmt: live.price - prevClose,
-      open: live.open,
-      high: live.high || live.price,
-      low: live.low || live.price,
-      volume: (live.volumeShares || 0) / 1_000_000,
-      turnover: (live.turnoverAmount || 0) / 100_000_000,
-      marketCap: (live.marketCapAmount || 0) / 100_000_000,
-      volumeShares: live.volumeShares,
-      turnoverAmount: live.turnoverAmount,
-      turnoverRate: live.turnoverRate,
-      volumeRatio: live.volumeRatio,
-      highLimit: live.highLimit,
-      lowLimit: live.lowLimit,
-      paused: live.paused,
-      tags: [],
-      thesis: '',
-      source: 'eastmoney',
-    });
-  }
-  return quotes;
 }
 
 function toBacktestBars(bars: Awaited<ReturnType<typeof fetchJqHistoricalBars>>): BacktestPriceBar[] {
@@ -161,12 +139,13 @@ function toBacktestBars(bars: Awaited<ReturnType<typeof fetchJqHistoricalBars>>)
 }
 
 export function ResearchValidationPanel() {
-  const [view, setView] = useState<ValidationView>('monitor');
+  const [view, setView] = useState<ValidationView>('cockpit');
   const [reports, setReports] = useState<PremarketThemeRun[]>(() => loadPremarketThemeRuns());
   const [selectedReportId, setSelectedReportId] = useState(() => reports[0]?.id || '');
   const [events, setEvents] = useState<ThemeTrackingEvent[]>(() => loadThemeTrackingEvents());
   const [reviews, setReviews] = useState<ThemeDailyReview[]>(() => loadThemeReviews());
   const [backtestRuns, setBacktestRuns] = useState<ThemeBacktestRun[]>(() => loadThemeBacktestRuns());
+  const [quotes, setQuotes] = useState<Map<string, ResearchQuote>>(new Map());
   const [dataAsOf, setDataAsOf] = useState<string>('');
   const [dataError, setDataError] = useState<string>('');
   const [refreshing, setRefreshing] = useState(false);
@@ -178,14 +157,15 @@ export function ResearchValidationPanel() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => typeof Notification !== 'undefined'
     && Notification.permission === 'granted'
     && window.localStorage.getItem(THEME_SYSTEM_NOTIFICATIONS_KEY) === '1');
-  const notifiedEventIds = useRef(new Set<string>());
-  const lastBreadthAt = useRef(0);
   const lastImmediateAiEventId = useRef<string | null>(null);
 
   const selectedReport = useMemo(
     () => reports.find((report) => report.id === selectedReportId) ?? reports[0] ?? null,
     [reports, selectedReportId],
   );
+
+  const ledgerEntries = useMemo(() => buildThemeLedger(reports, events), [reports, events]);
+  const ledgerSummary = useMemo(() => summarizeLedger(ledgerEntries, reports), [ledgerEntries, reports]);
 
   useEffect(() => {
     let disposed = false;
@@ -212,11 +192,19 @@ export function ResearchValidationPanel() {
     const handleTracking = () => setEvents(loadThemeTrackingEvents());
     const handleReviews = () => setReviews(loadThemeReviews());
     const handleAutomations = () => setAutomationTasks(loadScheduledAutomationTasks());
+    const handleEngineTick = (event: Event) => {
+      const detail = (event as CustomEvent<ThemeEngineTickDetail>).detail;
+      if (!detail) return;
+      setQuotes(new Map(detail.quotes));
+      setDataAsOf(detail.asOfLabel);
+      setDataError(detail.errors[0] || '');
+    };
     window.addEventListener(PREMARKET_THEME_RUNS_CHANGED_EVENT, handleRuns);
     window.addEventListener(PREMARKET_THEME_IMPORT_EVENT, handleImport);
     window.addEventListener(THEME_TRACKING_CHANGED_EVENT, handleTracking);
     window.addEventListener(THEME_REVIEWS_CHANGED_EVENT, handleReviews);
     window.addEventListener(AUTOMATION_TASKS_CHANGED_EVENT, handleAutomations);
+    window.addEventListener(THEME_ENGINE_TICK_EVENT, handleEngineTick);
     return () => {
       disposed = true;
       window.removeEventListener(PREMARKET_THEME_RUNS_CHANGED_EVENT, handleRuns);
@@ -224,38 +212,23 @@ export function ResearchValidationPanel() {
       window.removeEventListener(THEME_TRACKING_CHANGED_EVENT, handleTracking);
       window.removeEventListener(THEME_REVIEWS_CHANGED_EVENT, handleReviews);
       window.removeEventListener(AUTOMATION_TASKS_CHANGED_EVENT, handleAutomations);
+      window.removeEventListener(THEME_ENGINE_TICK_EVENT, handleEngineTick);
     };
   }, []);
 
-  const refreshMonitor = useCallback(async (forceBreadth = false) => {
+  const selectedReportIsHistorical = Boolean(selectedReport && selectedReport.tradeDate !== shanghaiTradeDate());
+
+  const refreshMonitor = useCallback(async () => {
     if (!selectedReport) return;
     if (selectedReport.tradeDate !== shanghaiTradeDate()) {
       setDataAsOf('历史快照');
       setDataError('历史报告仅展示已记录事件，不使用当前行情补算盘中触发。');
       return;
     }
-    const codes = reportCodes(selectedReport);
-    if (!codes.length) {
-      setDataError('报告没有可用于实时监控的证券代码。');
-      return;
-    }
     setRefreshing(true);
     try {
-      const batch = await fetchEastmoneyRealtimeBatch(codes, { forceRefresh: true });
-      const quotes = reportQuoteMap(selectedReport, batch.prices);
-      const now = new Date();
-      const evaluateBreadth = forceBreadth || now.getTime() - lastBreadthAt.current >= 60_000;
-      if (evaluateBreadth) lastBreadthAt.current = now.getTime();
-      const evaluations = selectedReport.themes.flatMap((theme) => theme.triggerSpecs
-        .filter((trigger) => trigger.evaluator !== 'breadth' || evaluateBreadth)
-        .map((trigger) => evaluateThemeTrigger(selectedReport, trigger, { now, theme, quotes })));
-      setEvents((current) => {
-        const next = mergeTrackingEvaluations(current, evaluations);
-        if (next !== current) saveThemeTrackingEvents(next);
-        return next;
-      });
-      setDataAsOf(batch.asOfLabel || new Date().toLocaleTimeString('zh-CN', { hour12: false }));
-      setDataError(batch.errors.length ? batch.errors[0] : '');
+      const detail = await runTrackingTick({ force: true });
+      if (!detail) setDataError('暂无可评估的今日报告标的。');
     } catch (error) {
       setDataError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -264,31 +237,24 @@ export function ResearchValidationPanel() {
   }, [selectedReport]);
 
   useEffect(() => {
-    if (!selectedReport || view !== 'monitor') return;
-    void refreshMonitor(true);
-    const timer = window.setInterval(() => void refreshMonitor(false), 30_000);
+    if (!selectedReport || view !== 'cockpit' || selectedReportIsHistorical) return;
+    void refreshMonitor();
+    const timer = window.setInterval(() => {
+      void runTrackingTick({ force: true }).catch(() => undefined);
+    }, 30_000);
     return () => window.clearInterval(timer);
-  }, [refreshMonitor, selectedReport, view]);
+  }, [refreshMonitor, selectedReport, selectedReportIsHistorical, view]);
+
+  useEffect(() => {
+    if (selectedReportIsHistorical) {
+      setDataAsOf('历史快照');
+      setDataError('历史报告仅展示已记录事件，不使用当前行情补算盘中触发。');
+    }
+  }, [selectedReportIsHistorical]);
 
   const selectedReview = reviews.find((review) => review.reportId === selectedReport?.id) ?? null;
   const latest = useMemo(() => selectedReport ? latestByTrigger(events, selectedReport.id) : new Map<string, ThemeTrackingEvent>(), [events, selectedReport]);
-  const selectedReportIsHistorical = Boolean(selectedReport && selectedReport.tradeDate !== shanghaiTradeDate());
   const importantCount = Array.from(latest.values()).filter((event) => IMPORTANT_TRIGGER_STATES.has(event.status)).length;
-
-  useEffect(() => {
-    if (!notificationsEnabled || typeof Notification === 'undefined' || !selectedReport) return;
-    const recent = events.find((event) => event.reportId === selectedReport.id
-      && IMPORTANT_TRIGGER_STATES.has(event.status)
-      && Date.now() - Date.parse(event.observedAt) < 120_000
-      && !notifiedEventIds.current.has(event.id));
-    if (!recent) return;
-    notifiedEventIds.current.add(recent.id);
-    const trigger = selectedReport.themes.flatMap((theme) => theme.triggerSpecs).find((item) => item.id === recent.triggerId);
-    new Notification(`Alpha Studio · ${TRIGGER_STATUS_LABELS[recent.status]}`, {
-      body: `${trigger?.label || recent.triggerId}：${recent.evidence}`,
-      tag: `${recent.reportId}:${recent.triggerId}`,
-    });
-  }, [events, notificationsEnabled, selectedReport]);
 
   const toggleNotifications = useCallback(async () => {
     if (notificationsEnabled) {
@@ -374,6 +340,7 @@ export function ResearchValidationPanel() {
       true,
     );
   }, [aiMonitorTask, events, selectedReport]);
+
   const toggleAiMonitor = useCallback(() => {
     if (aiMonitorTask) {
       saveScheduledAutomationTasks(automationTasks.filter((task) => task.id !== aiMonitorTask.id));
@@ -415,12 +382,17 @@ export function ResearchValidationPanel() {
     setImportMessage(`已导入 ${parsed.run.tradeDate} · ${parsed.run.title}`);
   }, []);
 
+  const openReportInCockpit = useCallback((reportId: string) => {
+    setSelectedReportId(reportId);
+    setView('cockpit');
+  }, []);
+
   return (
-    <section className="rv-shell" aria-label="跟踪验证中心">
+    <section className="rv-shell" aria-label="日报跟踪作战台">
       <header className="rv-head">
         <div>
-          <h3>跟踪验证中心</h3>
-          <span>报告 → 观察 → 复盘 → 回测</span>
+          <h3>日报跟踪</h3>
+          <span>盘前报告 → 盘中自动记录 → 台账 → 复盘 → 回测</span>
         </div>
         <div className="rv-head-actions">
           <input
@@ -440,16 +412,28 @@ export function ResearchValidationPanel() {
         </div>
       </header>
 
-      <div className="rv-view-tabs" role="tablist" aria-label="跟踪验证视图">
+      {reports.length ? (
+        <div className="rv-kpi-strip" aria-label="跟踪概览">
+          <div><span>覆盖交易日</span><strong>{ledgerSummary.coveredDays}</strong></div>
+          <div><span>结构化报告</span><strong>{ledgerSummary.reportCount}</strong></div>
+          <div><span>活跃/累计题材</span><strong>{ledgerSummary.activeThemes}<em>/{ledgerSummary.totalThemes}</em></strong></div>
+          <div>
+            <span>触发兑现率</span>
+            <strong>{ledgerSummary.hitRatePct === null ? '—' : `${ledgerSummary.hitRatePct.toFixed(0)}%`}<em>{ledgerSummary.decidedTriggers ? ` · ${ledgerSummary.decidedTriggers}次` : ''}</em></strong>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="rv-view-tabs four" role="tablist" aria-label="跟踪验证视图">
         {(Object.keys(VIEW_LABELS) as ValidationView[]).map((key) => (
           <button key={key} type="button" role="tab" aria-selected={view === key} className={view === key ? 'active' : ''} onClick={() => setView(key)}>
             {VIEW_LABELS[key]}
-            {key === 'monitor' && importantCount > 0 ? <em>{importantCount}</em> : null}
+            {key === 'cockpit' && importantCount > 0 ? <em>{importantCount}</em> : null}
           </button>
         ))}
       </div>
 
-      {reports.length ? (
+      {reports.length && (view === 'cockpit' || view === 'review') ? (
         <div className="rv-baseline">
           <label>
             <span>基线报告</span>
@@ -471,18 +455,19 @@ export function ResearchValidationPanel() {
 
       <div className="rv-content">
         {!selectedReport ? <ValidationEmpty onImport={() => importRef.current?.click()} /> : null}
-        {selectedReport && view === 'monitor' ? (
-          <MonitorView
+        {selectedReport && view === 'cockpit' ? (
+          <CockpitView
             report={selectedReport}
             events={events}
             latest={latest}
+            quotes={quotes}
             refreshing={refreshing}
             dataAsOf={dataAsOf}
             dataError={dataError}
             historical={selectedReportIsHistorical}
             aiMonitorEnabled={Boolean(aiMonitorTask)}
             notificationsEnabled={notificationsEnabled}
-            onRefresh={() => void refreshMonitor(true)}
+            onRefresh={() => void refreshMonitor()}
             onToggleAiMonitor={toggleAiMonitor}
             onToggleNotifications={() => void toggleNotifications()}
             onOverride={(event, status, reason) => {
@@ -492,8 +477,19 @@ export function ResearchValidationPanel() {
             }}
           />
         ) : null}
+        {selectedReport && view === 'ledger' ? (
+          <LedgerView entries={ledgerEntries} onOpenReport={openReportInCockpit} />
+        ) : null}
         {selectedReport && view === 'review' ? (
-          <ReviewView report={selectedReport} review={selectedReview} onCreate={createReview} onAcceptRules={acceptRuleChanges} />
+          <ReviewView
+            report={selectedReport}
+            review={selectedReview}
+            reviews={reviews}
+            reports={reports}
+            onCreate={createReview}
+            onAcceptRules={acceptRuleChanges}
+            onSelectReport={setSelectedReportId}
+          />
         ) : null}
         {selectedReport && view === 'backtest' ? (
           <BacktestView reports={reports} events={events} runs={backtestRuns} onRun={(run) => {
@@ -526,16 +522,19 @@ function ValidationEmpty({ onImport }: { onImport: () => void }) {
     <div className="rv-empty">
       <ShieldCheck size={28} />
       <strong>还没有可跟踪的结构化日报</strong>
-      <span>使用 Alpha Studio 盘前主题技能生成日报，完成后会自动入库；也可以导入已有 JSON、Markdown 或 HTML。</span>
+      <span>使用 Alpha Studio 盘前主题技能生成日报，完成后会自动入库并在交易时段自动记录盘中触发；也可以导入已有 JSON、Markdown 或 HTML。</span>
       <button type="button" onClick={onImport}><FileInput size={13} />导入报告</button>
     </div>
   );
 }
 
-function MonitorView({
+// ---- 今日作战 --------------------------------------------------------------
+
+function CockpitView({
   report,
   events,
   latest,
+  quotes,
   refreshing,
   dataAsOf,
   dataError,
@@ -550,6 +549,7 @@ function MonitorView({
   report: PremarketThemeRun;
   events: ThemeTrackingEvent[];
   latest: Map<string, ThemeTrackingEvent>;
+  quotes: Map<string, ResearchQuote>;
   refreshing: boolean;
   dataAsOf: string;
   dataError: string;
@@ -568,29 +568,35 @@ function MonitorView({
   return (
     <div className="rv-stack">
       <div className="rv-status-strip">
-        <span className={historical || dataError ? 'warn' : 'ready'}><Activity size={12} />{historical ? '历史快照' : dataError ? '行情部分不可用' : '实时行情'}</span>
+        <span className={historical || dataError ? 'warn' : 'ready'}><Activity size={12} />{historical ? '历史快照' : dataError ? '行情部分不可用' : '盘中自动记录中'}</span>
         <span>{historical ? '仅展示已记录事件' : dataAsOf ? `更新 ${dataAsOf}` : '等待行情'}</span>
         <button type="button" className={aiMonitorEnabled ? 'active' : ''} onClick={onToggleAiMonitor}>{aiMonitorEnabled ? 'AI 10分钟 · 已开' : '启用 AI 10分钟'}</button>
         <button type="button" className={notificationsEnabled ? 'active' : ''} onClick={onToggleNotifications} title="已触发、升级确认和已失效的系统通知">{notificationsEnabled ? '通知已开' : '系统通知'}</button>
         <button type="button" onClick={onRefresh} disabled={refreshing}>{refreshing ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}刷新</button>
       </div>
       {dataError ? <div className="rv-error"><AlertTriangle size={13} />{dataError}</div> : null}
-      <section className="rv-section">
-        <header><div><strong>今日执行</strong><span>{report.capitalAttackPath.primaryRoute || '主路径待确认'}</span></div><em>{report.capitalAttackPath.todayAttackProbability || '未给概率'}</em></header>
+      <section className="rv-section rv-gate">
+        <header>
+          <div><strong>今日执行 · {report.executionGate.state}</strong><span>{report.capitalAttackPath.primaryRoute || '主路径待确认'}</span></div>
+          <em>{report.capitalAttackPath.todayAttackProbability || '未给概率'}</em>
+        </header>
         <p>{report.capitalAttackPath.actionCondition || report.executionGate.triggerBeforeAction.join('；') || '等待报告条件确认。'}</p>
+        {report.executionGate.todayOnlyDo.length || report.executionGate.todayDoNotDo.length ? (
+          <div className="rv-gate-rules">
+            {report.executionGate.todayOnlyDo.slice(0, 3).map((item) => <span key={item} className="do">只做 · {item}</span>)}
+            {report.executionGate.todayDoNotDo.slice(0, 3).map((item) => <span key={item} className="dont">不做 · {item}</span>)}
+          </div>
+        ) : null}
       </section>
       {[...report.themes].sort((a, b) => a.rank - b.rank).map((theme) => (
-        <section key={theme.id} className="rv-section rv-trigger-section">
-          <header>
-            <div><strong>#{theme.rank} {theme.name}</strong><span>{theme.grade} · {theme.lifecycle} · {theme.capitalType}</span></div>
-            <em>{theme.todayAttackProbability}</em>
-          </header>
-          <div className="rv-trigger-list">
-            {theme.triggerSpecs.length ? theme.triggerSpecs.map((trigger) => (
-              <TriggerRow key={trigger.id} trigger={trigger} event={latest.get(trigger.id)} historical={historical} onOverride={setOverriding} />
-            )) : <div className="rv-muted-row">报告未提供可机读触发条件。</div>}
-          </div>
-        </section>
+        <ThemeBattleCard
+          key={theme.id}
+          theme={theme}
+          quotes={quotes}
+          latest={latest}
+          historical={historical}
+          onOverride={setOverriding}
+        />
       ))}
       <section className="rv-section">
         <header><div><strong>变化时间线</strong><span>只记录状态或证据变化</span></div></header>
@@ -618,6 +624,60 @@ function MonitorView({
   );
 }
 
+function ThemeBattleCard({
+  theme,
+  quotes,
+  latest,
+  historical,
+  onOverride,
+}: {
+  theme: PremarketTheme;
+  quotes: Map<string, ResearchQuote>;
+  latest: Map<string, ThemeTrackingEvent>;
+  historical: boolean;
+  onOverride: (event: ThemeTrackingEvent) => void;
+}) {
+  const stocks = [...theme.stocks].sort((a, b) =>
+    roleOrderIndex(a.role) === roleOrderIndex(b.role)
+      ? a.roleRank - b.roleRank
+      : roleOrderIndex(a.role) - roleOrderIndex(b.role));
+  return (
+    <section className="rv-section rv-trigger-section">
+      <header>
+        <div><strong>#{theme.rank} {theme.name}</strong><span>{theme.grade} · {theme.lifecycle} · {theme.capitalType}</span></div>
+        <em>{theme.todayAttackProbability}</em>
+      </header>
+      {stocks.length ? (
+        <table className="rv-matrix" aria-label={`${theme.name} 角色矩阵`}>
+          <thead>
+            <tr><th>角色</th><th>标的</th><th className="num">现价</th><th className="num">涨跌</th><th>真实性</th></tr>
+          </thead>
+          <tbody>
+            {stocks.map((stock) => {
+              const quote = stock.code ? quotes.get(stock.code) : undefined;
+              const tone = quote ? (quote.changePct > 0 ? 'up' : quote.changePct < 0 ? 'down' : '') : '';
+              return (
+                <tr key={`${stock.code || stock.name}`}>
+                  <td><span className="rv-role-chip">{stock.role || '未标注'}{stock.roleRank > 1 ? ` ${stock.roleRank}` : ''}</span></td>
+                  <td className="rv-matrix-name"><strong>{stock.name}</strong><span>{stock.code || '缺代码'}</span></td>
+                  <td className={`num ${tone}`}>{quote ? quote.price.toFixed(2) : historical ? '—' : '…'}</td>
+                  <td className={`num ${tone}`}>{quote ? formatPercent(quote.changePct) : historical ? '—' : '…'}</td>
+                  <td>{stock.authenticity || '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      ) : <div className="rv-muted-row">报告未提供角色矩阵标的。</div>}
+      <div className="rv-trigger-list">
+        {theme.triggerSpecs.length ? theme.triggerSpecs.map((trigger) => (
+          <TriggerRow key={trigger.id} trigger={trigger} event={latest.get(trigger.id)} historical={historical} onOverride={onOverride} />
+        )) : <div className="rv-muted-row">报告未提供可机读触发条件。</div>}
+      </div>
+    </section>
+  );
+}
+
 export function TriggerRow({
   trigger,
   event,
@@ -641,12 +701,131 @@ export function TriggerRow({
   );
 }
 
-function ReviewView({ report, review, onCreate, onAcceptRules }: { report: PremarketThemeRun; review: ThemeDailyReview | null; onCreate: () => void; onAcceptRules: (review: ThemeDailyReview) => void }) {
-  if (!review) {
-    return <div className="rv-empty"><RotateCcw size={28} /><strong>尚未生成收盘复盘</strong><span>将报告与已记录的盘中状态逐项对照，不使用事后信息改写原判断。</span><button type="button" onClick={onCreate}><Play size={13} />生成复盘</button></div>;
+// ---- 主题台账 --------------------------------------------------------------
+
+const DAY_VERDICT_LABELS: Record<ThemeDayOutcome['verdict'], string> = {
+  hit: '触发兑现',
+  miss: '触发失效',
+  mixed: '有触发有失效',
+  pending: '未触发/观察中',
+  no_data: '缺盘中记录',
+};
+
+function LedgerView({ entries, onOpenReport }: { entries: ThemeLedgerEntry[]; onOpenReport: (reportId: string) => void }) {
+  const [expandedKey, setExpandedKey] = useState<string | null>(entries[0]?.key ?? null);
+  if (!entries.length) {
+    return (
+      <div className="rv-empty compact">
+        <Layers size={24} />
+        <strong>台账为空</strong>
+        <span>入库两天以上的盘前报告后，这里会自动聚合每个题材的连续跟踪轨迹、角色标的与触发兑现率。</span>
+      </div>
+    );
   }
   return (
     <div className="rv-stack">
+      {entries.map((entry) => {
+        const expanded = expandedKey === entry.key;
+        return (
+          <section key={entry.key} className={`rv-section rv-ledger-card${entry.active ? '' : ' inactive'}`}>
+            <header onClick={() => setExpandedKey(expanded ? null : entry.key)} role="button" tabIndex={0}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setExpandedKey(expanded ? null : entry.key); }}>
+              <div>
+                <strong>{entry.active ? `#${entry.latestRank} ` : ''}{entry.name}</strong>
+                <span>
+                  {entry.latestGrade} · {entry.latestLifecycle} · 跟踪 {entry.daysTracked} 天
+                  {entry.active ? '' : ` · 最后出现 ${formatShortDate(entry.lastDate)}`}
+                </span>
+              </div>
+              <em>{entry.hitRatePct === null ? '无触发样本' : `兑现 ${entry.hitRatePct.toFixed(0)}%`}</em>
+            </header>
+            <div className="rv-ledger-track" aria-label={`${entry.name} 逐日轨迹`}>
+              {entry.timeline.map((day) => (
+                <button
+                  key={`${day.reportId}:${day.themeId}`}
+                  type="button"
+                  className={`rv-day-dot verdict-${day.verdict}`}
+                  title={`${day.tradeDate} · 排名#${day.rank} · ${day.grade}级 · ${DAY_VERDICT_LABELS[day.verdict]}${day.triggerTotal ? ` (${day.triggeredCount}/${day.triggerTotal} 触发)` : ''}`}
+                  onClick={() => onOpenReport(day.reportId)}
+                >
+                  <span>{formatShortDate(day.tradeDate)}</span>
+                  <strong>{day.grade}</strong>
+                </button>
+              ))}
+            </div>
+            {expanded ? (
+              <div className="rv-ledger-detail">
+                <p className="rv-ledger-conclusion">{entry.latestConclusion || '最新报告未给出结论。'}</p>
+                <div className="rv-ledger-stocks">
+                  {entry.stocks.map((stock) => (
+                    <span key={stock.code || stock.name} className="rv-stock-chip" title={`出现 ${stock.appearances} 次 · 最后 ${stock.lastDate}`}>
+                      <em>{stock.role}</em>{stock.name}{stock.authenticity ? `（${stock.authenticity}）` : ''}
+                      {stock.appearances > 1 ? <i>×{stock.appearances}</i> : null}
+                    </span>
+                  ))}
+                  {!entry.stocks.length ? <span className="rv-stock-chip"><em>—</em>无标的记录</span> : null}
+                </div>
+              </div>
+            ) : null}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---- 收盘复盘 --------------------------------------------------------------
+
+function ReviewView({
+  report,
+  review,
+  reviews,
+  reports,
+  onCreate,
+  onAcceptRules,
+  onSelectReport,
+}: {
+  report: PremarketThemeRun;
+  review: ThemeDailyReview | null;
+  reviews: ThemeDailyReview[];
+  reports: PremarketThemeRun[];
+  onCreate: () => void;
+  onAcceptRules: (review: ThemeDailyReview) => void;
+  onSelectReport: (reportId: string) => void;
+}) {
+  const knownReports = new Set(reports.map((item) => item.id));
+  const history = [...reviews]
+    .filter((item) => knownReports.has(item.reportId))
+    .sort((a, b) => b.tradeDate.localeCompare(a.tradeDate));
+  const historySection = history.length > 1 ? (
+    <section className="rv-section">
+      <header><div><strong>复盘历史</strong><span>逐日评分趋势，点击切换基线报告</span></div></header>
+      <div className="rv-review-history">
+        {history.slice(0, 14).map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={item.reportId === report.id ? 'active' : ''}
+            onClick={() => onSelectReport(item.reportId)}
+          >
+            <span>{formatShortDate(item.tradeDate)}</span>
+            <strong className={item.score >= 70 ? 'up' : item.score >= 45 ? '' : 'down'}>{item.score}</strong>
+          </button>
+        ))}
+      </div>
+    </section>
+  ) : null;
+  if (!review) {
+    return (
+      <div className="rv-stack">
+        {historySection}
+        <div className="rv-empty compact"><RotateCcw size={28} /><strong>尚未生成收盘复盘</strong><span>将报告与已记录的盘中状态逐项对照，不使用事后信息改写原判断。</span><button type="button" onClick={onCreate}><Play size={13} />生成复盘</button></div>
+      </div>
+    );
+  }
+  return (
+    <div className="rv-stack">
+      {historySection}
       <section className="rv-review-score">
         <div><span>总体评分</span><strong>{review.score}</strong><em>/ 100</em></div>
         <p>{review.summary}</p>
@@ -666,26 +845,63 @@ function ReviewView({ report, review, onCreate, onAcceptRules }: { report: Prema
   );
 }
 
+// ---- 净值回测 --------------------------------------------------------------
+
+interface BacktestPreset {
+  label: string;
+  config: Partial<ThemeBacktestConfig>;
+}
+
+const BACKTEST_PRESETS: BacktestPreset[] = [
+  { label: '龙头 T+1', config: { name: 'Top1·龙头·T+1', stockRole: '龙头', roleRank: 1, holdingDays: 1 } },
+  { label: '中军 T+1', config: { name: 'Top1·第一中军·T+1', stockRole: '中军', roleRank: 1, holdingDays: 1 } },
+  { label: '中军 T+3', config: { name: 'Top1·第一中军·T+3', stockRole: '中军', roleRank: 1, holdingDays: 3 } },
+  { label: '趋势核心 T+2', config: { name: 'Top1·趋势核心·T+2', stockRole: '趋势核心', roleRank: 1, holdingDays: 2 } },
+  { label: '补涨 T+1', config: { name: 'Top1·补涨·T+1', stockRole: '补涨', roleRank: 1, holdingDays: 1 } },
+];
+
+const SCAN_ROLES = ['龙头', '中军', '趋势核心', '补涨'];
+const SCAN_HOLDING_DAYS = [1, 2, 3, 5];
+
+interface ScanCell {
+  role: string;
+  holdingDays: number;
+  totalReturnPct: number;
+  winRatePct: number;
+  sampleCount: number;
+}
+
 function BacktestView({ reports, events, runs, onRun }: { reports: PremarketThemeRun[]; events: ThemeTrackingEvent[]; runs: ThemeBacktestRun[]; onRun: (run: ThemeBacktestRun) => void }) {
   const [config, setConfig] = useState<ThemeBacktestConfig>(DEFAULT_THEME_BACKTEST_CONFIG);
   const [running, setRunning] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [error, setError] = useState('');
   const [activeRun, setActiveRun] = useState<ThemeBacktestRun | null>(runs[0] ?? null);
+  const [scanResults, setScanResults] = useState<ScanCell[] | null>(null);
+
+  const dateRange = useCallback(() => {
+    const eligible = reports.filter((report) => report.tradeDate);
+    if (!eligible.length) throw new Error('没有带交易日期的结构化报告。');
+    const dates = eligible.map((report) => report.tradeDate).sort();
+    const start = config.dateFrom || dates[0];
+    const endBase = config.dateTo || dates[dates.length - 1];
+    const endDate = new Date(`${endBase}T00:00:00+08:00`);
+    endDate.setDate(endDate.getDate() + 12);
+    const end = endDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+    return { start, end };
+  }, [config.dateFrom, config.dateTo, reports]);
+
+  const requireJq = useCallback(async () => {
+    const jqConfig = await loadJqDataConfig();
+    if (!jqConfig.enabled || !jqConfig.passwordConfigured) throw new Error('净值回测需要先在设置中启用 JQData；不会使用样例行情代替。');
+  }, []);
 
   const execute = useCallback(async () => {
     setRunning(true);
     setError('');
     try {
-      const jqConfig = await loadJqDataConfig();
-      if (!jqConfig.enabled || !jqConfig.passwordConfigured) throw new Error('策略回测需要先在设置中启用 JQData；不会使用样例行情代替。');
-      const eligible = reports.filter((report) => report.tradeDate);
-      if (!eligible.length) throw new Error('没有带交易日期的结构化报告。');
-      const dates = eligible.map((report) => report.tradeDate).sort();
-      const start = config.dateFrom || dates[0];
-      const endBase = config.dateTo || dates[dates.length - 1];
-      const endDate = new Date(`${endBase}T00:00:00+08:00`);
-      endDate.setDate(endDate.getDate() + 12);
-      const end = endDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+      await requireJq();
+      const { start, end } = dateRange();
       const backtestEligible = eligibleOpenReports(reports, config);
       const selections = backtestEligible.map((report) => ({ report, candidate: selectBacktestCandidate(report, config) }));
       const codes = Array.from(new Set(selections.map((item) => item.candidate?.stock.code).filter((code): code is string => Boolean(code))));
@@ -721,12 +937,79 @@ function BacktestView({ reports, events, runs, onRun }: { reports: PremarketThem
     } finally {
       setRunning(false);
     }
-  }, [config, events, onRun, reports]);
+  }, [config, dateRange, events, onRun, reports, requireJq]);
+
+  const scan = useCallback(async () => {
+    setScanning(true);
+    setError('');
+    try {
+      await requireJq();
+      const { start, end } = dateRange();
+      const codes = new Set<string>();
+      for (const role of SCAN_ROLES) {
+        const scanConfig = { ...config, stockRole: role, roleRank: 1 };
+        for (const report of eligibleOpenReports(reports, scanConfig)) {
+          const candidate = selectBacktestCandidate(report, scanConfig);
+          if (candidate?.stock.code) codes.add(candidate.stock.code);
+        }
+      }
+      if (!codes.size) throw new Error('没有可用于扫描的角色标的。');
+      const dailyEntries = await Promise.all(Array.from(codes).map(async (code) =>
+        [code, toBacktestBars(await fetchJqHistoricalBars(code, start, end, '1d', { fq: 'pre' }))] as const));
+      const benchmark = toBacktestBars(await fetchJqHistoricalBars(config.benchmarkCode, start, end, '1d', { fq: 'pre' }));
+      if (!benchmark.length) throw new Error('JQData 未返回沪深300基准行情。');
+      const dailyBarsByCode = new Map(dailyEntries);
+      const cells: ScanCell[] = [];
+      for (const role of SCAN_ROLES) {
+        for (const holdingDays of SCAN_HOLDING_DAYS) {
+          const run = runThemeBacktest({
+            reports,
+            events,
+            dailyBarsByCode,
+            benchmarkBars: benchmark,
+            config: { ...config, stockRole: role, roleRank: 1, holdingDays, name: `扫描·${role}·T+${holdingDays}` },
+            dataSource: 'jqdata',
+            dataVersion: new Date().toISOString(),
+          });
+          cells.push({
+            role,
+            holdingDays,
+            totalReturnPct: run.metrics.totalReturnPct,
+            winRatePct: run.metrics.winRatePct,
+            sampleCount: run.metrics.sampleCount,
+          });
+        }
+      }
+      setScanResults(cells);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setScanning(false);
+    }
+  }, [config, dateRange, events, reports, requireJq]);
 
   return (
     <div className="rv-stack">
+      <div className="rv-presets" role="group" aria-label="策略预设">
+        {BACKTEST_PRESETS.map((preset) => (
+          <button
+            key={preset.label}
+            type="button"
+            className={preset.config.stockRole === config.stockRole && preset.config.holdingDays === config.holdingDays ? 'active' : ''}
+            onClick={() => setConfig({ ...config, ...preset.config })}
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
       <section className="rv-section rv-backtest-config">
-        <header><div><strong>{config.name}</strong><span>信号曲线 + 可执行净值</span></div><button type="button" onClick={() => void execute()} disabled={running}>{running ? <Loader2 size={13} className="spin" /> : <Play size={13} />}运行</button></header>
+        <header>
+          <div><strong>{config.name}</strong><span>信号曲线 + 可执行净值 · 防未来函数</span></div>
+          <div className="rv-backtest-actions">
+            <button type="button" onClick={() => void scan()} disabled={scanning || running}>{scanning ? <Loader2 size={13} className="spin" /> : <Crosshair size={13} />}扫描矩阵</button>
+            <button type="button" className="primary" onClick={() => void execute()} disabled={running || scanning}>{running ? <Loader2 size={13} className="spin" /> : <Play size={13} />}运行</button>
+          </div>
+        </header>
         <div className="rv-form-grid">
           <label>题材排名<input type="number" min="1" value={config.themeRank} onChange={(event) => setConfig({ ...config, themeRank: Number(event.target.value) || 1 })} /></label>
           <label>股票角色<select value={config.stockRole} onChange={(event) => setConfig({ ...config, stockRole: event.target.value })}><option>中军</option><option>趋势核心</option><option>龙头</option><option>补涨</option></select></label>
@@ -737,8 +1020,59 @@ function BacktestView({ reports, events, runs, onRun }: { reports: PremarketThem
         </div>
       </section>
       {error ? <div className="rv-error"><AlertTriangle size={13} />{error}</div> : null}
+      {scanResults ? (
+        <section className="rv-section">
+          <header><div><strong>角色 × 持有期扫描</strong><span>信号毛收益（不含费用/成交约束）；点击单元格套用配置</span></div></header>
+          <div className="rv-scan-grid" style={{ gridTemplateColumns: `64px repeat(${SCAN_HOLDING_DAYS.length}, minmax(0, 1fr))` }}>
+            <span className="rv-scan-head" />
+            {SCAN_HOLDING_DAYS.map((days) => <span key={days} className="rv-scan-head">T+{days}</span>)}
+            {SCAN_ROLES.map((role) => (
+              <ScanRow
+                key={role}
+                role={role}
+                cells={scanResults.filter((cell) => cell.role === role)}
+                onPick={(cell) => setConfig({ ...config, stockRole: cell.role, roleRank: 1, holdingDays: cell.holdingDays, name: `Top1·${cell.role}·T+${cell.holdingDays}` })}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {runs.length > 1 ? (
+        <section className="rv-section">
+          <header><div><strong>历史回测记录</strong><span>最近 {Math.min(runs.length, 8)} 次，点击查看</span></div></header>
+          <div className="rv-run-history">
+            {runs.slice(0, 8).map((run) => (
+              <button key={run.id} type="button" className={activeRun?.id === run.id ? 'active' : ''} onClick={() => setActiveRun(run)}>
+                <span>{formatDateTime(run.createdAt)}</span>
+                <strong>{run.config.name}</strong>
+                <em className={run.metrics.totalReturnPct >= 0 ? 'up' : 'down'}>{formatPercent(run.metrics.totalReturnPct)}</em>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
       {activeRun ? <BacktestResults run={activeRun} /> : <div className="rv-empty compact"><BarChart3 size={24} /><strong>等待第一次可信回测</strong><span>只使用结构化报告和 JQData 历史行情，缺失样本会留在排除清单。</span></div>}
     </div>
+  );
+}
+
+function ScanRow({ role, cells, onPick }: { role: string; cells: ScanCell[]; onPick: (cell: ScanCell) => void }) {
+  return (
+    <>
+      <span className="rv-scan-role">{role}</span>
+      {cells.map((cell) => (
+        <button
+          key={`${cell.role}:${cell.holdingDays}`}
+          type="button"
+          className={`rv-scan-cell ${cell.sampleCount ? (cell.totalReturnPct >= 0 ? 'up' : 'down') : 'empty'}`}
+          onClick={() => onPick(cell)}
+          title={`${role} T+${cell.holdingDays} · 胜率 ${cell.winRatePct.toFixed(0)}% · ${cell.sampleCount} 笔`}
+        >
+          <strong>{cell.sampleCount ? formatPercent(cell.totalReturnPct) : '—'}</strong>
+          <span>{cell.sampleCount ? `${cell.winRatePct.toFixed(0)}% · ${cell.sampleCount}笔` : '无样本'}</span>
+        </button>
+      ))}
+    </>
   );
 }
 

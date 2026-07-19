@@ -2,8 +2,8 @@ import type { ChatMessage, CodexChatEvent, CodexTokenUsage, CodexTokenUsageBreak
 import { COWORKER_CATALOG, coworkerById } from './coworkers';
 
 export const CONTEXT_COMPACTION_TOOL_TITLE = 'context_compaction';
-export const CODEX_CONTEXT_COMPACTION_TARGET = 'Codex 已压缩历史上下文';
-export const CODEX_CONTEXT_COMPACTION_OUTPUT = '已收到 Codex 原生上下文压缩事件，后续回复会基于压缩后的线程继续。';
+export const CODEX_CONTEXT_COMPACTION_TARGET = 'GPT 已压缩历史上下文';
+export const CODEX_CONTEXT_COMPACTION_OUTPUT = '已收到 GPT 原生上下文压缩事件，后续回复会基于压缩后的线程继续。';
 
 export function applyCodexEventToConversation(conversation: Conversation, event: CodexChatEvent): Conversation {
   if (event.conversationId && event.conversationId !== conversation.id) {
@@ -68,13 +68,13 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
     if (conversation.status !== 'streaming') return conversation;
     return appendToStreamingAssistant(conversation, now, {
       type: 'error',
-      content: event.message || event.text || 'Codex 返回了未知错误。',
+      content: event.message || event.text || 'GPT 返回了未知错误。',
     }, { status: 'error', runId: undefined, done: true });
   }
 
   if (event.type === 'status') {
     if (conversation.status !== 'streaming') return conversation;
-    return appendStatusBlock(conversation, now, event.message || event.text || 'Codex 正在重试连接。');
+    return appendStatusBlock(conversation, now, event.message || event.text || 'GPT 正在重试连接。');
   }
 
   if (event.type === 'text_delta' && event.text) {

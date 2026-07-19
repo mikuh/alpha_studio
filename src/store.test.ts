@@ -14,6 +14,7 @@ import {
 } from './store';
 import type { ChatMessage, Conversation, CoworkerSelection, SkillSelection } from './types';
 import { INTRADAY_MONITOR_CARD_PROMPT } from './themeAbilities';
+import { DAILY_DECISION_STATE_KEY, JOINT_RESEARCH_EVIDENCE_SCHEMA, beginJointResearch, loadDailyDecisionState } from './dailyDecision';
 
 function textMessage(content = 'hi'): ChatMessage {
   return { id: `msg-${content}`, role: 'user', timestamp: 1, blocks: [{ type: 'text', content }] };
@@ -293,6 +294,86 @@ describe('skill selections on user messages', () => {
     // Automation intents short-circuit into an instant reply; coworker turns
     // must instead go through the normal (streaming) chat pipeline.
     expect(useChatStore.getState().conversations[0].status).not.toBe('idle');
+  });
+});
+
+describe('joint research phased handoff', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    window.localStorage.removeItem(DAILY_DECISION_STATE_KEY);
+    useChatStore.setState({
+      conversations: [conversation('conv-joint', {
+        status: 'streaming',
+        runId: 'run-joint',
+        messages: [
+          textMessage('请联合研判'),
+          { id: 'assistant-joint', role: 'assistant', timestamp: 2, isStreaming: true, blocks: [{ type: 'text', content: '⑦ 风险控制官：已完成' }] },
+        ],
+      })],
+      projects: [],
+      currentConversationId: 'conv-joint',
+      selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+      modelProfiles: defaultModelProfiles(),
+      approvalMode: 'auto',
+      projectSort: 'updated',
+      conversationSort: 'updated',
+      error: null,
+    });
+    beginJointResearch({
+      id: 'joint-auto-close',
+      reportId: 'report-1',
+      reportContentHash: 'hash-1',
+      conversationId: 'conv-joint',
+      selection: { themeId: 'theme-1', themeName: '创新药', stockCodes: [], stockNames: [] },
+    });
+  });
+
+  it('repairs the ①⑦ evidence package instead of treating a coworker status as completion', () => {
+    useChatStore.getState().handleCodexEvent({ type: 'completed', runId: 'run-joint', conversationId: 'conv-joint' });
+
+    const current = useChatStore.getState().conversations[0];
+    const decisionRun = loadDailyDecisionState().jointResearchRuns[0];
+    expect(decisionRun).toMatchObject({ id: 'joint-auto-close', status: 'running', phase: 'analyst_research', evidenceRepairAttempt: 1 });
+    expect(current.status).toBe('streaming');
+    expect(current.messages).toHaveLength(4);
+    expect(current.messages[2]).toMatchObject({ role: 'user' });
+    expect(current.messages[2].blocks[0]).toMatchObject({ type: 'text', content: expect.stringContaining('证据包自动修复') });
+    expect(current.messages[2].coworkers).toBeUndefined();
+
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('starts a separate visible ⑧ turn only after the ①⑦ evidence package passes validation', () => {
+    const evidence = `\`\`\`json\n${JSON.stringify({
+      schema: JOINT_RESEARCH_EVIDENCE_SCHEMA,
+      runId: 'joint-auto-close',
+      reportId: 'report-1',
+      mainlineView: '主线处于发酵期',
+      riskView: '拥挤度偏高',
+      mainlineFindings: ['催化明确'],
+      riskFindings: ['流动性风险'],
+      disagreements: [],
+      dataGaps: [],
+    })}\n\`\`\``;
+    useChatStore.setState((state) => ({
+      conversations: state.conversations.map((item) => item.id === 'conv-joint'
+        ? { ...item, messages: item.messages.map((message) => message.id === 'assistant-joint' ? { ...message, blocks: [{ type: 'text', content: evidence }] } : message) }
+        : item),
+    }));
+
+    useChatStore.getState().handleCodexEvent({ type: 'completed', runId: 'run-joint', conversationId: 'conv-joint' });
+
+    const current = useChatStore.getState().conversations[0];
+    const decisionRun = loadDailyDecisionState().jointResearchRuns[0];
+    expect(decisionRun).toMatchObject({ id: 'joint-auto-close', status: 'running', phase: 'pm_synthesis', evidenceSourceMessageId: 'assistant-joint' });
+    expect(current.status).toBe('streaming');
+    expect(current.messages).toHaveLength(4);
+    expect(current.messages[2].blocks[0]).toMatchObject({ type: 'text', content: expect.stringContaining('⑧综合收口') });
+    expect(current.messages[2].coworkers).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'pm_deputy' })]));
+
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 });
 

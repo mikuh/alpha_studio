@@ -17,6 +17,15 @@ pub fn build_router(state: AppState) -> Router {
             "/api/client/billing-summary",
             post(routes::client_billing_summary),
         )
+        .route("/api/client/devices", post(routes::client_devices))
+        .route(
+            "/api/client/codex-authorization",
+            post(routes::client_codex_authorization),
+        )
+        .route(
+            "/api/client/devices/revoke",
+            post(routes::client_revoke_device),
+        )
         .route("/api/devices/activate", post(routes::device_activate))
         .route("/api/devices/lease", post(routes::device_lease))
         .route("/api/runs/create", post(routes::run_create))

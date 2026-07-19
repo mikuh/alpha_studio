@@ -251,6 +251,22 @@ ${JSON.stringify(validThemeJson(), null, 2)}
     expect(loaded[0].themes[0].stocks[0].name).toBe('中际旭创');
   });
 
+  it('keeps multiple report versions with the same declared id when their content hashes differ', () => {
+    const run = parsePremarketThemeResult(validReply()).run as PremarketThemeRun;
+    savePremarketThemeRun({ ...run, sourceConversationId: 'conversation-1', sourceMessageId: 'message-1' });
+    const saved = savePremarketThemeRun({
+      ...run,
+      generatedAt: '2026-07-07T00:45:00.000Z',
+      contentHash: 'new-version-hash',
+      sourceConversationId: 'conversation-1',
+      sourceMessageId: 'message-2',
+    });
+
+    expect(saved).toHaveLength(2);
+    expect(new Set(saved.map((item) => item.id)).size).toBe(2);
+    expect(saved.every((item) => item.sourceConversationId === 'conversation-1')).toBe(true);
+  });
+
   it('replaces an incomplete legacy draft when the complete same-day sidecar arrives', () => {
     const run = parsePremarketThemeResult(validReply()).run as PremarketThemeRun;
     savePremarketThemeRun({

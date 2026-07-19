@@ -82,8 +82,8 @@ describe('applyCodexEventToConversation', () => {
         id: 'compact-1',
         title: 'context_compaction',
         status: 'completed',
-        target: 'Codex 已压缩历史上下文',
-        output: '已收到 Codex 原生上下文压缩事件，后续回复会基于压缩后的线程继续。',
+        target: 'GPT 已压缩历史上下文',
+        output: '已收到 GPT 原生上下文压缩事件，后续回复会基于压缩后的线程继续。',
       },
     ]);
   });

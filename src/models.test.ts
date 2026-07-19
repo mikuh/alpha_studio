@@ -3,6 +3,7 @@ import {
   EFFORT_OPTIONS,
   effortLabel,
   modelProfilesFromCodexCatalog,
+  publicModelLabel,
   reasoningEffortOptionsForProfile,
   reconcileModelSelection,
   resolveReasoningEffortForProfile,
@@ -62,6 +63,11 @@ describe('Codex model catalog domain', () => {
 
     expect(profiles[0].id).toBe('gpt-5.5');
     expect(profiles.some((profile) => profile.id === 'gpt-5.6-sol')).toBe(false);
+  });
+
+  it('removes the underlying engine brand from customer-facing model labels', () => {
+    expect(publicModelLabel('GPT-5.3-Codex-Spark')).toBe('GPT-5.3-Spark');
+    expect(publicModelLabel('Codex GPT-5.3')).toBe('GPT-5.3');
   });
 
   it('preserves a valid selection and otherwise uses the Codex default', () => {

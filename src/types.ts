@@ -222,6 +222,7 @@ export interface CodexStatus {
   version: string;
   path: string;
   loggedIn: boolean;
+  accountEmail?: string;
   error?: string;
 }
 

@@ -60,6 +60,8 @@ pub struct CodexCheckResult {
     path: String,
     logged_in: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    account_email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -1130,7 +1132,7 @@ async fn codex_check(app: AppHandle) -> Result<CodexCheckResult, String> {
 #[tauri::command]
 async fn codex_login(app: AppHandle) -> Result<CodexLoginResult, String> {
     let (path, _) = resolve_codex_binary().ok_or_else(|| {
-        "No working Codex CLI was found. Install or repair Codex first.".to_string()
+        "No working GPT engine was found. Install or repair GPT first.".to_string()
     })?;
     let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
     mark_codex_device_authorized(&codex_home)?;
@@ -1154,13 +1156,12 @@ async fn codex_subscription_usage(app: AppHandle) -> Result<Value, String> {
     if !check.installed {
         return Err(check
             .error
-            .unwrap_or_else(|| "Codex CLI is not installed or cannot be executed.".to_string()));
+            .unwrap_or_else(|| "GPT is not installed or cannot be executed.".to_string()));
     }
     let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
     if !codex_logged_in(&check.path, &codex_home) {
         return Err(check.error.unwrap_or_else(|| {
-            "Codex CLI is installed but Alpha Studio has not completed device authorization."
-                .to_string()
+            "GPT is installed but Alpha Studio has not completed device authorization.".to_string()
         }));
     }
 
@@ -1169,7 +1170,7 @@ async fn codex_subscription_usage(app: AppHandle) -> Result<Value, String> {
         read_codex_account_rate_limits(&check.path, &codex_home),
     )
     .await
-    .map_err(|_| "Timed out reading Codex subscription usage from Codex CLI.".to_string())??;
+    .map_err(|_| "Timed out reading GPT subscription usage.".to_string())??;
 
     if let Value::Object(object) = &mut result {
         object.insert("source".to_string(), json!("codex-cli"));
@@ -1190,13 +1191,12 @@ async fn codex_models(
     if !check.installed {
         return Err(check
             .error
-            .unwrap_or_else(|| "Codex CLI is not installed or cannot be executed.".to_string()));
+            .unwrap_or_else(|| "GPT is not installed or cannot be executed.".to_string()));
     }
     let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
     if !codex_logged_in(&check.path, &codex_home) {
         return Err(check.error.unwrap_or_else(|| {
-            "Codex CLI is installed but Alpha Studio has not completed device authorization."
-                .to_string()
+            "GPT is installed but Alpha Studio has not completed device authorization.".to_string()
         }));
     }
     read_codex_models(&check.path, &codex_home, request.force_refetch).await
@@ -1397,12 +1397,11 @@ async fn codex_chat_start(
     if !check.installed {
         return Err(check
             .error
-            .unwrap_or_else(|| "Codex CLI is not installed or cannot be executed.".to_string()));
+            .unwrap_or_else(|| "GPT is not installed or cannot be executed.".to_string()));
     }
     if !check.logged_in && provider_config.is_none() {
         return Err(check.error.unwrap_or_else(|| {
-            "Codex CLI is installed but Alpha Studio has not completed device authorization."
-                .to_string()
+            "GPT is installed but Alpha Studio has not completed device authorization.".to_string()
         }));
     }
 
@@ -1454,20 +1453,20 @@ async fn codex_chat_start(
 
     let mut child = command
         .spawn()
-        .map_err(|e| format!("Failed to spawn Codex app-server: {e}"))?;
+        .map_err(|e| format!("Failed to start GPT service: {e}"))?;
 
     let stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "Failed to open Codex stdin".to_string())?;
+        .ok_or_else(|| "Failed to open GPT input".to_string())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "Failed to open Codex stdout".to_string())?;
+        .ok_or_else(|| "Failed to open GPT output".to_string())?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "Failed to open Codex stderr".to_string())?;
+        .ok_or_else(|| "Failed to open GPT error output".to_string())?;
 
     {
         let mut children = state.children.lock().await;
@@ -1759,7 +1758,7 @@ impl CodexDriver {
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
-            .ok_or_else(|| "Codex app-server did not return a thread id".to_string())?;
+            .ok_or_else(|| "GPT service did not return a thread id".to_string())?;
 
         emit_event(
             &self.app,
@@ -1804,8 +1803,8 @@ impl CodexDriver {
         loop {
             let line = match reader.next_line().await {
                 Ok(Some(line)) => line,
-                Ok(None) => return Err("Codex app-server closed during the turn".to_string()),
-                Err(e) => return Err(format!("Failed to read from Codex app-server: {e}")),
+                Ok(None) => return Err("GPT service closed during the turn".to_string()),
+                Err(e) => return Err(format!("Failed to read from GPT service: {e}")),
             };
             let trimmed = line.trim();
             if trimmed.is_empty() || !trimmed.starts_with('{') {
@@ -2009,11 +2008,11 @@ fn normalize_codex_model_page(
     let result = response
         .get("result")
         .and_then(Value::as_object)
-        .ok_or_else(|| "Codex app-server returned malformed model list data.".to_string())?;
+        .ok_or_else(|| "GPT service returned malformed model list data.".to_string())?;
     let data = result
         .get("data")
         .and_then(Value::as_array)
-        .ok_or_else(|| "Codex app-server returned malformed model list data.".to_string())?;
+        .ok_or_else(|| "GPT service returned malformed model list data.".to_string())?;
 
     for raw in data {
         if let Some(model) = normalize_codex_model(raw) {
@@ -2028,7 +2027,7 @@ fn normalize_codex_model_page(
         Some(Value::String(cursor)) if !cursor.trim().is_empty() => {
             Ok(Some(cursor.trim().to_string()))
         }
-        Some(_) => Err("Codex app-server returned an invalid model pagination cursor.".to_string()),
+        Some(_) => Err("GPT service returned an invalid model pagination cursor.".to_string()),
     }
 }
 
@@ -2158,15 +2157,13 @@ where
             break;
         };
         if !seen_cursors.insert(next_cursor.clone()) {
-            return Err(
-                "Codex app-server returned a repeated model pagination cursor.".to_string(),
-            );
+            return Err("GPT service returned a repeated model pagination cursor.".to_string());
         }
         request_id += 1;
     }
 
     if catalog.is_empty() {
-        return Err("Codex app-server returned no visible valid models.".to_string());
+        return Err("GPT service returned no visible valid models.".to_string());
     }
     Ok(catalog)
 }
@@ -2181,11 +2178,11 @@ where
     stdin
         .write_all(&bytes)
         .await
-        .map_err(|e| format!("Failed to write to Codex app-server: {e}"))?;
+        .map_err(|e| format!("Failed to write to GPT service: {e}"))?;
     stdin
         .flush()
         .await
-        .map_err(|e| format!("Failed to flush Codex app-server: {e}"))?;
+        .map_err(|e| format!("Failed to flush GPT service: {e}"))?;
     Ok(())
 }
 
@@ -2223,8 +2220,8 @@ where
                     return Ok(message);
                 }
             }
-            Ok(None) => return Err("Codex app-server closed before responding".to_string()),
-            Err(e) => return Err(format!("Failed to read from Codex app-server: {e}")),
+            Ok(None) => return Err("GPT service closed before responding".to_string()),
+            Err(e) => return Err(format!("Failed to read from GPT service: {e}")),
         }
     }
 }
@@ -2492,7 +2489,7 @@ fn map_app_server_notification(
             let error = params.get("error").unwrap_or(params);
             let message = first_string(error, &["message", "error"])
                 .or_else(|| first_string(params, &["message"]))
-                .unwrap_or_else(|| "Codex reported an error.".to_string());
+                .unwrap_or_else(|| "GPT reported an error.".to_string());
             let event_type = if is_retryable_app_server_error(params) {
                 "status"
             } else {
@@ -5033,7 +5030,7 @@ fn sanitize_model_provider(
     }
     if matches!(provider_id, "ollama" | "lmstudio") {
         return Err(format!(
-            "Provider ID `{provider_id}` 是 Codex 保留名称，请换一个自定义 ID。"
+            "Provider ID `{provider_id}` 是 GPT 保留名称，请换一个自定义 ID。"
         ));
     }
 
@@ -6352,20 +6349,27 @@ fn check_codex(app: Option<&AppHandle>) -> CodexCheckResult {
                         version,
                         path,
                         logged_in: false,
+                        account_email: None,
                         error: Some(error),
                     };
                 }
             };
             let logged_in = codex_logged_in(&path, &codex_home);
+            let account_email = if logged_in {
+                codex_account_email(&codex_home)
+            } else {
+                None
+            };
             CodexCheckResult {
                 installed: true,
                 version,
                 path,
                 logged_in,
+                account_email,
                 error: if logged_in {
                     None
                 } else {
-                    Some("Codex CLI is installed, but Alpha Studio has not completed device authorization. Click \"Authorize Codex CLI\" to sign in.".to_string())
+                    Some("GPT is installed, but Alpha Studio has not completed device authorization. Click \"Authorize GPT\" to sign in.".to_string())
                 },
             }
         }
@@ -6374,8 +6378,9 @@ fn check_codex(app: Option<&AppHandle>) -> CodexCheckResult {
             version: String::new(),
             path: String::new(),
             logged_in: false,
+            account_email: None,
             error: Some(
-                "No working Codex CLI was found. Install or repair Codex first.".to_string(),
+                "No working GPT engine was found. Install or repair GPT first.".to_string(),
             ),
         },
     }
@@ -6397,19 +6402,19 @@ async fn read_codex_account_rate_limits(path: &str, codex_home: &Path) -> Result
 
     let mut child = command
         .spawn()
-        .map_err(|e| format!("Failed to spawn Codex app-server: {e}"))?;
+        .map_err(|e| format!("Failed to start GPT service: {e}"))?;
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "Failed to open Codex stdin".to_string())?;
+        .ok_or_else(|| "Failed to open GPT input".to_string())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "Failed to open Codex stdout".to_string())?;
+        .ok_or_else(|| "Failed to open GPT output".to_string())?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "Failed to open Codex stderr".to_string())?;
+        .ok_or_else(|| "Failed to open GPT error output".to_string())?;
 
     let stderr_buffer = Arc::new(Mutex::new(String::new()));
     let stderr_buffer_reader = stderr_buffer.clone();
@@ -6442,7 +6447,7 @@ async fn read_codex_account_rate_limits(path: &str, codex_home: &Path) -> Result
         response
             .get("result")
             .cloned()
-            .ok_or_else(|| "Codex app-server did not return rate limit data".to_string())
+            .ok_or_else(|| "GPT service did not return rate limit data".to_string())
     }
     .await;
 
@@ -6482,7 +6487,7 @@ async fn read_codex_models(
 
     let mut child = command
         .spawn()
-        .map_err(|error| format!("Failed to spawn Codex app-server: {error}"))?;
+        .map_err(|error| format!("Failed to start GPT service: {error}"))?;
     let request_result = match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
         (Some(mut stdin), Some(stdout), Some(stderr)) => {
             tokio::spawn(async move {
@@ -6497,10 +6502,10 @@ async fn read_codex_models(
             .await
             {
                 Ok(result) => result,
-                Err(_) => Err("Timed out reading Codex model catalog from Codex CLI.".to_string()),
+                Err(_) => Err("Timed out reading the GPT model catalog.".to_string()),
             }
         }
-        _ => Err("Failed to open Codex app-server stdio.".to_string()),
+        _ => Err("Failed to open GPT service I/O.".to_string()),
     };
 
     let _ = child.kill().await;
@@ -6549,7 +6554,7 @@ fn home_dir() -> Option<String> {
 }
 
 fn prepare_alpha_studio_codex_home(app: Option<&AppHandle>) -> Result<PathBuf, String> {
-    let home = home_dir().ok_or_else(|| "Failed to resolve HOME for Codex config.".to_string())?;
+    let home = home_dir().ok_or_else(|| "Failed to resolve HOME for GPT config.".to_string())?;
     let source = PathBuf::from(&home).join(".codex");
     let target = alpha_studio_codex_home_path_from(&home);
     let preserve_authorization = target.join(CODEX_DEVICE_AUTHORIZATION_MARKER).is_file();
@@ -6564,7 +6569,7 @@ fn prepare_alpha_studio_codex_home(app: Option<&AppHandle>) -> Result<PathBuf, S
 }
 
 fn alpha_studio_codex_home_path() -> Result<PathBuf, String> {
-    let home = home_dir().ok_or_else(|| "Failed to resolve HOME for Codex config.".to_string())?;
+    let home = home_dir().ok_or_else(|| "Failed to resolve HOME for GPT config.".to_string())?;
     Ok(alpha_studio_codex_home_path_from(&home))
 }
 
@@ -6593,7 +6598,7 @@ fn prepare_alpha_studio_codex_home_from_with_builtin(
     builtin_skills: Option<&Path>,
 ) -> Result<(), String> {
     fs::create_dir_all(target)
-        .map_err(|e| format!("Failed to create Alpha Studio Codex home: {e}"))?;
+        .map_err(|e| format!("Failed to create Alpha Studio GPT workspace: {e}"))?;
 
     if !preserve_authorization {
         for file_name in ["auth.json", "installation_id"] {
@@ -6633,9 +6638,14 @@ fn prepare_alpha_studio_codex_home_from_with_builtin(
 fn alpha_studio_builtin_skills_path(app: Option<&AppHandle>) -> Option<PathBuf> {
     if let Some(app) = app {
         if let Ok(resource_dir) = app.path().resource_dir() {
-            let resource_skills = resource_dir.join("skills");
-            if resource_skills.is_dir() {
-                return Some(resource_skills);
+            // New bundles map the repository skills directory directly to
+            // Contents/Resources/skills. Older builds used a relative resource
+            // entry, which Tauri materialized under _up_/skills.
+            for relative_path in ["skills", "_up_/skills"] {
+                let resource_skills = resource_dir.join(relative_path);
+                if resource_skills.is_dir() {
+                    return Some(resource_skills);
+                }
             }
         }
     }
@@ -6668,7 +6678,7 @@ fn ensure_agents_config_section(config_path: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => {
             return Err(format!(
-                "Failed to read Codex config {}: {e}",
+                "Failed to read GPT config {}: {e}",
                 config_path.display(),
                 e = error
             ))
@@ -6688,12 +6698,8 @@ fn ensure_agents_config_section(config_path: &Path) -> Result<(), String> {
     content.push_str(&format!(
         "\n[agents]\n# Added by Alpha Studio: allow all AI coworkers to run in parallel.\nmax_threads = {COWORKER_AGENTS_MAX_THREADS}\n",
     ));
-    fs::write(config_path, content).map_err(|e| {
-        format!(
-            "Failed to update Codex config {}: {e}",
-            config_path.display()
-        )
-    })
+    fs::write(config_path, content)
+        .map_err(|e| format!("Failed to update GPT config {}: {e}", config_path.display()))
 }
 
 /// Materializes the AI coworker catalog into Codex custom agent definitions
@@ -6717,7 +6723,7 @@ fn sync_coworker_agents(
 ) -> Result<usize, String> {
     remove_existing_path(agents_dir)?;
     fs::create_dir_all(agents_dir)
-        .map_err(|e| format!("Failed to create Codex agents directory: {e}"))?;
+        .map_err(|e| format!("Failed to create GPT agents directory: {e}"))?;
     let mut written = 0;
     for definition in definitions {
         if !is_valid_coworker_agent_id(&definition.id) {
@@ -6824,23 +6830,23 @@ fn revoke_alpha_studio_codex_authorization_from(target: &Path) -> Result<(), Str
 
 fn mark_codex_device_authorized(target: &Path) -> Result<(), String> {
     fs::create_dir_all(target)
-        .map_err(|e| format!("Failed to create Alpha Studio Codex home: {e}"))?;
+        .map_err(|e| format!("Failed to create Alpha Studio GPT workspace: {e}"))?;
     fs::write(
         target.join(CODEX_DEVICE_AUTHORIZATION_MARKER),
-        "Codex device authorization was started from Alpha Studio.\n",
+        "GPT device authorization was started from Alpha Studio.\n",
     )
-    .map_err(|e| format!("Failed to save Codex authorization marker: {e}"))
+    .map_err(|e| format!("Failed to save GPT authorization marker: {e}"))
 }
 
 fn copy_codex_home_file(source: &Path, target: &Path) -> Result<(), String> {
     remove_existing_path(target)?;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create Codex config directory: {e}"))?;
+            .map_err(|e| format!("Failed to create GPT config directory: {e}"))?;
     }
     fs::copy(source, target)
         .map(|_| ())
-        .map_err(|e| format!("Failed to copy Codex config file {}: {e}", source.display()))
+        .map_err(|e| format!("Failed to copy GPT config file {}: {e}", source.display()))
 }
 
 fn link_codex_home_directory(source: &Path, target: &Path) -> Result<(), String> {
@@ -6848,7 +6854,7 @@ fn link_codex_home_directory(source: &Path, target: &Path) -> Result<(), String>
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(source, target)
-            .map_err(|e| format!("Failed to link Codex directory {}: {e}", source.display()))
+            .map_err(|e| format!("Failed to link GPT directory {}: {e}", source.display()))
     }
     #[cfg(not(unix))]
     {
@@ -6863,11 +6869,11 @@ fn copy_codex_home_directory(source: &Path, target: &Path) -> Result<(), String>
 
 fn copy_codex_home_directory_contents(source: &Path, target: &Path) -> Result<(), String> {
     fs::create_dir_all(target)
-        .map_err(|e| format!("Failed to create Codex directory {}: {e}", target.display()))?;
+        .map_err(|e| format!("Failed to create GPT directory {}: {e}", target.display()))?;
     for entry in fs::read_dir(source)
-        .map_err(|e| format!("Failed to read Codex directory {}: {e}", source.display()))?
+        .map_err(|e| format!("Failed to read GPT directory {}: {e}", source.display()))?
     {
-        let entry = entry.map_err(|e| format!("Failed to read Codex directory entry: {e}"))?;
+        let entry = entry.map_err(|e| format!("Failed to read GPT directory entry: {e}"))?;
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
         if source_path.is_dir() {
@@ -7325,7 +7331,7 @@ async fn launch_codex_login(path: &str, codex_home: &Path) -> Result<(), String>
             "env CODEX_HOME={} {} login; echo; echo {}",
             shell_quote(&codex_home.to_string_lossy()),
             shell_quote(path),
-            shell_quote("Return to Alpha Studio and click retry after Codex login finishes."),
+            shell_quote("Return to Alpha Studio after GPT login finishes."),
         );
         let script = format!(
             "tell application \"Terminal\" to do script \"{}\"",
@@ -7338,13 +7344,13 @@ async fn launch_codex_login(path: &str, codex_home: &Path) -> Result<(), String>
             .arg("tell application \"Terminal\" to activate")
             .output()
             .await
-            .map_err(|e| format!("Failed to launch Codex login: {e}"))?;
+            .map_err(|e| format!("Failed to launch GPT login: {e}"))?;
         if output.status.success() {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             Err(if stderr.is_empty() {
-                "Failed to launch Codex login in Terminal.".to_string()
+                "Failed to launch GPT login in Terminal.".to_string()
             } else {
                 stderr
             })
@@ -7357,7 +7363,7 @@ async fn launch_codex_login(path: &str, codex_home: &Path) -> Result<(), String>
             .env("CODEX_HOME", codex_home)
             .spawn()
             .map(|_| ())
-            .map_err(|e| format!("Failed to launch Codex login: {e}"))
+            .map_err(|e| format!("Failed to launch GPT login: {e}"))
     }
 }
 
@@ -7380,6 +7386,24 @@ fn codex_logged_in(path: &str, codex_home: &Path) -> bool {
         Ok(output) => output.status.success(),
         Err(_) => false,
     }
+}
+
+fn codex_account_email(codex_home: &Path) -> Option<String> {
+    let text = fs::read_to_string(codex_home.join("auth.json")).ok()?;
+    let auth = serde_json::from_str::<Value>(&text).ok()?;
+    let id_token = auth.get("tokens")?.get("id_token")?.as_str()?.trim();
+    let payload = id_token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload))
+        .ok()?;
+    let claims = serde_json::from_slice::<Value>(&bytes).ok()?;
+    claims
+        .get("email")?
+        .as_str()
+        .map(str::trim)
+        .filter(|email| !email.is_empty())
+        .map(str::to_string)
 }
 
 fn first_non_empty_line(bytes: &[u8]) -> Option<String> {
@@ -7520,7 +7544,7 @@ pub fn parse_codex_json_event(
         )),
         "turn.failed" | "response.failed" => {
             let message = first_string(&raw, &["message", "error"])
-                .unwrap_or_else(|| "Codex turn failed.".to_string());
+                .unwrap_or_else(|| "GPT turn failed.".to_string());
             Some(event(
                 "error",
                 run_id,
@@ -7539,7 +7563,7 @@ pub fn parse_codex_json_event(
                     raw.get("error")
                         .and_then(|v| first_string(v, &["message", "code"]))
                 })
-                .unwrap_or_else(|| "Codex reported an error.".to_string());
+                .unwrap_or_else(|| "GPT reported an error.".to_string());
             Some(event(
                 "error",
                 run_id,
@@ -8417,7 +8441,7 @@ mod tests {
 
         assert_eq!(
             error,
-            "Codex app-server returned a repeated model pagination cursor."
+            "GPT service returned a repeated model pagination cursor."
         );
     }
 
@@ -8468,7 +8492,7 @@ mod tests {
             .unwrap_err();
         server_task.await.unwrap();
 
-        assert_eq!(error, "Codex app-server returned no visible valid models.");
+        assert_eq!(error, "GPT service returned no visible valid models.");
     }
 
     #[test]
@@ -8888,10 +8912,8 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "tool_completed");
         assert_eq!(events[0].title.as_deref(), Some("fileChange"));
-        let rendered_changes: Value = serde_json::from_str(
-            events[0].text.as_deref().expect("file change details"),
-        )
-        .unwrap();
+        let rendered_changes: Value =
+            serde_json::from_str(events[0].text.as_deref().expect("file change details")).unwrap();
         assert_eq!(rendered_changes, changes);
     }
 
@@ -9148,11 +9170,48 @@ mod tests {
             .join("alpha-studio-daily-theme-research")
             .join("SKILL.md")
             .exists());
+        assert!(target
+            .join("skills")
+            .join("alpha-studio-intraday-monitor")
+            .join("SKILL.md")
+            .exists());
+        assert!(target
+            .join("skills")
+            .join("alpha-studio-report-review")
+            .join("SKILL.md")
+            .exists());
 
         let config = fs::read_to_string(target.join("config.toml")).unwrap();
         assert!(config.contains("model = \"gpt-5.5\""));
         assert!(config.contains("[agents]"));
         assert!(config.contains("max_threads = 9"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_codex_account_email_from_the_private_auth_token() {
+        let root = std::env::temp_dir().join(format!(
+            "alpha-studio-codex-identity-test-{}",
+            generate_run_id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(br#"{"email":"managed@example.com","sub":"user_1"}"#);
+        fs::write(
+            root.join("auth.json"),
+            json!({
+                "auth_mode": "chatgpt",
+                "tokens": { "id_token": format!("header.{payload}.signature") }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            codex_account_email(&root).as_deref(),
+            Some("managed@example.com")
+        );
 
         let _ = fs::remove_dir_all(root);
     }

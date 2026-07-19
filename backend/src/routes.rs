@@ -19,7 +19,7 @@ use crate::{
     },
     license::{
         can_activate_device, codex_subscription_available, normalize_authorization_code,
-        normalize_company_name, CLIENT_DEVICE_LEASE_YEARS,
+        normalize_company_name, CLIENT_DEVICE_LEASE_DAYS,
     },
     state::AppState,
     tokens::RunTokenClaims,
@@ -111,10 +111,10 @@ pub async fn device_activate(
     let row = sqlx::query(
         r#"
         insert into devices (id, tenant_id, user_id, fingerprint, name, status, lease_expires_at, last_seen_at)
-        values ($1, $2, $3, $4, $5, 'active', now() + make_interval(years => $6), now())
+        values ($1, $2, $3, $4, $5, 'active', now() + make_interval(days => $6), now())
         on conflict (tenant_id, fingerprint)
         do update set name = excluded.name, user_id = excluded.user_id, status = 'active',
-            lease_expires_at = now() + make_interval(years => $6), last_seen_at = now()
+            lease_expires_at = now() + make_interval(days => $6), last_seen_at = now()
         returning id, lease_expires_at
         "#,
     )
@@ -123,7 +123,7 @@ pub async fn device_activate(
     .bind(&request.user_id)
     .bind(&request.fingerprint)
     .bind(&request.name)
-    .bind(CLIENT_DEVICE_LEASE_YEARS)
+    .bind(CLIENT_DEVICE_LEASE_DAYS)
     .fetch_one(&state.db)
     .await?;
     write_audit(
@@ -152,15 +152,17 @@ pub async fn device_lease(
 ) -> ApiResult<Json<Value>> {
     let row = sqlx::query(
         r#"
-        update devices
-        set lease_expires_at = now() + make_interval(years => $3), last_seen_at = now()
-        where tenant_id = $1 and id = $2 and status = 'active'
-        returning lease_expires_at
+        update devices d
+        set lease_expires_at = now() + make_interval(days => $3), last_seen_at = now()
+        from tenants t
+        where d.tenant_id = $1 and d.id = $2 and d.status = 'active'
+          and t.id = d.tenant_id and t.status = 'active'
+        returning d.lease_expires_at
         "#,
     )
     .bind(&request.tenant_id)
     .bind(&request.device_id)
-    .bind(CLIENT_DEVICE_LEASE_YEARS)
+    .bind(CLIENT_DEVICE_LEASE_DAYS)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| ApiError::Forbidden("device is not active for this tenant".to_string()))?;
@@ -202,6 +204,164 @@ pub async fn device_lease(
         "models": models,
         "codexAccounts": codex_accounts
     })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDevicesRequest {
+    tenant_id: String,
+    device_id: String,
+    fingerprint: String,
+}
+
+pub async fn client_devices(
+    State(state): State<AppState>,
+    Json(request): Json<ClientDevicesRequest>,
+) -> ApiResult<Json<Value>> {
+    ensure_device_identity(
+        &state.db,
+        &request.tenant_id,
+        &request.device_id,
+        &request.fingerprint,
+    )
+    .await?;
+    Ok(Json(
+        client_device_summary(&state.db, &request.tenant_id, &request.device_id).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientCodexAuthorizationRequest {
+    tenant_id: String,
+    device_id: String,
+    fingerprint: String,
+    email: String,
+}
+
+pub async fn client_codex_authorization(
+    State(state): State<AppState>,
+    Json(request): Json<ClientCodexAuthorizationRequest>,
+) -> ApiResult<Json<Value>> {
+    ensure_device_identity(
+        &state.db,
+        &request.tenant_id,
+        &request.device_id,
+        &request.fingerprint,
+    )
+    .await?;
+    let row = sqlx::query(
+        r#"
+        select a.id, a.email, t.codex_subscription_enabled,
+          t.codex_subscription_expires_at
+        from tenants t
+        join codex_account_tenants cat on cat.tenant_id = t.id
+        join codex_accounts a on a.id = cat.account_id
+        where t.id = $1 and t.status = 'active'
+          and a.status = 'active'
+          and lower(a.email) = lower($2)
+          and (a.expires_at is null or a.expires_at > now())
+        order by a.created_at
+        limit 1
+        "#,
+    )
+    .bind(&request.tenant_id)
+    .bind(request.email.trim())
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| {
+        ApiError::Forbidden(
+            "the signed-in GPT account is not assigned by the administrator".to_string(),
+        )
+    })?;
+    let subscription_expires_at = row
+        .try_get::<Option<chrono::DateTime<Utc>>, _>("codex_subscription_expires_at")
+        .unwrap_or(None);
+    if !codex_subscription_available(
+        row.get::<bool, _>("codex_subscription_enabled"),
+        subscription_expires_at,
+        Utc::now(),
+    ) {
+        return Err(ApiError::Forbidden(
+            "GPT enterprise authorization is disabled or expired".to_string(),
+        ));
+    }
+    write_audit(
+        &state.db,
+        &request.tenant_id,
+        "client.codex_authorize",
+        json!({
+            "deviceId": request.device_id,
+            "codexAccountId": row.get::<String, _>("id"),
+            "email": row.get::<String, _>("email")
+        }),
+    )
+    .await?;
+    Ok(Json(json!({
+        "authorized": true,
+        "accountId": row.get::<String, _>("id"),
+        "email": row.get::<String, _>("email")
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientRevokeDeviceRequest {
+    tenant_id: String,
+    device_id: String,
+    fingerprint: String,
+    target_device_id: String,
+}
+
+pub async fn client_revoke_device(
+    State(state): State<AppState>,
+    Json(request): Json<ClientRevokeDeviceRequest>,
+) -> ApiResult<Json<Value>> {
+    ensure_device_identity(
+        &state.db,
+        &request.tenant_id,
+        &request.device_id,
+        &request.fingerprint,
+    )
+    .await?;
+    let administrator_id = first_tenant_device_id(&state.db, &request.tenant_id).await?;
+    if administrator_id != request.device_id {
+        return Err(ApiError::Forbidden(
+            "only the first installed device can revoke device authorization".to_string(),
+        ));
+    }
+    if request.target_device_id == request.device_id {
+        return Err(ApiError::BadRequest(
+            "the administrator device cannot revoke itself".to_string(),
+        ));
+    }
+    let revoked = sqlx::query(
+        r#"
+        update devices
+        set status = 'revoked', lease_expires_at = now()
+        where tenant_id = $1 and id = $2 and status = 'active'
+        returning name
+        "#,
+    )
+    .bind(&request.tenant_id)
+    .bind(&request.target_device_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("active target device was not found".to_string()))?;
+    write_audit(
+        &state.db,
+        &request.tenant_id,
+        "client.device.revoke",
+        json!({
+            "administratorDeviceId": request.device_id,
+            "targetDeviceId": request.target_device_id,
+            "targetDeviceName": revoked.get::<String, _>("name")
+        }),
+    )
+    .await?;
+    Ok(Json(
+        client_device_summary(&state.db, &request.tenant_id, &request.device_id).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1020,9 +1180,19 @@ pub async fn admin_list_codex_accounts(
         r#"
         select c.id, c.tenant_id, t.name as tenant_name, c.email, c.login_secret,
           c.login_hint, c.plan, c.status, c.seat_limit, c.expires_at,
-          c.assigned_at, c.created_at, c.updated_at
+          c.assigned_at, c.created_at, c.updated_at,
+          coalesce(assignments.tenant_ids, array[]::text[]) as tenant_ids,
+          coalesce(assignments.tenant_names, array[]::text[]) as tenant_names
         from codex_accounts c
         left join tenants t on t.id = c.tenant_id
+        left join lateral (
+          select
+            array_agg(cat.tenant_id order by assigned_tenant.name, cat.tenant_id) as tenant_ids,
+            array_agg(assigned_tenant.name order by assigned_tenant.name, cat.tenant_id) as tenant_names
+          from codex_account_tenants cat
+          join tenants assigned_tenant on assigned_tenant.id = cat.tenant_id
+          where cat.account_id = c.id
+        ) assignments on true
         order by c.created_at desc
         "#,
     )
@@ -1037,6 +1207,8 @@ pub async fn admin_list_codex_accounts(
 #[serde(rename_all = "camelCase")]
 pub struct CodexAccountSaveRequest {
     id: Option<String>,
+    #[serde(default)]
+    tenant_ids: Option<Vec<String>>,
     tenant_id: Option<String>,
     email: String,
     login_secret: Option<String>,
@@ -1064,7 +1236,10 @@ pub async fn admin_save_codex_account(
         .id
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| format!("codex_{}", Uuid::new_v4().simple()));
+    let tenant_ids = normalized_codex_tenant_ids(request.tenant_ids, request.tenant_id);
+    let primary_tenant_id = tenant_ids.first().cloned();
     let login_secret = request.login_secret.unwrap_or_default();
+    let mut transaction = state.db.begin().await?;
     sqlx::query(
         r#"
         insert into codex_accounts (
@@ -1086,7 +1261,7 @@ pub async fn admin_save_codex_account(
         "#,
     )
     .bind(&id)
-    .bind(&request.tenant_id)
+    .bind(&primary_tenant_id)
     .bind(request.email.trim())
     .bind(login_secret.trim())
     .bind(request.login_hint.trim())
@@ -1094,13 +1269,25 @@ pub async fn admin_save_codex_account(
     .bind(request.status.trim())
     .bind(request.seat_limit)
     .bind(request.expires_at)
-    .execute(&state.db)
+    .execute(&mut *transaction)
     .await?;
+    sqlx::query("delete from codex_account_tenants where account_id = $1")
+        .bind(&id)
+        .execute(&mut *transaction)
+        .await?;
+    for tenant_id in &tenant_ids {
+        sqlx::query("insert into codex_account_tenants (account_id, tenant_id) values ($1, $2)")
+            .bind(&id)
+            .bind(tenant_id)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await?;
     write_audit(
         &state.db,
-        request.tenant_id.as_deref().unwrap_or("system"),
+        primary_tenant_id.as_deref().unwrap_or("system"),
         "codex_account.save",
-        json!({ "email": request.email, "tenantId": request.tenant_id }),
+        json!({ "email": request.email, "tenantIds": tenant_ids }),
     )
     .await?;
     Ok(Json(json!({ "id": id })))
@@ -1450,26 +1637,117 @@ async fn ensure_device_capacity_for_fingerprint(
     max_devices: i32,
 ) -> ApiResult<()> {
     let max_devices = max_devices as i64;
+    let existing_status =
+        sqlx::query("select status from devices where tenant_id = $1 and fingerprint = $2")
+            .bind(tenant_id)
+            .bind(fingerprint)
+            .fetch_optional(pool)
+            .await?
+            .map(|row| row.get::<String, _>("status"));
+    if existing_status.as_deref() == Some("revoked") {
+        return Err(ApiError::Forbidden(
+            "device authorization was revoked by the administrator".to_string(),
+        ));
+    }
     let active_devices =
         sqlx::query("select count(*) from devices where tenant_id = $1 and status = 'active'")
             .bind(tenant_id)
             .fetch_one(pool)
             .await?
             .get::<i64, _>(0);
-    let fingerprint_exists = sqlx::query(
-        "select 1 from devices where tenant_id = $1 and fingerprint = $2 and status = 'active'",
-    )
-    .bind(tenant_id)
-    .bind(fingerprint)
-    .fetch_optional(pool)
-    .await?
-    .is_some();
+    let fingerprint_exists = existing_status.as_deref() == Some("active");
     if !can_activate_device(active_devices, max_devices, fingerprint_exists) {
         return Err(ApiError::Forbidden(
             "tenant device limit reached".to_string(),
         ));
     }
     Ok(())
+}
+
+async fn ensure_device_identity(
+    pool: &PgPool,
+    tenant_id: &str,
+    device_id: &str,
+    fingerprint: &str,
+) -> ApiResult<()> {
+    let exists = sqlx::query(
+        r#"
+        select 1 from devices
+        where tenant_id = $1 and id = $2 and fingerprint = $3
+          and status = 'active' and lease_expires_at > now()
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(device_id)
+    .bind(fingerprint)
+    .fetch_optional(pool)
+    .await?
+    .is_some();
+    if exists {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden(
+            "device identity is invalid or inactive".to_string(),
+        ))
+    }
+}
+
+async fn first_tenant_device_id(pool: &PgPool, tenant_id: &str) -> ApiResult<String> {
+    sqlx::query("select id from devices where tenant_id = $1 order by created_at, id limit 1")
+        .bind(tenant_id)
+        .fetch_optional(pool)
+        .await?
+        .map(|row| row.get::<String, _>("id"))
+        .ok_or_else(|| ApiError::NotFound("tenant has no installed devices".to_string()))
+}
+
+async fn client_device_summary(
+    pool: &PgPool,
+    tenant_id: &str,
+    current_device_id: &str,
+) -> ApiResult<Value> {
+    let administrator_id = first_tenant_device_id(pool, tenant_id).await?;
+    let tenant = sqlx::query("select max_devices from tenants where id = $1")
+        .bind(tenant_id)
+        .fetch_one(pool)
+        .await?;
+    let rows = sqlx::query(
+        r#"
+        select id, name, status, lease_expires_at, last_seen_at, created_at
+        from devices
+        where tenant_id = $1
+        order by created_at, id
+        "#,
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await?;
+    let active_devices = rows
+        .iter()
+        .filter(|row| row.get::<String, _>("status") == "active")
+        .count();
+    let devices = rows
+        .into_iter()
+        .map(|row| {
+            let id = row.get::<String, _>("id");
+            json!({
+                "id": id,
+                "name": row.get::<String, _>("name"),
+                "status": row.get::<String, _>("status"),
+                "isCurrent": id == current_device_id,
+                "isAdministrator": id == administrator_id,
+                "leaseExpiresAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("lease_expires_at").unwrap_or(None),
+                "lastSeenAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("last_seen_at").unwrap_or(None),
+                "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at")
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "activeDevices": active_devices,
+        "maxDevices": tenant.get::<i32, _>("max_devices"),
+        "isAdministrator": current_device_id == administrator_id,
+        "devices": devices
+    }))
 }
 
 async fn ensure_device_lease(pool: &PgPool, tenant_id: &str, device_id: &str) -> ApiResult<()> {
@@ -1647,10 +1925,18 @@ fn model_route_json(row: sqlx::postgres::PgRow) -> Value {
 
 fn codex_account_json(row: sqlx::postgres::PgRow) -> Value {
     let login_secret = row.get::<String, _>("login_secret");
+    let tenant_ids = row
+        .try_get::<Vec<String>, _>("tenant_ids")
+        .unwrap_or_default();
+    let tenant_names = row
+        .try_get::<Vec<String>, _>("tenant_names")
+        .unwrap_or_default();
     json!({
         "id": row.get::<String, _>("id"),
         "tenantId": row.try_get::<Option<String>, _>("tenant_id").unwrap_or(None),
         "tenantName": row.try_get::<Option<String>, _>("tenant_name").unwrap_or(None),
+        "tenantIds": tenant_ids,
+        "tenantNames": tenant_names,
         "email": row.get::<String, _>("email"),
         "loginSecretConfigured": !login_secret.trim().is_empty(),
         "loginSecretMask": if login_secret.trim().is_empty() { Value::Null } else { Value::String(mask_secret(&login_secret)) },
@@ -1702,10 +1988,10 @@ async fn upsert_device(
     let row = sqlx::query(
         r#"
         insert into devices (id, tenant_id, user_id, fingerprint, name, status, lease_expires_at, last_seen_at)
-        values ($1, $2, $3, $4, $5, 'active', now() + make_interval(years => $6), now())
+        values ($1, $2, $3, $4, $5, 'active', now() + make_interval(days => $6), now())
         on conflict (tenant_id, fingerprint)
         do update set name = excluded.name, user_id = excluded.user_id, status = 'active',
-            lease_expires_at = now() + make_interval(years => $6), last_seen_at = now()
+            lease_expires_at = now() + make_interval(days => $6), last_seen_at = now()
         returning id, lease_expires_at
         "#,
     )
@@ -1714,7 +2000,7 @@ async fn upsert_device(
     .bind(user_id)
     .bind(fingerprint)
     .bind(name)
-    .bind(CLIENT_DEVICE_LEASE_YEARS)
+    .bind(CLIENT_DEVICE_LEASE_DAYS)
     .fetch_one(pool)
     .await?;
     Ok((
@@ -1726,12 +2012,13 @@ async fn upsert_device(
 async fn load_codex_accounts_for_client(pool: &PgPool, tenant_id: &str) -> ApiResult<Vec<Value>> {
     let rows = sqlx::query(
         r#"
-        select id, email, login_secret, login_hint, plan, seat_limit, expires_at
-        from codex_accounts
-        where tenant_id = $1
-          and status = 'active'
-          and (expires_at is null or expires_at > now())
-        order by created_at
+        select id, email, login_hint, plan, seat_limit, expires_at
+        from codex_accounts a
+        join codex_account_tenants cat on cat.account_id = a.id
+        where cat.tenant_id = $1
+          and a.status = 'active'
+          and (a.expires_at is null or a.expires_at > now())
+        order by a.created_at
         "#,
     )
     .bind(tenant_id)
@@ -1743,7 +2030,6 @@ async fn load_codex_accounts_for_client(pool: &PgPool, tenant_id: &str) -> ApiRe
             json!({
                 "id": row.get::<String, _>("id"),
                 "email": row.get::<String, _>("email"),
-                "loginSecret": row.get::<String, _>("login_secret"),
                 "loginHint": row.get::<String, _>("login_hint"),
                 "plan": row.get::<String, _>("plan"),
                 "seatLimit": row.get::<i32, _>("seat_limit"),
@@ -1982,7 +2268,7 @@ fn default_client_email() -> String {
 }
 
 fn default_client_name() -> String {
-    "Alpha Studio User".to_string()
+    "本机用户".to_string()
 }
 
 fn default_max_devices_i32() -> i32 {
@@ -1995,4 +2281,47 @@ fn default_sort_order() -> i32 {
 
 fn default_one() -> i32 {
     1
+}
+
+fn normalized_codex_tenant_ids(
+    tenant_ids: Option<Vec<String>>,
+    legacy_tenant_id: Option<String>,
+) -> Vec<String> {
+    let values = tenant_ids.unwrap_or_else(|| legacy_tenant_id.into_iter().collect());
+    values.into_iter().fold(Vec::new(), |mut normalized, id| {
+        let id = id.trim().to_string();
+        if !id.is_empty() && !normalized.contains(&id) {
+            normalized.push(id);
+        }
+        normalized
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_codex_tenant_ids;
+
+    #[test]
+    fn normalizes_multiple_account_tenant_assignments() {
+        assert_eq!(
+            normalized_codex_tenant_ids(
+                Some(vec![
+                    " tenant_alpha ".to_string(),
+                    "tenant_beta".to_string(),
+                    "tenant_alpha".to_string(),
+                    "".to_string(),
+                ]),
+                Some("legacy_tenant".to_string()),
+            ),
+            vec!["tenant_alpha", "tenant_beta"]
+        );
+    }
+
+    #[test]
+    fn accepts_the_legacy_single_tenant_field() {
+        assert_eq!(
+            normalized_codex_tenant_ids(None, Some("tenant_alpha".to_string())),
+            vec!["tenant_alpha"]
+        );
+    }
 }

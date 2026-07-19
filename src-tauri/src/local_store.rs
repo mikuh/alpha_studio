@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 const DB_FILE_NAME: &str = "alpha-studio.sqlite3";
 
 #[derive(Debug, Clone)]
@@ -40,6 +40,10 @@ pub struct LocalStoreLoadResult {
     theme_reviews: Vec<Value>,
     theme_backtest_runs: Vec<Value>,
     automation_tasks: Vec<Value>,
+    joint_research_runs: Vec<Value>,
+    research_recommendations: Vec<Value>,
+    ai_risk_assessments: Vec<Value>,
+    recommendation_events: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +56,10 @@ pub struct LocalStoreCommitRequest {
     theme_reviews: Option<Vec<Value>>,
     theme_backtest_runs: Option<Vec<Value>>,
     automation_tasks: Option<Vec<Value>>,
+    joint_research_runs: Option<Vec<Value>>,
+    research_recommendations: Option<Vec<Value>>,
+    ai_risk_assessments: Option<Vec<Value>>,
+    recommendation_events: Option<Vec<Value>>,
     audit: Option<LocalAuditInput>,
 }
 
@@ -74,6 +82,10 @@ pub struct LocalStoreImportLegacyRequest {
     theme_reviews: Option<Vec<Value>>,
     theme_backtest_runs: Option<Vec<Value>>,
     automation_tasks: Option<Vec<Value>>,
+    joint_research_runs: Option<Vec<Value>>,
+    research_recommendations: Option<Vec<Value>>,
+    ai_risk_assessments: Option<Vec<Value>>,
+    recommendation_events: Option<Vec<Value>>,
     source_keys: Vec<String>,
 }
 
@@ -96,6 +108,10 @@ pub struct LocalStoreExportResult {
     theme_reviews: Vec<Value>,
     theme_backtest_runs: Vec<Value>,
     automation_tasks: Vec<Value>,
+    joint_research_runs: Vec<Value>,
+    research_recommendations: Vec<Value>,
+    ai_risk_assessments: Vec<Value>,
+    recommendation_events: Vec<Value>,
     audit_events: Vec<Value>,
 }
 
@@ -194,6 +210,10 @@ pub fn local_store_export(app: AppHandle) -> Result<LocalStoreExportResult, Stri
         theme_reviews: loaded.theme_reviews,
         theme_backtest_runs: loaded.theme_backtest_runs,
         automation_tasks: loaded.automation_tasks,
+        joint_research_runs: loaded.joint_research_runs,
+        research_recommendations: loaded.research_recommendations,
+        ai_risk_assessments: loaded.ai_risk_assessments,
+        recommendation_events: loaded.recommendation_events,
         audit_events: load_recent_audit_events(&conn, 500)?,
     })
 }
@@ -466,6 +486,45 @@ fn migrate(conn: &Connection, version: i64) -> Result<(), String> {
           payload text not null
         );
 
+        create table if not exists joint_research_runs (
+          id text primary key,
+          report_id text not null,
+          conversation_id text not null,
+          status text not null,
+          created_at text not null,
+          updated_at text not null,
+          deleted_at text,
+          payload text not null
+        );
+
+        create table if not exists research_recommendations (
+          id text primary key,
+          report_id text not null,
+          conversation_id text not null,
+          status text not null,
+          version integer not null,
+          updated_at text not null,
+          deleted_at text,
+          payload text not null
+        );
+
+        create table if not exists ai_risk_assessments (
+          id text primary key,
+          recommendation_id text not null,
+          recommendation_version integer not null,
+          assessed_at text not null,
+          deleted_at text,
+          payload text not null
+        );
+
+        create table if not exists recommendation_events (
+          id text primary key,
+          recommendation_id text not null,
+          event_type text not null,
+          created_at text not null,
+          payload text not null
+        );
+
         create table if not exists audit_events (
           id text primary key,
           domain text not null,
@@ -508,8 +567,12 @@ fn migrate(conn: &Connection, version: i64) -> Result<(), String> {
         create index if not exists idx_market_cache_lookup on market_cache_entries(source, scope, cache_key);
         create index if not exists idx_theme_tracking_report on theme_tracking_events(report_id, observed_at desc);
         create index if not exists idx_theme_reviews_report on theme_reviews(report_id, generated_at desc);
+        create index if not exists idx_joint_research_report on joint_research_runs(report_id, created_at desc);
+        create index if not exists idx_recommendations_report on research_recommendations(report_id, updated_at desc);
+        create index if not exists idx_risk_recommendation on ai_risk_assessments(recommendation_id, recommendation_version desc);
+        create index if not exists idx_recommendation_events on recommendation_events(recommendation_id, created_at desc);
 
-        pragma user_version = 2;
+        pragma user_version = 3;
         commit;
         "#,
     )
@@ -535,6 +598,10 @@ fn has_data(conn: &Connection) -> Result<bool, String> {
               + (select count(*) from theme_reviews)
               + (select count(*) from theme_backtest_runs)
               + (select count(*) from automation_tasks)
+              + (select count(*) from joint_research_runs)
+              + (select count(*) from research_recommendations)
+              + (select count(*) from ai_risk_assessments)
+              + (select count(*) from recommendation_events)
             "#,
             [],
             |row| row.get(0),
@@ -570,6 +637,22 @@ fn load_snapshot(paths: &StorePaths, conn: &Connection) -> Result<LocalStoreLoad
             conn,
             "select payload from automation_tasks where deleted_at is null order by created_at desc",
         )?,
+        joint_research_runs: load_payload_rows(
+            conn,
+            "select payload from joint_research_runs where deleted_at is null order by created_at desc",
+        )?,
+        research_recommendations: load_payload_rows(
+            conn,
+            "select payload from research_recommendations where deleted_at is null order by updated_at desc",
+        )?,
+        ai_risk_assessments: load_payload_rows(
+            conn,
+            "select payload from ai_risk_assessments where deleted_at is null order by assessed_at desc",
+        )?,
+        recommendation_events: load_payload_rows(
+            conn,
+            "select payload from recommendation_events order by created_at desc",
+        )?,
     })
 }
 
@@ -597,6 +680,18 @@ fn commit_snapshot(conn: &mut Connection, request: LocalStoreCommitRequest) -> R
     }
     if let Some(tasks) = request.automation_tasks {
         save_automation_tasks(&tx, &tasks)?;
+    }
+    if let Some(runs) = request.joint_research_runs {
+        save_joint_research_runs(&tx, &runs)?;
+    }
+    if let Some(recommendations) = request.research_recommendations {
+        save_research_recommendations(&tx, &recommendations)?;
+    }
+    if let Some(assessments) = request.ai_risk_assessments {
+        save_ai_risk_assessments(&tx, &assessments)?;
+    }
+    if let Some(events) = request.recommendation_events {
+        save_recommendation_events(&tx, &events)?;
     }
     if let Some(audit) = request.audit {
         write_audit(
@@ -646,6 +741,22 @@ fn import_legacy(
     if let Some(tasks) = request.automation_tasks.as_ref() {
         save_automation_tasks(&tx, tasks)?;
         imported_domains.push("automation_tasks");
+    }
+    if let Some(runs) = request.joint_research_runs.as_ref() {
+        save_joint_research_runs(&tx, runs)?;
+        imported_domains.push("joint_research_runs");
+    }
+    if let Some(recommendations) = request.research_recommendations.as_ref() {
+        save_research_recommendations(&tx, recommendations)?;
+        imported_domains.push("research_recommendations");
+    }
+    if let Some(assessments) = request.ai_risk_assessments.as_ref() {
+        save_ai_risk_assessments(&tx, assessments)?;
+        imported_domains.push("ai_risk_assessments");
+    }
+    if let Some(events) = request.recommendation_events.as_ref() {
+        save_recommendation_events(&tx, events)?;
+        imported_domains.push("recommendation_events");
     }
     tx.execute(
         "insert into legacy_imports (id, imported_at, source_keys, payload) values (?1, ?2, ?3, ?4)",
@@ -1343,6 +1454,139 @@ fn save_automation_tasks(tx: &Transaction<'_>, tasks: &[Value]) -> Result<(), St
     Ok(())
 }
 
+fn save_joint_research_runs(tx: &Transaction<'_>, runs: &[Value]) -> Result<(), String> {
+    let now = now_rfc3339();
+    let incoming = runs
+        .iter()
+        .filter_map(|run| string_field(run, "id"))
+        .collect::<HashSet<_>>();
+    soft_delete_missing(tx, "joint_research_runs", &incoming, &now)?;
+    for run in runs {
+        let id = string_field(run, "id").unwrap_or_else(|| generated_id("joint"));
+        tx.execute(
+            r#"
+            insert into joint_research_runs (id, report_id, conversation_id, status, created_at, updated_at, deleted_at, payload)
+            values (?1, ?2, ?3, ?4, ?5, ?6, null, ?7)
+            on conflict(id) do update set
+              report_id = excluded.report_id,
+              conversation_id = excluded.conversation_id,
+              status = excluded.status,
+              created_at = excluded.created_at,
+              updated_at = excluded.updated_at,
+              deleted_at = null,
+              payload = excluded.payload
+            "#,
+            params![
+                id,
+                string_field(run, "reportId").unwrap_or_default(),
+                string_field(run, "conversationId").unwrap_or_default(),
+                string_field(run, "status").unwrap_or_else(|| "pending".to_string()),
+                string_field(run, "createdAt").unwrap_or_else(now_rfc3339),
+                string_field(run, "updatedAt").unwrap_or_else(now_rfc3339),
+                json_string(run)?,
+            ],
+        ).map_err(|e| format!("Failed to save joint research run: {e}"))?;
+    }
+    Ok(())
+}
+
+fn save_research_recommendations(
+    tx: &Transaction<'_>,
+    recommendations: &[Value],
+) -> Result<(), String> {
+    let now = now_rfc3339();
+    let incoming = recommendations
+        .iter()
+        .filter_map(|item| string_field(item, "id"))
+        .collect::<HashSet<_>>();
+    soft_delete_missing(tx, "research_recommendations", &incoming, &now)?;
+    for recommendation in recommendations {
+        let id =
+            string_field(recommendation, "id").unwrap_or_else(|| generated_id("recommendation"));
+        tx.execute(
+            r#"
+            insert into research_recommendations (id, report_id, conversation_id, status, version, updated_at, deleted_at, payload)
+            values (?1, ?2, ?3, ?4, ?5, ?6, null, ?7)
+            on conflict(id) do update set
+              report_id = excluded.report_id,
+              conversation_id = excluded.conversation_id,
+              status = excluded.status,
+              version = excluded.version,
+              updated_at = excluded.updated_at,
+              deleted_at = null,
+              payload = excluded.payload
+            "#,
+            params![
+                id,
+                string_field(recommendation, "reportId").unwrap_or_default(),
+                string_field(recommendation, "conversationId").unwrap_or_default(),
+                string_field(recommendation, "status").unwrap_or_else(|| "draft".to_string()),
+                i64_field(recommendation, "version").unwrap_or(1),
+                string_field(recommendation, "updatedAt").unwrap_or_else(now_rfc3339),
+                json_string(recommendation)?,
+            ],
+        ).map_err(|e| format!("Failed to save research recommendation: {e}"))?;
+    }
+    Ok(())
+}
+
+fn save_ai_risk_assessments(tx: &Transaction<'_>, assessments: &[Value]) -> Result<(), String> {
+    let now = now_rfc3339();
+    let incoming = assessments
+        .iter()
+        .filter_map(|item| string_field(item, "id"))
+        .collect::<HashSet<_>>();
+    soft_delete_missing(tx, "ai_risk_assessments", &incoming, &now)?;
+    for assessment in assessments {
+        let id = string_field(assessment, "id").unwrap_or_else(|| generated_id("risk"));
+        tx.execute(
+            r#"
+            insert into ai_risk_assessments (id, recommendation_id, recommendation_version, assessed_at, deleted_at, payload)
+            values (?1, ?2, ?3, ?4, null, ?5)
+            on conflict(id) do update set
+              recommendation_id = excluded.recommendation_id,
+              recommendation_version = excluded.recommendation_version,
+              assessed_at = excluded.assessed_at,
+              deleted_at = null,
+              payload = excluded.payload
+            "#,
+            params![
+                id,
+                string_field(assessment, "recommendationId").unwrap_or_default(),
+                i64_field(assessment, "recommendationVersion").unwrap_or(1),
+                string_field(assessment, "assessedAt").unwrap_or_else(now_rfc3339),
+                json_string(assessment)?,
+            ],
+        ).map_err(|e| format!("Failed to save AI risk assessment: {e}"))?;
+    }
+    Ok(())
+}
+
+fn save_recommendation_events(tx: &Transaction<'_>, events: &[Value]) -> Result<(), String> {
+    for event in events {
+        let id = string_field(event, "id").unwrap_or_else(|| generated_id("recommendation-event"));
+        tx.execute(
+            r#"
+            insert into recommendation_events (id, recommendation_id, event_type, created_at, payload)
+            values (?1, ?2, ?3, ?4, ?5)
+            on conflict(id) do update set
+              recommendation_id = excluded.recommendation_id,
+              event_type = excluded.event_type,
+              created_at = excluded.created_at,
+              payload = excluded.payload
+            "#,
+            params![
+                id,
+                string_field(event, "recommendationId").unwrap_or_default(),
+                string_field(event, "type").unwrap_or_else(|| "created".to_string()),
+                string_field(event, "createdAt").unwrap_or_else(now_rfc3339),
+                json_string(event)?,
+            ],
+        ).map_err(|e| format!("Failed to save recommendation event: {e}"))?;
+    }
+    Ok(())
+}
+
 fn save_market_cache_entry(
     conn: &Connection,
     request: MarketCachePutRequest,
@@ -1598,7 +1842,10 @@ fn id_column(table: &str) -> Result<&'static str, String> {
         | "theme_tracking_events"
         | "theme_reviews"
         | "theme_backtest_runs"
-        | "automation_tasks" => Ok("id"),
+        | "automation_tasks"
+        | "joint_research_runs"
+        | "research_recommendations"
+        | "ai_risk_assessments" => Ok("id"),
         "research_holdings" | "research_custom_securities" => Ok("code"),
         other => Err(format!("Unsupported soft-delete table: {other}")),
     }
@@ -1795,6 +2042,22 @@ mod tests {
                 theme_reviews: None,
                 theme_backtest_runs: None,
                 automation_tasks: None,
+                joint_research_runs: Some(vec![json!({
+                    "id": "joint-1", "reportId": "report-1", "conversationId": "conv-1",
+                    "status": "completed", "createdAt": "2026-07-18T01:00:00Z", "updatedAt": "2026-07-18T01:01:00Z"
+                })]),
+                research_recommendations: Some(vec![json!({
+                    "id": "rec-1", "reportId": "report-1", "conversationId": "conv-1",
+                    "status": "risk_ready", "version": 1, "updatedAt": "2026-07-18T01:02:00Z"
+                })]),
+                ai_risk_assessments: Some(vec![json!({
+                    "id": "risk-1", "recommendationId": "rec-1", "recommendationVersion": 1,
+                    "assessedAt": "2026-07-18T01:03:00Z"
+                })]),
+                recommendation_events: Some(vec![json!({
+                    "id": "event-1", "recommendationId": "rec-1", "type": "created",
+                    "createdAt": "2026-07-18T01:02:00Z"
+                })]),
                 audit: None,
             },
         )
@@ -1802,6 +2065,10 @@ mod tests {
         let loaded = load_snapshot(&paths, &conn).unwrap();
         assert_eq!(loaded.chat.unwrap()["conversations"][0]["id"], "conv-1");
         assert_eq!(loaded.research.unwrap()["cash"], 1000);
+        assert_eq!(loaded.joint_research_runs[0]["id"], "joint-1");
+        assert_eq!(loaded.research_recommendations[0]["id"], "rec-1");
+        assert_eq!(loaded.ai_risk_assessments[0]["id"], "risk-1");
+        assert_eq!(loaded.recommendation_events[0]["id"], "event-1");
     }
 
     #[test]
@@ -1829,6 +2096,10 @@ mod tests {
                     theme_reviews: None,
                     theme_backtest_runs: None,
                     automation_tasks: None,
+                    joint_research_runs: None,
+                    research_recommendations: None,
+                    ai_risk_assessments: None,
+                    recommendation_events: None,
                     audit: None,
                 },
             )
@@ -1874,17 +2145,17 @@ mod tests {
         drop(conn);
 
         let migrated = open_store_at_paths(&paths).unwrap();
-        assert_eq!(schema_version(&migrated).unwrap(), 2);
+        assert_eq!(schema_version(&migrated).unwrap(), 3);
         let loaded = load_snapshot(&paths, &migrated).unwrap();
         assert_eq!(loaded.premarket_theme_runs[0]["id"], "legacy-report");
         let new_tables: i64 = migrated
             .query_row(
-                "select count(*) from sqlite_master where type = 'table' and name in ('theme_tracking_events', 'theme_reviews', 'theme_backtest_runs')",
+                "select count(*) from sqlite_master where type = 'table' and name in ('theme_tracking_events', 'theme_reviews', 'theme_backtest_runs', 'joint_research_runs', 'research_recommendations', 'ai_risk_assessments', 'recommendation_events')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(new_tables, 3);
+        assert_eq!(new_tables, 7);
     }
 
     #[test]
@@ -1910,6 +2181,10 @@ mod tests {
                 theme_reviews: None,
                 theme_backtest_runs: None,
                 automation_tasks: None,
+                joint_research_runs: None,
+                research_recommendations: None,
+                ai_risk_assessments: None,
+                recommendation_events: None,
                 source_keys: vec!["alpha-studio.research-state.v2".to_string()],
             },
         )

@@ -98,7 +98,7 @@ export async function checkCodex(): Promise<CodexStatus> {
       version: 'browser preview',
       path: '',
       loggedIn: false,
-      error: '浏览器预览模式不会启动 Codex CLI。请使用 npm run tauri:dev。',
+      error: '浏览器预览模式不会启动 GPT。请使用桌面客户端。',
     };
   }
   return invoke<CodexStatus>('codex_check');

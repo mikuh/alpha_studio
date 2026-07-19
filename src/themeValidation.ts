@@ -27,6 +27,8 @@ export type TriggerEvaluationStatus =
   | 'data_missing'
   | 'awaiting_manual';
 
+export const IMPORTANT_TRIGGER_STATES = new Set<TriggerEvaluationStatus>(['triggered', 'upgraded', 'invalidated']);
+
 export const TRIGGER_STATUS_LABELS: Record<TriggerEvaluationStatus, string> = {
   not_due: '未到时点',
   not_triggered: '未触发',

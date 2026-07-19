@@ -30,6 +30,7 @@ import {
   ChartCandlestick,
   ChevronRight,
   ClipboardCheck,
+  FileCheck2,
   Database,
   GitCompareArrows,
   GripVertical,
@@ -111,8 +112,10 @@ import {
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
 import { insertIntoComposer } from './composerBridge';
 import { ResearchValidationPanel } from './ResearchValidation';
+import { RecommendationCenter } from './RecommendationCenter';
+import { DAILY_DECISION_CHANGED_EVENT, loadDailyDecisionState } from './dailyDecision';
 
-type WorkbenchTab = 'market' | 'overview' | 'watchlist' | 'holdings' | 'trade' | 'portfolios' | 'data' | 'validation';
+type WorkbenchTab = 'market' | 'overview' | 'watchlist' | 'holdings' | 'trade' | 'portfolios' | 'data' | 'validation' | 'recommendations';
 type MarketDataSource = 'eastmoney' | 'jqdata' | null;
 type MarketRankMode = 'gainers' | 'losers' | 'turnoverRate' | 'turnover';
 type MarketBoardFilter = 'all' | 'main' | 'startup' | 'star';
@@ -134,6 +137,7 @@ const TAB_LABELS: Record<WorkbenchTab, string> = {
   portfolios: '组合',
   data: '研究数据',
   validation: '日报跟踪',
+  recommendations: '建议',
 };
 
 const TAB_ICONS: Record<WorkbenchTab, LucideIcon> = {
@@ -145,6 +149,7 @@ const TAB_ICONS: Record<WorkbenchTab, LucideIcon> = {
   portfolios: ListTree,
   data: Database,
   validation: ClipboardCheck,
+  recommendations: FileCheck2,
 };
 
 interface TradePrefill {
@@ -314,6 +319,7 @@ export function ResearchWorkbenchPanel() {
   const [configLoading, setConfigLoading] = useState(true);
   const [state, setState] = useState<ResearchState>(() => loadResearchState());
   const [tab, setTab] = useState<WorkbenchTab>('market');
+  const [recommendationCount, setRecommendationCount] = useState(() => loadDailyDecisionState().recommendations.filter((item) => !['confirmed', 'deferred', 'rejected'].includes(item.status)).length);
   const [liveOverrides, setLiveOverrides] = useState<Map<string, LivePriceOverride> | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
@@ -331,6 +337,12 @@ export function ResearchWorkbenchPanel() {
   const [tradePrefill, setTradePrefill] = useState<TradePrefill | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  useEffect(() => {
+    const sync = () => setRecommendationCount(loadDailyDecisionState().recommendations.filter((item) => !['confirmed', 'deferred', 'rejected'].includes(item.status)).length);
+    window.addEventListener(DAILY_DECISION_CHANGED_EVENT, sync);
+    return () => window.removeEventListener(DAILY_DECISION_CHANGED_EVENT, sync);
+  }, []);
 
   const commit = useCallback((next: ResearchState) => {
     setState(next);
@@ -667,6 +679,7 @@ export function ResearchWorkbenchPanel() {
               {key === 'watchlist' && state.watchlist.length > 0 && <em>{state.watchlist.length}</em>}
               {key === 'holdings' && state.holdings.length > 0 && <em>{state.holdings.length}</em>}
               {key === 'portfolios' && state.portfolios.length > 0 && <em>{state.portfolios.length}</em>}
+              {key === 'recommendations' && recommendationCount > 0 && <em>{recommendationCount}</em>}
             </button>
           );
         })}
@@ -742,6 +755,7 @@ export function ResearchWorkbenchPanel() {
         )}
         {tab === 'data' && <JqDataResearchTab jqReady={jqReady} state={state} />}
         {tab === 'validation' && <ResearchValidationPanel />}
+        {tab === 'recommendations' && <RecommendationCenter />}
       </div>
 
       <footer className="rw-quick" aria-label="AI 分析任务">

@@ -16,11 +16,10 @@ const windowMockState = vi.hoisted(() => ({
   resizeHandler: null as (() => void) | null,
 }));
 const codexCatalogMockState = vi.hoisted(() => ({
-  status: { installed: true, version: 'test', path: '/usr/bin/codex', loggedIn: false, error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。' },
+  status: { installed: true, version: 'test', path: '/usr/bin/codex', loggedIn: false, accountEmail: undefined as string | undefined, error: 'Alpha Studio 的 GPT 尚未完成设备授权。' },
   models: [] as CodexModelCatalogItem[],
   error: null as Error | null,
 }));
-
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
   invoke: vi.fn((command: string, args?: { request?: { method?: string; name?: string; data?: string; currentPath?: string; path?: string; params?: Record<string, unknown>; codes?: string[]; tickCode?: string; tickCount?: number; fullMarket?: boolean; pageSize?: number } }) => {
@@ -292,6 +291,7 @@ function seedClientLicenseSession(codexSubscriptionEnabled = true, leaseExpiresA
   saveClientLicenseSession({
     apiBaseUrl: 'http://localhost:18080',
     activatedAt: 1,
+    lastValidatedAt: Date.now(),
     tenant: {
       id: 'tenant_demo',
       name: 'Demo Fund',
@@ -382,6 +382,7 @@ describe('right feature panel', () => {
     Object.defineProperty(document, 'fullscreenElement', { value: null, configurable: true });
     window.localStorage.clear();
     codexCatalogMockState.status.loggedIn = false;
+    codexCatalogMockState.status.accountEmail = 'codex-demo@alpha.local';
     codexCatalogMockState.models = [];
     codexCatalogMockState.error = null;
     seedClientLicenseSession();
@@ -395,7 +396,7 @@ describe('right feature panel', () => {
       selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
       modelProfiles: defaultModelProfiles(),
       workModeId: 'finance-research',
-      codexStatus: { installed: true, loggedIn: true, path: '/usr/bin/codex', version: 'test' },
+      codexStatus: { installed: true, loggedIn: true, accountEmail: 'codex-demo@alpha.local', path: '/usr/bin/codex', version: 'test' },
       codexModelCatalog: null,
       codexModelCatalogError: null,
       isRefreshingCodexModels: false,
@@ -443,6 +444,23 @@ describe('right feature panel', () => {
     expect(loadClientLicenseSession()?.device.id).toBe('dev_demo');
   });
 
+  it('returns a freshly stored device to activation when the backend has revoked it', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      text: () => Promise.resolve(JSON.stringify({
+        error: { message: 'device is not active for this tenant' },
+      })),
+    } as Response);
+
+    const { container } = render(<App />);
+
+    expect(container.querySelector('.app-shell')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('heading', { name: '激活 Alpha Studio' })).toBeInTheDocument());
+    expect(loadClientLicenseSession()).toBeNull();
+    expect(container.querySelector('.app-shell')).not.toBeInTheDocument();
+  });
+
   it('requires renewal when the stored activation has expired', async () => {
     seedClientLicenseSession(true, new Date(Date.now() - 60_000).toISOString());
     vi.mocked(fetch)
@@ -465,8 +483,40 @@ describe('right feature panel', () => {
     expect(screen.queryByLabelText('打开下方终端')).not.toBeInTheDocument();
     expect(screen.getByLabelText('打开投研工作台')).toBeInTheDocument();
     expect(screen.getByLabelText('打开浏览器')).toBeInTheDocument();
+    expect(screen.queryByLabelText('日报决策')).not.toBeInTheDocument();
     expect(container.querySelector('.open-app-trigger-icon')).not.toBeInTheDocument();
     expect(document.querySelector('.app-shell')).toHaveAttribute('data-work-mode', 'finance-research');
+  });
+
+  it('shows daily decision only for daily-report conversations and closes it after switching away', async () => {
+    const user = userEvent.setup();
+    const dailyConversation = conversation({
+      id: 'conv-daily',
+      title: '今日盘前日报',
+      messages: [{
+        id: 'daily-user',
+        role: 'user',
+        timestamp: 1,
+        blocks: [{ type: 'text', content: '生成今日盘前日报' }],
+        selectedSkill: { id: 'alpha-studio-daily-theme-research', title: '盘前主题日报' },
+      }],
+    });
+    const normalConversation = conversation({ id: 'conv-normal', title: '普通研究对话' });
+    useChatStore.setState({ conversations: [dailyConversation, normalConversation], currentConversationId: dailyConversation.id });
+    const { container } = render(<App />);
+
+    expect(screen.getByLabelText('日报决策')).toBeInTheDocument();
+    expect(container.querySelector('.app-shell')).toHaveClass('daily-decision-available');
+    await user.click(screen.getByLabelText('日报决策'));
+    await waitFor(() => expect(container.querySelector('.dd-panel')).toBeInTheDocument());
+
+    useChatStore.getState().setCurrentConversation(normalConversation.id);
+    await waitFor(() => {
+      expect(screen.queryByLabelText('日报决策')).not.toBeInTheDocument();
+      expect(container.querySelector('.dd-panel')).not.toBeInTheDocument();
+      expect(Array.from(container.querySelectorAll('.right-dock-tab')).some((tab) => tab.textContent?.includes('日报决策'))).toBe(false);
+      expect(container.querySelector('.app-shell')).not.toHaveClass('daily-decision-available');
+    });
   });
 
   it('exposes the two finance tools as direct right-top actions', async () => {
@@ -997,7 +1047,7 @@ describe('right feature panel', () => {
     const automationPage = container.querySelector('.automation-page') as HTMLElement;
     expect(automationPage).toBeInTheDocument();
     expect(container.querySelector('.top-bar')).not.toBeInTheDocument();
-    expect(automationPage.querySelector('.automation-drag-strip')).toHaveAttribute('data-tauri-drag-region');
+    expect(automationPage.querySelector('.automation-topbar')).toHaveAttribute('data-tauri-drag-region', 'deep');
     expect(screen.queryByRole('dialog', { name: '设置' })).not.toBeInTheDocument();
     expect(within(automationPage).getByRole('heading', { name: '已安排的任务' })).toBeInTheDocument();
     expect(within(automationPage).getByRole('tab', { name: '已安排' })).toHaveAttribute('aria-selected', 'true');
@@ -1015,7 +1065,7 @@ describe('right feature panel', () => {
 
     const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
     expect(within(editor).getByPlaceholderText('已安排任务标题')).toBeInTheDocument();
-    expect(within(editor).getByPlaceholderText('描述 Codex 应该做什么')).toBeInTheDocument();
+    expect(within(editor).getByPlaceholderText('描述 GPT 应该做什么')).toBeInTheDocument();
     expect(within(editor).getByLabelText('运行于')).toHaveValue('工作树');
     expect(within(editor).getByLabelText('重复')).toHaveValue('daily');
     expect(within(editor).getByLabelText('时间')).toHaveTextContent('9:00');
@@ -1142,7 +1192,7 @@ describe('right feature panel', () => {
   it('offers dynamic catalog profiles and model-specific efforts in automation editor', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
     codexCatalogMockState.status.loggedIn = true;
-    useChatStore.setState({ codexStatus: { installed: true, version: 'test', path: '/usr/bin/codex', loggedIn: true }, codexModelCatalog: CODEX_MODEL_CATALOG, modelProfiles: modelProfilesFromCodexCatalog(CODEX_MODEL_CATALOG), selectedModelProfileId: 'gpt-5.6-sol', reasoningEffort: 'ultra' });
+    useChatStore.setState({ codexStatus: { installed: true, version: 'test', path: '/usr/bin/codex', loggedIn: true, accountEmail: 'codex-demo@alpha.local' }, codexModelCatalog: CODEX_MODEL_CATALOG, modelProfiles: modelProfilesFromCodexCatalog(CODEX_MODEL_CATALOG), selectedModelProfileId: 'gpt-5.6-sol', reasoningEffort: 'ultra' });
     const user = userEvent.setup();
     const { container } = render(<App />);
     await user.click(screen.getByRole('button', { name: '自动化' }));
@@ -1182,13 +1232,15 @@ describe('right feature panel', () => {
     await user.click(screen.getByRole('button', { name: '自动化' }));
     const automationPage = container.querySelector('.automation-page') as HTMLElement;
     await user.click(within(automationPage).getByRole('tab', { name: '模板' }));
-    await user.click(within(automationPage).getByRole('button', { name: /CI 失败总结/ }));
+    expect(within(automationPage).getByRole('heading', { name: '金融投研' })).toBeInTheDocument();
+    expect(within(automationPage).queryByRole('button', { name: /扫描最近提交/ })).not.toBeInTheDocument();
+    await user.click(within(automationPage).getByRole('button', { name: /盘后市场复盘/ }));
 
     const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
-    expect(within(editor).getByLabelText('已安排任务标题')).toHaveValue('CI 失败总结');
-    expect(within(editor).getByLabelText('提示词')).toHaveValue('总结上一个 CI 窗口中的失败和不稳定测试，并给出首要修复建议。');
-    expect(within(editor).getByLabelText('重复')).toHaveValue('daily');
-    expect(within(editor).getByLabelText('时间')).toHaveTextContent('21:00');
+    expect(within(editor).getByLabelText('已安排任务标题')).toHaveValue('盘后市场复盘');
+    expect(within(editor).getByLabelText('提示词')).toHaveValue('生成盘后市场复盘：总结指数与成交、市场情绪、领涨题材、核心个股梯队和资金风格，区分机构与短线资金线索，评估主题生命周期，并形成下一交易日的观察重点、触发条件和风险预案。');
+    expect(within(editor).getByLabelText('重复')).toHaveValue('weekdays');
+    expect(within(editor).getByLabelText('时间')).toHaveTextContent('15:30');
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
@@ -1205,9 +1257,37 @@ describe('right feature panel', () => {
     await user.type(within(editor).getByLabelText('提示词'), '汇总 Neostream 每日题材研究，并突出异常波动。');
     await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
 
-    expect(within(automationPage).getByRole('heading', { name: '当前' })).toBeInTheDocument();
+    expect(within(automationPage).getByRole('group', { name: '任务状态筛选' })).toBeInTheDocument();
     expect(within(automationPage).getByRole('button', { name: /每日 Neostream 题材研究日报/ })).toBeInTheDocument();
     expect(within(automationPage).getByText('Next run 待安排 · 每天 9:00')).toBeInTheDocument();
+  });
+
+  it('pauses scheduled tasks and filters enabled and paused tasks separately', async () => {
+    window.localStorage.setItem('alpha:automation-tasks-v1', JSON.stringify([
+      { id: 'enabled-task', title: '已开启日报', prompt: '生成日报', environment: '当前对话', project: '选择项目', schedule: '每天 9:00', model: 'GPT-5.5', createdAt: 2 },
+      { id: 'paused-task', title: '已暂停周报', prompt: '生成周报', environment: '当前对话', project: '选择项目', schedule: '每周五 17:30', model: 'GPT-5.5', createdAt: 1, paused: true },
+    ]));
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const automationPage = container.querySelector('.automation-page') as HTMLElement;
+    expect(within(automationPage).getByRole('button', { name: /已开启日报/ })).toBeInTheDocument();
+    expect(within(automationPage).getByRole('button', { name: /已暂停周报/ })).toBeInTheDocument();
+
+    await user.click(within(automationPage).getByRole('button', { name: '已暂停' }));
+    expect(within(automationPage).queryByRole('button', { name: /已开启日报/ })).not.toBeInTheDocument();
+    const pausedRow = within(automationPage).getByRole('button', { name: /已暂停周报/ }).closest('.automation-task-row') as HTMLElement;
+    expect(pausedRow).toHaveClass('paused');
+    await user.click(within(pausedRow).getByRole('button', { name: '恢复任务' }));
+    expect(within(automationPage).getByText('没有已暂停的任务')).toBeInTheDocument();
+
+    await user.click(within(automationPage).getByRole('button', { name: '已开启' }));
+    expect(within(automationPage).getByRole('button', { name: /已开启日报/ })).toBeInTheDocument();
+    expect(within(automationPage).getByRole('button', { name: /已暂停周报/ })).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem('alpha:automation-tasks-v1') || '[]')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'paused-task', paused: false })]),
+    );
   });
 
   it('runs edits and deletes scheduled automation tasks from the task row', async () => {
@@ -1481,7 +1561,7 @@ describe('right feature panel', () => {
     await user.click(within(settings).getByRole('button', { name: '使用情况和计费' }));
 
     expect(await within(settings).findByText('订阅 + 按量')).toBeInTheDocument();
-    expect(within(settings).getByText('Codex 订阅')).toBeInTheDocument();
+    expect(within(settings).getByText('GPT 订阅')).toBeInTheDocument();
     expect(within(settings).getByText('剩余用量')).toBeInTheDocument();
     expect(within(settings).getByText('5 小时')).toBeInTheDocument();
     expect(within(settings).getByText('1 周')).toBeInTheDocument();
@@ -1589,7 +1669,7 @@ describe('right feature panel', () => {
         version: 'test',
         path: '/usr/bin/codex',
         loggedIn: false,
-        error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。',
+        error: 'Alpha Studio 的 GPT 尚未完成设备授权。',
       },
       selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
       modelProfiles: [
@@ -1609,7 +1689,7 @@ describe('right feature panel', () => {
     render(<App />);
 
     expect(screen.queryByText('AI 引擎暂不可用')).not.toBeInTheDocument();
-    expect(screen.queryByText('Alpha Studio 的 Codex CLI 尚未完成设备授权。')).not.toBeInTheDocument();
+    expect(screen.queryByText('Alpha Studio 的 GPT 尚未完成设备授权。')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('继续追问投研问题')).toBeEnabled();
 
     await user.click(screen.getByTitle('选择模型与推理强度'));
@@ -1633,7 +1713,7 @@ describe('right feature panel', () => {
           version: 'test',
           path: '/usr/bin/codex',
           loggedIn: false,
-          error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。',
+          error: 'Alpha Studio 的 GPT 尚未完成设备授权。',
         });
       }
       if (command === 'model_config_load') {
@@ -1667,7 +1747,7 @@ describe('right feature panel', () => {
         version: 'test',
         path: '/usr/bin/codex',
         loggedIn: false,
-        error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。',
+        error: 'Alpha Studio 的 GPT 尚未完成设备授权。',
       },
       selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
       modelProfiles: defaultModelProfiles(),
@@ -1678,7 +1758,7 @@ describe('right feature panel', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('model_config_load'));
     await waitFor(() => expect(screen.getByTitle('选择模型与推理强度')).toHaveTextContent('5.5 API'));
     expect(screen.queryByText('AI 引擎暂不可用')).not.toBeInTheDocument();
-    expect(screen.queryByText('Alpha Studio 的 Codex CLI 尚未完成设备授权。')).not.toBeInTheDocument();
+    expect(screen.queryByText('Alpha Studio 的 GPT 尚未完成设备授权。')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('继续追问投研问题')).toBeEnabled();
 
     await user.click(screen.getByTitle('选择模型与推理强度'));
@@ -1716,13 +1796,13 @@ describe('right feature panel', () => {
     const { container } = render(<App />);
 
     expect(container.querySelector('.client-license-banner')).not.toBeInTheDocument();
-    expect(screen.queryByText(/Codex 订阅账号/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/GPT 订阅账号/)).not.toBeInTheDocument();
 
     await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
     const settings = screen.getByRole('dialog', { name: '设置' });
     await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
 
-    expect(within(settings).getByText('Codex 订阅账号')).toBeInTheDocument();
+    expect(within(settings).getByText('GPT 订阅账号')).toBeInTheDocument();
     expect(within(settings).getByText('codex-demo@alpha.local')).toBeInTheDocument();
     expect(within(settings).getByText('Use browser login handoff')).toBeInTheDocument();
     expect(within(settings).getByText('设备授权')).toBeInTheDocument();
@@ -1734,15 +1814,15 @@ describe('right feature panel', () => {
     expect(loadClientLicenseSession()).toBeNull();
   });
 
-  it('requires an explicit button press to launch Codex CLI device authorization', async () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
-    useChatStore.setState({
-      codexStatus: {
-        installed: true,
-        loggedIn: false,
-        path: '/usr/bin/codex',
-        version: 'test',
-        error: 'Alpha Studio 的 Codex CLI 尚未完成设备授权。',
+  it('hides internal placeholder user details behind a natural local authorization identity', async () => {
+    const stored = loadClientLicenseSession()!;
+    saveClientLicenseSession({
+      ...stored,
+      tenant: { ...stored.tenant, name: '德靖私募' },
+      user: {
+        ...stored.user,
+        name: 'Alpha Studio User',
+        email: 'local@alpha-studio.local',
       },
     });
     const user = userEvent.setup();
@@ -1752,7 +1832,141 @@ describe('right feature panel', () => {
     const settings = screen.getByRole('dialog', { name: '设置' });
     await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
 
-    const loginButton = within(settings).getByRole('button', { name: '授权 Codex CLI' });
+    expect(within(settings).getByText('本机授权')).toBeInTheDocument();
+    expect(within(settings).getByText('授权身份')).toBeInTheDocument();
+    expect(within(settings).getByText('本机用户')).toBeInTheDocument();
+    expect(within(settings).getByText('德靖')).toBeInTheDocument();
+    expect(within(settings).queryByText('Alpha Studio User')).not.toBeInTheDocument();
+    expect(within(settings).queryByText('local@alpha-studio.local')).not.toBeInTheDocument();
+  });
+
+  it('shows installed devices and lets the first device revoke another device', async () => {
+    const deviceSummary = {
+      activeDevices: 2,
+      maxDevices: 5,
+      isAdministrator: true,
+      devices: [
+        {
+          id: 'dev_demo',
+          name: 'Alpha Studio MacIntel',
+          status: 'active',
+          isCurrent: true,
+          isAdministrator: true,
+          createdAt: '2026-07-01T00:00:00.000Z',
+          lastSeenAt: '2026-07-16T08:30:00.000Z',
+        },
+        {
+          id: 'dev_other',
+          name: 'Alpha Studio Win32',
+          status: 'active',
+          isCurrent: false,
+          isAdministrator: false,
+          createdAt: '2026-07-02T00:00:00.000Z',
+          lastSeenAt: '2026-07-16T07:30:00.000Z',
+        },
+      ],
+    };
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith('/api/client/devices/revoke')) {
+        return Promise.resolve(jsonResponse({
+          ...deviceSummary,
+          activeDevices: 1,
+          devices: deviceSummary.devices.map((device) => (
+            device.id === 'dev_other' ? { ...device, status: 'revoked' } : device
+          )),
+        }));
+      }
+      if (url.endsWith('/api/client/devices')) return Promise.resolve(jsonResponse(deviceSummary));
+      return Promise.resolve(jsonResponse({ leaseExpiresAt: futureIso() }));
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+    const settings = screen.getByRole('dialog', { name: '设置' });
+    await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
+
+    expect(await within(settings).findByText('Alpha Studio MacIntel')).toBeInTheDocument();
+    expect(within(settings).getByText('Alpha Studio Win32')).toBeInTheDocument();
+    expect(within(settings).getByText('管理员')).toBeInTheDocument();
+    expect(within(settings).getByText('本机')).toBeInTheDocument();
+    expect(within(settings).getByText('2 / 5')).toBeInTheDocument();
+
+    await user.click(within(settings).getByRole('button', { name: '解除 Alpha Studio Win32 的授权' }));
+
+    await waitFor(() => expect(within(settings).getByText('已解除授权')).toBeInTheDocument());
+    expect(within(settings).getByText('1 / 5')).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/client/devices/revoke',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"targetDeviceId":"dev_other"'),
+      }),
+    );
+  });
+
+  it('does not offer device revocation controls on a non-administrator device', async () => {
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith('/api/client/devices')) {
+        return Promise.resolve(jsonResponse({
+          activeDevices: 2,
+          maxDevices: 5,
+          isAdministrator: false,
+          devices: [
+            {
+              id: 'dev_admin',
+              name: 'Administrator Mac',
+              status: 'active',
+              isCurrent: false,
+              isAdministrator: true,
+              createdAt: '2026-07-01T00:00:00.000Z',
+            },
+            {
+              id: 'dev_demo',
+              name: 'Current Mac',
+              status: 'active',
+              isCurrent: true,
+              isAdministrator: false,
+              createdAt: '2026-07-02T00:00:00.000Z',
+            },
+          ],
+        }));
+      }
+      return Promise.resolve(jsonResponse({ leaseExpiresAt: futureIso() }));
+    });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+    const settings = screen.getByRole('dialog', { name: '设置' });
+    await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
+
+    expect(await within(settings).findByText('Administrator Mac')).toBeInTheDocument();
+    expect(within(settings).queryByRole('button', { name: /解除 .* 的授权/ })).not.toBeInTheDocument();
+  });
+
+  it('requires an explicit button press to launch Codex CLI device authorization', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    useChatStore.setState({
+      codexStatus: {
+        installed: true,
+        loggedIn: false,
+        path: '/usr/bin/codex',
+        version: 'test',
+        error: 'Alpha Studio 的 GPT 尚未完成设备授权。',
+      },
+    });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+    const settings = screen.getByRole('dialog', { name: '设置' });
+    await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
+
+    const loginButton = within(settings).getByRole('button', { name: '授权 GPT' });
     expect(invoke).not.toHaveBeenCalledWith('codex_login');
 
     await user.click(loginButton);
@@ -1769,6 +1983,7 @@ describe('right feature panel', () => {
           version: 'test',
           path: '/usr/bin/codex',
           loggedIn: true,
+          accountEmail: 'codex-demo@alpha.local',
         });
       }
       if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
@@ -1788,7 +2003,7 @@ describe('right feature panel', () => {
       return Promise.resolve(undefined);
     });
     useChatStore.setState({
-      codexStatus: { installed: true, loggedIn: true, path: '/usr/bin/codex', version: 'test' },
+      codexStatus: { installed: true, loggedIn: true, accountEmail: 'codex-demo@alpha.local', path: '/usr/bin/codex', version: 'test' },
     });
     const user = userEvent.setup();
     const { container } = render(<App />);
@@ -1798,7 +2013,7 @@ describe('right feature panel', () => {
     await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
 
     await waitFor(() => expect(within(settings).getByText('已授权')).toBeInTheDocument());
-    expect(within(settings).queryByRole('button', { name: '授权 Codex CLI' })).not.toBeInTheDocument();
+    expect(within(settings).queryByRole('button', { name: '授权 GPT' })).not.toBeInTheDocument();
   });
 
   it('revokes Codex CLI authorization from profile settings', async () => {
@@ -1811,7 +2026,8 @@ describe('right feature panel', () => {
           version: 'test',
           path: '/usr/bin/codex',
           loggedIn: !revoked,
-          error: revoked ? 'Alpha Studio 的 Codex CLI 尚未完成设备授权。' : undefined,
+          accountEmail: revoked ? undefined : 'codex-demo@alpha.local',
+          error: revoked ? 'Alpha Studio 的 GPT 尚未完成设备授权。' : undefined,
         });
       }
       if (command === 'codex_revoke_authorization') {
@@ -1834,7 +2050,7 @@ describe('right feature panel', () => {
       return Promise.resolve(undefined);
     });
     useChatStore.setState({
-      codexStatus: { installed: true, loggedIn: true, path: '/usr/bin/codex', version: 'test' },
+      codexStatus: { installed: true, loggedIn: true, accountEmail: 'codex-demo@alpha.local', path: '/usr/bin/codex', version: 'test' },
     });
     const user = userEvent.setup();
     const { container } = render(<App />);
@@ -1847,7 +2063,7 @@ describe('right feature panel', () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('codex_revoke_authorization'));
     await waitFor(() => expect(within(settings).getByText('未授权')).toBeInTheDocument());
-    expect(within(settings).getByRole('button', { name: '授权 Codex CLI' })).toBeInTheDocument();
+    expect(within(settings).getByRole('button', { name: '授权 GPT' })).toBeInTheDocument();
     expect(within(settings).queryByRole('button', { name: '撤销授权' })).not.toBeInTheDocument();
   });
 
@@ -2278,6 +2494,43 @@ describe('right feature panel', () => {
     expect(frame?.getAttribute('srcdoc')).toContain('<style>');
     expect(frame?.getAttribute('srcdoc')).toContain('data:image/png;base64,preview');
     expect(screen.queryByText('<!doctype html>')).not.toBeInTheDocument();
+  });
+
+  it('reuses the existing browser tab when the same local file is opened repeatedly', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    mockLocalHtmlPreviewFiles();
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-link',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'text',
+                  content: '已生成今日报告：[index.html](/Users/geb/reports/daily-theme/index.html)',
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const link = screen.getByRole('link', { name: /index\.html/ });
+
+    await user.click(link);
+    await waitFor(() => expect(container.querySelector('.browser-frame')).not.toBeNull());
+    await user.click(link);
+
+    const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
+    expect(container.querySelectorAll('.browser-dock-panel')).toHaveLength(1);
+    expect(within(dock).getAllByRole('tab', { name: '浏览器' })).toHaveLength(1);
+    expect(within(dock).getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('opens local HTML markdown links in the browser dock', async () => {
@@ -2850,10 +3103,13 @@ describe('right feature panel', () => {
     expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.main-stage\s*{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.right-dock-workspace\s*{[^}]*width:\s*auto;[^}]*flex:\s*1 1 auto;/s);
     expect(css).toMatch(/\.right-dock-expand-btn\s*{[^}]*width:\s*30px;[^}]*height:\s*30px;/s);
-    expect(css).toMatch(/\.right-dock-tabs\s*{[^}]*padding:\s*0 154px 0 8px;/s);
-    expect(css).toMatch(/\.right-dock-tabbar-actions\s*{[^}]*right:\s*118px;/s);
+    expect(css).toMatch(/\.app-shell\s*{[^}]*--top-panel-actions-width:\s*98px;/s);
+    expect(css).toMatch(/\.app-shell\.daily-decision-available\s*{[^}]*--top-panel-actions-width:\s*132px;/s);
+    expect(css).toMatch(/\.right-dock-tabs\s*{[^}]*padding:\s*0 calc\(var\(--top-panel-actions-width\) \+ 56px\) 0 8px;/s);
+    expect(css).toMatch(/\.right-dock-tabbar-actions\s*{[^}]*right:\s*calc\(var\(--top-panel-actions-width\) \+ 20px\);/s);
     expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.right-dock-tabs\s*{[^}]*padding-right:\s*50px;/s);
     expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.right-dock-tabbar-actions\s*{[^}]*right:\s*12px;/s);
+    expect(css).toMatch(/\.coworkers-panel-head\s*{[^}]*padding:\s*13px calc\(var\(--top-panel-actions-width\) \+ 17px\) 10px 16px;/s);
     expect(css).toMatch(/\.environment-menu\s*{[^}]*position:\s*fixed;[^}]*top:\s*48px;[^}]*right:\s*16px;[^}]*width:\s*304px;/s);
     expect(css).toMatch(/\.app-shell\.right-panel-open\s+\.environment-menu\s*{[^}]*right:\s*calc\(var\(--right-sidebar-width, 416px\) \+ 16px\);/s);
     expect(css).toMatch(/\.top-bar-actions\s+button:focus\s*{[^}]*outline:\s*none;/s);

@@ -75,8 +75,10 @@ import {
   ListChecks,
   Loader2,
   Lock,
+  LockKeyholeOpen,
   LogOut,
   MessageCircle,
+  MessageCircleQuestionMark,
   MessageSquare,
   MessageSquarePlus,
   Maximize2,
@@ -93,6 +95,7 @@ import {
   PanelLeftOpen,
   PanelRight,
   Paperclip,
+  Pause,
   Pencil,
   Pin,
   PinOff,
@@ -193,6 +196,7 @@ import {
   type ScheduledAutomationTask,
 } from './automation';
 import { useAutomationScheduler } from './automationScheduler';
+import { useThemeTrackingEngine } from './themeTrackingEngine';
 import { loadLocalStoreSnapshot } from './localStore';
 import { activeDomain, type DomainConfig, type DomainSuggestion } from './domain';
 import {
@@ -200,15 +204,24 @@ import {
   ALPHA_GATEWAY_PROVIDER_ID,
   clearClientLicenseSession,
   defaultAlphaApiBaseUrl,
+  enterpriseAuthorizationValidUntil,
+  ENTERPRISE_AUTHORIZATION_CHECK_INTERVAL_MS,
   fetchClientBillingSummary,
+  fetchClientDevices,
   getOrCreateDeviceFingerprint,
+  isClientAuthorizationError,
+  isEnterpriseAuthorizationFresh,
   loadClientLicenseSession,
   renewClientLease,
+  revokeClientDevice,
+  validateCodexAuthorization,
   type BillingLedgerEntry,
   type BillingModelUsage,
   type BillingUsageTotals,
   type ClientBillingSummary,
+  type ClientDeviceSummary,
   type ClientLicenseSession,
+  type ClientManagedDevice,
 } from './license';
 import {
   APPROVAL_OPTIONS,
@@ -248,9 +261,17 @@ import {
 import { RESEARCH_DRAG_MIME } from './research';
 import { registerComposerInsertHandler } from './composerBridge';
 import { ResearchWorkbenchPanel } from './ResearchWorkbench';
+import { DailyDecisionPanel } from './DailyDecisionPanel';
+import {
+  DAILY_DECISION_CHANGED_EVENT,
+  OPEN_DAILY_DECISION_EVENT,
+  loadDailyDecisionState,
+} from './dailyDecision';
 import {
   ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
   ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE,
+  PREMARKET_THEME_RUNS_CHANGED_EVENT,
+  loadPremarketThemeRuns,
 } from './themeResearch';
 import {
   ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
@@ -283,8 +304,8 @@ import type {
   SkillSelection,
 } from './types';
 
-type RightPanel = 'none' | 'git' | 'features' | 'coworkers' | 'review' | 'terminal' | 'browser' | 'files' | 'side-chat' | 'research-workbench';
-type RightDockKind = 'review' | 'terminal' | 'browser' | 'files' | 'side-chat' | 'research-workbench';
+type RightPanel = 'none' | 'git' | 'features' | 'coworkers' | 'review' | 'terminal' | 'browser' | 'files' | 'side-chat' | 'research-workbench' | 'daily-decision';
+type RightDockKind = 'review' | 'terminal' | 'browser' | 'files' | 'side-chat' | 'research-workbench' | 'daily-decision';
 type MainView = 'chat' | 'skills' | 'automations';
 interface RightDockTab {
   id: string;
@@ -308,7 +329,6 @@ const THEME_KEY = 'alpha:codex-theme';
 const THEME_RESTORE_KEY = 'alpha:codex-theme-restored-main-ui-v2';
 const CODEX_LOGIN_POLL_INTERVAL_MS = 2_000;
 const CODEX_LOGIN_POLL_TIMEOUT_MS = 60_000;
-const CLIENT_LICENSE_RENEW_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const SIDEBAR_MIN_WIDTH = 244;
 const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 300;
@@ -333,8 +353,16 @@ const RIGHT_DOCK_META: Record<RightDockKind, { label: string; shortcut?: string 
   files: { label: '文件', shortcut: '⌘P' },
   'side-chat': { label: '侧边聊天', shortcut: '⌥⌘S' },
   'research-workbench': { label: '投研工作台' },
+  'daily-decision': { label: '日报决策' },
 };
 const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['research-workbench', 'browser'];
+
+function conversationHasDailyThemeTurn(conversation: Conversation | null | undefined): boolean {
+  return Boolean(conversation?.messages.some((message) => message.role === 'user' && (
+    message.selectedSkill?.id === ALPHA_STUDIO_DAILY_THEME_SKILL_ID
+    || message.blocks.some((block) => block.type === 'text' && block.content.includes(ALPHA_STUDIO_DAILY_THEME_SKILL_ID))
+  )));
+}
 
 type SkillCategory = 'personal' | 'system' | 'recommended';
 type SkillCategoryFilter = SkillCategory | 'all';
@@ -380,7 +408,7 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
   {
     id: 'browser',
     title: 'Browser',
-    description: 'Browser lets Codex open and control the in-app browser, mainly for local development pages and web QA.',
+    description: 'Browser lets GPT open and control the in-app browser, mainly for local development pages and web QA.',
     category: 'personal',
     source: '个人',
     installed: true,
@@ -475,7 +503,7 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
   {
     id: 'openai-docs',
     title: 'OpenAI Docs',
-    description: 'Reference OpenAI docs, Codex self-knowledge, and model migration guidance.',
+    description: 'Reference OpenAI docs, GPT self-knowledge, and model migration guidance.',
     category: 'system',
     source: '系统',
     installed: true,
@@ -484,7 +512,7 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
       {
         paragraphs: [
           'Provide authoritative, current guidance from OpenAI developer docs using the developers.openai.com MCP server. "Docs MCP" means `mcp__openaiDeveloperDocs__search_openai_docs` and `mcp__openaiDeveloperDocs__fetch_openai_doc`; for API reference, schema, parameter, or required-field questions, also use `mcp__openaiDeveloperDocs__get_openapi_spec` when available. Official-domain web search is fallback after those tools are unavailable or unhelpful.',
-          'Broad Codex questions use the manual helper before Docs MCP. This skill also owns model selection, API model migration, and prompt-upgrade guidance.',
+          'Broad GPT questions use the manual helper before Docs MCP. This skill also owns model selection, API model migration, and prompt-upgrade guidance.',
         ],
       },
       {
@@ -505,7 +533,7 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     source: '系统',
     installed: true,
     icon: 'plugin',
-    detail: detail('Scaffold Codex plugins, marketplace metadata, and plugin directories using the local plugin authoring conventions.'),
+    detail: detail('Scaffold GPT plugins, marketplace metadata, and plugin directories using the local plugin authoring conventions.'),
   },
   {
     id: 'skill-creator',
@@ -645,6 +673,7 @@ interface SkillStatus {
 type SkillStatusMap = Record<string, SkillStatus>;
 
 type AutomationTab = 'tasks' | 'templates';
+type AutomationTaskFilter = 'all' | 'enabled' | 'paused';
 type AutomationTemplateIcon = 'daily' | 'weekly' | 'project' | 'commit' | 'release' | 'ci';
 
 interface AutomationTemplate {
@@ -719,58 +748,58 @@ const AUTOMATION_ENVIRONMENT_SELECT_OPTIONS: readonly AutomationSelectOption[] =
 
 const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
   {
-    id: 'daily-brief',
-    title: '每日简报',
-    description: '每天开始前汇总市场、项目或代码库状态，突出需要关注的变化和下一步动作。',
-    schedule: '每天 09:00',
+    id: 'premarket-brief',
+    title: '盘前市场简报',
+    description: '汇总隔夜全球市场、宏观数据、政策与财经要闻，提炼当日重点方向和风险。',
+    schedule: '每个工作日 08:30',
     source: '系统模板',
     icon: 'daily',
-    prompt: '汇总市场、项目或代码库状态，并突出需要关注的变化和下一步动作。',
+    prompt: '生成盘前市场简报：汇总隔夜全球市场表现、宏观数据、政策变化和重要财经新闻，梳理对 A 股的潜在映射，列出今日重点主题、关键观察指标与主要风险。',
   },
   {
-    id: 'weekly-review',
-    title: '每周回顾',
-    description: '每周整理本周完成事项、遗留风险和下周优先级，适合投研与项目复盘。',
+    id: 'auction-confirmation',
+    title: '集合竞价确认',
+    description: '结合 9:25 竞价强弱、封单与高开结构，确认题材攻击方向和核心标的。',
+    schedule: '每个工作日 09:25',
+    source: '系统模板',
+    icon: 'project',
+    prompt: '分析 9:25 集合竞价结果：比较重点题材和核心标的的竞价涨幅、成交额、封单质量与高开结构，判断资金攻击方向，给出确认项、证伪项和开盘后的观察计划。',
+  },
+  {
+    id: 'intraday-move-monitor',
+    title: '盘中异动监控',
+    description: '跟踪板块强度、量价异动与资金扩散，及时提示主线强化、分歧或退潮信号。',
+    schedule: '每 30 分钟',
+    source: '投研自动化',
+    icon: 'commit',
+    prompt: '仅在 A 股交易时段执行盘中异动监控：跟踪板块涨速、成交额、资金扩散、核心股表现和指数环境，识别主线强化、分歧转一致、冲高回落或退潮信号，并给出需要继续观察的触发条件。',
+  },
+  {
+    id: 'postmarket-review',
+    title: '盘后市场复盘',
+    description: '复盘指数、情绪、题材梯队与资金风格，沉淀当日结论和下一交易日预案。',
+    schedule: '每个工作日 15:30',
+    source: '系统模板',
+    icon: 'release',
+    prompt: '生成盘后市场复盘：总结指数与成交、市场情绪、领涨题材、核心个股梯队和资金风格，区分机构与短线资金线索，评估主题生命周期，并形成下一交易日的观察重点、触发条件和风险预案。',
+  },
+  {
+    id: 'weekly-strategy-review',
+    title: '周度策略回顾',
+    description: '回顾本周行情与研究判断，更新主题优先级、组合风险和下周策略。',
     schedule: '星期五 17:30',
     source: '系统模板',
     icon: 'weekly',
-    prompt: '整理本周完成事项、遗留风险和下周优先级。',
+    prompt: '生成周度投研策略回顾：复盘本周指数、风格、主题轮动和关键判断的验证情况，评估组合暴露与主要风险，更新下周主题优先级、关键事件日历、观察标的和交易触发条件。',
   },
   {
-    id: 'project-monitor',
-    title: '项目监控',
-    description: '持续跟踪当前研究主题或代码项目，发现异常、延期或新变化时提醒你处理。',
-    schedule: '每个工作日 10:00',
-    source: 'Codex 自动化',
-    icon: 'project',
-    prompt: '跟踪当前研究主题或代码项目，发现异常、延期或新变化时提醒我处理。',
-  },
-  {
-    id: 'commit-scan',
-    title: '扫描最近提交',
-    description: '检查最近提交、PR、测试失败和 CI 信号，优先提示小且安全的修复建议。',
-    schedule: '每天 09:00',
-    source: 'Codex 自动化',
-    icon: 'commit',
-    prompt: '检查最近提交、PR、测试失败和 CI 信号，并优先提示小且安全的修复建议。',
-  },
-  {
-    id: 'release-note',
-    title: 'PR 发布说明',
-    description: '基于已合并 PR 起草发布说明，严格区分已合并历史和推断内容。',
-    schedule: '星期五 09:00',
-    source: '系统模板',
-    icon: 'release',
-    prompt: '基于已合并 PR 起草发布说明，并严格区分已合并历史和推断内容。',
-  },
-  {
-    id: 'ci-triage',
-    title: 'CI 失败总结',
-    description: '总结上一个 CI 窗口中的失败和不稳定测试，给出首要修复建议。',
-    schedule: '每天 21:00',
-    source: 'Codex 自动化',
+    id: 'announcement-risk-scan',
+    title: '公告与风险扫描',
+    description: '扫描重要公告、监管动态与事件风险，识别可能影响持仓和关注标的的变化。',
+    schedule: '每个工作日 20:30',
+    source: '投研自动化',
     icon: 'ci',
-    prompt: '总结上一个 CI 窗口中的失败和不稳定测试，并给出首要修复建议。',
+    prompt: '扫描当日上市公司公告、监管动态、产业事件和重大财经新闻，筛选可能影响持仓及重点观察标的的信息，区分事实与推断，标注影响方向、紧迫程度、待验证问题和下一步研究动作。',
   },
 ] as const;
 
@@ -847,7 +876,7 @@ function useFileDockOpener() {
 
 const CODEX_SKILLS_CAPABILITY: SkillSelection = {
   id: 'skills',
-  title: 'Codex CLI Skills',
+  title: 'GPT Skills',
   description: '读取本地 SKILL.md，并在任务匹配时按需加载技能说明。',
 };
 
@@ -892,7 +921,7 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<'checking' | 'inactive' | 'active'>(() => {
     const stored = initialSessionRef.current;
     if (!stored) return 'inactive';
-    return isLeaseFresh(stored) ? 'active' : 'checking';
+    return isEnterpriseAuthorizationFresh(stored) ? 'active' : 'checking';
   });
   const [session, setSession] = useState<ClientLicenseSession | null>(() => initialSessionRef.current);
   const [error, setError] = useState('');
@@ -927,14 +956,17 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
       setClientLicenseSession(null);
       return;
     }
-    if (isLeaseFresh(stored)) {
+    if (isEnterpriseAuthorizationFresh(stored)) {
       activateSession(stored);
       void renewClientLease(stored)
         .then((renewed) => {
           if (!disposed) activateSession(renewed);
         })
-        .catch(() => {
-          // A still-valid three-year lease should survive transient startup/network failures.
+        .catch((leaseError) => {
+          if (!disposed && isClientAuthorizationError(leaseError)) {
+            deactivateSession(`设备授权已被解除，请重新激活：${stringifyUnknownError(leaseError)}`);
+          }
+          // A still-valid five-day authorization survives transient startup/network failures.
         });
       return () => {
         disposed = true;
@@ -961,16 +993,20 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (status !== 'active' || !session) return;
-    const interval = window.setInterval(() => {
+    const delay = Math.max(
+      0,
+      enterpriseAuthorizationValidUntil(session) - Date.now() - 15_000,
+    );
+    const timeout = window.setTimeout(() => {
       void renewClientLease(session)
         .then(activateSession)
         .catch((leaseError) => {
-          if (!isLeaseFresh(session)) {
+          if (isClientAuthorizationError(leaseError) || !isEnterpriseAuthorizationFresh(session)) {
             deactivateSession(`设备续租失败，请重新激活：${stringifyUnknownError(leaseError)}`);
           }
         });
-    }, CLIENT_LICENSE_RENEW_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    }, Math.min(delay, ENTERPRISE_AUTHORIZATION_CHECK_INTERVAL_MS));
+    return () => window.clearTimeout(timeout);
   }, [activateSession, deactivateSession, session, status]);
 
   if (status === 'checking') {
@@ -1065,10 +1101,6 @@ function defaultDeviceName(): string {
   return `Alpha Studio ${platform}`;
 }
 
-function isLeaseFresh(session: ClientLicenseSession): boolean {
-  return new Date(session.device.leaseExpiresAt).getTime() > Date.now() + 15_000;
-}
-
 function stringifyUnknownError(error: unknown): string {
   return stringifyError(error);
 }
@@ -1104,6 +1136,7 @@ function AppWorkspace() {
   const workModeId = useChatStore((state) => state.workModeId);
   const domain = activeDomain(workModeId);
   useAutomationScheduler();
+  useThemeTrackingEngine();
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -1140,6 +1173,7 @@ function AppWorkspace() {
   const [rightDockExpanded, setRightDockExpanded] = useState(false);
   const [rightDockTabs, setRightDockTabs] = useState<RightDockTab[]>([]);
   const [activeRightDockTabId, setActiveRightDockTabId] = useState<string | null>(null);
+  const [dailyReportsForShell, setDailyReportsForShell] = useState(() => loadPremarketThemeRuns());
   const lastRegularRightPanelRef = useRef<{
     panel: Exclude<RightPanel, 'none' | 'coworkers'>;
     activeTabId: string | null;
@@ -1164,6 +1198,16 @@ function AppWorkspace() {
   const [queuedSkill, setQueuedSkill] = useState<SkillCatalogItem | null>(null);
   const [queuedSkillPrompt, setQueuedSkillPrompt] = useState<string | null>(null);
   const [queuedCoworkerTask, setQueuedCoworkerTask] = useState<QueuedCoworkerTask | null>(null);
+
+  useEffect(() => {
+    const syncReports = () => setDailyReportsForShell(loadPremarketThemeRuns());
+    window.addEventListener(PREMARKET_THEME_RUNS_CHANGED_EVENT, syncReports);
+    return () => window.removeEventListener(PREMARKET_THEME_RUNS_CHANGED_EVENT, syncReports);
+  }, []);
+
+  const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId) ?? null;
+  const dailyDecisionAvailable = conversationHasDailyThemeTurn(currentConversation)
+    || dailyReportsForShell.some((report) => report.sourceConversationId === currentConversationId);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1370,7 +1414,21 @@ function AppWorkspace() {
     };
   }, [activeRightDockTabId, currentRightPanel]);
 
+  const activateRightDockTab = useCallback((tab: RightDockTab) => {
+    setActiveRightDockTabId(tab.id);
+    setRightPanel(tab.kind);
+    setRightDockMounted(true);
+    setRightPanelVisible(true);
+  }, []);
+
   const addRightDockTab = useCallback((kind: RightDockKind, url?: string) => {
+    if (kind === 'daily-decision') {
+      const existing = rightDockTabs.find((tab) => tab.kind === kind);
+      if (existing) {
+        activateRightDockTab(existing);
+        return;
+      }
+    }
     nextRightDockTabRef.current += 1;
     const tab: RightDockTab = {
       id: `${kind}-${Date.now()}-${nextRightDockTabRef.current}`,
@@ -1383,30 +1441,40 @@ function AppWorkspace() {
     setRightPanel(kind);
     setRightDockMounted(true);
     setRightPanelVisible(true);
-  }, []);
+  }, [activateRightDockTab, rightDockTabs]);
 
   const openBrowserUrl = useCallback((rawUrl: string) => {
     const displayUrl = browserDockDisplayUrl(rawUrl);
     if (!normalizeBrowserDockUrl(displayUrl)) return;
+    const localPath = localFilePath(displayUrl);
+    const existingTab = localPath
+      ? rightDockTabs.find((tab) => tab.kind === 'browser' && localFilePath(tab.url || '') === localPath)
+      : null;
+    if (existingTab) {
+      activateRightDockTab(existingTab);
+      return;
+    }
     addRightDockTab('browser', displayUrl);
-  }, [addRightDockTab]);
+  }, [activateRightDockTab, addRightDockTab, rightDockTabs]);
 
   const openFileInDock = useCallback((rawPath: string) => {
     const path = localFilePath(rawPath) || rawPath.trim();
     if (!path) return;
+    const existingTab = rightDockTabs.find((tab) => tab.kind === 'files' && localFilePath(tab.url || '') === path);
+    if (existingTab) {
+      activateRightDockTab(existingTab);
+      return;
+    }
     addRightDockTab('files', path);
-  }, [addRightDockTab]);
+  }, [activateRightDockTab, addRightDockTab, rightDockTabs]);
 
   const selectRightDockTab = useCallback((id: string) => {
     const tab = rightDockTabs.find((item) => item.id === id);
     if (!tab) return;
-    setActiveRightDockTabId(id);
-    setRightPanel(tab.kind);
-    setRightDockMounted(true);
-    setRightPanelVisible(true);
-  }, [rightDockTabs]);
+    activateRightDockTab(tab);
+  }, [activateRightDockTab, rightDockTabs]);
 
-  const toggleRightDockKind = useCallback((kind: 'browser' | 'research-workbench') => {
+  const toggleRightDockKind = useCallback((kind: 'browser' | 'research-workbench' | 'daily-decision') => {
     if (rightPanelVisible && currentRightPanel === kind) {
       setRightDockExpanded(false);
       setRightPanelVisible(false);
@@ -1422,6 +1490,21 @@ function AppWorkspace() {
 
     addRightDockTab(kind);
   }, [addRightDockTab, currentRightPanel, rightPanelVisible, rightDockTabs, selectRightDockTab]);
+
+  useEffect(() => {
+    const openDailyDecision = (event: Event) => {
+      const conversationId = (event as CustomEvent<{ conversationId?: string }>).detail?.conversationId;
+      if (conversationId && conversations.some((conversation) => conversation.id === conversationId)) {
+        setCurrentConversation(conversationId);
+      }
+      setMainView('chat');
+      const existingTab = [...rightDockTabs].reverse().find((tab) => tab.kind === 'daily-decision');
+      if (existingTab) activateRightDockTab(existingTab);
+      else addRightDockTab('daily-decision');
+    };
+    window.addEventListener(OPEN_DAILY_DECISION_EVENT, openDailyDecision);
+    return () => window.removeEventListener(OPEN_DAILY_DECISION_EVENT, openDailyDecision);
+  }, [activateRightDockTab, addRightDockTab, conversations, rightDockTabs, setCurrentConversation]);
 
   const closeRightDockTab = useCallback((id: string) => {
     const index = rightDockTabs.findIndex((tab) => tab.id === id);
@@ -1439,8 +1522,24 @@ function AppWorkspace() {
     }
   }, [activeRightDockTabId, rightDockTabs]);
 
+  useEffect(() => {
+    if (dailyDecisionAvailable || !rightDockTabs.some((tab) => tab.kind === 'daily-decision')) return;
+    const nextTabs = rightDockTabs.filter((tab) => tab.kind !== 'daily-decision');
+    const activeWasDaily = rightDockTabs.find((tab) => tab.id === activeRightDockTabId)?.kind === 'daily-decision';
+    setRightDockTabs(nextTabs);
+    if (!activeWasDaily) return;
+    const nextActive = nextTabs[nextTabs.length - 1] ?? null;
+    setActiveRightDockTabId(nextActive?.id ?? null);
+    setRightPanel(nextActive?.kind ?? 'features');
+    if (!nextActive) {
+      setRightDockExpanded(false);
+      setRightPanelVisible(false);
+    }
+  }, [activeRightDockTabId, dailyDecisionAvailable, rightDockTabs]);
+
   const coworkersPanelOpen = rightPanelVisible && currentRightPanel === 'coworkers';
   const researchWorkbenchOpen = rightPanelVisible && currentRightPanel === 'research-workbench';
+  const dailyDecisionOpen = rightPanelVisible && currentRightPanel === 'daily-decision';
   const browserOpen = rightPanelVisible && currentRightPanel === 'browser';
 
   const toggleCoworkersPanel = useCallback(() => {
@@ -1468,7 +1567,8 @@ function AppWorkspace() {
     currentRightPanel === 'browser' ||
     currentRightPanel === 'files' ||
     currentRightPanel === 'side-chat' ||
-    currentRightPanel === 'research-workbench';
+    currentRightPanel === 'research-workbench' ||
+    currentRightPanel === 'daily-decision';
 
   useEffect(() => {
     const handleKeyDown = (event: WindowEventMap['keydown']) => {
@@ -1537,7 +1637,7 @@ function AppWorkspace() {
       <BrowserDockContext.Provider value={openBrowserUrl}>
         <FileDockContext.Provider value={openFileInDock}>
           <div
-            className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && rightDockExpanded ? 'right-dock-expanded' : ''} ${coworkersPanelOpen ? 'coworkers-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'} ${windowFullscreen ? 'window-fullscreen' : ''}`}
+            className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${rightPanelVisible ? 'right-panel-open' : ''} ${rightPanelVisible && rightDockExpanded ? 'right-dock-expanded' : ''} ${coworkersPanelOpen ? 'coworkers-panel-open' : ''} ${dailyDecisionAvailable ? 'daily-decision-available' : ''} ${rightPanelVisible && currentRightPanel === 'git' ? 'git-panel-open' : ''} ${rightPanelVisible && currentRightPanel === 'review' ? 'review-panel-open' : ''} ${windowFocused ? '' : 'window-inactive'} ${windowFullscreen ? 'window-fullscreen' : ''}`}
             data-work-mode={domain.id}
             style={
               {
@@ -1576,11 +1676,13 @@ function AppWorkspace() {
                   sidebarCollapsed={sidebarCollapsed}
                   coworkersPanelOpen={coworkersPanelOpen}
                   researchWorkbenchOpen={researchWorkbenchOpen}
+                  dailyDecisionOpen={dailyDecisionOpen}
                   browserOpen={browserOpen}
                   hidePanelActions={settingsOpen}
                   onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
                   onToggleCoworkersPanel={toggleCoworkersPanel}
                   onToggleResearchWorkbench={() => toggleRightDockKind('research-workbench')}
+                  onToggleDailyDecision={() => toggleRightDockKind('daily-decision')}
                   onToggleBrowser={() => toggleRightDockKind('browser')}
                   onOpenSideChat={() => addRightDockTab('side-chat')}
                   onOpenSettings={() => openSettings('general')}
@@ -1708,6 +1810,39 @@ function RightDockToggleButton({
       title={label}
     >
       {rightDockIcon(kind, 16)}
+    </button>
+  );
+}
+
+function DailyDecisionToggleButton({
+  open,
+  loading,
+  warning,
+  badge,
+  onToggle,
+}: {
+  open: boolean;
+  loading: boolean;
+  warning: boolean;
+  badge: number;
+  onToggle: () => void;
+}) {
+  const title = loading
+    ? '日报正在生成'
+    : warning
+      ? '日报结构化失败，打开后可由 AI 补全'
+      : '日报决策';
+  return (
+    <button
+      className={`icon-btn daily-decision-toggle ${open ? 'active' : ''} ${warning ? 'warning' : ''}`}
+      type="button"
+      onClick={onToggle}
+      aria-label={title}
+      aria-pressed={open}
+      title={title}
+    >
+      {loading ? <Loader2 size={16} className="spin" /> : warning ? <AlertTriangle size={16} /> : <FileChartColumn size={16} />}
+      {badge > 0 && <span className="daily-decision-badge">{badge > 99 ? '99+' : badge}</span>}
     </button>
   );
 }
@@ -2684,11 +2819,13 @@ function TopBar({
   sidebarCollapsed,
   coworkersPanelOpen,
   researchWorkbenchOpen,
+  dailyDecisionOpen,
   browserOpen,
   hidePanelActions = false,
   onToggleSidebar,
   onToggleCoworkersPanel,
   onToggleResearchWorkbench,
+  onToggleDailyDecision,
   onToggleBrowser,
   onOpenSideChat,
   onOpenSettings,
@@ -2697,11 +2834,13 @@ function TopBar({
   sidebarCollapsed: boolean;
   coworkersPanelOpen: boolean;
   researchWorkbenchOpen: boolean;
+  dailyDecisionOpen: boolean;
   browserOpen: boolean;
   hidePanelActions?: boolean;
   onToggleSidebar: () => void;
   onToggleCoworkersPanel: () => void;
   onToggleResearchWorkbench: () => void;
+  onToggleDailyDecision: () => void;
   onToggleBrowser: () => void;
   onOpenSideChat: () => void;
   onOpenSettings: () => void;
@@ -2714,7 +2853,41 @@ function TopBar({
   const createConversation = useChatStore((state) => state.createConversation);
   const [editing, setEditing] = useState(false);
   const [menu, setMenu] = useState<SidebarMenu | null>(null);
+  const [dailyReports, setDailyReports] = useState(() => loadPremarketThemeRuns());
+  const [dailyDecisionState, setDailyDecisionState] = useState(() => loadDailyDecisionState());
   const cwd = conversation?.cwd || '';
+
+  useEffect(() => {
+    const syncReports = () => setDailyReports(loadPremarketThemeRuns());
+    const syncDecisions = () => setDailyDecisionState(loadDailyDecisionState());
+    window.addEventListener(PREMARKET_THEME_RUNS_CHANGED_EVENT, syncReports);
+    window.addEventListener(DAILY_DECISION_CHANGED_EVENT, syncDecisions);
+    return () => {
+      window.removeEventListener(PREMARKET_THEME_RUNS_CHANGED_EVENT, syncReports);
+      window.removeEventListener(DAILY_DECISION_CHANGED_EVENT, syncDecisions);
+    };
+  }, []);
+
+  const conversationReports = dailyReports.filter((report) => report.sourceConversationId === conversation?.id);
+  const hasDailyThemeTurn = conversationHasDailyThemeTurn(conversation);
+  const dailyDecisionAvailable = hasDailyThemeTurn || conversationReports.length > 0;
+  const latestUserMessage = [...(conversation?.messages ?? [])].reverse().find((message) => message.role === 'user');
+  const latestTurnIsDailyTheme = Boolean(latestUserMessage && (
+    latestUserMessage.selectedSkill?.id === ALPHA_STUDIO_DAILY_THEME_SKILL_ID
+    || latestUserMessage.blocks.some((block) => block.type === 'text' && block.content.includes(ALPHA_STUDIO_DAILY_THEME_SKILL_ID))
+  ));
+  const latestAssistantMessage = [...(conversation?.messages ?? [])].reverse().find((message) => message.role === 'assistant' && message.timestamp >= (latestUserMessage?.timestamp ?? 0));
+  const boundMessageIds = new Set(conversationReports.map((report) => report.sourceMessageId).filter(Boolean));
+  const dailyDecisionLoading = latestTurnIsDailyTheme && conversation?.status === 'streaming';
+  const dailyDecisionWarning = latestTurnIsDailyTheme
+    && conversation?.status !== 'streaming'
+    && Boolean(latestAssistantMessage)
+    && !boundMessageIds.has(latestAssistantMessage?.id);
+  const dailyReportIds = new Set(conversationReports.map((report) => report.id));
+  const dailyDecisionBadge = dailyDecisionState.recommendations.filter((recommendation) => (
+    dailyReportIds.has(recommendation.reportId)
+    && !['confirmed', 'deferred', 'rejected'].includes(recommendation.status)
+  )).length;
 
   useEffect(() => {
     if (!conversation) return;
@@ -2809,6 +2982,15 @@ function TopBar({
         <div className="top-bar-actions">
           <div className="top-bar-panel-actions">
             <CoworkersToggleButton open={coworkersPanelOpen} onToggle={onToggleCoworkersPanel} />
+            {dailyDecisionAvailable && (
+              <DailyDecisionToggleButton
+                open={dailyDecisionOpen}
+                loading={dailyDecisionLoading}
+                warning={dailyDecisionWarning}
+                badge={dailyDecisionBadge}
+                onToggle={onToggleDailyDecision}
+              />
+            )}
             <RightDockToggleButton
               kind="research-workbench"
               open={researchWorkbenchOpen}
@@ -3706,6 +3888,8 @@ function rightDockIcon(kind: RightDockKind, size = 14): ReactNode {
       return <MessageSquare size={size} />;
     case 'research-workbench':
       return <LineChart size={size} />;
+    case 'daily-decision':
+      return <FileChartColumn size={size} />;
   }
 }
 
@@ -3768,6 +3952,7 @@ function RightDockWorkspace({
                 {tab.kind === 'files' && <FilesDockPanel filePath={tab.url} />}
                 {tab.kind === 'side-chat' && <SideChatPanel domain={domain} sidebarExpanded={expanded} />}
                 {tab.kind === 'research-workbench' && <ResearchWorkbenchPanel />}
+                {tab.kind === 'daily-decision' && <DailyDecisionPanel />}
               </div>
             ))}
           </div>
@@ -4792,6 +4977,7 @@ function AutomationsPage({
 }) {
   const [tab, setTab] = useState<AutomationTab>('tasks');
   const [query, setQuery] = useState('');
+  const [taskFilter, setTaskFilter] = useState<AutomationTaskFilter>('all');
   const [editorOpen, setEditorOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<ScheduledAutomationTask[]>(() => loadScheduledAutomationTasks());
@@ -4841,7 +5027,13 @@ function AutomationsPage({
   const normalizedQuery = query.trim().toLowerCase();
   const visibleTemplates = AUTOMATION_TEMPLATES.filter((template) => {
     if (!normalizedQuery) return true;
-    return `${template.title} ${template.description} ${template.schedule} ${template.source}`.toLowerCase().includes(normalizedQuery);
+    return `${template.title} ${template.description} ${template.schedule} ${template.source} ${template.prompt}`.toLowerCase().includes(normalizedQuery);
+  });
+  const filteredTasks = tasks.filter((task) => {
+    if (taskFilter === 'enabled' && task.paused) return false;
+    if (taskFilter === 'paused' && !task.paused) return false;
+    if (!normalizedQuery) return true;
+    return `${task.title} ${task.prompt} ${task.schedule} ${task.project}`.toLowerCase().includes(normalizedQuery);
   });
 
   useEffect(() => {
@@ -4949,6 +5141,12 @@ function AutomationsPage({
     }
   };
 
+  const toggleTaskPaused = (taskId: string) => {
+    commitTasks((current) => current.map((task) => (
+      task.id === taskId ? { ...task, paused: !task.paused } : task
+    )));
+  };
+
   const submitManualTask = (event: FormEvent) => {
     event.preventDefault();
     const prompt = form.prompt.trim();
@@ -4965,6 +5163,7 @@ function AutomationsPage({
       prompt,
       createdAt: tasks.find((item) => item.id === selectedTaskId)?.createdAt ?? Date.now(),
       conversationId: tasks.find((item) => item.id === selectedTaskId)?.conversationId ?? useChatStore.getState().currentConversationId ?? undefined,
+      paused: tasks.find((item) => item.id === selectedTaskId)?.paused ?? false,
     };
 
     commitTasks((current) => {
@@ -4980,8 +5179,7 @@ function AutomationsPage({
 
   return (
     <section className={`automation-page ${editorOpen ? 'manual-editor-open' : ''}`} aria-label="自动化">
-      <div className="automation-drag-strip" data-tauri-drag-region aria-hidden="true" />
-      <div className="automation-topbar">
+      <div className="automation-topbar" data-tauri-drag-region="deep">
         <div className="automation-topbar-start">
           <CollapsedSidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
           <div className="automation-tabs" role="tablist" aria-label="自动化">
@@ -5019,28 +5217,50 @@ function AutomationsPage({
                     <button type="button" onClick={() => { setTab('templates'); setQuery(''); }}>了解更多</button>
                   </div>
                 </div>
+                <label className="automation-search">
+                  <Search size={15} />
+                  <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索已安排任务" aria-label="搜索已安排任务" />
+                </label>
               </header>
 
               {tasks.length > 0 ? (
                 <section className="automation-task-section" aria-label="当前自动化任务">
-                  <h2>当前</h2>
+                  <div className="automation-task-toolbar">
+                    <div className="automation-task-filters" role="group" aria-label="任务状态筛选">
+                      <button type="button" className={taskFilter === 'all' ? 'active' : ''} aria-pressed={taskFilter === 'all'} onClick={() => setTaskFilter('all')}>全部</button>
+                      <button type="button" className={taskFilter === 'enabled' ? 'active' : ''} aria-pressed={taskFilter === 'enabled'} onClick={() => setTaskFilter('enabled')}>已开启</button>
+                      <button type="button" className={taskFilter === 'paused' ? 'active' : ''} aria-pressed={taskFilter === 'paused'} onClick={() => setTaskFilter('paused')}>已暂停</button>
+                    </div>
+                    <span className="automation-task-count">
+                      {filteredTasks.length} / {tasks.length}
+                    </span>
+                  </div>
                   <div className="automation-task-list">
-                    {tasks.map((task) => (
+                    {filteredTasks.map((task) => (
                       <div
                         key={task.id}
-                        className={`automation-task-row ${task.id === selectedTaskId ? 'active' : ''}`}
+                        className={`automation-task-row ${task.paused ? 'paused' : ''} ${task.id === selectedTaskId ? 'active' : ''}`}
                       >
                         <button type="button" className="automation-task-main" onClick={() => inspectTask(task)}>
                           <span className="automation-task-status" aria-hidden="true" />
                           <span className="automation-task-copy">
                             <strong>{task.title}</strong>
-                            <span>{task.kind === 'intraday-monitor' ? '交易时段自动运行' : 'Next run 待安排'} · {task.schedule}</span>
+                            <span>{task.paused ? '已暂停' : task.kind === 'intraday-monitor' ? '交易时段自动运行' : 'Next run 待安排'} · {task.schedule}</span>
                           </span>
                         </button>
                         <span className="automation-task-meta">{task.kind === 'intraday-monitor' ? '盘中监控' : task.project === '选择项目' ? '手动创建' : task.project}</span>
                         <span className="automation-task-actions" aria-label="任务操作">
                           <button type="button" className="automation-task-action" aria-label="立即执行" title="立即执行" onClick={() => runTaskNow(task)}>
                             <Play size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className="automation-task-action"
+                            aria-label={task.paused ? '恢复任务' : '暂停任务'}
+                            title={task.paused ? '恢复任务' : '暂停任务'}
+                            onClick={() => toggleTaskPaused(task.id)}
+                          >
+                            {task.paused ? <Play size={14} /> : <Pause size={14} />}
                           </button>
                           <button type="button" className="automation-task-action" aria-label="编辑" title="编辑" onClick={() => inspectTask(task)}>
                             <Pencil size={14} />
@@ -5051,6 +5271,12 @@ function AutomationsPage({
                         </span>
                       </div>
                     ))}
+                    {filteredTasks.length === 0 && (
+                      <div className="automation-filter-empty">
+                        <strong>{normalizedQuery ? '没有匹配的任务' : taskFilter === 'paused' ? '没有已暂停的任务' : '没有已开启的任务'}</strong>
+                        <span>{normalizedQuery ? '请尝试其他关键词或状态筛选。' : '切换上方筛选可以查看其他任务。'}</span>
+                      </div>
+                    )}
                   </div>
                 </section>
               ) : (
@@ -5072,15 +5298,15 @@ function AutomationsPage({
               <header className="automation-head templates">
                 <div>
                   <h1>任务模板</h1>
-                  <p>从预设开始创建计划任务</p>
+                  <p>从金融投研预设开始创建计划任务</p>
                 </div>
                 <label className="automation-search">
                   <Search size={15} />
-                  <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search templates" />
+                  <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索投研模板" aria-label="搜索投研模板" />
                 </label>
               </header>
               <section className="automation-template-section" aria-label="自动化模板">
-                <h2>System</h2>
+                <h2>金融投研</h2>
                 {visibleTemplates.length > 0 ? (
                   <div className="automation-template-grid">
                     {visibleTemplates.map((template) => (
@@ -5349,7 +5575,7 @@ function AutomationManualEditor({
             className="automation-editor-prompt"
             value={form.prompt}
             onChange={(event) => onChange('prompt', event.target.value)}
-            placeholder="描述 Codex 应该做什么"
+            placeholder="描述 GPT 应该做什么"
             aria-label="提示词"
           />
         </div>
@@ -5632,9 +5858,9 @@ function automationTemplateIcon(icon: AutomationTemplateIcon, size: number): Rea
     daily: <Clock3 size={size} />,
     weekly: <ListChecks size={size} />,
     project: <Target size={size} />,
-    commit: <GitCommitHorizontal size={size} />,
-    release: <FileText size={size} />,
-    ci: <AlertCircle size={size} />,
+    commit: <LineChart size={size} />,
+    release: <FileChartColumn size={size} />,
+    ci: <AlertTriangle size={size} />,
   };
   return icons[icon];
 }
@@ -7065,13 +7291,13 @@ function Composer({
 }
 
 function ContextWindowIndicator({ usage }: { usage: ContextWindowUsage }) {
-  const label = usage.source === 'codex' ? 'Codex 实际上下文窗口' : '本地估算背景信息窗口';
+  const label = usage.source === 'codex' ? 'GPT 实际上下文窗口' : '本地估算背景信息窗口';
   const detail = [
     `${label}：${usage.usedPercent}% 已用（剩余 ${usage.remainingPercent}%）`,
     `已用 ${formatTokenCount(usage.usedTokens)} 标记，共 ${formatTokenCount(usage.totalTokens)}`,
     `压缩阈值 ${usage.compactThresholdPercent}%（${formatTokenCount(usage.compactThresholdTokens)} 标记）`,
     usage.source === 'codex'
-      ? (usage.compacted ? 'Codex 已执行上下文压缩' : '尚未收到 Codex 压缩事件')
+      ? (usage.compacted ? 'GPT 已执行上下文压缩' : '尚未收到 GPT 压缩事件')
       : (usage.compacted ? `已压缩前 ${usage.compactedMessageCount} 条消息` : '尚未压缩'),
   ].join('\n');
   return (
@@ -8610,7 +8836,7 @@ function clampFloatingPosition(value: number, min: number, max: number): number 
 }
 
 function codexSubscriptionModelsVisible(codexStatus: { loggedIn: boolean } | null, session: ClientLicenseSession | null): boolean {
-  if (session && !session.tenant.codexSubscriptionEnabled) return false;
+  if (session && (!session.tenant.codexSubscriptionEnabled || session.codexAccounts.length === 0)) return false;
   return !isTauriRuntime() || codexStatus?.loggedIn !== false;
 }
 
@@ -8770,9 +8996,9 @@ function ModelPicker() {
 }
 
 function approvalIcon(mode: ApprovalMode, size = 13): ReactNode {
-  if (mode === 'request') return <ShieldQuestion size={size} />;
+  if (mode === 'request') return <MessageCircleQuestionMark size={size} />;
   if (mode === 'auto') return <ShieldCheck size={size} />;
-  return <Globe size={size} />;
+  return <LockKeyholeOpen size={size} />;
 }
 
 function ApprovalPicker() {
@@ -10763,7 +10989,7 @@ function ModelSettings() {
     ? `${selectedUsesGateway && !codexStatus?.loggedIn ? '本地 AI 运行环境可用于按量模型' : '本地 AI 运行环境已就绪'}${codexStatus?.version ? ` · ${codexStatus.version}` : ''}`
     : '本地 AI 运行环境未就绪';
   const codexRuntimeDescription = codexStatus?.installed && selectedUsesGateway && !codexStatus.loggedIn
-    ? '按量模型无需 Codex 订阅设备授权。'
+    ? '按量模型无需 GPT 订阅设备授权。'
     : codexStatus?.loggedIn
       ? codexStatus.path
       : (codexStatus?.error || codexStatus?.path || '请确认本地 AI 运行环境已安装并完成设备授权。');
@@ -10876,7 +11102,7 @@ function ModelSettings() {
         {draft.wireApi === 'chat' && (
           <div className="model-form-warning">
             <Network size={14} />
-            <span>Chat Completions 会通过 Alpha Studio 本地 adapter 接入 Codex；勾选“启用思考模式”会发送 thinking.enabled，取消勾选会发送 thinking.disabled。</span>
+            <span>Chat Completions 会通过 Alpha Studio 本地 adapter 接入 GPT；勾选“启用思考模式”会发送 thinking.enabled，取消勾选会发送 thinking.disabled。</span>
           </div>
         )}
         <div className="model-form-options">
@@ -10964,6 +11190,7 @@ function ColorSwatch({ value }: { value: string }) {
 
 function CodexLoginButton({ compact = false, stateButton = false }: { compact?: boolean; stateButton?: boolean }) {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
+  const session = useChatStore((state) => state.clientLicenseSession);
   const [isLaunching, setIsLaunching] = useState(false);
   const [isWaitingForLogin, setIsWaitingForLogin] = useState(false);
   const [error, setError] = useState('');
@@ -11000,12 +11227,36 @@ function CodexLoginButton({ compact = false, stateButton = false }: { compact?: 
     while (pollRunRef.current === runId && Date.now() < expiresAt) {
       await refreshCodexStatus();
       if (pollRunRef.current !== runId) return;
-      if (useChatStore.getState().codexStatus?.loggedIn) break;
+      const status = useChatStore.getState().codexStatus;
+      if (status?.loggedIn) {
+        try {
+          if (!session || !status.accountEmail) {
+            throw new Error('无法识别 GPT 登录账号，请重新授权。');
+          }
+          await validateCodexAuthorization(session, status.accountEmail);
+          break;
+        } catch (authorizationError) {
+          await revokeCodexAuthorization();
+          await refreshCodexStatus();
+          setError(`GPT 授权失败：${stringifyUnknownError(authorizationError)}`);
+          setIsWaitingForLogin(false);
+          return;
+        }
+      }
+      if (status?.accountEmail && status.error) {
+        await revokeCodexAuthorization();
+        await refreshCodexStatus();
+        setError(status.error);
+        setIsWaitingForLogin(false);
+        return;
+      }
       const shouldContinue = await waitForNextPoll(runId);
       if (!shouldContinue) return;
     }
     if (pollRunRef.current === runId) {
       await refreshCodexStatus();
+      const status = useChatStore.getState().codexStatus;
+      if (!status?.loggedIn && status?.error) setError(status.error);
       setIsWaitingForLogin(false);
     }
   };
@@ -11028,7 +11279,7 @@ function CodexLoginButton({ compact = false, stateButton = false }: { compact?: 
     }
   };
   const busy = isLaunching || isWaitingForLogin;
-  const label = isLaunching ? '正在打开授权' : isWaitingForLogin ? '等待授权完成' : '授权 Codex CLI';
+  const label = isLaunching ? '正在打开授权' : isWaitingForLogin ? '等待授权完成' : '授权 GPT';
   const buttonClassName = stateButton
     ? `settings-state-pill settings-state-button attention ${busy ? 'authorizing' : ''}`
     : 'settings-btn';
@@ -11039,7 +11290,7 @@ function CodexLoginButton({ compact = false, stateButton = false }: { compact?: 
         className={buttonClassName}
         type="button"
         aria-label={label}
-        title="授权 Codex CLI"
+        title="授权 GPT"
         onClick={() => void launchLogin()}
         disabled={busy}
       >
@@ -11056,7 +11307,7 @@ function CodexLoginButton({ compact = false, stateButton = false }: { compact?: 
         {stateButton ? (
           <>
             <span className="state-idle-label" aria-hidden="true">{busy ? label : '未授权'}</span>
-            {!busy && <span className="state-hover-label" aria-hidden="true">授权 Codex CLI</span>}
+            {!busy && <span className="state-hover-label" aria-hidden="true">授权 GPT</span>}
           </>
         ) : (
           <span>{label}</span>
@@ -11107,7 +11358,7 @@ function CodexRevokeButton({ compact = false }: { compact?: boolean }) {
         className={`settings-state-pill settings-state-button ready ${isRevoking ? 'revoking' : ''}`}
         type="button"
         aria-label={isRevoking ? '正在撤销' : '撤销授权'}
-        title="撤销 Codex CLI 授权"
+        title="撤销 GPT 授权"
         onClick={() => void revokeAuthorization()}
         disabled={isRevoking}
       >
@@ -11127,11 +11378,101 @@ function CodexRevokeButton({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function DeviceManagement({
+  session,
+  summary,
+  loading,
+  error,
+  revokingId,
+  onRefresh,
+  onRevoke,
+}: {
+  session: ClientLicenseSession;
+  summary: ClientDeviceSummary | null;
+  loading: boolean;
+  error: string;
+  revokingId: string | null;
+  onRefresh: () => void;
+  onRevoke: (device: ClientManagedDevice) => void;
+}) {
+  const devices = summary?.devices ?? [];
+  return (
+    <section className="device-management" aria-label="设备管理">
+      <div className="device-management-head">
+        <div>
+          <strong>设备管理</strong>
+          <span>
+            已安装 {summary?.activeDevices ?? (loading ? '—' : 1)} 台，共可安装 {summary?.maxDevices ?? session.tenant.maxDevices} 台。
+            首台安装设备拥有管理员权限。
+          </span>
+        </div>
+        <button
+          className="icon-mini"
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          aria-label="刷新设备列表"
+          title="刷新设备列表"
+        >
+          <RefreshCw size={14} className={loading ? 'spin' : ''} />
+        </button>
+      </div>
+      {error && <div className="device-management-error"><AlertCircle size={14} />{error}</div>}
+      <div className="device-list">
+        {devices.map((device) => {
+          const active = device.status === 'active';
+          const canRevoke = Boolean(summary?.isAdministrator && active && !device.isCurrent);
+          return (
+            <div className={`device-row ${active ? '' : 'revoked'}`} key={device.id}>
+              <span className="device-icon"><Monitor size={17} /></span>
+              <span className="device-main">
+                <span className="device-name">
+                  <strong>{device.name || 'Alpha Studio 设备'}</strong>
+                  {device.isCurrent && <em>本机</em>}
+                  {device.isAdministrator && <em className="administrator"><ShieldCheck size={11} />管理员</em>}
+                  {!active && <em className="revoked">已解除授权</em>}
+                </span>
+                <span className="device-meta">
+                  {device.id} · 安装于 {formatLicenseDate(device.createdAt)}
+                  {device.lastSeenAt ? ` · 最近在线 ${formatLicenseDate(device.lastSeenAt)}` : ''}
+                </span>
+              </span>
+              {canRevoke ? (
+                <button
+                  className="settings-btn danger device-revoke"
+                  type="button"
+                  onClick={() => onRevoke(device)}
+                  disabled={revokingId === device.id}
+                  aria-label={`解除 ${device.name || device.id} 的授权`}
+                >
+                  {revokingId === device.id ? <Loader2 size={13} className="spin" /> : <LogOut size={13} />}
+                  <span>{revokingId === device.id ? '正在解除' : '解除授权'}</span>
+                </button>
+              ) : (
+                <span className={`device-status ${active ? 'active' : 'revoked'}`}>
+                  {active ? '已授权' : '不可使用'}
+                </span>
+              )}
+            </div>
+          );
+        })}
+        {!loading && devices.length === 0 && !error && (
+          <div className="device-list-empty">暂无设备信息。</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function ProfileSettings() {
   const session = useChatStore((state) => state.clientLicenseSession);
   const setClientLicenseSession = useChatStore((state) => state.setClientLicenseSession);
   const codexStatus = useChatStore((state) => state.codexStatus);
   const isCheckingCodex = useChatStore((state) => state.isCheckingCodex);
+  const [deviceSummary, setDeviceSummary] = useState<ClientDeviceSummary | null>(null);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [devicesError, setDevicesError] = useState('');
+  const [revokingDeviceId, setRevokingDeviceId] = useState<string | null>(null);
   const codexAccount = session?.codexAccounts[0] ?? null;
   const codexSubscriptionEnabled = Boolean(session?.tenant.codexSubscriptionEnabled);
   const codexCliAuthorized = Boolean(codexStatus?.installed && codexStatus.loggedIn);
@@ -11142,11 +11483,17 @@ function ProfileSettings() {
       : codexStatus.installed
         ? 'attention'
         : 'missing';
-  const showCodexLoginButton = codexSubscriptionEnabled && Boolean(codexStatus?.installed) && !codexCliAuthorized;
+  const showCodexLoginButton = codexSubscriptionEnabled && Boolean(codexAccount) && Boolean(codexStatus?.installed) && !codexCliAuthorized;
   const showCodexRevokeButton = codexSubscriptionEnabled && codexCliAuthorized;
   const profileTitle = session?.tenant.name || 'Alpha Studio';
+  const internalUserEmail = isInternalLicenseEmail(session?.user.email);
+  const profileUserName = isInternalLicenseUserName(session?.user.name)
+    ? '本机用户'
+    : session?.user.name || '本机用户';
   const profileSubtitle = session
-    ? `${session.user.name} · ${session.user.email}`
+    ? internalUserEmail
+      ? '本机授权'
+      : `${profileUserName} · ${session.user.email}`
     : '@local · Noncommercial';
   const codexLabel = codexSubscriptionEnabled
     ? codexAccount?.email || '未分配账号'
@@ -11154,9 +11501,48 @@ function ProfileSettings() {
   const codexPlanLabel = session?.tenant.codexSubscriptionPlan || codexAccount?.plan || '已启用';
   const codexDescription = codexSubscriptionEnabled
     ? codexCliAuthorized
-      ? `本地 Codex CLI 已完成设备授权${codexStatus?.version ? ` · ${codexStatus.version}` : ''}。`
-      : codexAccount?.loginHint || `订阅计划：${codexPlanLabel}`
+      ? '本地 GPT 已完成设备授权。'
+      : codexAccount?.loginHint || (codexAccount ? `订阅计划：${codexPlanLabel}` : '管理后台尚未为当前客户分配 GPT 账号。')
     : '当前客户使用 API 网关模式，用量会计入客户额度。';
+  const refreshDevices = useCallback(async () => {
+    if (!session) return;
+    setDevicesLoading(true);
+    setDevicesError('');
+    try {
+      const next = await fetchClientDevices(session);
+      setDeviceSummary({
+        ...next,
+        activeDevices: Number.isFinite(next.activeDevices) ? next.activeDevices : 0,
+        maxDevices: Number.isFinite(next.maxDevices) ? next.maxDevices : session.tenant.maxDevices,
+        devices: Array.isArray(next.devices) ? next.devices : [],
+      });
+    } catch (refreshError) {
+      setDevicesError(formatDeviceManagementError(refreshError));
+    } finally {
+      setDevicesLoading(false);
+    }
+  }, [session]);
+  useEffect(() => {
+    void refreshDevices();
+  }, [refreshDevices]);
+  const revokeDevice = useCallback(async (device: ClientManagedDevice) => {
+    if (!session) return;
+    const confirmed = await confirmDeviceRevocation(device.name || device.id);
+    if (!confirmed) return;
+    setRevokingDeviceId(device.id);
+    setDevicesError('');
+    try {
+      const next = await revokeClientDevice(session, device.id);
+      setDeviceSummary({
+        ...next,
+        devices: Array.isArray(next.devices) ? next.devices : [],
+      });
+    } catch (revokeError) {
+      setDevicesError(formatDeviceManagementError(revokeError));
+    } finally {
+      setRevokingDeviceId(null);
+    }
+  }, [session]);
   const signOut = () => {
     clearClientLicenseSession();
     setClientLicenseSession(null);
@@ -11165,7 +11551,7 @@ function ProfileSettings() {
   return (
     <>
       <div className="profile-settings">
-        <div className="avatar">AS</div>
+        <div className="avatar">{profileAvatarLabel(profileTitle)}</div>
         <h2>{profileTitle}</h2>
         <span>{profileSubtitle}</span>
         <div className="profile-actions">
@@ -11175,8 +11561,11 @@ function ProfileSettings() {
           </button>
         </div>
         <div className="profile-metrics">
-          <span><strong>{session?.tenant.maxDevices ?? 'Core'}</strong><em>设备额度</em></span>
-          <span><strong>{codexSubscriptionEnabled ? 'Codex 订阅' : 'API 网关'}</strong><em>运行模式</em></span>
+          <span>
+            <strong>{deviceSummary?.activeDevices ?? (devicesLoading ? '—' : session ? 1 : 0)} / {deviceSummary?.maxDevices ?? session?.tenant.maxDevices ?? '-'}</strong>
+            <em>已安装设备</em>
+          </span>
+          <span><strong>{codexSubscriptionEnabled ? 'GPT 订阅' : 'API 网关'}</strong><em>运行模式</em></span>
           <span><strong>{session ? '已激活' : '未激活'}</strong><em>客户端状态</em></span>
         </div>
       </div>
@@ -11184,10 +11573,13 @@ function ProfileSettings() {
         <SettingsRow title="客户" description="当前激活的公司授权。">
           <span className="settings-static">{session?.tenant.name || '未激活'}</span>
         </SettingsRow>
-        <SettingsRow title="用户" description={session?.user.email || '本地用户。'}>
-          <span className="settings-static">{session?.user.name || 'Alpha Studio'}</span>
+        <SettingsRow
+          title="授权身份"
+          description={internalUserEmail ? '当前设备使用公司授权激活。' : session?.user.email || '当前设备使用公司授权激活。'}
+        >
+          <span className="settings-static">{profileUserName}</span>
         </SettingsRow>
-        <SettingsRow title="Codex 订阅账号" description={codexDescription}>
+        <SettingsRow title="GPT 订阅账号" description={codexDescription}>
           <span className="settings-action-stack">
             <span className="settings-static">{codexLabel}</span>
             {codexSubscriptionEnabled && !showCodexRevokeButton && !showCodexLoginButton && <CodexAuthorizationBadge status={codexAuthorizationStatus} />}
@@ -11199,6 +11591,17 @@ function ProfileSettings() {
           <span className="settings-static">{formatLicenseDate(session?.device.leaseExpiresAt)}</span>
         </SettingsRow>
       </SettingsGroup>
+      {session && (
+        <DeviceManagement
+          session={session}
+          summary={deviceSummary}
+          loading={devicesLoading}
+          error={devicesError}
+          revokingId={revokingDeviceId}
+          onRefresh={() => void refreshDevices()}
+          onRevoke={(device) => void revokeDevice(device)}
+        />
+      )}
     </>
   );
 }
@@ -11304,7 +11707,7 @@ function UsageSettings() {
 
       <div className="settings-subtitle">订阅</div>
       <SettingsGroup>
-        <SettingsRow title="Codex 订阅" description={codexSubscriptionEnabled ? `套餐 ${formatPlanLabel(tenant?.codexSubscriptionPlan)} · ${formatExpiryLabel(tenant?.codexSubscriptionExpiresAt)}` : '未启用 Codex 订阅模型。'}>
+        <SettingsRow title="GPT 订阅" description={codexSubscriptionEnabled ? `套餐 ${formatPlanLabel(tenant?.codexSubscriptionPlan)} · ${formatExpiryLabel(tenant?.codexSubscriptionExpiresAt)}` : '未启用 GPT 订阅模型。'}>
           <BillingStatusPill enabled={codexSubscriptionEnabled} label={codexSubscriptionEnabled ? '已启用' : '未启用'} />
         </SettingsRow>
         {codexSubscriptionEnabled && (
@@ -11430,10 +11833,10 @@ function BillingModelTable({ models }: { models: BillingModelUsage[] }) {
 }
 
 function codexUsageDescription(usage: CodexSubscriptionUsage | null, loading: boolean, error: string): string {
-  if (loading && !usage) return '正在从 Codex CLI 同步。';
-  if (error && !usage) return `Codex CLI 读取失败：${error}`;
-  if (usage?.generatedAt) return `来自 Codex CLI · 更新 ${formatLicenseDate(usage.generatedAt)}`;
-  return '来自 Codex CLI。';
+  if (loading && !usage) return '正在从 GPT 同步。';
+  if (error && !usage) return `GPT 读取失败：${error}`;
+  if (usage?.generatedAt) return `来自 GPT · 更新 ${formatLicenseDate(usage.generatedAt)}`;
+  return '来自 GPT。';
 }
 
 function codexRateLimitSnapshot(usage: CodexSubscriptionUsage | null): CodexRateLimitSnapshot | null {
@@ -11628,7 +12031,7 @@ function EnvironmentSettings() {
     <SettingsGroup>
       <SettingsRow title="Node.js" description="由工作区或系统环境提供。"><span className="settings-static">自动检测</span></SettingsRow>
       <SettingsRow title="Python" description="由工作区或系统环境提供。"><span className="settings-static">自动检测</span></SettingsRow>
-      <SettingsRow title="终端" description="命令通过 Codex CLI 和 Tauri 后端运行。"><span className="settings-static">本地</span></SettingsRow>
+      <SettingsRow title="终端" description="命令通过 GPT 和本地后端运行。"><span className="settings-static">本地</span></SettingsRow>
     </SettingsGroup>
   );
 }
@@ -11748,7 +12151,7 @@ function toolPresentation(title: string): { kind: ToolKind; icon: ReactNode; run
   if (has('context_compaction', 'contextcompaction', 'context compaction')) {
     return { kind: 'generic', icon: <Workflow size={14} />, running: '正在压缩上下文', done: '已压缩上下文', failed: '上下文压缩失败' };
   }
-  if (has('stderr')) return { kind: 'log', icon: <FileText size={14} />, running: 'Codex 日志', done: 'Codex 日志', failed: 'Codex 日志' };
+  if (has('stderr')) return { kind: 'log', icon: <FileText size={14} />, running: 'GPT 日志', done: 'GPT 日志', failed: 'GPT 日志' };
   if (/image[\s._-]*gen|generate[\s._-]*image|image[\s._-]*generation|text[\s._-]*to[\s._-]*image/.test(normalized)) {
     return { kind: 'image', icon: <ImageIcon size={14} />, running: '正在生成图片', done: '已生成图片', failed: '图片生成失败' };
   }
@@ -11784,7 +12187,7 @@ function messageToPlainText(message: ChatMessage): string {
 function conversationToPlainText(conversation: Conversation): string {
   return conversation.messages
     .map((message) => {
-      const who = message.role === 'user' ? '我' : 'Codex';
+      const who = message.role === 'user' ? '我' : 'GPT';
       const body = messageToPlainText(message);
       return body ? `${who}：${body}` : '';
     })
@@ -11867,6 +12270,24 @@ async function confirmDanger(message: string, title: string): Promise<boolean> {
   return window.confirm(`${title}\n\n${message}`);
 }
 
+async function confirmDeviceRevocation(deviceName: string): Promise<boolean> {
+  const message = `解除“${deviceName}”的设备授权后，该设备上的 Alpha Studio 将无法继续使用。`;
+  if (isTauriRuntime()) {
+    try {
+      const { ask } = await import('@tauri-apps/plugin-dialog');
+      return await ask(message, {
+        title: '解除设备授权',
+        kind: 'warning',
+        okLabel: '解除授权',
+        cancelLabel: '取消',
+      });
+    } catch {
+      return false;
+    }
+  }
+  return window.confirm(`解除设备授权\n\n${message}`);
+}
+
 function formatRelative(value: number): string {
   const diff = Date.now() - value;
   if (diff < 60_000) return '刚刚';
@@ -11887,6 +12308,33 @@ function formatLicenseDate(value?: string | null): string {
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return value;
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(time);
+}
+
+function isInternalLicenseEmail(value?: string | null): boolean {
+  return !value || /^local(?:[+._-][^@]+)?@alpha-studio\.local$/i.test(value.trim());
+}
+
+function isInternalLicenseUserName(value?: string | null): boolean {
+  const normalized = value?.trim().toLowerCase() || '';
+  return !normalized || normalized === 'alpha studio user' || normalized === '本机用户';
+}
+
+function profileAvatarLabel(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) return 'AS';
+  const words = normalized.split(/\s+/).filter(Boolean);
+  if (words.length > 1) {
+    return words.slice(0, 2).map((word) => word[0]).join('').toUpperCase();
+  }
+  return Array.from(normalized).slice(0, 2).join('').toUpperCase();
+}
+
+function formatDeviceManagementError(error: unknown): string {
+  const message = stringifyError(error);
+  if (message === 'Alpha Studio API 404' || /\b404\b/.test(message)) {
+    return '设备管理服务尚未更新，请重启 Alpha Studio 后台服务后重试。';
+  }
+  return message;
 }
 
 function shortenPath(value: string): string {
