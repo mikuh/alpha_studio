@@ -161,14 +161,15 @@ describe('admin model gateway', () => {
 
     await waitFor(() => expect(screen.queryByText('GPT-5.5 API')).toBeNull());
     expect(screen.getByText('DeepSeek Chat')).toBeTruthy();
-    expect((screen.getByLabelText('供应商') as HTMLSelectElement).value).toBe('deepseek');
+    expect(deepseekProvider.className).toContain('selected');
   });
 
   it('saves model prices as fractional yuan per million tokens', async () => {
     await import('./main');
 
     fireEvent.click(await screen.findByRole('button', { name: '模型网关' }));
-    const modelForm = (await screen.findByRole('heading', { name: '新增模型路由' })).closest('form') as HTMLElement;
+    fireEvent.click(await screen.findByRole('button', { name: '新增模型' }));
+    const modelForm = (await screen.findByRole('dialog', { name: '新增模型路由' })) as HTMLElement;
 
     fireEvent.change(within(modelForm).getByLabelText('模型 ID'), { target: { value: 'deepseek-v4-flash' } });
     fireEvent.change(within(modelForm).getByLabelText('显示名称'), { target: { value: 'DeepSeek V4 Flash' } });
@@ -176,6 +177,8 @@ describe('admin model gateway', () => {
     fireEvent.change(within(modelForm).getByLabelText('输入 元/百万'), { target: { value: '1.25' } });
     fireEvent.change(within(modelForm).getByLabelText('输出 元/百万'), { target: { value: '2.5' } });
     fireEvent.change(within(modelForm).getByLabelText('缓存输入 元/百万'), { target: { value: '0.02' } });
+    fireEvent.change(within(modelForm).getByLabelText('用户价格倍率'), { target: { value: '1.5' } });
+    expect(within(modelForm).getByText(/输入.*¥1\.875.*输出.*¥3\.75.*缓存输入.*¥0\.03/)).toBeTruthy();
     fireEvent.click(within(modelForm).getByRole('button', { name: '保存模型' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -196,10 +199,29 @@ describe('admin model gateway', () => {
           outputYuanPerMillion: 2.5,
           reasoningYuanPerMillion: 0,
           cachedInputYuanPerMillion: 0.02,
-          markupBps: 2500,
+          markupBps: 5000,
         }),
       }),
     ));
+  });
+
+  it('discovers provider models and fills a model route', async () => {
+    await import('./main');
+
+    fireEvent.click(await screen.findByRole('button', { name: '模型网关' }));
+    fireEvent.click(await screen.findByRole('button', { name: '编辑供应商' }));
+    const providerDialog = await screen.findByRole('dialog', { name: '编辑供应商' });
+    fireEvent.click(within(providerDialog).getByRole('button', { name: '获取模型' }));
+    await screen.findByText('已发现 2 个模型');
+    fireEvent.click(within(providerDialog).getByRole('button', { name: '取消' }));
+    fireEvent.click(screen.getByRole('button', { name: '新增模型' }));
+    const modelDialog = await screen.findByRole('dialog', { name: '新增模型路由' });
+    const discovered = within(modelDialog).getByLabelText('已发现模型（2）');
+    fireEvent.change(discovered, { target: { value: 'gpt-test-mini' } });
+
+    expect((within(modelDialog).getByLabelText('模型 ID') as HTMLInputElement).value).toBe('gpt-test-mini');
+    expect((within(modelDialog).getByLabelText('上游模型名') as HTMLInputElement).value).toBe('gpt-test-mini');
+    expect((within(modelDialog).getByLabelText('显示名称') as HTMLInputElement).value).toBe('GPT Test Mini');
   });
 
   it('deletes a Codex account from the account pool', async () => {
@@ -273,12 +295,14 @@ describe('admin model gateway', () => {
     await screen.findByText('Deleted Fund · 0 条授权码');
 
     currentTenants = tenants;
-    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    fireEvent.click(screen.getByRole('button', { name: '刷新数据' }));
 
     await waitFor(() => expect(screen.queryByText('Deleted Fund · 0 条授权码')).toBeNull());
     await screen.findByText('Alpha Fund · 1 条授权码');
 
     fireEvent.click(screen.getByRole('button', { name: '生成授权码' }));
+    const codeDialog = await screen.findByRole('dialog', { name: '生成授权码' });
+    fireEvent.click(within(codeDialog).getByRole('button', { name: '生成授权码' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/admin/authorization-codes',
@@ -308,6 +332,8 @@ describe('admin model gateway', () => {
 
     await screen.findByText('Beta Fund · 0 条授权码');
     fireEvent.click(screen.getByRole('button', { name: '生成授权码' }));
+    const codeDialog = await screen.findByRole('dialog', { name: '生成授权码' });
+    fireEvent.click(within(codeDialog).getByRole('button', { name: '生成授权码' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/admin/authorization-codes',
@@ -339,6 +365,27 @@ describe('admin model gateway', () => {
     ));
   });
 
+  it('shows per-customer LLM usage and pages billing ledger on the server', async () => {
+    await import('./main');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'LLM 用量' }));
+
+    expect(await screen.findByRole('heading', { name: 'LLM 用量与账单' })).toBeTruthy();
+    expect(await screen.findByText('GPT-5.5 API')).toBeTruthy();
+    expect(screen.getByText('usage charge 1')).toBeTruthy();
+    expect(screen.getByText('第 1 / 3 页 · 每页 20 条')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/admin/tenants/tenant_alpha/billing?page=2&pageSize=20',
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: 'Bearer test-token' }),
+      }),
+    ));
+    expect(await screen.findByText('usage charge 2')).toBeTruthy();
+  });
+
   it('keeps the selected admin section in the url across reloads', async () => {
     window.history.replaceState({}, '', '/admin/tenants');
 
@@ -367,9 +414,19 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
     });
   }
   if (path === '/api/admin/tenants') return jsonResponse({ tenants: currentTenants });
+  if (path.startsWith('/api/admin/tenants/tenant_alpha/billing?')) {
+    const page = new URL(path, 'https://admin.test').searchParams.get('page') === '2' ? 2 : 1;
+    return jsonResponse(tenantBillingSummary(page));
+  }
   if (path === '/api/admin/authorization-codes' && method === 'POST') return jsonResponse({ authorizationCode: 'NEW-CODE-1234' });
   if (path === '/api/admin/authorization-codes') return jsonResponse({ authorizationCodes });
   if (path === '/api/admin/provider-configs') return jsonResponse({ providers });
+  if (path === '/api/admin/provider-configs/discover-models') return jsonResponse({
+    models: [
+      { id: 'gpt-test', label: 'GPT Test' },
+      { id: 'gpt-test-mini', label: 'GPT Test Mini' },
+    ],
+  });
   if (path === '/api/admin/model-routes') return jsonResponse({ models });
   if (path === '/api/admin/codex-accounts') return jsonResponse({ accounts: codexAccounts });
   if (path === '/api/admin/audit-logs') return jsonResponse({ logs: [] });
@@ -386,4 +443,47 @@ function jsonResponse(body: unknown) {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function tenantBillingSummary(page: number) {
+  const usage = {
+    runCount: 8,
+    inputTokens: 12000,
+    outputTokens: 4200,
+    reasoningTokens: 1600,
+    cachedTokens: 3200,
+    totalTokens: 21000,
+    costYuan: 2.6,
+    billableYuan: 3.25,
+    lastUsedAt: '2026-07-09T08:00:00.000Z',
+  };
+  return {
+    tenant: tenants[0],
+    period: {
+      currentMonthStart: '2026-07-01T00:00:00.000Z',
+      currentMonthEnd: '2026-08-01T00:00:00.000Z',
+      generatedAt: '2026-07-09T08:30:00.000Z',
+    },
+    usage: {
+      currentMonth: usage,
+      allTime: { ...usage, runCount: 32, totalTokens: 84000, billableYuan: 13 },
+      models: [{ ...usage, modelId: 'gpt-5.5', label: 'GPT-5.5 API', provider: 'openai' }],
+      recentLedger: [{
+        id: `ledger_${page}`,
+        runId: `run_${page}`,
+        entryType: 'usage_charge',
+        amountYuan: -3.25,
+        description: `usage charge ${page}`,
+        createdAt: '2026-07-09T08:00:00.000Z',
+      }],
+      ledgerPagination: {
+        page,
+        pageSize: 20,
+        total: 41,
+        totalPages: 3,
+        hasPrevious: page > 1,
+        hasNext: page < 3,
+      },
+    },
+  };
 }

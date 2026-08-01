@@ -78,9 +78,13 @@ The admin app now covers the commercial operating loop:
 
 - create and update customer tenants, balances, subscription dates, and machine limits
 - generate customer authorization codes for first-device activation by company name
-- configure upstream provider keys, model aliases, endpoint paths, prices, and markup
+- configure provider presets, upstream protocols/auth, discover models, and manage aliases, prices, and markup
 - assign GPT subscription accounts to customers for monthly or yearly subscription access
 - inspect audit logs and usage-ledger totals
+
+See [Multi-model gateway setup](./docs/model-gateway.md) for OpenAI Responses,
+Chat Completions, Anthropic Messages, Gemini, Azure, Ollama, and other
+OpenAI-compatible provider configuration.
 
 ### Cloud market data
 

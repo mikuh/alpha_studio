@@ -149,3 +149,6 @@ vite.config.ts.timestamp-*
 # Rust / Tauri
 target/
 src-tauri/target/
+
+# Generated, encoded built-in Skill bundle
+.alpha-encoded/

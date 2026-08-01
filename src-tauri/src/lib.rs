@@ -20,8 +20,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex};
 
+mod builtin_skills;
 mod jqdata_http;
 mod local_store;
+mod skill_codec;
 
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
 const TERMINAL_EVENT: &str = "terminal-event";
@@ -997,6 +999,7 @@ async fn codex_chat_start(
     let run_id = generate_run_id();
     let cwd = resolve_cwd(request.cwd.as_deref())?;
     let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
+    let runtime_skills_root = codex_home.join("skills").to_string_lossy().into_owned();
     let sandbox_mode = sanitize_sandbox_mode(request.sandbox_mode.as_deref());
     let adapter_shutdown = if let Some(provider) = provider_config.as_mut() {
         if let Some(adapter) = provider.adapter.clone() {
@@ -1111,6 +1114,7 @@ async fn codex_chat_start(
             .filter(|value| !value.is_empty())
             .map(str::to_string),
         cwd,
+        runtime_skills_root,
         sandbox_mode,
         model: request
             .model
@@ -1147,6 +1151,7 @@ struct CodexDriver {
     conversation_id: String,
     thread_id: Option<String>,
     cwd: String,
+    runtime_skills_root: String,
     sandbox_mode: String,
     model: Option<String>,
     developer_instructions: Option<String>,
@@ -1252,7 +1257,6 @@ impl CodexDriver {
         let Some(selection) = self.selected_skill.as_ref() else {
             return Ok(None);
         };
-        self.register_workspace_skill_roots(stdin, reader).await;
         send_jsonrpc(
             stdin,
             &json!({
@@ -1272,33 +1276,33 @@ impl CodexDriver {
             .and_then(|result| find_native_skill_input(result, selection)))
     }
 
-    async fn register_workspace_skill_roots<W, R>(
+    async fn register_skill_roots<W, R>(
         &self,
         stdin: &mut W,
         reader: &mut tokio::io::Lines<R>,
-    ) where
+    ) -> Result<(), String>
+    where
         W: AsyncWrite + Unpin,
         R: AsyncBufRead + Unpin,
     {
-        let Some(extra_root) = workspace_skills_extra_root(&self.cwd) else {
-            return;
-        };
-        if send_jsonrpc(
+        let extra_roots = runtime_skill_extra_roots(&self.cwd, &self.runtime_skills_root);
+        if extra_roots.is_empty() {
+            return Err("No runtime Skill root is available for registration".to_string());
+        }
+        send_jsonrpc(
             stdin,
             &json!({
                 "jsonrpc": "2.0",
                 "id": 19,
                 "method": "skills/extraRoots/set",
                 "params": {
-                    "extraRoots": [extra_root],
+                    "extraRoots": extra_roots,
                 },
             }),
         )
-        .await
-        .is_ok()
-        {
-            let _ = await_response(stdin, reader, 19).await;
-        }
+        .await?;
+        await_response(stdin, reader, 19).await?;
+        Ok(())
     }
 
     async fn drive(
@@ -1308,6 +1312,7 @@ impl CodexDriver {
     ) -> Result<(), String> {
         // 1. Handshake.
         initialize_codex_app_server(stdin, reader).await?;
+        self.register_skill_roots(stdin, reader).await?;
         let native_skill = match self.resolve_selected_skill(stdin, reader).await {
             Ok(skill) => skill,
             Err(_) => None,
@@ -1498,12 +1503,19 @@ fn native_attachment_input(attachment: &CodexChatAttachment) -> Option<Value> {
     }))
 }
 
-fn workspace_skills_extra_root(cwd: &str) -> Option<String> {
-    let root = Path::new(cwd).join("skills");
-    if root.is_dir() {
-        return Some(root.to_string_lossy().into_owned());
+fn runtime_skill_extra_roots(cwd: &str, runtime_skills_root: &str) -> Vec<String> {
+    let mut roots = Vec::new();
+    let runtime_root = Path::new(runtime_skills_root);
+    if runtime_root.is_dir() {
+        roots.push(runtime_root.to_string_lossy().into_owned());
     }
-    None
+    let workspace_root = Path::new(cwd).join("skills");
+    if workspace_root.is_dir()
+        && fs::canonicalize(&workspace_root).ok() != fs::canonicalize(runtime_root).ok()
+    {
+        roots.push(workspace_root.to_string_lossy().into_owned());
+    }
+    roots
 }
 
 fn find_native_skill_input(
@@ -5626,12 +5638,12 @@ fn prepare_alpha_studio_codex_home(app: Option<&AppHandle>) -> Result<PathBuf, S
     let source = PathBuf::from(&home).join(".codex");
     let target = alpha_studio_codex_home_path_from(&home);
     let preserve_authorization = target.join(CODEX_DEVICE_AUTHORIZATION_MARKER).is_file();
-    let builtin_skills = alpha_studio_builtin_skills_path(app);
+    let encoded_skills = alpha_studio_encoded_skills_path(app);
     prepare_alpha_studio_codex_home_from_with_builtin(
         &source,
         &target,
         preserve_authorization,
-        builtin_skills.as_deref(),
+        encoded_skills.as_deref(),
     )?;
     Ok(target)
 }
@@ -5645,17 +5657,18 @@ fn alpha_studio_codex_home_path_from(home: &str) -> PathBuf {
     PathBuf::from(home).join(".alpha-studio").join("codex-home")
 }
 
+#[cfg(test)]
 fn prepare_alpha_studio_codex_home_from(
     source: &Path,
     target: &Path,
     preserve_authorization: bool,
 ) -> Result<(), String> {
-    let builtin_skills = alpha_studio_builtin_skills_path(None);
+    let encoded_skills = alpha_studio_encoded_skills_path(None);
     prepare_alpha_studio_codex_home_from_with_builtin(
         source,
         target,
         preserve_authorization,
-        builtin_skills.as_deref(),
+        encoded_skills.as_deref(),
     )
 }
 
@@ -5663,7 +5676,7 @@ fn prepare_alpha_studio_codex_home_from_with_builtin(
     source: &Path,
     target: &Path,
     preserve_authorization: bool,
-    builtin_skills: Option<&Path>,
+    encoded_skills: Option<&Path>,
 ) -> Result<(), String> {
     fs::create_dir_all(target)
         .map_err(|e| format!("Failed to create Alpha Studio GPT workspace: {e}"))?;
@@ -5684,7 +5697,7 @@ fn prepare_alpha_studio_codex_home_from_with_builtin(
     prepare_alpha_studio_skills_directory(
         &source.join("skills"),
         &target.join("skills"),
-        builtin_skills,
+        encoded_skills,
     )?;
 
     for dir_name in ["plugins", "vendor_imports", "cache", "rules"] {
@@ -5703,28 +5716,25 @@ fn prepare_alpha_studio_codex_home_from_with_builtin(
     Ok(())
 }
 
-fn alpha_studio_builtin_skills_path(app: Option<&AppHandle>) -> Option<PathBuf> {
+fn alpha_studio_encoded_skills_path(app: Option<&AppHandle>) -> Option<PathBuf> {
     if let Some(app) = app {
         if let Ok(resource_dir) = app.path().resource_dir() {
-            // New bundles map the repository skills directory directly to
-            // Contents/Resources/skills. Older builds used a relative resource
-            // entry, which Tauri materialized under _up_/skills.
-            for relative_path in ["skills", "_up_/skills"] {
-                let resource_skills = resource_dir.join(relative_path);
-                if resource_skills.is_dir() {
-                    return Some(resource_skills);
+            for relative_path in [".alpha-encoded", "_up_/.alpha-encoded"] {
+                let encoded_skills = resource_dir.join(relative_path);
+                if encoded_skills.is_dir() {
+                    return Some(encoded_skills);
                 }
             }
         }
     }
-    let source_skills = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skills");
-    source_skills.is_dir().then_some(source_skills)
+    let encoded_skills = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.alpha-encoded");
+    encoded_skills.is_dir().then_some(encoded_skills)
 }
 
 fn prepare_alpha_studio_skills_directory(
     source: &Path,
     target: &Path,
-    builtin_skills: Option<&Path>,
+    encoded_skills: Option<&Path>,
 ) -> Result<(), String> {
     remove_existing_path(target)?;
     fs::create_dir_all(target)
@@ -5732,8 +5742,13 @@ fn prepare_alpha_studio_skills_directory(
     if source.is_dir() {
         copy_codex_home_directory_contents(source, target)?;
     }
-    if let Some(builtin_skills) = builtin_skills.filter(|path| path.is_dir()) {
-        copy_codex_home_directory_contents(builtin_skills, target)?;
+    let encoded_skills = encoded_skills.ok_or_else(|| {
+        "Alpha Studio built-in Skill bundle is missing; run `npm run skills:encode` and rebuild."
+            .to_string()
+    })?;
+    let installed = builtin_skills::install_builtin_skills(encoded_skills, target, source)?;
+    if installed.skill_names.is_empty() || installed.encoded_file_count == 0 {
+        return Err("Alpha Studio built-in Skill bundle decoded no usable Skills".to_string());
     }
     Ok(())
 }
@@ -8264,21 +8279,22 @@ mod tests {
             .join("custom-skill")
             .join("SKILL.md")
             .exists());
-        assert!(target
-            .join("skills")
-            .join("alpha-studio-daily-theme-research")
-            .join("SKILL.md")
-            .exists());
-        assert!(target
-            .join("skills")
-            .join("alpha-studio-intraday-monitor")
-            .join("SKILL.md")
-            .exists());
-        assert!(target
-            .join("skills")
-            .join("alpha-studio-report-review")
-            .join("SKILL.md")
-            .exists());
+        let builtin_skill_roots = fs::read_dir(target.join("skills"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.path().is_dir()
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(builtin_skills::RESERVED_SKILL_PREFIX)
+            })
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        assert!(!builtin_skill_roots.is_empty());
+        assert!(builtin_skill_roots
+            .iter()
+            .all(|skill_root| skill_root.join("SKILL.md").is_file()));
 
         let config = fs::read_to_string(target.join("config.toml")).unwrap();
         assert!(config.contains("model = \"gpt-5.5\""));
@@ -9109,6 +9125,28 @@ mod tests {
 
         assert_eq!(native.name, "browser:control-in-app-browser");
         assert!(native.path.ends_with("/control-in-app-browser/SKILL.md"));
+    }
+
+    #[test]
+    fn registers_the_unified_runtime_skills_root_before_workspace_skills() {
+        let root = std::env::temp_dir().join(format!(
+            "alpha-studio-runtime-skill-roots-test-{}",
+            generate_run_id()
+        ));
+        let runtime_root = root.join("private").join("skills");
+        let workspace_root = root.join("workspace");
+        fs::create_dir_all(&runtime_root).unwrap();
+        fs::create_dir_all(workspace_root.join("skills")).unwrap();
+
+        let roots = runtime_skill_extra_roots(
+            &workspace_root.to_string_lossy(),
+            &runtime_root.to_string_lossy(),
+        );
+
+        assert_eq!(roots.len(), 2);
+        assert_eq!(Path::new(&roots[0]), runtime_root);
+        assert_eq!(Path::new(&roots[1]), workspace_root.join("skills"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

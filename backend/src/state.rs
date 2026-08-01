@@ -3,7 +3,11 @@ use std::sync::Arc;
 use reqwest::Client;
 use sqlx::PgPool;
 
-use crate::{config::AppConfig, market::MarketDataHub, tokens::RunTokenService};
+use crate::{
+    config::AppConfig,
+    market::{MarketCapitalFlowHub, MarketDataHub},
+    tokens::RunTokenService,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -13,6 +17,7 @@ pub struct AppState {
     pub http: Client,
     pub run_tokens: RunTokenService,
     pub market: MarketDataHub,
+    pub capital_flow: MarketCapitalFlowHub,
 }
 
 impl AppState {
@@ -20,6 +25,7 @@ impl AppState {
         let run_tokens = RunTokenService::new(config.run_token_secret.clone());
         let market =
             MarketDataHub::new(config.market_refresh_seconds, config.market_snapshot_limit);
+        let capital_flow = MarketCapitalFlowHub::new(config.market_refresh_seconds);
         Self {
             config: Arc::new(config),
             db,
@@ -27,6 +33,7 @@ impl AppState {
             http: Client::new(),
             run_tokens,
             market,
+            capital_flow,
         }
     }
 

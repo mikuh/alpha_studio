@@ -1,6 +1,8 @@
 use alpha_studio_backend::gateway::{
-    build_upstream_request, mask_secret, normalize_upstream_success_body, responses_body_to_sse,
-    ProviderConfig, UpstreamResponseFormat,
+    build_model_discovery_request, build_upstream_request, discover_models_from_body, mask_secret,
+    normalize_upstream_error_body, normalize_upstream_success_body,
+    normalize_upstream_success_body_for_request, responses_body_to_sse, ProviderApiFormat,
+    ProviderAuthType, ProviderConfig, UpstreamResponseFormat,
 };
 
 #[test]
@@ -10,12 +12,15 @@ fn builds_openai_responses_url_and_injects_upstream_model() {
         base_url: "https://api.openai.com/v1/".to_string(),
         endpoint_path: "/responses".to_string(),
         api_key: "sk-test".to_string(),
+        ..ProviderConfig::default()
     };
     let mut body = serde_json::json!({ "model": "alpha-alias", "input": "hello" });
     let request = build_upstream_request(&provider, "gpt-5.5", &mut body).unwrap();
 
     assert_eq!(request.url, "https://api.openai.com/v1/responses");
-    assert_eq!(request.authorization_header, "Bearer sk-test");
+    assert!(request
+        .headers
+        .contains(&("authorization".to_string(), "Bearer sk-test".to_string())));
     assert_eq!(body["model"], "gpt-5.5");
 }
 
@@ -26,6 +31,7 @@ fn forces_streaming_responses_requests_to_non_streaming_upstream() {
         base_url: "https://api.openai.com/v1".to_string(),
         endpoint_path: "/responses".to_string(),
         api_key: "sk-test".to_string(),
+        ..ProviderConfig::default()
     };
     let mut body = serde_json::json!({ "model": "alpha-alias", "stream": true });
 
@@ -37,12 +43,37 @@ fn forces_streaming_responses_requests_to_non_streaming_upstream() {
 }
 
 #[test]
+fn strips_codex_client_metadata_from_responses_upstream_request() {
+    let provider = ProviderConfig {
+        provider: "volcengine-ark-responses".to_string(),
+        base_url: "https://ark.cn-beijing.volces.com/api/v3".to_string(),
+        endpoint_path: "/responses".to_string(),
+        api_key: "test-key".to_string(),
+        api_format: ProviderApiFormat::Responses,
+        ..ProviderConfig::default()
+    };
+    let mut body = serde_json::json!({
+        "model": "alpha-alias",
+        "input": "hello",
+        "client_metadata": { "originator": "codex_cli_rs" },
+        "metadata": { "request": "preserve-standard-field" }
+    });
+
+    build_upstream_request(&provider, "deepseek-v4-pro-260425", &mut body).unwrap();
+
+    assert!(body.get("client_metadata").is_none());
+    assert_eq!(body["metadata"]["request"], "preserve-standard-field");
+    assert_eq!(body["model"], "deepseek-v4-pro-260425");
+}
+
+#[test]
 fn translates_responses_request_for_chat_completion_endpoint() {
     let provider = ProviderConfig {
         provider: "deepseek".to_string(),
         base_url: "https://api.deepseek.com/v1".to_string(),
         endpoint_path: "/chat/completions".to_string(),
         api_key: "sk-test".to_string(),
+        ..ProviderConfig::default()
     };
     let mut body = serde_json::json!({
         "model": "alpha-alias",
@@ -120,6 +151,76 @@ fn wraps_chat_completion_success_as_responses_body() {
 }
 
 #[test]
+fn remaps_custom_tools_through_chat_and_back_to_native_responses_events() {
+    let provider = ProviderConfig {
+        provider: "deepseek".to_string(),
+        base_url: "https://api.deepseek.com/v1".to_string(),
+        endpoint_path: "/chat/completions".to_string(),
+        api_key: "sk-test".to_string(),
+        api_format: ProviderApiFormat::ChatCompletions,
+        ..ProviderConfig::default()
+    };
+    let original = serde_json::json!({
+        "input": "patch the file",
+        "tools": [{
+            "type": "custom",
+            "name": "plugin.apply_patch",
+            "description": "Apply a patch",
+            "format": { "type": "text" }
+        }],
+        "stream": true
+    });
+    let mut upstream_body = original.clone();
+    let upstream = build_upstream_request(&provider, "deepseek-chat", &mut upstream_body).unwrap();
+
+    assert_eq!(upstream_body["tools"][0]["type"], "function");
+    assert_eq!(
+        upstream_body["tools"][0]["function"]["parameters"]["required"][0],
+        "input"
+    );
+    let upstream_name = upstream_body["tools"][0]["function"]["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!upstream_name.contains('.'));
+
+    let chat = serde_json::json!({
+        "id": "chat_custom",
+        "model": "deepseek-chat",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {
+                        "name": upstream_name,
+                        "arguments": "{\"input\":\"*** Begin Patch\\n*** End Patch\"}"
+                    }
+                }]
+            }
+        }]
+    });
+    let response =
+        normalize_upstream_success_body_for_request(upstream.response_format, chat, &original)
+            .unwrap();
+
+    assert_eq!(response["output"][0]["type"], "custom_tool_call");
+    assert_eq!(response["output"][0]["name"], "plugin.apply_patch");
+    assert_eq!(
+        response["output"][0]["input"],
+        "*** Begin Patch\n*** End Patch"
+    );
+    assert!(response["output"][0].get("arguments").is_none());
+
+    let sse = responses_body_to_sse(&response);
+    assert!(sse.contains("event: response.custom_tool_call_input.delta"));
+    assert!(sse.contains("event: response.custom_tool_call_input.done"));
+    assert!(sse.contains("\"type\":\"custom_tool_call\""));
+}
+
+#[test]
 fn serializes_responses_body_as_sse_for_streaming_clients() {
     let responses = serde_json::json!({
         "id": "resp_test",
@@ -137,8 +238,205 @@ fn serializes_responses_body_as_sse_for_streaming_clients() {
     assert!(sse.contains("event: response.created"));
     assert!(sse.contains("event: response.output_text.delta"));
     assert!(sse.contains("\"delta\":\"你好\""));
+    assert!(sse.contains("\"sequence_number\":0"));
     assert!(sse.contains("event: response.completed"));
     assert!(sse.contains("data: [DONE]"));
+}
+
+#[test]
+fn translates_responses_tools_for_anthropic_messages() {
+    let provider = ProviderConfig {
+        provider: "anthropic".to_string(),
+        base_url: "https://api.anthropic.com/v1".to_string(),
+        endpoint_path: "/messages".to_string(),
+        api_key: "ant-test".to_string(),
+        api_format: ProviderApiFormat::AnthropicMessages,
+        auth_type: ProviderAuthType::ApiKeyHeader,
+        auth_header: "x-api-key".to_string(),
+        ..ProviderConfig::default()
+    };
+    let mut body = serde_json::json!({
+        "instructions": "be precise",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "inspect" }] },
+            { "type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{\"path\":\"a.rs\"}" },
+            { "type": "function_call_output", "call_id": "call_1", "output": "contents" }
+        ],
+        "tools": [{ "type": "function", "name": "read_file", "parameters": { "type": "object" } }],
+        "stream": true
+    });
+
+    let request = build_upstream_request(&provider, "claude-sonnet", &mut body).unwrap();
+
+    assert_eq!(
+        request.response_format,
+        UpstreamResponseFormat::AnthropicMessages
+    );
+    assert_eq!(request.url, "https://api.anthropic.com/v1/messages");
+    assert!(request
+        .headers
+        .contains(&("x-api-key".to_string(), "ant-test".to_string())));
+    assert!(request
+        .headers
+        .contains(&("anthropic-version".to_string(), "2023-06-01".to_string())));
+    assert_eq!(body["system"], "be precise");
+    assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
+    assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
+    assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+    assert_eq!(body["stream"], false);
+}
+
+#[test]
+fn wraps_anthropic_text_and_tool_use_as_responses() {
+    let body = serde_json::json!({
+        "id": "msg_test",
+        "model": "claude-sonnet",
+        "content": [
+            { "type": "thinking", "thinking": "check first" },
+            { "type": "text", "text": "I will inspect it." },
+            { "type": "tool_use", "id": "toolu_1", "name": "read_file", "input": { "path": "a.rs" } }
+        ],
+        "usage": { "input_tokens": 21, "output_tokens": 9, "cache_read_input_tokens": 4 }
+    });
+
+    let response =
+        normalize_upstream_success_body(UpstreamResponseFormat::AnthropicMessages, body).unwrap();
+
+    assert_eq!(response["output"][0]["type"], "reasoning");
+    assert_eq!(
+        response["output"][1]["content"][0]["text"],
+        "I will inspect it."
+    );
+    assert_eq!(response["output"][2]["type"], "function_call");
+    assert_eq!(response["output"][2]["arguments"], "{\"path\":\"a.rs\"}");
+    assert_eq!(
+        response["usage"]["input_tokens_details"]["cached_tokens"],
+        4
+    );
+}
+
+#[test]
+fn translates_responses_for_native_gemini_with_query_auth() {
+    let provider = ProviderConfig {
+        provider: "google".to_string(),
+        base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+        endpoint_path: "/models/{model}:generateContent".to_string(),
+        api_key: "gem-test".to_string(),
+        api_format: ProviderApiFormat::GeminiGenerateContent,
+        auth_type: ProviderAuthType::QueryParam,
+        auth_header: "key".to_string(),
+        ..ProviderConfig::default()
+    };
+    let mut body = serde_json::json!({
+        "instructions": "system",
+        "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hello" }] }],
+        "tools": [{ "type": "function", "name": "search", "parameters": { "type": "object" } }],
+        "tool_choice": "required",
+        "max_output_tokens": 100
+    });
+
+    let request = build_upstream_request(&provider, "gemini-2.5-pro", &mut body).unwrap();
+
+    assert_eq!(
+        request.response_format,
+        UpstreamResponseFormat::GeminiGenerateContent
+    );
+    assert_eq!(
+        request.url,
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+    );
+    assert!(request
+        .query_params
+        .contains(&("key".to_string(), "gem-test".to_string())));
+    assert_eq!(body["systemInstruction"]["parts"][0]["text"], "system");
+    assert_eq!(body["contents"][0]["parts"][0]["text"], "hello");
+    assert_eq!(
+        body["tools"][0]["functionDeclarations"][0]["name"],
+        "search"
+    );
+    assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
+    assert_eq!(body["generationConfig"]["maxOutputTokens"], 100);
+}
+
+#[test]
+fn wraps_gemini_text_thought_and_function_call_as_responses() {
+    let body = serde_json::json!({
+        "responseId": "gem_test",
+        "modelVersion": "gemini-test",
+        "candidates": [{
+            "content": { "parts": [
+                { "text": "consider", "thought": true },
+                { "text": "done" },
+                { "functionCall": { "id": "call_7", "name": "search", "args": { "q": "rust" } } }
+            ] }
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 8,
+            "thoughtsTokenCount": 3,
+            "cachedContentTokenCount": 2,
+            "totalTokenCount": 18
+        }
+    });
+
+    let response =
+        normalize_upstream_success_body(UpstreamResponseFormat::GeminiGenerateContent, body)
+            .unwrap();
+
+    assert_eq!(response["output"][0]["type"], "reasoning");
+    assert_eq!(response["output"][1]["content"][0]["text"], "done");
+    assert_eq!(response["output"][2]["name"], "search");
+    assert_eq!(
+        response["usage"]["output_tokens_details"]["reasoning_tokens"],
+        3
+    );
+}
+
+#[test]
+fn discovers_openai_anthropic_and_gemini_model_catalog_shapes() {
+    let openai = discover_models_from_body(&serde_json::json!({
+        "data": [{ "id": "gpt-test" }, { "id": "gpt-test" }]
+    }));
+    let anthropic = discover_models_from_body(&serde_json::json!({
+        "data": [{ "id": "claude-test", "display_name": "Claude Test" }]
+    }));
+    let gemini = discover_models_from_body(&serde_json::json!({
+        "models": [{ "name": "models/gemini-test", "displayName": "Gemini Test" }]
+    }));
+
+    assert_eq!(openai.len(), 1);
+    assert_eq!(anthropic[0].label, "Claude Test");
+    assert_eq!(gemini[0].id, "gemini-test");
+    assert_eq!(gemini[0].label, "Gemini Test");
+}
+
+#[test]
+fn builds_no_auth_local_model_discovery_request() {
+    let provider = ProviderConfig {
+        provider: "ollama".to_string(),
+        base_url: "http://localhost:11434/v1/".to_string(),
+        auth_type: ProviderAuthType::None,
+        ..ProviderConfig::default()
+    };
+
+    let request = build_model_discovery_request(&provider).unwrap();
+
+    assert_eq!(request.url, "http://localhost:11434/v1/models");
+    assert!(request.headers.is_empty());
+}
+
+#[test]
+fn normalizes_non_openai_upstream_errors_for_codex() {
+    let error = normalize_upstream_error_body(
+        "anthropic",
+        429,
+        serde_json::json!({ "error": { "type": "rate_limit_error", "message": "slow down" } }),
+    );
+
+    assert_eq!(error["error"]["message"], "slow down");
+    assert_eq!(error["error"]["type"], "rate_limit_error");
+    assert_eq!(error["error"]["provider"], "anthropic");
+    assert_eq!(error["error"]["upstream_status"], 429);
 }
 
 #[test]

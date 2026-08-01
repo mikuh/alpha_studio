@@ -10,6 +10,7 @@ import type { CodexModelCatalogItem } from './types';
 import { useChatStore } from './store';
 import type { Conversation } from './types';
 import { INTRADAY_MONITOR_CARD_PROMPT, REPORT_REVIEW_CARD_PROMPT } from './themeAbilities';
+import { ALPHA_STUDIO_DAILY_THEME_SKILL_ID } from './themeResearch';
 
 const windowMockState = vi.hoisted(() => ({
   fullscreen: false,
@@ -343,6 +344,36 @@ function cloudMarketSnapshot(codes?: string[]) {
   };
 }
 
+function cloudCapitalFlowSnapshot(code = '600519.XSHG') {
+  const emptyGross = { inflow: null, outflow: null, netPct: null };
+  const buckets = [
+    { key: 'xl', label: '超大单', net: 86_000_000, ...emptyGross },
+    { key: 'l', label: '大单', net: 34_000_000, ...emptyGross },
+    { key: 'm', label: '中单', net: -29_000_000, ...emptyGross },
+    { key: 's', label: '小单', net: -91_000_000, ...emptyGross },
+  ];
+  const emptyBuckets = buckets.map((bucket) => ({ ...bucket, net: null }));
+  return {
+    schemaVersion: 1,
+    code,
+    daily: [
+      { time: '2026-07-30', mainNet: -30_000_000, mainNetPct: null, changePct: null, buckets: emptyBuckets },
+      { time: '2026-07-31', mainNet: 120_000_000, mainNetPct: null, changePct: null, buckets },
+    ],
+    intraday: [
+      { time: '2026-07-31 09:30', mainNet: 12_000_000, mainNetPct: null, changePct: null, buckets },
+      { time: '2026-07-31 15:00', mainNet: 120_000_000, mainNetPct: null, changePct: null, buckets },
+    ],
+    intradayMode: 'cumulative',
+    source: 'tencent',
+    sourceLabel: '腾讯财经免费资金流',
+    asOf: '2026-07-31 15:00',
+    generatedAt: '2026-08-01T03:35:00.000Z',
+    stale: false,
+    warnings: ['免费版展示四档净额；未将净额反推为各档流入/流出。'],
+  };
+}
+
 function mockLocalHtmlPreviewFiles() {
   vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
     const request = args && typeof args === 'object' && 'request' in args
@@ -393,6 +424,9 @@ describe('right feature panel', () => {
     seedClientLicenseSession();
     vi.stubGlobal('fetch', vi.fn((input?: RequestInfo | URL) => {
       const url = String(input ?? '');
+      if (url.includes('/api/market/capital-flow/')) {
+        return Promise.resolve(jsonResponse(cloudCapitalFlowSnapshot(decodeURIComponent(url.split('/').pop() || '600519.XSHG'))));
+      }
       if (url.includes('/api/market/snapshot')) {
         const parsed = new URL(url);
         const codes = parsed.searchParams.get('codes')?.split(',').filter(Boolean);
@@ -472,6 +506,44 @@ describe('right feature panel', () => {
     expect(container.querySelector('.app-shell')).not.toBeInTheDocument();
   });
 
+  it('refreshes admin-managed models when the app regains focus', async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+      leaseExpiresAt: futureIso(),
+      models: [
+        {
+          id: 'gpt-5.5',
+          label: 'GPT-5.5 API',
+          provider: 'openai',
+          mode: 'gateway_api',
+          enabled: true,
+        },
+      ],
+    }));
+    render(<App />);
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes('/api/devices/lease'))).toHaveLength(1));
+
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+      leaseExpiresAt: futureIso(),
+      models: [
+        {
+          id: 'deepseek-v4-flash',
+          label: 'DeepSeek V4 Flash',
+          provider: 'deepseek',
+          mode: 'gateway_api',
+          enabled: true,
+        },
+      ],
+    }));
+    window.dispatchEvent(new Event('focus'));
+
+    await waitFor(() => expect(loadClientLicenseSession()?.models.map((model) => model.id)).toEqual(['deepseek-v4-flash']));
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    const modelMenu = screen.getByRole('menu', { name: '选择模型' });
+    expect(within(modelMenu).queryByRole('menuitemradio', { name: /GPT-5\.5 API/ })).not.toBeInTheDocument();
+    expect(within(modelMenu).getByRole('menuitemradio', { name: /DeepSeek V4 Flash/ })).toBeInTheDocument();
+  });
+
   it('requires renewal when the stored activation has expired', async () => {
     seedClientLicenseSession(true, new Date(Date.now() - 60_000).toISOString());
     vi.mocked(fetch)
@@ -537,7 +609,7 @@ describe('right feature panel', () => {
         role: 'user',
         timestamp: 1,
         blocks: [{ type: 'text', content: '生成今日盘前日报' }],
-        selectedSkill: { id: 'alpha-studio-daily-theme-research', title: '盘前主题日报' },
+        selectedSkill: { id: ALPHA_STUDIO_DAILY_THEME_SKILL_ID, title: '盘前主题日报' },
       }],
     });
     const normalConversation = conversation({ id: 'conv-normal', title: '普通研究对话' });
@@ -640,7 +712,7 @@ describe('right feature panel', () => {
     await user.click(screen.getByLabelText('打开投研工作台'));
 
     const workbench = await screen.findByLabelText('投研工作台');
-    await waitFor(() => expect(within(workbench).getByText(/云端实时/)).toBeInTheDocument());
+    await waitFor(() => expect(within(workbench).getByText(/云端行情快照/)).toBeInTheDocument());
     expect(within(workbench).getByRole('heading', { name: '市场' })).toBeInTheDocument();
     expect(within(workbench).getByRole('tab', { name: /自选/ })).toBeInTheDocument();
     expect(within(workbench).getByRole('tab', { name: '市场' })).toHaveAttribute('aria-selected', 'true');
@@ -702,10 +774,17 @@ describe('right feature panel', () => {
     expect(within(workbench).getByText('资金分布')).toBeInTheDocument();
     expect(within(workbench).getByText('资金流向')).toBeInTheDocument();
     expect(within(workbench).getByRole('tablist', { name: '资金流向周期' })).toBeInTheDocument();
-    await user.click(within(workbench).getByRole('button', { name: '进入对话分析“主力是否还在”' }));
+    expect(await within(workbench).findByText('腾讯财经免费资金流')).toBeInTheDocument();
+    expect(within(workbench).getByText('免费版仅展示各档净额，不把净额反推为各档流入/流出。')).toBeInTheDocument();
+    expect(within(workbench).getAllByText('+1.20亿').length).toBeGreaterThan(0);
+    expect(within(workbench).getByText('AI 庄家去留研判')).toBeInTheDocument();
+    await user.click(within(workbench).getByRole('button', { name: '进入对话研判“庄家是否还在”' }));
     const composer = document.querySelector('.main-stage .composer-card') as HTMLElement;
-    expect((within(composer).getByRole('textbox') as HTMLTextAreaElement).value).toContain('不得把大单直接等同于可识别的机构或庄家');
-    expect((within(composer).getByRole('textbox') as HTMLTextAreaElement).value).toContain('不要得出“主力在就可以放心持有”的结论');
+    expect((within(composer).getByRole('textbox') as HTMLTextAreaElement).value).toContain('做“庄家去留研判”');
+    expect((within(composer).getByRole('textbox') as HTMLTextAreaElement).value).toContain('不得把单笔大单或资金流标签直接等同于庄家');
+    expect((within(composer).getByRole('textbox') as HTMLTextAreaElement).value).toContain('最近20—60个交易日');
+    expect((within(composer).getByRole('textbox') as HTMLTextAreaElement).value).toContain('高概率仍在 / 疑似仍在但有分歧 / 疑似派发或撤退 / 无法判断');
+    expect((within(composer).getByRole('textbox') as HTMLTextAreaElement).value).toContain('“庄家仍在”不等于股价一定上涨');
     expect(within(workbench).getByRole('button', { name: '返回上一级' })).toBeInTheDocument();
 
     await user.click(within(workbench).getByRole('button', { name: '返回上一级' }));
@@ -719,7 +798,7 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByLabelText('打开投研工作台'));
     const workbench = await screen.findByLabelText('投研工作台');
-    await waitFor(() => expect(within(workbench).getByText(/云端实时/)).toBeInTheDocument());
+    await waitFor(() => expect(within(workbench).getByText(/云端行情快照/)).toBeInTheDocument());
     await user.click(within(workbench).getByRole('tab', { name: '发现' }));
 
     await user.click(within(workbench).getByRole('button', { name: /选股器/ }));
@@ -769,7 +848,7 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByLabelText('打开投研工作台'));
     const workbench = await screen.findByLabelText('投研工作台');
-    await waitFor(() => expect(within(workbench).getByText(/云端实时/)).toBeInTheDocument());
+    await waitFor(() => expect(within(workbench).getByText(/云端行情快照/)).toBeInTheDocument());
     await user.click(within(workbench).getByRole('tab', { name: /自选/ }));
 
     const scopeTabs = within(workbench).getByRole('tablist', { name: '自选范围' });
@@ -830,6 +909,54 @@ describe('right feature panel', () => {
     expect(within(position).getAllByText('100 股')).toHaveLength(3);
   });
 
+  it('does not value recorded holdings with offline sample quotes', async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem('alpha-studio.research-state.v2', JSON.stringify({
+      version: 3,
+      cash: 100_000,
+      netDeposits: 121_000,
+      watchlist: ['600519.XSHG'],
+      holdings: [{ code: '600519.XSHG', quantity: 100, avgCost: 1500, openedAt: Date.now() }],
+      portfolios: [],
+      trades: [],
+      customSecurities: {},
+    }));
+    vi.mocked(fetch).mockImplementation((input?: RequestInfo | URL) => {
+      const url = String(input ?? '');
+      if (url.includes('/api/market/snapshot')) {
+        return Promise.resolve(jsonResponse({ ...cloudMarketSnapshot([]), quotes: [] }));
+      }
+      return Promise.resolve(jsonResponse({ leaseExpiresAt: futureIso() }));
+    });
+    render(<App />);
+
+    await user.click(screen.getByLabelText('打开投研工作台'));
+    const workbench = await screen.findByLabelText('投研工作台');
+    await waitFor(() => expect(within(workbench).getByText(/内置样例 · 云端暂不可用/)).toBeInTheDocument());
+    await user.click(within(workbench).getByRole('tab', { name: '资产' }));
+
+    expect(within(workbench).getByText('账户估值已暂停')).toBeInTheDocument();
+    expect(within(workbench).getByText(/不会使用内置样例价格计算总资产/)).toBeInTheDocument();
+    expect(within(workbench).getByText(/100 股 · 等待可信行情/)).toBeInTheDocument();
+    expect(workbench.querySelector('.market-assets-hero')).toHaveTextContent('—');
+  });
+
+  it('marks a manual market refresh as a forced upstream refresh', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByLabelText('打开投研工作台'));
+    const workbench = await screen.findByLabelText('投研工作台');
+    await waitFor(() => expect(within(workbench).getByText(/云端行情快照/)).toBeInTheDocument());
+    vi.mocked(fetch).mockClear();
+    await user.click(within(workbench).getByLabelText('刷新行情'));
+
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => {
+      const url = String(input ?? '');
+      return url.includes('/api/market/snapshot') && url.includes('forceRefresh=true');
+    })).toBe(true));
+  });
+
   it('searches cloud-market stocks and opens a dedicated stock page', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -859,7 +986,7 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByLabelText('打开投研工作台'));
     const workbench = await screen.findByLabelText('投研工作台');
-    await waitFor(() => expect(within(workbench).getByText(/云端实时/)).toBeInTheDocument());
+    await waitFor(() => expect(within(workbench).getByText(/云端行情快照/)).toBeInTheDocument());
     await user.click(within(workbench).getByRole('tab', { name: '实盘' }));
 
     expect(within(workbench).getByLabelText('实盘交易记录')).toBeInTheDocument();
@@ -885,7 +1012,7 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByLabelText('打开投研工作台'));
     const workbench = await screen.findByLabelText('投研工作台');
-    await waitFor(() => expect(within(workbench).getByText(/云端实时/)).toBeInTheDocument());
+    await waitFor(() => expect(within(workbench).getByText(/云端行情快照/)).toBeInTheDocument());
     await user.click(within(workbench).getByRole('tab', { name: '资产' }));
     await user.click(within(workbench).getByRole('button', { name: /股票组合/ }));
 
@@ -1026,7 +1153,7 @@ describe('right feature panel', () => {
     expect(composerCard).not.toHaveClass('compact');
     const textbox = within(composerCard).getByRole('textbox');
     const suggestions = [
-      ['生成今日报告', '使用 alpha-studio-daily-theme-research 生成今日的报告'],
+      ['生成今日报告', `使用 ${ALPHA_STUDIO_DAILY_THEME_SKILL_ID} 生成今日的报告`],
       ['盘中监控', INTRADAY_MONITOR_CARD_PROMPT],
       ['晚间复盘', REPORT_REVIEW_CARD_PROMPT],
     ];
@@ -1910,6 +2037,14 @@ describe('right feature panel', () => {
                 createdAt: '2026-07-09T08:00:00.000Z',
               },
             ],
+            ledgerPagination: {
+              page: 1,
+              pageSize: 8,
+              total: 17,
+              totalPages: 3,
+              hasPrevious: false,
+              hasNext: true,
+            },
           },
         }));
       }
@@ -1933,6 +2068,7 @@ describe('right feature panel', () => {
     expect(within(settings).getAllByText(/3\.25/).length).toBeGreaterThan(0);
     expect(within(settings).getByText('GPT-5.5 API')).toBeInTheDocument();
     expect(within(settings).getByText('gpt-5.5 usage charge')).toBeInTheDocument();
+    expect(within(settings).getByText('第 1 / 3 页')).toBeInTheDocument();
     expect(within(settings).queryByText('PolyForm Noncommercial License 1.0.0。')).not.toBeInTheDocument();
     expect(fetch).toHaveBeenCalledWith(
       'http://localhost:18080/api/client/billing-summary',
@@ -1941,6 +2077,12 @@ describe('right feature panel', () => {
         body: expect.stringContaining('"tenantId":"tenant_demo"'),
       }),
     );
+
+    await user.click(within(settings).getByRole('button', { name: '下一页' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/client/billing-summary',
+      expect.objectContaining({ body: expect.stringContaining('"ledgerPage":2') }),
+    ));
     expect(invoke).toHaveBeenCalledWith('codex_subscription_usage');
   });
 
@@ -1962,33 +2104,69 @@ describe('right feature panel', () => {
     });
     render(<App />);
 
-    await user.click(screen.getByTitle('选择模型与推理强度'));
-    const modelMenu = document.querySelector('.model-choice-menu') as HTMLElement;
-    const modelRow = within(modelMenu).getByText(/GPT-5\.5 API|5\.5 API/).closest('.model-flyout-row') as HTMLElement;
-    const modelButton = within(modelRow).getByRole('button');
-    fireEvent.mouseEnter(modelRow);
-    await user.click(modelButton);
-
-    expect(modelButton).toHaveAttribute('aria-expanded', 'true');
-    const subscriptionModels = await screen.findByText('订阅模型');
-    expect(subscriptionModels.closest('.model-choice-flyout')?.parentElement).toBe(document.body);
-    expect(screen.getByText('按量模型')).toBeInTheDocument();
+    const modelPicker = screen.getByTitle('选择模型与推理强度');
+    expect(modelPicker.querySelector('.model-pill-icon')).not.toBeInTheDocument();
+    expect(modelPicker.querySelector('.model-pill-label')).toBeInTheDocument();
+    await user.click(modelPicker);
+    const modelMenu = screen.getByRole('menu', { name: '选择模型' });
+    expect(within(modelMenu).getByText('订阅模型')).toBeInTheDocument();
+    expect(within(modelMenu).getByText('按量模型')).toBeInTheDocument();
+    expect(within(modelMenu).getByRole('button', { name: '刷新模型列表' })).toBeInTheDocument();
     expect(screen.queryByText('内置模型')).not.toBeInTheDocument();
     expect(screen.queryByText('自定义模型')).not.toBeInTheDocument();
+
+    const editButton = within(modelMenu).getByRole('button', { name: '编辑 GPT-5.5 API 的模型选项' });
+    await user.click(editButton);
+
+    expect(editButton).toHaveAttribute('aria-expanded', 'true');
+    const optionsMenu = screen.getByRole('menu', { name: 'GPT-5.5 API 模型选项' });
+    expect(optionsMenu.closest('.model-choice-flyout')?.parentElement).toBe(document.body);
+    expect(within(optionsMenu).getByText('思考强度')).toBeInTheDocument();
+    expect(within(optionsMenu).getByText('速度')).toBeInTheDocument();
   });
 
-  it('opens speed choices when the speed row is clicked after pointer entry', async () => {
+  it('opens model-specific options from the row edit action', async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByTitle('选择模型与推理强度'));
-    const speedButton = screen.getByRole('button', { name: '速度' });
-    fireEvent.mouseEnter(speedButton.closest('.model-flyout-row') as HTMLElement);
-    await user.click(speedButton);
+    const modelMenu = screen.getByRole('menu', { name: '选择模型' });
+    const editButton = within(modelMenu).getByRole('button', { name: /编辑 GPT-5\.5 API 的模型选项/ });
+    await user.click(editButton);
 
-    expect(speedButton).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByText('默认速度')).toBeVisible();
-    expect(screen.getByText('1.5x speed, increased usage')).toBeVisible();
+    const optionsMenu = screen.getByRole('menu', { name: /GPT-5\.5 API 模型选项/ });
+    expect(within(optionsMenu).getByText('默认速度')).toBeVisible();
+    expect(within(optionsMenu).getByText('1.5x speed, increased usage')).toBeVisible();
+  });
+
+  it('only shows settings supported by the edited model', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      selectedModelProfileId: 'static-model',
+      modelProfiles: [
+        ...defaultModelProfiles(),
+        {
+          id: 'static-model',
+          label: 'Static Model',
+          providerId: 'custom',
+          model: 'static-model',
+          wireApi: 'chat',
+          baseUrl: 'http://localhost:9000',
+          enabled: true,
+          supportsReasoningEffort: false,
+        },
+      ],
+    });
+    render(<App />);
+
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    const modelMenu = screen.getByRole('menu', { name: '选择模型' });
+    await user.click(within(modelMenu).getByRole('button', { name: '编辑 Static Model 的模型选项' }));
+
+    const optionsMenu = screen.getByRole('menu', { name: 'Static Model 模型选项' });
+    expect(within(optionsMenu).getByText('此模型不提供思考强度设置')).toBeInTheDocument();
+    expect(within(optionsMenu).getByText('默认速度')).toBeInTheDocument();
+    expect(within(optionsMenu).queryByRole('menuitemradio', { name: '低' })).not.toBeInTheDocument();
   });
 
   it('keeps the active model flyout open while the pointer crosses the menu gap', async () => {
@@ -1996,13 +2174,13 @@ describe('right feature panel', () => {
     render(<App />);
 
     await user.click(screen.getByTitle('选择模型与推理强度'));
-    const modelMenu = document.querySelector('.model-choice-menu') as HTMLElement;
-    const modelButton = within(modelMenu).getByRole('button', { name: /GPT-5\.5 API|5\.5 API/ });
-    await user.click(modelButton);
+    const modelMenu = screen.getByRole('menu', { name: '选择模型' });
+    const editButton = within(modelMenu).getByRole('button', { name: /编辑 GPT-5\.5 API 的模型选项/ });
+    await user.click(editButton);
     fireEvent.mouseLeave(modelMenu);
 
-    expect(modelButton).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByText('订阅模型')).toBeVisible();
+    expect(editButton).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('menu', { name: /GPT-5\.5 API 模型选项/ })).toBeVisible();
   });
 
   it('loads authorized Codex catalog models into the picker', async () => {
@@ -2015,10 +2193,9 @@ describe('right feature panel', () => {
     render(<App />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('codex_models', { request: { forceRefetch: false } }));
     await user.click(screen.getByTitle('选择模型与推理强度'));
-    await user.hover(screen.getByRole('button', { name: /GPT-5.6 Sol/ }));
-    expect(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Sol' })).toBeInTheDocument();
-    expect(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Terra' })).toBeInTheDocument();
-    expect(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Luna' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: /GPT-5.6 Sol/ })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: /GPT-5.6 Terra/ })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: /GPT-5.6 Luna/ })).toBeInTheDocument();
     expect(screen.getByText('GPT-5.5 API')).toBeInTheDocument();
   });
 
@@ -2030,13 +2207,18 @@ describe('right feature panel', () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByTitle('选择模型与推理强度'));
-    expect(screen.getByRole('menuitemradio', { name: 'Ultra' })).toBeInTheDocument();
-    await user.hover(screen.getByRole('button', { name: /GPT-5.6 Sol/ }));
-    fireEvent.click(screen.getByRole('menuitemradio', { name: 'GPT-5.6 Terra' }));
+    const modelMenu = screen.getByRole('menu', { name: '选择模型' });
+    await user.click(within(modelMenu).getByRole('button', { name: '编辑 GPT-5.6 Sol 的模型选项' }));
+    const solOptions = screen.getByRole('menu', { name: 'GPT-5.6 Sol 模型选项' });
+    expect(within(solOptions).getByRole('menuitemradio', { name: 'Ultra' })).toBeInTheDocument();
+    fireEvent.click(within(modelMenu).getByRole('menuitemradio', { name: /GPT-5.6 Terra/ }));
     await waitFor(() => expect(useChatStore.getState().reasoningEffort).toBe('high'));
     await user.click(screen.getByTitle('选择模型与推理强度'));
-    expect(screen.queryByRole('menuitemradio', { name: 'Ultra' })).not.toBeInTheDocument();
-    expect(screen.getAllByRole('menuitemradio').map((item) => item.textContent)).toEqual(expect.arrayContaining(['低', '中', '高', 'Max']));
+    const terraMenu = screen.getByRole('menu', { name: '选择模型' });
+    await user.click(within(terraMenu).getByRole('button', { name: '编辑 GPT-5.6 Terra 的模型选项' }));
+    const terraOptions = screen.getByRole('menu', { name: 'GPT-5.6 Terra 模型选项' });
+    expect(within(terraOptions).queryByRole('menuitemradio', { name: 'Ultra' })).not.toBeInTheDocument();
+    expect(within(terraOptions).getAllByRole('menuitemradio').map((item) => item.textContent)).toEqual(expect.arrayContaining(['低', '中', '高', 'Max', '标准默认速度', '快速1.5x speed, increased usage']));
   });
 
   it('keeps fallback picker usable when catalog refresh fails', async () => {
@@ -2048,9 +2230,10 @@ describe('right feature panel', () => {
     render(<App />);
     await waitFor(() => expect(useChatStore.getState().codexModelCatalogError).toBe('catalog offline'));
     await user.click(screen.getByTitle('选择模型与推理强度'));
-    const pickerMenu = screen.getByRole('menu');
-    await user.hover(within(pickerMenu).getByRole('button', { name: /GPT-5\.5 API|5\.5 API/ }));
-    expect(screen.getByRole('menuitemradio', { name: 'GPT-5.5' })).toBeInTheDocument();
+    const pickerMenu = screen.getByRole('menu', { name: '选择模型' });
+    expect(within(pickerMenu).getByRole('menuitemradio', { name: /GPT-5\.5 API/ })).toBeInTheDocument();
+    await user.click(within(pickerMenu).getByRole('button', { name: '编辑 GPT-5.5 API 的模型选项' }));
+    expect(screen.getByRole('menu', { name: 'GPT-5.5 API 模型选项' })).toBeInTheDocument();
   });
 
   it('hides subscription models and the unavailable engine notice when Codex is not authorized', async () => {
@@ -2087,13 +2270,11 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByTitle('选择模型与推理强度'));
     const modelMenu = document.querySelector('.model-choice-menu') as HTMLElement;
-    const modelRow = within(modelMenu).getByText('GPT-5.5 API').closest('.model-flyout-row') as HTMLElement;
-    fireEvent.mouseEnter(modelRow);
 
     expect(await screen.findByText('按量模型')).toBeInTheDocument();
-    expect(screen.getAllByText('GPT-5.5 API').length).toBeGreaterThan(0);
+    expect(within(modelMenu).getByRole('menuitemradio', { name: /GPT-5.5 API/ })).toBeInTheDocument();
     expect(screen.queryByText('订阅模型')).not.toBeInTheDocument();
-    expect(screen.queryByRole('menuitemradio', { name: 'GPT-5.5' })).not.toBeInTheDocument();
+    expect(within(modelMenu).queryByRole('menuitemradio', { name: /^GPT-5.5(?:中|高|低|超高|Max|Ultra)?$/ })).not.toBeInTheDocument();
   });
 
   it('keeps empty local model config from restoring subscription models without Codex subscription', async () => {
@@ -2156,12 +2337,11 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByTitle('选择模型与推理强度'));
     const modelMenu = document.querySelector('.model-choice-menu') as HTMLElement;
-    const modelRow = within(modelMenu).getByText('GPT-5.5 API').closest('.model-flyout-row') as HTMLElement;
-    fireEvent.mouseEnter(modelRow);
 
     expect(await screen.findByText('按量模型')).toBeInTheDocument();
     expect(screen.queryByText('订阅模型')).not.toBeInTheDocument();
-    expect(screen.queryByRole('menuitemradio', { name: 'GPT-5.5' })).not.toBeInTheDocument();
+    expect(within(modelMenu).getByRole('menuitemradio', { name: /GPT-5.5 API/ })).toBeInTheDocument();
+    expect(within(modelMenu).queryByRole('menuitemradio', { name: /^GPT-5.5(?:中|高|低|超高|Max|Ultra)?$/ })).not.toBeInTheDocument();
   });
 
   it('keeps finance settings focused and removes user model configuration', async () => {
@@ -2196,7 +2376,7 @@ describe('right feature panel', () => {
     await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
 
     expect(within(settings).getByText('GPT 订阅账号')).toBeInTheDocument();
-    expect(within(settings).getByText('codex-demo@alpha.local')).toBeInTheDocument();
+    expect(within(settings).queryByText('codex-demo@alpha.local')).not.toBeInTheDocument();
     expect(within(settings).getByText('Use browser login handoff')).toBeInTheDocument();
     expect(within(settings).getByText('设备授权')).toBeInTheDocument();
     expect(within(settings).queryByText('设备租约')).not.toBeInTheDocument();
@@ -3194,6 +3374,8 @@ describe('right feature panel', () => {
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     expect(browser).toBeInTheDocument();
     expect(within(dock).getByRole('tab', { name: '新标签' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(browser).getByText('官网')).toBeInTheDocument();
+    expect(within(browser).getByRole('button', { name: '打开元流涌现官网' })).toBeInTheDocument();
 
     await user.click(within(dock).getByLabelText('添加侧边栏标签'));
     const tabMenu = container.querySelector('.right-dock-tab-menu') as HTMLElement;
@@ -3203,6 +3385,18 @@ describe('right feature panel', () => {
     expect(within(tabMenu).queryByRole('button', { name: /审查/ })).not.toBeInTheDocument();
     expect(within(tabMenu).queryByRole('button', { name: /^终端$/ })).not.toBeInTheDocument();
     expect(within(tabMenu).getByRole('button', { name: /文件/ })).toBeInTheDocument();
+  });
+
+  it('opens the Yuanliu official website from the browser start page', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开浏览器'));
+
+    const browser = container.querySelector('.browser-dock-panel') as HTMLElement;
+    await user.click(within(browser).getByRole('button', { name: '打开元流涌现官网' }));
+
+    expect(within(browser).getByPlaceholderText('搜索或输入网址')).toHaveValue('https://yuanliu.ai');
   });
 
   it('restores a wide right sidebar beyond the former 620px limit', async () => {
@@ -3606,6 +3800,10 @@ describe('right feature panel', () => {
     expect(css).toMatch(/\.right-dock-workspace\s*{[^}]*width:\s*min\(\s*var\(--right-sidebar-width, 416px\),\s*calc\(100% - var\(--right-panel-main-min-width, 360px\)\)\s*\);/s);
     expect(css).toMatch(/\.main-stage\s*{[^}]*container-name:\s*main-stage;[^}]*container-type:\s*inline-size;/s);
     expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.composer-toolbar\s*{[^}]*flex-wrap:\s*nowrap;[\s\S]*?\.approval-pill > span,[\s\S]*?\.approval-pill > \.lucide-chevron-down\s*{[^}]*display:\s*none;/s);
+    expect(css).toMatch(/\.suggestion-row\s*{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(220px, 100%\), 1fr\)\);/s);
+    expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.suggestion-row\s*{[^}]*grid-template-columns:\s*1fr;/s);
+    expect(css).not.toMatch(/\.suggestion-card:nth-child\(n \+ 2\)\s*{[^}]*display:\s*none;/s);
+    expect(css).not.toContain('.model-pill-icon');
   });
 
   it('keeps panel actions fixed while environment actions move beside an open right dock', () => {

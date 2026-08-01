@@ -4,6 +4,7 @@ import {
   PREMARKET_THEME_RUNS_KEY,
   PREMARKET_THEME_SCHEMA,
   PREMARKET_THEME_SCHEMA_V1,
+  ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
   buildPremarketThemePrompt,
   extractLegacyPremarketThemeDraft,
   loadPremarketThemeRuns,
@@ -131,7 +132,7 @@ describe('themeResearch', () => {
       generatedAt: new Date('2026-07-07T00:30:00.000Z'),
     });
 
-    expect(prompt).toContain('alpha-studio-daily-theme-research skill');
+    expect(prompt).toContain(`${ALPHA_STUDIO_DAILY_THEME_SKILL_ID} skill`);
     expect(prompt).toContain('neostream-daily-theme-research 保持一致');
     expect(prompt).toContain(PREMARKET_THEME_SCHEMA);
     expect(prompt).toContain('capitalAttackPath');

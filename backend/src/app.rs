@@ -13,6 +13,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/login", post(routes::auth_login))
         .route("/api/client/bootstrap", get(routes::client_bootstrap))
         .route("/api/market/snapshot", get(routes::market_snapshot))
+        .route(
+            "/api/market/capital-flow/:code",
+            get(routes::market_capital_flow),
+        )
         .route("/api/market/stream", get(routes::market_stream))
         .route("/api/client/activate", post(routes::client_activate))
         .route(
@@ -42,6 +46,10 @@ pub fn build_router(state: AppState) -> Router {
             delete(routes::admin_delete_tenant),
         )
         .route(
+            "/api/admin/tenants/:id/billing",
+            get(routes::admin_tenant_billing),
+        )
+        .route(
             "/api/admin/authorization-codes",
             get(routes::admin_list_authorization_codes)
                 .post(routes::admin_create_authorization_code),
@@ -54,6 +62,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/admin/provider-configs",
             get(routes::admin_list_provider_configs).post(routes::admin_save_provider_config),
+        )
+        .route(
+            "/api/admin/provider-configs/discover-models",
+            post(routes::admin_discover_provider_models),
         )
         .route(
             "/api/admin/provider-configs/:provider",
@@ -76,6 +88,7 @@ pub fn build_router(state: AppState) -> Router {
             delete(routes::admin_delete_codex_account),
         )
         .route("/v1/responses", post(routes::gateway_responses))
+        .route("/v1/models", get(routes::gateway_models))
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())

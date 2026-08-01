@@ -4,6 +4,7 @@ const SESSION_KEY = 'alpha:client-license-session';
 const DEVICE_FINGERPRINT_KEY = 'alpha:device-fingerprint';
 export const ALPHA_GATEWAY_PROVIDER_ID = 'alpha-gateway';
 export const ENTERPRISE_AUTHORIZATION_CHECK_INTERVAL_MS = 5 * 24 * 60 * 60 * 1000;
+export const CLIENT_MODEL_CATALOG_SYNC_INTERVAL_MS = 60 * 1000;
 
 export interface ClientTenant {
   id: string;
@@ -120,6 +121,15 @@ export interface BillingLedgerEntry {
   createdAt: string;
 }
 
+export interface BillingLedgerPagination {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  hasPrevious: boolean;
+  hasNext: boolean;
+}
+
 export interface ClientBillingSummary {
   tenant: ClientTenant & {
     billingMode: string;
@@ -138,6 +148,7 @@ export interface ClientBillingSummary {
     allTime: BillingUsageTotals;
     models: BillingModelUsage[];
     recentLedger: BillingLedgerEntry[];
+    ledgerPagination?: BillingLedgerPagination;
   };
 }
 
@@ -333,12 +344,17 @@ export async function createGatewayRun(modelId: string, budgetYuan = 5): Promise
   };
 }
 
-export async function fetchClientBillingSummary(session: ClientLicenseSession): Promise<ClientBillingSummary> {
+export async function fetchClientBillingSummary(
+  session: ClientLicenseSession,
+  ledger: { page?: number; pageSize?: number } = {},
+): Promise<ClientBillingSummary> {
   return alphaFetch<ClientBillingSummary>(session.apiBaseUrl, '/api/client/billing-summary', {
     method: 'POST',
     body: JSON.stringify({
       tenantId: session.tenant.id,
       deviceId: session.device.id,
+      ledgerPage: ledger.page ?? 1,
+      ledgerPageSize: ledger.pageSize ?? 8,
     }),
   }, { retryLoopback: true });
 }

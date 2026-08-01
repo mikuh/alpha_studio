@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-type Tab = 'overview' | 'tenants' | 'gateway' | 'codex' | 'audit';
+type Tab = 'overview' | 'tenants' | 'usage' | 'gateway' | 'codex' | 'audit';
 
 interface Summary {
   tenants: number;
@@ -47,9 +47,21 @@ interface ProviderConfig {
   label: string;
   baseUrl: string;
   endpointPath: string;
+  apiFormat?: string;
+  authType?: string;
+  authHeader?: string;
+  customHeaders?: Record<string, string>;
+  queryParams?: Record<string, string>;
+  requestTimeoutMs?: number;
+  maxRetries?: number;
   enabled: boolean;
   keyConfigured: boolean;
   keyMask?: string | null;
+}
+
+interface DiscoveredModel {
+  id: string;
+  label: string;
 }
 
 interface ModelRoute {
@@ -94,6 +106,58 @@ interface AuditLog {
   createdAt: string;
 }
 
+interface BillingUsageTotals {
+  runCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  costYuan: number;
+  billableYuan: number;
+  lastUsedAt?: string | null;
+}
+
+interface BillingModelUsage extends BillingUsageTotals {
+  modelId: string;
+  label: string;
+  provider?: string | null;
+}
+
+interface BillingLedgerEntry {
+  id: string;
+  runId?: string | null;
+  entryType: string;
+  amountYuan: number;
+  description: string;
+  createdAt: string;
+}
+
+interface BillingLedgerPagination {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  hasPrevious: boolean;
+  hasNext: boolean;
+}
+
+interface TenantBillingSummary {
+  tenant: Pick<Tenant, 'id' | 'name' | 'status' | 'billingMode' | 'balanceYuan' | 'subscriptionPlan' | 'subscriptionExpiresAt' | 'codexSubscriptionEnabled' | 'codexSubscriptionPlan' | 'codexSubscriptionExpiresAt'>;
+  period: {
+    currentMonthStart: string;
+    currentMonthEnd: string;
+    generatedAt: string;
+  };
+  usage: {
+    currentMonth: BillingUsageTotals;
+    allTime: BillingUsageTotals;
+    models: BillingModelUsage[];
+    recentLedger: BillingLedgerEntry[];
+    ledgerPagination: BillingLedgerPagination;
+  };
+}
+
 interface ConfirmDialogState {
   title: string;
   message: string;
@@ -101,6 +165,8 @@ interface ConfirmDialogState {
   confirmLabel: string;
   onConfirm: () => Promise<void> | void;
 }
+
+type FormDialog = 'tenant' | 'authorization' | 'activation' | 'provider' | 'model' | 'codex' | null;
 
 const defaultSummary: Summary = {
   tenants: 0,
@@ -137,8 +203,30 @@ const emptyProviderForm = {
   baseUrl: 'https://api.openai.com/v1',
   endpointPath: '/responses',
   apiKey: '',
+  apiFormat: 'responses',
+  authType: 'bearer',
+  authHeader: 'authorization',
+  customHeaders: '{}',
+  queryParams: '{}',
+  requestTimeoutMs: 300000,
+  maxRetries: 2,
   enabled: true,
 };
+
+const providerPresets: Array<{ id: string; label: string; config: Omit<typeof emptyProviderForm, 'apiKey' | 'enabled'> }> = [
+  { id: 'openai', label: 'OpenAI · Responses', config: { provider: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', endpointPath: '/responses', apiFormat: 'responses', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'anthropic', label: 'Anthropic · Messages', config: { provider: 'anthropic', label: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', endpointPath: '/messages', apiFormat: 'anthropic_messages', authType: 'api_key_header', authHeader: 'x-api-key', customHeaders: '{"anthropic-version":"2023-06-01"}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'google', label: 'Google Gemini · 原生', config: { provider: 'google', label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', endpointPath: '/models/{model}:generateContent', apiFormat: 'gemini_generate_content', authType: 'query_param', authHeader: 'key', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'deepseek', label: 'DeepSeek · Chat', config: { provider: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', endpointPath: '/chat/completions', apiFormat: 'chat_completions', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'openrouter', label: 'OpenRouter · Responses', config: { provider: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', endpointPath: '/responses', apiFormat: 'responses', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'azure-openai', label: 'Azure OpenAI · Responses', config: { provider: 'azure-openai', label: 'Azure OpenAI', baseUrl: 'https://YOUR_RESOURCE.openai.azure.com/openai/v1', endpointPath: '/responses', apiFormat: 'responses', authType: 'api_key_header', authHeader: 'api-key', customHeaders: '{}', queryParams: '{"api-version":"2025-04-01-preview"}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'ollama', label: 'Ollama · 本地免鉴权', config: { provider: 'ollama', label: 'Ollama (Local)', baseUrl: 'http://host.docker.internal:11434/v1', endpointPath: '/chat/completions', apiFormat: 'chat_completions', authType: 'none', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 1 } },
+  { id: 'dashscope', label: '阿里云百炼 / Qwen · Chat', config: { provider: 'dashscope', label: 'Alibaba Cloud DashScope / Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', endpointPath: '/chat/completions', apiFormat: 'chat_completions', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'moonshot', label: 'Moonshot / Kimi · Chat', config: { provider: 'moonshot', label: 'Moonshot AI / Kimi', baseUrl: 'https://api.moonshot.cn/v1', endpointPath: '/chat/completions', apiFormat: 'chat_completions', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'siliconflow', label: 'SiliconFlow · Chat', config: { provider: 'siliconflow', label: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', endpointPath: '/chat/completions', apiFormat: 'chat_completions', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'zhipu', label: '智谱 GLM · Chat', config: { provider: 'zhipu', label: 'Zhipu AI / GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', endpointPath: '/chat/completions', apiFormat: 'chat_completions', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'volcengine-ark', label: '火山方舟 · Chat', config: { provider: 'volcengine-ark', label: 'Volcengine Ark', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', endpointPath: '/chat/completions', apiFormat: 'chat_completions', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+];
 
 const emptyModelForm = {
   id: '',
@@ -155,7 +243,7 @@ const emptyModelForm = {
   outputYuanPerMillion: 0,
   reasoningYuanPerMillion: 0,
   cachedInputYuanPerMillion: 0,
-  markupBps: 2500,
+  priceMultiplier: 1.25,
 };
 
 const emptyCodexForm = {
@@ -173,6 +261,7 @@ const emptyCodexForm = {
 const navItems: Array<[Tab, string]> = [
   ['overview', '总览'],
   ['tenants', '客户'],
+  ['usage', 'LLM 用量'],
   ['gateway', '模型网关'],
   ['codex', 'GPT 账号'],
   ['audit', '审计'],
@@ -189,6 +278,12 @@ const navIcons: Record<Tab, React.JSX.Element> = {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9.5" cy="7" r="4" />
       <path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M15.5 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  ),
+  usage: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 19V9" /><path d="M10 19V5" /><path d="M16 19v-7" /><path d="M22 19V3" />
+      <path d="M2 19h22" />
     </svg>
   ),
   gateway: (
@@ -221,8 +316,13 @@ function App() {
   const [authorizationCodes, setAuthorizationCodes] = useState<AuthorizationCode[]>([]);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [models, setModels] = useState<ModelRoute[]>([]);
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
   const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [selectedUsageTenantId, setSelectedUsageTenantId] = useState('');
+  const [tenantBilling, setTenantBilling] = useState<TenantBillingSummary | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState('');
   const [tenantForm, setTenantForm] = useState(emptyTenantForm);
   const [codeForm, setCodeForm] = useState(emptyCodeForm);
   const [providerForm, setProviderForm] = useState(emptyProviderForm);
@@ -241,6 +341,7 @@ function App() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [formDialog, setFormDialog] = useState<FormDialog>(null);
 
   const money = useMemo(() => formatYuan(summary.billableYuan), [summary.billableYuan]);
   const selectedProvider = useMemo(
@@ -250,6 +351,10 @@ function App() {
   const selectedProviderModels = useMemo(
     () => models.filter((model) => model.provider === selectedProvider?.provider),
     [models, selectedProvider],
+  );
+  const providerFormTarget = useMemo(
+    () => selectedProvider?.provider === providerForm.provider ? selectedProvider : null,
+    [providerForm.provider, selectedProvider],
   );
   const selectedAuthorizationTenant = useMemo(
     () => tenants.find((tenant) => tenant.id === codeForm.tenantId) || tenants[0] || null,
@@ -337,6 +442,7 @@ function App() {
       setSummary(summaryData);
       const loadedTenants = tenantData.tenants || [];
       setTenants(loadedTenants);
+      setSelectedUsageTenantId((tenantId) => selectExistingTenantId(loadedTenants, tenantId));
       setAuthorizationCodes(codeData.authorizationCodes || []);
       setProviders(providerData.providers || []);
       setModels(modelData.models || []);
@@ -354,9 +460,35 @@ function App() {
     }
   };
 
+  const loadTenantBilling = async (tenantId: string, page = 1) => {
+    if (!tenantId) {
+      setTenantBilling(null);
+      return;
+    }
+    setUsageLoading(true);
+    setUsageError('');
+    try {
+      const data = await api<TenantBillingSummary>(
+        `/api/admin/tenants/${encodeURIComponent(tenantId)}/billing?page=${page}&pageSize=20`,
+        token,
+      );
+      setTenantBilling(data);
+    } catch (err) {
+      setUsageError(err instanceof Error ? err.message : '用量数据加载失败');
+    } finally {
+      setUsageLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (token) void load();
   }, [token]);
+
+  useEffect(() => {
+    if (token && activeTab === 'usage' && selectedUsageTenantId) {
+      void loadTenantBilling(selectedUsageTenantId, 1);
+    }
+  }, [token, activeTab, selectedUsageTenantId]);
 
   const saveTenant = async (event: FormEvent) => {
     event.preventDefault();
@@ -373,6 +505,7 @@ function App() {
         }),
       });
       setTenantForm(emptyTenantForm);
+      setFormDialog(null);
       setNotice('客户已保存');
       await load();
     });
@@ -403,7 +536,7 @@ function App() {
     await mutate(async () => {
       await api('/api/admin/provider-configs', token, {
         method: 'POST',
-        body: JSON.stringify(providerForm),
+        body: JSON.stringify(providerPayload(providerForm)),
       });
       setSelectedProviderId(providerId);
       setProviderForm({ ...providerForm, provider: providerId, apiKey: '' });
@@ -412,8 +545,29 @@ function App() {
         baseUrl: providerForm.baseUrl,
         endpointPath: providerForm.endpointPath,
       }));
+      setFormDialog(null);
       setNotice('供应商配置已保存');
       await load();
+    });
+  };
+
+  const discoverProviderModels = async () => {
+    await mutate(async () => {
+      const data = await api<{ models: DiscoveredModel[] }>('/api/admin/provider-configs/discover-models', token, {
+        method: 'POST',
+        body: JSON.stringify(providerPayload(providerForm)),
+      });
+      const discovered = data.models || [];
+      setDiscoveredModels(discovered);
+      if (discovered.length === 1) {
+        setModelForm((form) => ({
+          ...form,
+          modelId: form.modelId || discovered[0].id,
+          upstreamModel: discovered[0].id,
+          label: form.label || discovered[0].label,
+        }));
+      }
+      setNotice(`已发现 ${discovered.length} 个模型`);
     });
   };
 
@@ -421,12 +575,18 @@ function App() {
     event.preventDefault();
     const providerId = modelForm.provider;
     await mutate(async () => {
+      const { priceMultiplier, ...route } = modelForm;
       await api('/api/admin/model-routes', token, {
         method: 'POST',
-        body: JSON.stringify({ ...modelForm, id: modelForm.id || undefined }),
+        body: JSON.stringify({
+          ...route,
+          id: route.id || undefined,
+          markupBps: markupBpsFromPriceMultiplier(priceMultiplier),
+        }),
       });
       setSelectedProviderId(providerId);
       setModelForm(modelFormForProvider(providers.find((provider) => provider.provider === providerId)));
+      setFormDialog(null);
       setNotice('模型路由已保存');
       await load();
     });
@@ -436,16 +596,29 @@ function App() {
     setSelectedProviderId(provider.provider);
     setProviderForm(providerFormFromConfig(provider));
     setModelForm(modelFormForProvider(provider));
+    setDiscoveredModels([]);
   };
 
   const createProvider = () => {
-    setSelectedProviderId('');
     setProviderForm({ ...emptyProviderForm, provider: '', label: '', apiKey: '' });
     setModelForm(modelFormForProvider(null));
+    setDiscoveredModels([]);
+    setFormDialog('provider');
   };
 
   const createModelForSelectedProvider = () => {
     setModelForm(modelFormForProvider(selectedProvider));
+    setFormDialog('model');
+  };
+
+  const editProvider = (provider: ProviderConfig) => {
+    selectProvider(provider);
+    setFormDialog('provider');
+  };
+
+  const editModel = (model: ModelRoute) => {
+    setModelForm(modelFormFromRoute(model));
+    setFormDialog('model');
   };
 
   const changeModelProvider = (providerId: string) => {
@@ -559,6 +732,7 @@ function App() {
         }),
       });
       setCodexForm(emptyCodexForm);
+      setFormDialog(null);
       setNotice('GPT 账号已保存');
       await load();
     });
@@ -628,6 +802,49 @@ function App() {
     setProbeResult('');
     setCodeForm((form) => ({ ...form, tenantId: tenant.id, maxDevices: tenant.maxDevices }));
     setActivationProbe((form) => ({ ...form, companyName: tenant.name }));
+  };
+
+  const createTenant = () => {
+    setTenantForm(emptyTenantForm);
+    setFormDialog('tenant');
+  };
+
+  const editTenant = (form: typeof emptyTenantForm) => {
+    setTenantForm(form);
+    setFormDialog('tenant');
+  };
+
+  const createCodeForSelectedTenant = () => {
+    if (!selectedAuthorizationTenant) return;
+    setGeneratedCode('');
+    setCodeForm({
+      tenantId: selectedAuthorizationTenant.id,
+      maxDevices: selectedAuthorizationTenant.maxDevices,
+      expiresAt: '',
+      note: '',
+    });
+    setFormDialog('authorization');
+  };
+
+  const testSelectedTenantActivation = () => {
+    if (!selectedAuthorizationTenant) return;
+    setProbeResult('');
+    setActivationProbe((form) => ({ ...form, companyName: selectedAuthorizationTenant.name }));
+    setFormDialog('activation');
+  };
+
+  const createCodexAccount = () => {
+    setCodexForm(emptyCodexForm);
+    setFormDialog('codex');
+  };
+
+  const editCodexAccount = (form: typeof emptyCodexForm) => {
+    setCodexForm(form);
+    setFormDialog('codex');
+  };
+
+  const closeFormDialog = () => {
+    if (!loading) setFormDialog(null);
   };
 
   const confirmPendingAction = async () => {
@@ -701,9 +918,21 @@ function App() {
             <h1>{tabTitle(activeTab)}</h1>
             <p>{tabSubtitle(activeTab)}</p>
           </div>
-          <button type="button" onClick={() => void load()} disabled={loading}>
-            {loading ? '刷新中...' : '刷新'}
-          </button>
+          <div className="page-actions">
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => activeTab === 'usage'
+                ? void loadTenantBilling(selectedUsageTenantId, tenantBilling?.usage.ledgerPagination.page ?? 1)
+                : void load()}
+              disabled={loading || usageLoading}
+            >
+              {loading || usageLoading ? '刷新中...' : '刷新数据'}
+            </button>
+            {activeTab === 'tenants' && <button type="button" onClick={createTenant}>新增客户</button>}
+            {activeTab === 'gateway' && <button type="button" onClick={createProvider}>新增供应商</button>}
+            {activeTab === 'codex' && <button type="button" onClick={createCodexAccount}>新增账号</button>}
+          </div>
         </header>
         {error && <div className="error">{error}</div>}
         {notice && <div className="notice">{notice}</div>}
@@ -721,75 +950,68 @@ function App() {
                 <h2>最近客户</h2>
                 <span>{tenants.length} 个客户</span>
               </div>
-              <TenantTable tenants={tenants.slice(0, 6)} onEdit={setTenantForm} />
+              <TenantTable tenants={tenants.slice(0, 6)} onEdit={editTenant} />
             </section>
           </>
         )}
         {activeTab === 'tenants' && (
-          <GridSection>
-            <TenantForm form={tenantForm} setForm={setTenantForm} onSubmit={saveTenant} loading={loading} />
-            <TenantAuthorizationPanel
-              tenant={selectedAuthorizationTenant}
-              form={codeForm}
-              setForm={setCodeForm}
-              generatedCode={generatedCode}
-              codes={selectedAuthorizationCodes}
-              activationForm={activationProbe}
-              setActivationForm={setActivationProbe}
-              activationResult={probeResult}
-              onSubmit={createAuthorizationCode}
-              onActivationSubmit={testActivation}
-              onRevoke={(code) => updateAuthorizationCodeStatus(code, 'revoked')}
-              onDelete={deleteAuthorizationCode}
-              loading={loading}
-            />
-            <section className="panel span-2">
+          <div className="page-stack">
+            <section className="panel">
               <div className="panel-head">
-                <h2>客户列表</h2>
-                <span>{tenants.length} 个，选择客户后在上方管理授权码</span>
+                <div>
+                  <h2>客户列表</h2>
+                  <span>{tenants.length} 个客户 · 选择“授权码”查看对应记录</span>
+                </div>
               </div>
               <TenantTable
                 tenants={tenants}
-                onEdit={setTenantForm}
+                onEdit={editTenant}
                 onDelete={deleteTenant}
                 onManageCodes={selectTenantForAuthorization}
                 selectedTenantId={selectedAuthorizationTenant?.id}
               />
             </section>
-          </GridSection>
+            <TenantAuthorizationPanel
+              tenant={selectedAuthorizationTenant}
+              codes={selectedAuthorizationCodes}
+              onCreateCode={createCodeForSelectedTenant}
+              onTestActivation={testSelectedTenantActivation}
+              onRevoke={(code) => updateAuthorizationCodeStatus(code, 'revoked')}
+              onDelete={deleteAuthorizationCode}
+            />
+          </div>
+        )}
+        {activeTab === 'usage' && (
+          <TenantUsageWorkspace
+            tenants={tenants}
+            selectedTenantId={selectedUsageTenantId}
+            summary={tenantBilling}
+            loading={usageLoading}
+            error={usageError}
+            onSelectTenant={setSelectedUsageTenantId}
+            onPageChange={(page) => void loadTenantBilling(selectedUsageTenantId, page)}
+          />
         )}
         {activeTab === 'gateway' && (
           <GatewayWorkspace
-            providerForm={providerForm}
-            setProviderForm={setProviderForm}
-            modelForm={modelForm}
-            setModelForm={setModelForm}
             providers={providers}
             models={models}
             selectedProvider={selectedProvider}
             selectedProviderModels={selectedProviderModels}
             onSelectProvider={selectProvider}
-            onCreateProvider={createProvider}
+            onEditProvider={editProvider}
             onDeleteProvider={deleteProvider}
-            onSubmitProvider={saveProvider}
             onCreateModel={createModelForSelectedProvider}
-            onChangeModelProvider={changeModelProvider}
+            onEditModel={editModel}
             onDeleteModel={deleteModel}
-            onSubmitModel={saveModel}
-            loading={loading}
           />
         )}
         {activeTab === 'codex' && (
           <CodexWorkspace
             accounts={codexAccounts}
-            form={codexForm}
-            setForm={setCodexForm}
-            tenants={tenants}
-            onSubmit={saveCodexAccount}
-            onEdit={setCodexForm}
+            onEdit={editCodexAccount}
             onDelete={deleteCodexAccount}
             onSetStatus={updateCodexAccountStatus}
-            loading={loading}
           />
         )}
         {activeTab === 'audit' && (
@@ -815,6 +1037,101 @@ function App() {
           </section>
         )}
       </section>
+      {formDialog === 'tenant' && (
+        <Modal
+          title={tenantForm.id ? '编辑客户' : '新增客户'}
+          description={tenantForm.id ? `更新 ${tenantForm.name} 的基础资料与服务配置。` : '创建客户后即可生成授权码并分配 GPT 账号。'}
+          onClose={closeFormDialog}
+        >
+          <TenantForm form={tenantForm} setForm={setTenantForm} onSubmit={saveTenant} onCancel={closeFormDialog} loading={loading} />
+        </Modal>
+      )}
+      {formDialog === 'authorization' && selectedAuthorizationTenant && (
+        <Modal
+          title="生成授权码"
+          description={`为 ${selectedAuthorizationTenant.name} 创建新的设备授权码。`}
+          onClose={closeFormDialog}
+        >
+          <AuthorizationCodeForm
+            form={codeForm}
+            setForm={setCodeForm}
+            generatedCode={generatedCode}
+            onSubmit={createAuthorizationCode}
+            onCancel={closeFormDialog}
+            loading={loading}
+          />
+        </Modal>
+      )}
+      {formDialog === 'activation' && selectedAuthorizationTenant && (
+        <Modal
+          title="模拟首次激活"
+          description={`验证 ${selectedAuthorizationTenant.name} 的客户端激活链路。`}
+          onClose={closeFormDialog}
+        >
+          <ActivationProbe
+            form={activationProbe}
+            setForm={setActivationProbe}
+            result={probeResult}
+            onSubmit={testActivation}
+            onCancel={closeFormDialog}
+            loading={loading}
+          />
+        </Modal>
+      )}
+      {formDialog === 'provider' && (
+        <Modal
+          title={providerFormTarget ? '编辑供应商' : '新增供应商'}
+          description={providerFormTarget ? `配置 ${providerFormTarget.label} 的接口、鉴权和请求策略。` : '接入新的模型服务供应商。'}
+          onClose={closeFormDialog}
+          size="wide"
+        >
+          <ProviderForm
+            form={providerForm}
+            setForm={setProviderForm}
+            selectedProvider={providerFormTarget}
+            selectedModelCount={selectedProviderModels.length}
+            onSubmit={saveProvider}
+            onDiscoverModels={discoverProviderModels}
+            onCancel={closeFormDialog}
+            loading={loading}
+          />
+        </Modal>
+      )}
+      {formDialog === 'model' && (
+        <Modal
+          title={modelForm.id ? '编辑模型路由' : '新增模型路由'}
+          description="配置上游模型映射、计费价格与路由状态。"
+          onClose={closeFormDialog}
+          size="wide"
+        >
+          <ModelForm
+            form={modelForm}
+            setForm={setModelForm}
+            providers={providers}
+            onProviderChange={changeModelProvider}
+            onSubmit={saveModel}
+            discoveredModels={discoveredModels}
+            onCancel={closeFormDialog}
+            loading={loading}
+          />
+        </Modal>
+      )}
+      {formDialog === 'codex' && (
+        <Modal
+          title={codexForm.id ? '编辑 GPT 账号' : '新增 GPT 账号'}
+          description="维护订阅账号、可用席位以及客户分配关系。"
+          onClose={closeFormDialog}
+        >
+          <CodexAccountForm
+            form={codexForm}
+            setForm={setCodexForm}
+            tenants={tenants}
+            onSubmit={saveCodexAccount}
+            onCancel={closeFormDialog}
+            loading={loading}
+          />
+        </Modal>
+      )}
       <ConfirmDialog
         dialog={confirmDialog}
         loading={loading}
@@ -825,18 +1142,15 @@ function App() {
   );
 }
 
-function TenantForm({ form, setForm, onSubmit, loading }: {
+function TenantForm({ form, setForm, onSubmit, onCancel, loading }: {
   form: typeof emptyTenantForm;
   setForm: (form: typeof emptyTenantForm) => void;
   onSubmit: (event: FormEvent) => void;
+  onCancel: () => void;
   loading: boolean;
 }) {
   return (
-    <form className="panel form-panel" onSubmit={onSubmit}>
-      <div className="panel-head compact">
-        <h2>{form.id ? '编辑客户' : '新增客户'}</h2>
-        {form.id && <button type="button" className="secondary" onClick={() => setForm(emptyTenantForm)}>新建</button>}
-      </div>
+    <form className="form-panel modal-form" onSubmit={onSubmit}>
       <div className="form-grid">
         <Field label="公司名称" value={form.name} onChange={(name) => setForm({ ...form, name })} required />
         <Field label="客户 ID" value={form.id} onChange={(id) => setForm({ ...form, id })} placeholder="留空自动生成" />
@@ -854,6 +1168,7 @@ function TenantForm({ form, setForm, onSubmit, loading }: {
         <Field label="GPT 到期时间" type="datetime-local" value={form.codexSubscriptionExpiresAt} onChange={(codexSubscriptionExpiresAt) => setForm({ ...form, codexSubscriptionExpiresAt })} />
       </div>
       <div className="form-actions">
+        <button type="button" className="secondary" onClick={onCancel} disabled={loading}>取消</button>
         <button type="submit" disabled={loading}>{loading ? '保存中...' : '保存客户'}</button>
       </div>
     </form>
@@ -862,32 +1177,18 @@ function TenantForm({ form, setForm, onSubmit, loading }: {
 
 function TenantAuthorizationPanel({
   tenant,
-  form,
-  setForm,
-  generatedCode,
   codes,
-  activationForm,
-  setActivationForm,
-  activationResult,
-  onSubmit,
-  onActivationSubmit,
+  onCreateCode,
+  onTestActivation,
   onRevoke,
   onDelete,
-  loading,
 }: {
   tenant: Tenant | null;
-  form: typeof emptyCodeForm;
-  setForm: (form: typeof emptyCodeForm) => void;
-  generatedCode: string;
   codes: AuthorizationCode[];
-  activationForm: typeof activationProbeShape;
-  setActivationForm: (form: typeof activationProbeShape) => void;
-  activationResult: string;
-  onSubmit: (event: FormEvent) => void;
-  onActivationSubmit: (event: FormEvent) => void;
+  onCreateCode: () => void;
+  onTestActivation: () => void;
   onRevoke: (code: AuthorizationCode) => void;
   onDelete: (code: AuthorizationCode) => void;
-  loading: boolean;
 }) {
   const activeCodes = codes.filter((code) => code.status === 'active').length;
 
@@ -896,53 +1197,23 @@ function TenantAuthorizationPanel({
       <div className="panel-head">
         <div>
           <h2>客户授权</h2>
-          <span>{tenant ? `${tenant.name} · ${codes.length} 条授权码` : '选择客户后创建授权码'}</span>
+          <span>{tenant ? `${tenant.name} · ${codes.length} 条授权码` : '选择客户后管理授权码'}</span>
         </div>
-        {tenant && <Status value={tenant.status} />}
+        {tenant && (
+          <div className="head-actions">
+            <button className="secondary" type="button" onClick={onTestActivation}>模拟激活</button>
+            <button type="button" onClick={onCreateCode}>生成授权码</button>
+          </div>
+        )}
       </div>
       {!tenant ? (
-        <div className="empty">暂无客户。先创建客户后即可在这里生成授权码。</div>
+        <div className="empty">从客户列表选择“授权码”，即可查看和管理对应记录。</div>
       ) : (
         <>
           <div className="tenant-auth-strip">
             <div className="mini-stat"><span>当前客户</span><strong>{tenant.name}</strong></div>
             <div className="mini-stat"><span>授权机器数</span><strong>{tenant.maxDevices}</strong></div>
             <div className="mini-stat"><span>活跃授权码</span><strong>{activeCodes}</strong></div>
-          </div>
-          <div className="tenant-auth-grid">
-            <form className="embedded-form" onSubmit={onSubmit}>
-              <div className="embedded-head">
-                <div>
-                  <h3>生成授权码</h3>
-                  <span>{tenant.id}</span>
-                </div>
-              </div>
-              <div className="form-grid compact-grid">
-                <NumberField label="授权机器数" value={form.maxDevices} onChange={(maxDevices) => setForm({ ...form, maxDevices })} />
-                <Field label="到期时间" type="datetime-local" value={form.expiresAt} onChange={(expiresAt) => setForm({ ...form, expiresAt })} />
-                <Field label="备注" value={form.note} onChange={(note) => setForm({ ...form, note })} />
-              </div>
-              {generatedCode && (
-                <div className="secret-box">
-                  <div className="secret-box-head">
-                    <span>新授权码</span>
-                    <CopyButton text={generatedCode} />
-                  </div>
-                  <strong>{generatedCode}</strong>
-                </div>
-              )}
-              <div className="form-actions embedded-actions">
-                <button type="submit" disabled={loading}>生成授权码</button>
-              </div>
-            </form>
-            <ActivationProbe
-              form={activationForm}
-              setForm={setActivationForm}
-              result={activationResult}
-              onSubmit={onActivationSubmit}
-              loading={loading}
-              tenantName={tenant.name}
-            />
           </div>
           <div className="panel-subhead">
             <div>
@@ -963,30 +1234,56 @@ function TenantAuthorizationPanel({
   );
 }
 
-function ActivationProbe({ form, setForm, result, onSubmit, loading, tenantName }: {
+function AuthorizationCodeForm({ form, setForm, generatedCode, onSubmit, onCancel, loading }: {
+  form: typeof emptyCodeForm;
+  setForm: (form: typeof emptyCodeForm) => void;
+  generatedCode: string;
+  onSubmit: (event: FormEvent) => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  return (
+    <form className="form-panel modal-form" onSubmit={onSubmit}>
+      <div className="form-grid compact-grid">
+        <NumberField label="授权机器数" value={form.maxDevices} onChange={(maxDevices) => setForm({ ...form, maxDevices })} />
+        <Field label="到期时间" type="datetime-local" value={form.expiresAt} onChange={(expiresAt) => setForm({ ...form, expiresAt })} />
+        <Field label="备注" value={form.note} onChange={(note) => setForm({ ...form, note })} />
+      </div>
+      {generatedCode && (
+        <div className="secret-box modal-result">
+          <div className="secret-box-head"><span>新授权码 · 请妥善保存</span><CopyButton text={generatedCode} /></div>
+          <strong>{generatedCode}</strong>
+        </div>
+      )}
+      <div className="form-actions">
+        <button type="button" className="secondary" onClick={onCancel} disabled={loading}>关闭</button>
+        <button type="submit" disabled={loading}>{loading ? '生成中...' : generatedCode ? '再生成一个' : '生成授权码'}</button>
+      </div>
+    </form>
+  );
+}
+
+function ActivationProbe({ form, setForm, result, onSubmit, onCancel, loading }: {
   form: typeof activationProbeShape;
   setForm: (form: typeof activationProbeShape) => void;
   result: string;
   onSubmit: (event: FormEvent) => void;
+  onCancel: () => void;
   loading: boolean;
-  tenantName?: string;
 }) {
   return (
-    <form className="embedded-form" onSubmit={onSubmit}>
-      <div className="embedded-head">
-        <div>
-          <h3>模拟首次激活</h3>
-          <span>{tenantName ? `客户：${tenantName}` : '验证客户端激活流程'}</span>
-        </div>
-      </div>
-      <div className="form-grid compact-grid">
+    <form className="form-panel modal-form" onSubmit={onSubmit}>
+      <div className="form-grid">
         <Field label="公司名称" value={form.companyName} onChange={(companyName) => setForm({ ...form, companyName })} />
         <Field label="授权码" value={form.authorizationCode} onChange={(authorizationCode) => setForm({ ...form, authorizationCode })} />
         <Field label="机器指纹" value={form.fingerprint} onChange={(fingerprint) => setForm({ ...form, fingerprint })} />
         <Field label="设备名" value={form.deviceName} onChange={(deviceName) => setForm({ ...form, deviceName })} />
       </div>
-      <div className="form-actions embedded-actions"><button type="submit" disabled={loading}>测试激活</button></div>
-      {result && <pre className="result-box">{result}</pre>}
+      {result && <pre className="result-box modal-result">{result}</pre>}
+      <div className="form-actions">
+        <button type="button" className="secondary" onClick={onCancel} disabled={loading}>关闭</button>
+        <button type="submit" disabled={loading}>{loading ? '测试中...' : '测试激活'}</button>
+      </div>
     </form>
   );
 }
@@ -1005,8 +1302,48 @@ function providerFormFromConfig(provider: ProviderConfig): typeof emptyProviderF
     baseUrl: provider.baseUrl,
     endpointPath: provider.endpointPath,
     apiKey: '',
+    apiFormat: provider.apiFormat || inferApiFormat(provider.provider, provider.endpointPath),
+    authType: provider.authType || (provider.provider === 'anthropic' ? 'api_key_header' : 'bearer'),
+    authHeader: provider.authHeader || (provider.provider === 'anthropic' ? 'x-api-key' : 'authorization'),
+    customHeaders: JSON.stringify(provider.customHeaders || {}, null, 2),
+    queryParams: JSON.stringify(provider.queryParams || {}, null, 2),
+    requestTimeoutMs: provider.requestTimeoutMs || 300000,
+    maxRetries: provider.maxRetries ?? 2,
     enabled: provider.enabled,
   };
+}
+
+function providerPayload(form: typeof emptyProviderForm) {
+  return {
+    ...form,
+    customHeaders: parseStringMap(form.customHeaders, '自定义 Headers'),
+    queryParams: parseStringMap(form.queryParams, 'Query 参数'),
+  };
+}
+
+function parseStringMap(value: string, label: string): Record<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value || '{}');
+  } catch {
+    throw new Error(`${label} 必须是合法 JSON`);
+  }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+    throw new Error(`${label} 必须是 JSON 对象`);
+  }
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (entries.some(([, item]) => typeof item !== 'string')) {
+    throw new Error(`${label} 的值必须全部是字符串`);
+  }
+  return Object.fromEntries(entries) as Record<string, string>;
+}
+
+function inferApiFormat(provider: string, endpointPath: string) {
+  const path = endpointPath.toLowerCase().split('?')[0];
+  if (provider === 'anthropic' || path.endsWith('/messages')) return 'anthropic_messages';
+  if (provider === 'google' && path.includes(':generatecontent')) return 'gemini_generate_content';
+  if (path.endsWith('/chat/completions')) return 'chat_completions';
+  return 'responses';
 }
 
 function modelFormForProvider(provider?: Pick<ProviderConfig, 'provider' | 'baseUrl' | 'endpointPath'> | null): typeof emptyModelForm {
@@ -1034,7 +1371,7 @@ function modelFormFromRoute(model: ModelRoute): typeof emptyModelForm {
     outputYuanPerMillion: model.outputYuanPerMillion,
     reasoningYuanPerMillion: model.reasoningYuanPerMillion,
     cachedInputYuanPerMillion: model.cachedInputYuanPerMillion,
-    markupBps: model.markupBps,
+    priceMultiplier: priceMultiplierFromMarkupBps(model.markupBps),
   };
 }
 
@@ -1066,41 +1403,27 @@ function selectExistingTenantId(tenants: Tenant[], tenantId: string) {
 }
 
 function GatewayWorkspace({
-  providerForm,
-  setProviderForm,
-  modelForm,
-  setModelForm,
   providers,
   models,
   selectedProvider,
   selectedProviderModels,
   onSelectProvider,
-  onCreateProvider,
+  onEditProvider,
   onDeleteProvider,
-  onSubmitProvider,
   onCreateModel,
-  onChangeModelProvider,
+  onEditModel,
   onDeleteModel,
-  onSubmitModel,
-  loading,
 }: {
-  providerForm: typeof emptyProviderForm;
-  setProviderForm: (form: typeof emptyProviderForm) => void;
-  modelForm: typeof emptyModelForm;
-  setModelForm: (form: typeof emptyModelForm) => void;
   providers: ProviderConfig[];
   models: ModelRoute[];
   selectedProvider: ProviderConfig | null;
   selectedProviderModels: ModelRoute[];
   onSelectProvider: (provider: ProviderConfig) => void;
-  onCreateProvider: () => void;
+  onEditProvider: (provider: ProviderConfig) => void;
   onDeleteProvider: (provider: ProviderConfig) => void;
-  onSubmitProvider: (event: FormEvent) => void;
   onCreateModel: () => void;
-  onChangeModelProvider: (providerId: string) => void;
+  onEditModel: (model: ModelRoute) => void;
   onDeleteModel: (model: ModelRoute) => void;
-  onSubmitModel: (event: FormEvent) => void;
-  loading: boolean;
 }) {
   const modelCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1116,11 +1439,10 @@ function GatewayWorkspace({
             <h2>供应商</h2>
             <span>{providers.length} 个上游，{models.length} 个模型</span>
           </div>
-          <button className="secondary" type="button" onClick={onCreateProvider}>新增</button>
         </div>
         <div className="provider-tree">
           {providers.length === 0 ? (
-            <div className="empty">暂无供应商。</div>
+            <div className="empty"><strong>暂无供应商</strong><span>点击页面右上角“新增供应商”开始接入。</span></div>
           ) : providers.map((provider) => {
             const modelCount = modelCounts.get(provider.provider) || 0;
             return (
@@ -1135,71 +1457,72 @@ function GatewayWorkspace({
                   <small>{provider.provider}</small>
                 </span>
                 <em>{modelCount} 个模型</em>
-                <small>{provider.enabled ? (provider.keyConfigured ? provider.keyMask : '未配置 key') : '已停用'}</small>
+                <small>{provider.enabled ? (provider.authType === 'none' ? '免鉴权' : provider.keyConfigured ? provider.keyMask : '未配置 key') : '已停用'}</small>
               </button>
             );
           })}
         </div>
       </section>
 
-      <div className="gateway-detail">
-        <ProviderForm
-          form={providerForm}
-          setForm={setProviderForm}
-          selectedProvider={selectedProvider}
-          selectedModelCount={selectedProviderModels.length}
-          onNew={onCreateProvider}
-          onDelete={onDeleteProvider}
-          onSubmit={onSubmitProvider}
-          loading={loading}
-        />
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2>{selectedProvider ? `${selectedProvider.label} 模型` : '模型'}</h2>
-              <span>{selectedProvider ? `${selectedProvider.provider} 下 ${selectedProviderModels.length} 个模型` : '请先选择供应商'}</span>
-            </div>
-            <button type="button" onClick={onCreateModel} disabled={loading || !selectedProvider}>新增模型</button>
+      <section className="panel gateway-detail-panel">
+        <div className="panel-head gateway-panel-head">
+          <div>
+            <h2>{selectedProvider ? `${selectedProvider.label} 模型` : '模型'}</h2>
+            <span>{selectedProvider ? `${selectedProvider.provider} 下 ${selectedProviderModels.length} 个模型` : '请先选择供应商'}</span>
           </div>
-          <ModelTable
-            models={selectedProviderModels}
-            onEdit={(model) => setModelForm(modelFormFromRoute(model))}
-            onDelete={onDeleteModel}
-          />
-        </section>
-        <ModelForm
-          form={modelForm}
-          setForm={setModelForm}
-          providers={providers}
-          onProviderChange={onChangeModelProvider}
-          onSubmit={onSubmitModel}
-          loading={loading}
-        />
-      </div>
+          <div className="head-actions">
+            {selectedProvider && <button className="secondary" type="button" onClick={() => onEditProvider(selectedProvider)}>编辑供应商</button>}
+            {selectedProvider && <button className="secondary danger" type="button" onClick={() => onDeleteProvider(selectedProvider)}>删除供应商</button>}
+            <button type="button" onClick={onCreateModel} disabled={!selectedProvider}>新增模型</button>
+          </div>
+        </div>
+        {selectedProvider ? (
+          <>
+            <div className="provider-summary-grid">
+              <div className="provider-summary-item endpoint">
+                <span>请求地址</span>
+                <strong title={`${selectedProvider.baseUrl}${selectedProvider.endpointPath}`}>{selectedProvider.baseUrl}{selectedProvider.endpointPath}</strong>
+              </div>
+              <div className="provider-summary-item">
+                <span>上游协议</span>
+                <strong>{selectedProvider.apiFormat || inferApiFormat(selectedProvider.provider, selectedProvider.endpointPath)}</strong>
+              </div>
+              <div className="provider-summary-item">
+                <span>鉴权状态</span>
+                <strong>{selectedProvider.authType === 'none' ? '免鉴权' : selectedProvider.keyConfigured ? '密钥已配置' : '密钥未配置'}</strong>
+              </div>
+              <div className="provider-summary-item status-item">
+                <span>服务状态</span>
+                <Status value={selectedProvider.enabled ? 'active' : 'disabled'} />
+              </div>
+            </div>
+            <div className="panel-subhead model-list-head">
+              <div><h3>模型路由</h3><span>价格为每百万 Tokens 的上游成本与用户结算价</span></div>
+              <span>{selectedProviderModels.length} 个</span>
+            </div>
+            <ModelTable models={selectedProviderModels} onEdit={onEditModel} onDelete={onDeleteModel} />
+          </>
+        ) : (
+          <div className="empty">
+            <strong>尚未配置供应商</strong>
+            <span>新增供应商后，可继续配置模型路由和计费价格。</span>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
 
 function CodexWorkspace({
   accounts,
-  form,
-  setForm,
-  tenants,
-  onSubmit,
   onEdit,
   onDelete,
   onSetStatus,
-  loading,
 }: {
   accounts: CodexAccount[];
-  form: typeof emptyCodexForm;
-  setForm: (form: typeof emptyCodexForm) => void;
-  tenants: Tenant[];
-  onSubmit: (event: FormEvent) => void;
   onEdit: (form: typeof emptyCodexForm) => void;
   onDelete: (account: CodexAccount) => void;
   onSetStatus: (account: CodexAccount, status: string) => void;
-  loading: boolean;
 }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');
@@ -1219,14 +1542,13 @@ function CodexWorkspace({
   const assignedCount = accounts.filter((account) => codexAccountTenantIds(account).length > 0).length;
 
   return (
-    <div className="management-layout codex-layout">
+    <div className="page-stack">
       <section className="panel management-list">
         <div className="panel-head">
           <div>
             <h2>GPT 账号池</h2>
             <span>{accounts.length} 个账号，{activeCount} 个可用，{assignedCount} 个已分配</span>
           </div>
-          <button type="button" onClick={() => setForm(emptyCodexForm)}>新增账号</button>
         </div>
         <div className="stat-strip">
           <div className="mini-stat"><span>可用</span><strong>{activeCount}</strong></div>
@@ -1259,63 +1581,71 @@ function CodexWorkspace({
           onSetStatus={onSetStatus}
         />
       </section>
-      <CodexAccountForm
-        form={form}
-        setForm={setForm}
-        tenants={tenants}
-        onSubmit={onSubmit}
-        loading={loading}
-      />
     </div>
   );
 }
 
-function ProviderForm({ form, setForm, selectedProvider, selectedModelCount, onNew, onDelete, onSubmit, loading }: {
+function ProviderForm({ form, setForm, selectedProvider, selectedModelCount, onSubmit, onDiscoverModels, onCancel, loading }: {
   form: typeof emptyProviderForm;
   setForm: (form: typeof emptyProviderForm) => void;
   selectedProvider: ProviderConfig | null;
   selectedModelCount: number;
-  onNew: () => void;
-  onDelete: (provider: ProviderConfig) => void;
   onSubmit: (event: FormEvent) => void;
+  onDiscoverModels: () => void;
+  onCancel: () => void;
   loading: boolean;
 }) {
   return (
-    <form className="panel form-panel" onSubmit={onSubmit}>
-      <div className="panel-head compact">
-        <div>
-          <h2>{selectedProvider ? '供应商配置' : '新增供应商'}</h2>
-          <span>{selectedProvider ? `${selectedModelCount} 个模型挂在此供应商下` : '保存后可在其下新增模型'}</span>
-        </div>
-        <div className="head-actions">
-          <button type="button" className="secondary" onClick={onNew}>新增</button>
-          {selectedProvider && (
-            <button type="button" className="secondary danger" onClick={() => onDelete(selectedProvider)}>删除</button>
-          )}
-        </div>
-      </div>
+    <form className="form-panel modal-form" onSubmit={onSubmit}>
+      <div className="modal-context">{selectedProvider ? `${selectedModelCount} 个模型挂在此供应商下` : '保存后可在其下新增模型'}</div>
       <div className="form-grid">
+        <label>
+          供应商预设
+          <select
+            value=""
+            onChange={(event) => {
+              const preset = providerPresets.find((item) => item.id === event.target.value);
+              if (preset) setForm({ ...form, ...preset.config });
+            }}
+          >
+            <option value="">选择后自动填充</option>
+            {providerPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+          </select>
+        </label>
         <Field label="Provider ID" value={form.provider} onChange={(provider) => setForm({ ...form, provider })} required />
         <Field label="显示名称" value={form.label} onChange={(label) => setForm({ ...form, label })} required />
         <Field label="Base URL" value={form.baseUrl} onChange={(baseUrl) => setForm({ ...form, baseUrl })} required />
         <Field label="Endpoint Path" value={form.endpointPath} onChange={(endpointPath) => setForm({ ...form, endpointPath })} />
+        <Select label="上游协议" value={form.apiFormat} onChange={(apiFormat) => setForm({ ...form, apiFormat })} options={['auto', 'responses', 'chat_completions', 'anthropic_messages', 'gemini_generate_content']} optionLabels={{ auto: '自动识别', responses: 'OpenAI Responses', chat_completions: 'OpenAI Chat Completions', anthropic_messages: 'Anthropic Messages', gemini_generate_content: 'Gemini generateContent' }} />
+        <Select label="鉴权方式" value={form.authType} onChange={(authType) => setForm({ ...form, authType })} options={['bearer', 'api_key_header', 'query_param', 'none']} optionLabels={{ bearer: 'Authorization: Bearer', api_key_header: 'API Key Header', query_param: 'Query 参数', none: '免鉴权' }} />
+        <Field label="鉴权 Header / Query 名" value={form.authHeader} onChange={(authHeader) => setForm({ ...form, authHeader })} placeholder="authorization / x-api-key / key" />
         <Field label="API Key" type="password" value={form.apiKey} onChange={(apiKey) => setForm({ ...form, apiKey })} placeholder="留空则保留原 key" />
+        <TextArea label="自定义 Headers（JSON）" value={form.customHeaders} onChange={(customHeaders) => setForm({ ...form, customHeaders })} placeholder='{"HTTP-Referer":"https://example.com"}' />
+        <TextArea label="Query 参数（JSON）" value={form.queryParams} onChange={(queryParams) => setForm({ ...form, queryParams })} placeholder='{"api-version":"2025-04-01-preview"}' />
+        <NumberField label="请求超时 ms" value={form.requestTimeoutMs} min={1000} step={1000} onChange={(requestTimeoutMs) => setForm({ ...form, requestTimeoutMs })} />
+        <NumberField label="自动重试次数" value={form.maxRetries} min={0} step={1} onChange={(maxRetries) => setForm({ ...form, maxRetries })} />
         <label className="check-row">
           <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
           启用供应商
         </label>
       </div>
-      <div className="form-actions"><button type="submit" disabled={loading}>保存供应商</button></div>
+      <div className="form-actions">
+        <button type="button" className="secondary" onClick={onCancel} disabled={loading}>取消</button>
+        <button type="button" className="secondary" disabled={loading || !form.baseUrl || (form.authType !== 'none' && !form.apiKey && !selectedProvider?.keyConfigured)} onClick={onDiscoverModels}>获取模型</button>
+        <button type="submit" disabled={loading}>保存供应商</button>
+      </div>
     </form>
   );
 }
 
-function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, loading }: {
+function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, discoveredModels, onCancel, loading }: {
   form: typeof emptyModelForm;
   setForm: (form: typeof emptyModelForm) => void;
   providers: ProviderConfig[];
   onProviderChange: (providerId: string) => void;
   onSubmit: (event: FormEvent) => void;
+  discoveredModels: DiscoveredModel[];
+  onCancel: () => void;
   loading: boolean;
 }) {
   const providerOptions = providers.some((provider) => provider.provider === form.provider)
@@ -1323,20 +1653,23 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, loadi
     : [form.provider, ...providers.map((provider) => provider.provider)].filter(Boolean);
 
   return (
-    <form className="panel form-panel" onSubmit={onSubmit}>
-      <div className="panel-head compact">
-        <h2>{form.id ? '编辑模型路由' : '新增模型路由'}</h2>
-        {form.id && (
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => setForm(modelFormForProvider(providers.find((provider) => provider.provider === form.provider)))}
-          >
-            新建
-          </button>
-        )}
-      </div>
+    <form className="form-panel modal-form" onSubmit={onSubmit}>
       <div className="form-grid">
+        {discoveredModels.length > 0 && (
+          <label>
+            已发现模型（{discoveredModels.length}）
+            <select
+              value=""
+              onChange={(event) => {
+                const model = discoveredModels.find((item) => item.id === event.target.value);
+                if (model) setForm({ ...form, modelId: model.id, upstreamModel: model.id, label: model.label });
+              }}
+            >
+              <option value="">选择模型并自动填充</option>
+              {discoveredModels.map((model) => <option key={model.id} value={model.id}>{model.label} · {model.id}</option>)}
+            </select>
+          </label>
+        )}
         <Field label="模型 ID" value={form.modelId} onChange={(modelId) => setForm({ ...form, modelId })} required />
         <Field label="显示名称" value={form.label} onChange={(label) => setForm({ ...form, label })} required />
         <Select label="供应商" value={form.provider} onChange={onProviderChange} options={providerOptions} />
@@ -1348,13 +1681,25 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, loadi
         <NumberField label="输出 元/百万" value={form.outputYuanPerMillion} min={0} step="any" onChange={(outputYuanPerMillion) => setForm({ ...form, outputYuanPerMillion })} />
         <NumberField label="推理 元/百万" value={form.reasoningYuanPerMillion} min={0} step="any" onChange={(reasoningYuanPerMillion) => setForm({ ...form, reasoningYuanPerMillion })} />
         <NumberField label="缓存输入 元/百万" value={form.cachedInputYuanPerMillion} min={0} step="any" onChange={(cachedInputYuanPerMillion) => setForm({ ...form, cachedInputYuanPerMillion })} />
-        <NumberField label="加价 bps" value={form.markupBps} min={0} step={1} title="10000 bps = 100%" onChange={(markupBps) => setForm({ ...form, markupBps })} />
+        <NumberField label="用户价格倍率" value={form.priceMultiplier} min={1} step={0.01} title="用户结算单价 = 上游成本单价 × 倍率；1.25 表示加价 25%" onChange={(priceMultiplier) => setForm({ ...form, priceMultiplier })} />
+        <div className="field-wide price-multiplier-preview">
+          <span>倍率后用户单价</span>
+          <strong>
+            输入 {formatYuanPerMillion(userPrice(form.inputYuanPerMillion, form.priceMultiplier))}
+            {' · '}输出 {formatYuanPerMillion(userPrice(form.outputYuanPerMillion, form.priceMultiplier))}
+            {' · '}缓存输入 {formatYuanPerMillion(userPrice(form.cachedInputYuanPerMillion, form.priceMultiplier))}
+          </strong>
+          <small>实际用量结算由服务端按 ×{formatPriceMultiplier(form.priceMultiplier)} 计算。</small>
+        </div>
         <label className="check-row">
           <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
           启用模型
         </label>
       </div>
-      <div className="form-actions"><button type="submit" disabled={loading || providers.length === 0}>保存模型</button></div>
+      <div className="form-actions">
+        <button type="button" className="secondary" onClick={onCancel} disabled={loading}>取消</button>
+        <button type="submit" disabled={loading || providers.length === 0}>保存模型</button>
+      </div>
     </form>
   );
 }
@@ -1408,19 +1753,16 @@ function TenantPicker({ tenants, selected, onChange }: {
   );
 }
 
-function CodexAccountForm({ form, setForm, tenants, onSubmit, loading }: {
+function CodexAccountForm({ form, setForm, tenants, onSubmit, onCancel, loading }: {
   form: typeof emptyCodexForm;
   setForm: (form: typeof emptyCodexForm) => void;
   tenants: Tenant[];
   onSubmit: (event: FormEvent) => void;
+  onCancel: () => void;
   loading: boolean;
 }) {
   return (
-    <form className="panel form-panel" onSubmit={onSubmit}>
-      <div className="panel-head compact">
-        <h2>{form.id ? '编辑 GPT 账号' : '新增 GPT 账号'}</h2>
-        {form.id && <button type="button" className="secondary" onClick={() => setForm(emptyCodexForm)}>新建</button>}
-      </div>
+    <form className="form-panel modal-form" onSubmit={onSubmit}>
       <div className="form-grid">
         <Field label="GPT 登录邮箱" value={form.email} onChange={(email) => setForm({ ...form, email })} />
         <Field label="登录提示" value={form.loginHint} onChange={(loginHint) => setForm({ ...form, loginHint })} />
@@ -1435,7 +1777,10 @@ function CodexAccountForm({ form, setForm, tenants, onSubmit, loading }: {
           onChange={(tenantIds) => setForm({ ...form, tenantIds })}
         />
       </div>
-      <div className="form-actions"><button type="submit" disabled={loading}>保存账号</button></div>
+      <div className="form-actions">
+        <button type="button" className="secondary" onClick={onCancel} disabled={loading}>取消</button>
+        <button type="submit" disabled={loading}>保存账号</button>
+      </div>
     </form>
   );
 }
@@ -1447,7 +1792,7 @@ function TenantTable({ tenants, onEdit, onDelete, onManageCodes, selectedTenantI
   onManageCodes?: (tenant: Tenant) => void;
   selectedTenantId?: string;
 }) {
-  if (tenants.length === 0) return <div className="empty">暂无客户。</div>;
+  if (tenants.length === 0) return <div className="empty"><strong>暂无客户</strong><span>点击页面右上角“新增客户”创建第一条记录。</span></div>;
   return (
     <div className="table-wrap">
       <table>
@@ -1491,6 +1836,136 @@ function TenantTable({ tenants, onEdit, onDelete, onManageCodes, selectedTenantI
       </table>
     </div>
   );
+}
+
+function TenantUsageWorkspace({
+  tenants,
+  selectedTenantId,
+  summary,
+  loading,
+  error,
+  onSelectTenant,
+  onPageChange,
+}: {
+  tenants: Tenant[];
+  selectedTenantId: string;
+  summary: TenantBillingSummary | null;
+  loading: boolean;
+  error: string;
+  onSelectTenant: (tenantId: string) => void;
+  onPageChange: (page: number) => void;
+}) {
+  const currentMonth = summary?.usage.currentMonth;
+  const allTime = summary?.usage.allTime;
+  const models = summary?.usage.models ?? [];
+  const ledger = summary?.usage.recentLedger ?? [];
+  const pagination = summary?.usage.ledgerPagination;
+  const showingSelectedTenant = summary?.tenant.id === selectedTenantId;
+
+  return (
+    <div className="usage-workspace">
+      <section className="panel usage-summary-panel">
+        <div className="panel-head usage-panel-head">
+          <div>
+            <h2>客户 LLM 用量</h2>
+            <span>{summary ? `${formatMonth(summary.period.currentMonthStart)}账期 · 更新于 ${formatDate(summary.period.generatedAt)}` : '选择客户查看模型调用、Tokens、费用和账单流水'}</span>
+          </div>
+          <label className="usage-tenant-select">
+            <span>客户</span>
+            <select value={selectedTenantId} onChange={(event) => onSelectTenant(event.target.value)} aria-label="用量客户">
+              {tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
+            </select>
+          </label>
+        </div>
+        {tenants.length === 0 ? (
+          <div className="empty">暂无客户，请先创建客户。</div>
+        ) : error ? (
+          <div className="usage-error">{error}</div>
+        ) : loading && !showingSelectedTenant ? (
+          <div className="empty">正在加载用量数据…</div>
+        ) : summary && showingSelectedTenant ? (
+          <>
+            <div className="usage-metric-grid">
+              <UsageMetric label="本月费用" value={formatYuan(currentMonth?.billableYuan ?? 0)} meta={`${formatWholeNumber(currentMonth?.runCount ?? 0)} 次调用`} />
+              <UsageMetric label="本月 Tokens" value={formatWholeNumber(currentMonth?.totalTokens ?? 0)} meta={formatUsageBreakdown(currentMonth)} />
+              <UsageMetric label="账户余额" value={formatYuan(summary.tenant.balanceYuan)} meta={formatBillingMode(summary.tenant.billingMode)} />
+              <UsageMetric label="累计费用" value={formatYuan(allTime?.billableYuan ?? 0)} meta={`累计 ${formatWholeNumber(allTime?.runCount ?? 0)} 次调用`} />
+            </div>
+            <div className="usage-detail-strip">
+              <span><strong>客户</strong>{summary.tenant.name}</span>
+              <span><strong>状态</strong><Status value={summary.tenant.status} /></span>
+              <span><strong>最近使用</strong>{formatDate(currentMonth?.lastUsedAt || allTime?.lastUsedAt)}</span>
+            </div>
+          </>
+        ) : (
+          <div className="empty">正在加载用量数据…</div>
+        )}
+      </section>
+
+      {summary && showingSelectedTenant && (
+        <>
+          <section className="panel">
+            <div className="panel-head">
+              <div><h2>模型用量</h2><span>按本月应收费用从高到低排序</span></div>
+              <span>{models.length} 个模型</span>
+            </div>
+            {models.length === 0 ? <div className="empty">本月还没有按量 API 消耗。</div> : (
+              <div className="table-wrap">
+                <table className="usage-model-table">
+                  <thead><tr><th>模型</th><th>供应商</th><th>调用</th><th>Tokens</th><th>费用</th><th>最近使用</th></tr></thead>
+                  <tbody>{models.map((model) => (
+                    <tr key={model.modelId}>
+                      <td><strong>{model.label || model.modelId}</strong><span title={model.modelId}>{model.modelId}</span></td>
+                      <td>{model.provider || '-'}</td>
+                      <td className="nowrap">{formatWholeNumber(model.runCount)}</td>
+                      <td className="nowrap" title={formatUsageBreakdown(model)}>{formatWholeNumber(model.totalTokens)}</td>
+                      <td className="nowrap">{formatYuan(model.billableYuan)}</td>
+                      <td className="nowrap">{formatDate(model.lastUsedAt)}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <div><h2>账单流水</h2><span>服务端分页，仅加载当前页，流水再多也不会拖慢页面</span></div>
+              <span>共 {formatWholeNumber(pagination?.total ?? ledger.length)} 条</span>
+            </div>
+            {ledger.length === 0 ? <div className="empty">暂无账单流水。</div> : (
+              <div className="table-wrap">
+                <table className="usage-ledger-table">
+                  <thead><tr><th>时间</th><th>说明</th><th>运行 ID</th><th>金额</th></tr></thead>
+                  <tbody>{ledger.map((entry) => (
+                    <tr key={entry.id}>
+                      <td className="nowrap">{formatDate(entry.createdAt)}</td>
+                      <td><strong title={entry.description}>{entry.description || entry.entryType}</strong><span>{entry.entryType}</span></td>
+                      <td><code title={entry.runId || undefined}>{entry.runId || '-'}</code></td>
+                      <td className={`nowrap usage-amount ${entry.amountYuan < 0 ? 'charge' : 'credit'}`}>{formatSignedYuan(entry.amountYuan)}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )}
+            {pagination && pagination.totalPages > 1 && (
+              <div className="usage-pagination">
+                <span>第 {pagination.page} / {pagination.totalPages} 页 · 每页 {pagination.pageSize} 条</span>
+                <div>
+                  <button className="secondary" type="button" disabled={loading || !pagination.hasPrevious} onClick={() => onPageChange(pagination.page - 1)}>上一页</button>
+                  <button className="secondary" type="button" disabled={loading || !pagination.hasNext} onClick={() => onPageChange(pagination.page + 1)}>下一页</button>
+                </div>
+              </div>
+            )}
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
+function UsageMetric({ label, value, meta }: { label: string; value: string; meta: string }) {
+  return <div className="usage-metric"><span>{label}</span><strong>{value}</strong><small>{meta}</small></div>;
 }
 
 function AuthorizationCodeTable({ codes, onRevoke, onDelete, showTenant = true }: {
@@ -1546,17 +2021,20 @@ function ModelTable({ models, onEdit, onDelete }: {
   onEdit: (model: ModelRoute) => void;
   onDelete: (model: ModelRoute) => void;
 }) {
-  if (models.length === 0) return <div className="empty">当前供应商下暂无模型路由。</div>;
+  if (models.length === 0) return <div className="empty"><strong>暂无模型路由</strong><span>点击“新增模型”配置第一条上游映射。</span></div>;
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>模型</th><th>上游模型</th><th>价格 元/百万</th><th>状态</th><th className="col-actions" /></tr></thead>
+        <thead><tr><th>模型</th><th>上游模型</th><th>成本 / 用户价 元/百万</th><th>状态</th><th className="col-actions" /></tr></thead>
         <tbody>
           {models.map((model) => (
             <tr key={model.id}>
               <td><strong>{model.label}</strong><span>{model.modelId}</span></td>
               <td><strong>{model.upstreamModel}</strong><span>{model.endpointPath}</span></td>
-              <td className="nowrap">{formatYuanPerMillion(model.inputYuanPerMillion)}/{formatYuanPerMillion(model.outputYuanPerMillion)} + {model.markupBps}bps</td>
+              <td>
+                <strong>成本 {formatYuanPerMillion(model.inputYuanPerMillion)} / {formatYuanPerMillion(model.outputYuanPerMillion)}</strong>
+                <span>用户 {formatYuanPerMillion(userPrice(model.inputYuanPerMillion, priceMultiplierFromMarkupBps(model.markupBps)))} / {formatYuanPerMillion(userPrice(model.outputYuanPerMillion, priceMultiplierFromMarkupBps(model.markupBps)))} · ×{formatPriceMultiplier(priceMultiplierFromMarkupBps(model.markupBps))}</span>
+              </td>
               <td><Status value={model.enabled && model.providerReady ? 'ready' : model.enabled ? 'provider missing' : 'disabled'} /></td>
               <td className="col-actions">
                 <div className="table-actions">
@@ -1582,7 +2060,7 @@ function CodexAccountTable({ accounts, onEdit, onDelete, onSetStatus }: {
     return (
       <div className="empty">
         <strong>暂无 GPT 账号</strong>
-        <span>在右侧「新增 GPT 账号」中录入第一个订阅账号。</span>
+        <span>点击页面右上角“新增账号”录入第一个订阅账号。</span>
       </div>
     );
   }
@@ -1628,12 +2106,74 @@ function CodexAccountTable({ accounts, onEdit, onDelete, onSetStatus }: {
   );
 }
 
+function Modal({ title, description, onClose, size = 'default', children }: {
+  title: string;
+  description?: string;
+  onClose: () => void;
+  size?: 'default' | 'wide';
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="dialog-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className={`form-dialog ${size === 'wide' ? 'wide' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="form-dialog-title"
+        aria-describedby={description ? 'form-dialog-description' : undefined}
+      >
+        <div className="form-dialog-head">
+          <div>
+            <h2 id="form-dialog-title">{title}</h2>
+            {description && <p id="form-dialog-description">{description}</p>}
+          </div>
+          <button className="dialog-close" type="button" aria-label="关闭" onClick={onClose}>×</button>
+        </div>
+        <div className="form-dialog-body">{children}</div>
+      </section>
+    </div>
+  );
+}
+
 function ConfirmDialog({ dialog, loading, onCancel, onConfirm }: {
   dialog: ConfirmDialogState | null;
   loading: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  useEffect(() => {
+    if (!dialog) return;
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !loading) onCancel();
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [dialog, loading, onCancel]);
+
   if (!dialog) return null;
   return (
     <div
@@ -1659,10 +2199,6 @@ function ConfirmDialog({ dialog, loading, onCancel, onConfirm }: {
       </section>
     </div>
   );
-}
-
-function GridSection({ children }: { children: React.ReactNode }) {
-  return <div className="work-grid">{children}</div>;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -1711,6 +2247,20 @@ function Field({ label, value, onChange, type = 'text', required = false, placeh
     <label>
       {label}
       <input type={type} value={value} required={required} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
+function TextArea({ label, value, onChange, placeholder = '' }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <label>
+      {label}
+      <textarea value={value} placeholder={placeholder} rows={3} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
@@ -1821,6 +2371,7 @@ function tabTitle(tab: Tab) {
   return {
     overview: '运营总览',
     tenants: '客户与授权',
+    usage: 'LLM 用量与账单',
     gateway: '模型网关',
     codex: 'GPT 订阅账号',
     audit: '审计日志',
@@ -1831,6 +2382,7 @@ function tabSubtitle(tab: Tab) {
   return {
     overview: '客户、设备、模型网关和用量账本状态。',
     tenants: '维护基金公司客户，并在客户上下文中生成和管理授权码。',
+    usage: '按客户查看月度模型调用、Tokens、费用和完整账单流水。',
     gateway: '在后台配置上游 key、模型别名、价格和加价规则。',
     codex: '管理我们提供给客户使用的 GPT 订阅账号。',
     audit: '查看资金、授权、模型和账号配置变更。',
@@ -1856,10 +2408,41 @@ function isTab(value: string): value is Tab {
 }
 
 function formatYuan(yuan: number) {
+  const safe = Number.isFinite(yuan) ? yuan : 0;
+  const absolute = Math.abs(safe);
   return new Intl.NumberFormat('zh-CN', {
     style: 'currency',
     currency: 'CNY',
-  }).format(yuan);
+    minimumFractionDigits: 2,
+    maximumFractionDigits: absolute > 0 && absolute < 1 ? 4 : 2,
+  }).format(safe);
+}
+
+function formatSignedYuan(yuan: number) {
+  return `${yuan > 0 ? '+' : ''}${formatYuan(yuan)}`;
+}
+
+function formatWholeNumber(value: number) {
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(Number(value) || 0);
+}
+
+function formatUsageBreakdown(usage?: BillingUsageTotals | null) {
+  if (!usage) return '输入 0 · 输出 0';
+  const parts = [
+    `输入 ${formatWholeNumber(usage.inputTokens)}`,
+    `输出 ${formatWholeNumber(usage.outputTokens)}`,
+  ];
+  if (usage.reasoningTokens > 0) parts.push(`推理 ${formatWholeNumber(usage.reasoningTokens)}`);
+  if (usage.cachedTokens > 0) parts.push(`缓存 ${formatWholeNumber(usage.cachedTokens)}`);
+  return parts.join(' · ');
+}
+
+function formatMonth(value: string) {
+  return new Date(value).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' });
+}
+
+function formatBillingMode(mode: string) {
+  return ({ hybrid: '订阅 + 按量', gateway_api: '按量付费', subscription: '订阅' } as Record<string, string>)[mode] || mode;
 }
 
 function formatYuanPerMillion(yuan: number) {
@@ -1869,6 +2452,23 @@ function formatYuanPerMillion(yuan: number) {
     minimumFractionDigits: 0,
     maximumFractionDigits: 6,
   }).format(yuan);
+}
+
+function priceMultiplierFromMarkupBps(markupBps: number) {
+  return 1 + Math.max(0, Number(markupBps) || 0) / 10_000;
+}
+
+function markupBpsFromPriceMultiplier(multiplier: number) {
+  const normalized = Number.isFinite(multiplier) ? Math.max(1, multiplier) : 1;
+  return Math.round((normalized - 1) * 10_000);
+}
+
+function userPrice(cost: number, multiplier: number) {
+  return Math.max(0, Number(cost) || 0) * Math.max(1, Number(multiplier) || 1);
+}
+
+function formatPriceMultiplier(multiplier: number) {
+  return new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 4 }).format(Math.max(1, Number(multiplier) || 1));
 }
 
 function formatDate(value?: string | null) {

@@ -156,7 +156,10 @@ export function DailyDecisionPanel() {
         `行情时点：${live?.asOfLabel || '未取得最新行情'}`,
         `现金：${researchState.cash.toFixed(2)}`,
         `自选：${researchState.watchlist.map((code) => quotes.get(code)?.name ? `${quotes.get(code)!.name}(${code})` : code).join('、') || '无'}`,
-        `持仓：${summary.holdings.map((row) => `${row.quote.name} ${row.code} ${row.weightPct.toFixed(2)}%`).join('；') || '无'}`,
+        `持仓：${[
+          ...summary.holdings.map((row) => `${row.quote.name} ${row.code}${summary.valuationComplete ? ` ${row.weightPct.toFixed(2)}%` : ' 占比待行情完整后计算'}`),
+          ...summary.unpricedHoldings.map((row) => `${row.quote?.name ?? row.code} ${row.code} 缺少可信行情`),
+        ].join('；') || '无'}`,
         `行业暴露：${sectorExposure(summary).map((row) => `${row.sector} ${row.pct.toFixed(2)}%`).join('；') || '无'}`,
         `组合：${researchState.portfolios.map((portfolio) => `${portfolio.name}(${portfolio.codes.join('、')})`).join('；') || '无'}`,
         `所选标的行情：${chosenStocks.map((stock) => {

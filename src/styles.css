@@ -1990,6 +1990,28 @@ code {
   color: var(--success);
 }
 
+.billing-pagination {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-soft);
+  padding: 8px 12px;
+}
+
+.billing-pagination > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.billing-pagination > div {
+  display: flex;
+  gap: 8px;
+}
+
 .settings-status-actions {
   flex-wrap: wrap;
 }
@@ -2885,6 +2907,16 @@ code {
   .billing-ledger-row {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .billing-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .billing-pagination > div {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .git-panel {
@@ -4300,9 +4332,9 @@ button {
 .automation-editor-row {
   min-height: 40px;
   display: grid;
-  grid-template-columns: minmax(110px, 1fr) minmax(150px, auto);
+  grid-template-columns: minmax(110px, 1fr) minmax(0, 184px);
   align-items: center;
-  gap: 16px;
+  gap: 24px;
 }
 
 .automation-editor-card .automation-editor-row:not(:last-child),
@@ -4324,15 +4356,16 @@ button {
 }
 
 .automation-editor-select {
+  width: 100%;
   min-width: 0;
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px;
   align-items: center;
-  justify-content: flex-end;
-  gap: 2px;
+  gap: 6px;
   color: var(--text-muted);
   border-radius: 9px;
-  margin-right: -7px;
-  padding: 0 7px;
+  padding: 0 4px 0 10px;
+  box-sizing: border-box;
   transition: background 140ms ease, color 140ms ease;
 }
 
@@ -4343,16 +4376,20 @@ button {
 }
 
 .automation-editor-select select {
-  max-width: min(220px, 42vw);
+  width: 100%;
+  min-width: 0;
+  max-width: none;
   border: 0;
   outline: 0;
   appearance: none;
   background: transparent;
   color: var(--text-muted);
-  padding: 3px 2px;
+  padding: 7px 0;
   font-size: 13px;
   font-weight: 500;
   text-align: right;
+  text-align-last: right;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
 
@@ -4373,11 +4410,14 @@ button {
 
 .automation-time-picker-root {
   position: relative;
-  justify-self: end;
+  width: 100%;
+  min-width: 0;
+  justify-self: stretch;
 }
 
 .automation-time-trigger {
-  min-width: 72px;
+  width: 100%;
+  min-width: 0;
   height: 30px;
   border: 0;
   border-radius: 10px;
@@ -4386,9 +4426,8 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 5px;
-  margin-right: -7px;
-  padding: 0 7px 0 10px;
+  gap: 6px;
+  padding: 0 4px 0 10px;
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -13167,12 +13206,8 @@ button.workspace-file-tree-state.error {
   }
 
   .suggestion-row {
-    max-width: min(320px, 100%);
+    max-width: 100%;
     grid-template-columns: 1fr;
-  }
-
-  .suggestion-card:nth-child(n + 2) {
-    display: none;
   }
 }
 
@@ -14127,7 +14162,6 @@ select:focus-visible,
   .approval-pill > span,
   .dir-pill > span,
   .composer-meta-pill > span,
-  .model-pill > span,
   .approval-pill > .lucide-chevron-down,
   .composer-toolbar .dir-pill-chevron,
   .model-pill > .lucide-chevron-down,
@@ -14135,11 +14169,24 @@ select:focus-visible,
     display: none;
   }
 
-  .composer-toolbar .model-picker,
+  .composer-toolbar .model-picker {
+    width: auto;
+    min-width: 0;
+    max-width: 92px;
+  }
+
   .composer-toolbar .model-pill {
-    width: 32px;
+    width: auto;
     min-width: 32px;
-    max-width: 32px;
+    max-width: 92px;
+    padding-inline: 7px;
+  }
+
+  .model-pill-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .composer-toolbar > .composer-meta {
@@ -14159,12 +14206,17 @@ select:focus-visible,
 
   .composer-toolbar .composer-icon-btn,
   .composer-toolbar .composer-pill,
-  .composer-toolbar .composer-meta-pill,
-  .composer-toolbar .model-picker,
-  .composer-toolbar .model-pill {
+  .composer-toolbar .composer-meta-pill {
     width: 30px;
     min-width: 30px;
     max-width: 30px;
+  }
+
+  .composer-toolbar .model-picker,
+  .composer-toolbar .model-pill {
+    width: auto;
+    min-width: 30px;
+    max-width: 78px;
   }
 
   .send-button {
@@ -14172,6 +14224,20 @@ select:focus-visible,
     min-width: 34px;
     height: 34px;
     min-height: 34px;
+  }
+}
+
+@container composer (max-width: 280px) {
+  .composer-toolbar .model-picker,
+  .composer-toolbar .model-pill {
+    width: 30px;
+    min-width: 30px;
+    max-width: 30px;
+    padding: 0;
+  }
+
+  .model-pill-label {
+    display: none;
   }
 }
 
@@ -14955,7 +15021,7 @@ select {
 
 .suggestion-row {
   width: min(800px, calc(100% - 48px));
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: 1px;
   margin-top: 12px;
   border: 1px solid var(--border-strong);
@@ -15001,6 +15067,33 @@ select {
 .suggestion-card:hover span,
 .suggestion-card:hover::before {
   color: var(--bg);
+}
+
+/* Keep every shortcut usable when the conversation is narrowed by a dock.
+   A compact list avoids empty grid tracks without making the full window
+   breakpoint responsible for the width of the center stage. */
+@container main-stage (max-width: 520px) {
+  .suggestion-row {
+    grid-template-columns: 1fr;
+  }
+
+  .suggestion-card {
+    min-height: 64px;
+    padding: 11px 42px 11px 52px;
+    justify-content: center;
+  }
+
+  .suggestion-card .icon {
+    position: absolute;
+    top: 50%;
+    left: 14px;
+    margin: 0;
+    transform: translateY(-50%);
+  }
+
+  .suggestion-card span {
+    -webkit-line-clamp: 1;
+  }
 }
 
 .message.user .bubble,
@@ -19667,4 +19760,178 @@ details[open] > .event-summary,
 
 .side-chat-composer {
   padding: 10px 12px 12px;
+}
+
+/* Model selection is intentionally model-first. Per-model controls stay in a
+   second panel so models with different reasoning modes never share a false
+   one-size-fits-all list of options. */
+.model-choice-menu.model-list-menu {
+  width: min(286px, calc(100vw - 16px));
+  max-height: min(62vh, calc(100vh - 16px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.model-list-toolbar {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 5px 0 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.model-list-toolbar button {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.model-list-toolbar button:hover:not(:disabled),
+.model-list-toolbar button:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.model-list-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.model-choice-row {
+  position: relative;
+  min-width: 0;
+}
+
+.model-choice-row .model-choice-select {
+  min-height: 36px;
+  padding-right: 10px;
+}
+
+.model-choice-row:hover .model-choice-select,
+.model-choice-row:focus-within .model-choice-select,
+.model-choice-row.editing .model-choice-select {
+  padding-right: 64px;
+  background: var(--bg-hover);
+}
+
+.model-choice-copy {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.model-choice-copy strong,
+.model-choice-copy em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-choice-copy strong {
+  flex: 0 1 auto;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.model-choice-copy em {
+  flex: 0 1 auto;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.model-choice-edit {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  z-index: 1;
+  height: 26px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.model-choice-row:hover .model-choice-edit,
+.model-choice-row:focus-within .model-choice-edit,
+.model-choice-row.editing .model-choice-edit {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.model-choice-row:hover .model-menu-check,
+.model-choice-row:focus-within .model-menu-check,
+.model-choice-row.editing .model-menu-check {
+  opacity: 0;
+}
+
+.model-choice-edit:hover,
+.model-choice-edit:focus-visible,
+.model-choice-row.editing .model-choice-edit {
+  color: var(--text);
+}
+
+.model-options-flyout .model-flyout-panel {
+  width: min(224px, calc(100vw - 16px));
+  padding: 6px;
+}
+
+.model-options-heading {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px 5px;
+}
+
+.model-options-heading > span {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.model-options-heading > strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-options-empty {
+  padding: 7px 8px 9px;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-choice-edit {
+    transition: none;
+  }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { activeDomain } from './domain';
 import { buildCodingInstructions, buildCodingPrompt } from './prompt';
+import { ALPHA_STUDIO_DAILY_THEME_SKILL_ID } from './themeResearch';
 
 describe('finance research domain', () => {
   it('uses the finance research domain by default', () => {
@@ -41,7 +42,7 @@ describe('finance research domain', () => {
 
   it('defers selected skills to Codex native skill input when available', () => {
     const instructions = buildCodingInstructions({
-      selectedSkill: { id: 'alpha-studio-daily-theme-research', title: 'Alpha Studio 盘前主题' },
+      selectedSkill: { id: ALPHA_STUDIO_DAILY_THEME_SKILL_ID, title: 'Alpha Studio 盘前主题' },
       nativeSkillInput: true,
     });
 
@@ -77,7 +78,7 @@ describe('finance research domain', () => {
 
   it('keeps Alpha Studio premarket theme turns aligned with Neostream-level output', () => {
     const instructions = buildCodingInstructions(
-      { selectedSkill: { id: 'alpha-studio-daily-theme-research', title: 'Alpha Studio 盘前主题' } },
+      { selectedSkill: { id: ALPHA_STUDIO_DAILY_THEME_SKILL_ID, title: 'Alpha Studio 盘前主题' } },
     );
 
     expect(instructions).toContain('neostream-daily-theme-research');

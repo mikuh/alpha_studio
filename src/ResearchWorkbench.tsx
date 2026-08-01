@@ -35,7 +35,15 @@ import {
   Wallet,
   type LucideIcon,
 } from 'lucide-react';
-import { fetchCloudFullMarket, fetchCloudRealtimeBatch, subscribeCloudMarket } from './cloudMarket';
+import {
+  fetchCloudCapitalFlow,
+  fetchCloudFullMarket,
+  fetchCloudRealtimeBatch,
+  subscribeCloudMarket,
+  type CloudCapitalFlowBucket,
+  type CloudCapitalFlowPoint,
+  type CloudCapitalFlowSnapshot,
+} from './cloudMarket';
 import {
   RESEARCH_CATALOG,
   RESEARCH_DRAG_MIME,
@@ -86,12 +94,6 @@ import {
   type ResearchCalendarCategory,
 } from './researchWorkspaceData';
 import { StockKlineChart } from './StockKlineChart';
-import {
-  fetchJqCapitalFlow,
-  type JqCapitalFlowBucket,
-  type JqCapitalFlowPoint,
-  type JqCapitalFlowSnapshot,
-} from './jqdata';
 import './researchMarketApp.css';
 
 type PrimarySection = 'watchlist' | 'market' | 'trade' | 'assets' | 'discover';
@@ -455,6 +457,9 @@ function WatchlistHome({ state, quotes, onRoute }: { state: ResearchState; quote
 
   return (
     <div className="market-root-page market-watchlist-page">
+      {orderedQuotes.some((quote) => quote.source === 'sample') && (
+        <SampleDataNotice detail="当前自选或持仓价格为离线演示行情，仅供界面浏览；真实账户市值和盈亏不会使用这些价格计算。" />
+      )}
       <div className="market-watchlist-tabs" role="tablist" aria-label="自选范围">
         <button type="button" role="tab" aria-selected={scope === 'all'} onClick={() => setScope('all')}>全部 <em>{state.watchlist.length}</em></button>
         <button type="button" role="tab" aria-selected={scope === 'holdings'} onClick={() => setScope('holdings')}>持仓 <em>{state.holdings.length}</em></button>
@@ -541,8 +546,24 @@ function TradeHome({ quotes, state, initial, onCommit, onRoute }: { quotes: Rese
   </div>;
 }
 
-function AssetsHome({ state, summary, quoteMap, onRoute }: { state: ResearchState; summary: ReturnType<typeof researchAccountSummary>; quoteMap: Map<string, ResearchQuote>; onRoute: (route: MarketRoute) => void }) {
-  return <div className="market-root-page"><section className="market-assets-hero" draggable onDragStart={(event) => startResearchDrag(event, marketPrompt('实盘账户记录', [`总资产 ${formatMoney(summary.totalAssets)}，现金 ${formatMoney(state.cash)}，浮盈亏 ${formatSignedMoney(summary.pnl)}。`]))}><span>总资产 · 实盘记录</span><strong>{formatMoney(summary.totalAssets)}</strong><div><span>浮盈亏 <b className={changeTone(summary.pnl)}>{formatSignedMoney(summary.pnl)}</b></span><span>仓位 <b>{formatPercent(summary.exposurePct)}</b></span></div></section><section className="market-card"><SectionHeading title="持仓" meta={`${summary.holdings.length} 只`} />{summary.holdings.length ? <div className="market-preview-list">{summary.holdings.map((holding) => <StockRow key={holding.code} quote={holding.quote} watched={state.watchlist.includes(holding.code)} metric={`${holding.quantity} 股 · ${formatSignedMoney(holding.pnl)}`} onOpen={() => onRoute({ kind: 'stock', code: holding.code })} />)}</div> : <EmptyState title="当前空仓" detail="资产页只显示你手工录入的实盘持仓，不填充演示仓位。" />}</section><section className="market-card"><SectionHeading title="组合与记录" /><div className="market-feature-list"><button type="button" onClick={() => onRoute({ kind: 'feature', feature: 'portfolio' })}><i><BriefcaseBusiness size={15} /></i><span><strong>股票组合</strong><em>{state.portfolios.length} 个观察组合</em></span><ChevronRight size={14} /></button><button type="button" onClick={() => insertIntoComposer(marketPrompt('实盘交易记录', state.trades.slice(0, 20).map((trade) => `${tradeKindLabel(trade.kind)} ${trade.name ?? ''} ${formatMoney(trade.amount)}`)))}><i><Activity size={15} /></i><span><strong>实盘交易记录</strong><em>{state.trades.length} 条本地记录</em></span><ChevronRight size={14} /></button></div></section></div>;
+function AssetsHome({ state, summary, onRoute }: { state: ResearchState; summary: ReturnType<typeof researchAccountSummary>; onRoute: (route: MarketRoute) => void }) {
+  const complete = summary.valuationComplete;
+  return <div className="market-root-page">
+    {!complete && <p className="market-source-note" role="alert"><Info size={13} /><span><strong>账户估值已暂停</strong><br />{summary.unpricedHoldings.length} 只持仓缺少可信行情。系统不会使用内置样例价格计算总资产、持仓盈亏或仓位。</span></p>}
+    <section className="market-assets-hero" draggable onDragStart={(event) => startResearchDrag(event, accountPrompt(state, summary))}>
+      <span>总资产 · 实盘记录{complete ? '' : ' · 等待可信行情'}</span>
+      <strong>{complete ? formatMoney(summary.totalAssets) : '—'}</strong>
+      <div><span>浮盈亏 <b className={complete ? changeTone(summary.pnl) : 'flat'}>{complete ? formatSignedMoney(summary.pnl) : '—'}</b></span><span>仓位 <b>{complete ? formatPercent(summary.exposurePct) : '—'}</b></span></div>
+    </section>
+    <section className="market-card">
+      <SectionHeading title="持仓" meta={`${state.holdings.length} 只`} />
+      {state.holdings.length ? <>
+        {summary.holdings.length > 0 && <div className="market-preview-list">{summary.holdings.map((holding) => <StockRow key={holding.code} quote={holding.quote} watched={state.watchlist.includes(holding.code)} metric={`${holding.quantity} 股 · ${formatSignedMoney(holding.pnl)}`} onOpen={() => onRoute({ kind: 'stock', code: holding.code })} />)}</div>}
+        {summary.unpricedHoldings.length > 0 && <div className="market-feature-list market-unpriced-holdings">{summary.unpricedHoldings.map((holding) => <button key={holding.code} type="button" disabled={!holding.quote} onClick={() => holding.quote && onRoute({ kind: 'stock', code: holding.code })}><i><Database size={15} /></i><span><strong>{holding.quote?.name ?? state.customSecurities[holding.code]?.name ?? shortCode(holding.code)}</strong><em>{holding.quantity} 股 · 等待可信行情，暂不计算盈亏</em></span>{holding.quote && <ChevronRight size={14} />}</button>)}</div>}
+      </> : <EmptyState title="当前空仓" detail="资产页只显示你手工录入的实盘持仓，不填充演示仓位。" />}
+    </section>
+    <section className="market-card"><SectionHeading title="组合与记录" /><div className="market-feature-list"><button type="button" onClick={() => onRoute({ kind: 'feature', feature: 'portfolio' })}><i><BriefcaseBusiness size={15} /></i><span><strong>股票组合</strong><em>{state.portfolios.length} 个观察组合</em></span><ChevronRight size={14} /></button><button type="button" onClick={() => insertIntoComposer(marketPrompt('实盘交易记录', state.trades.slice(0, 20).map((trade) => `${tradeKindLabel(trade.kind)} ${trade.name ?? ''} ${formatMoney(trade.amount)}`)))}><i><Activity size={15} /></i><span><strong>实盘交易记录</strong><em>{state.trades.length} 条本地记录</em></span><ChevronRight size={14} /></button></div></section>
+  </div>;
 }
 
 function DiscoverHome({ state, onRoute }: { state: ResearchState; onRoute: (route: MarketRoute) => void }) {
@@ -563,7 +584,7 @@ function formatCapitalAmount(value: number | null, signed = false): string {
   return `${sign}${formatMoney(value)}`;
 }
 
-function capitalBucketTotal(buckets: JqCapitalFlowBucket[], field: 'inflow' | 'outflow'): number | null {
+function capitalBucketTotal(buckets: CloudCapitalFlowBucket[], field: 'inflow' | 'outflow'): number | null {
   const values = buckets.map((bucket) => bucket[field]).filter((value): value is number => value !== null);
   return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
 }
@@ -578,19 +599,21 @@ function flowGroupKey(time: string, period: Exclude<CapitalFlowPeriod, 'intraday
   return date.toISOString().slice(0, 10);
 }
 
-function capitalFlowSeries(snapshot: JqCapitalFlowSnapshot, period: CapitalFlowPeriod): Array<{ label: string; value: number }> {
+function capitalFlowSeries(snapshot: CloudCapitalFlowSnapshot, period: CapitalFlowPeriod): Array<{ label: string; value: number }> {
   if (period === 'intraday') {
     const latestDay = snapshot.intraday[snapshot.intraday.length - 1]?.time.slice(0, 10) ?? '';
     let cumulative = 0;
     return snapshot.intraday
       .filter((point) => point.time.startsWith(latestDay) && point.mainNet !== null)
       .map((point) => {
-        cumulative += point.mainNet ?? 0;
+        cumulative = snapshot.intradayMode === 'cumulative'
+          ? point.mainNet ?? cumulative
+          : cumulative + (point.mainNet ?? 0);
         return { label: point.time.slice(11, 16) || point.time.slice(5, 10), value: cumulative };
       });
   }
   const daily = snapshot.daily
-    .filter((point): point is JqCapitalFlowPoint & { mainNet: number } => point.mainNet !== null);
+    .filter((point): point is CloudCapitalFlowPoint & { mainNet: number } => point.mainNet !== null);
   if (period === 'day') return daily.slice(-20).map((point) => ({ label: point.time.slice(5, 10), value: point.mainNet }));
   const grouped = new Map<string, number>();
   daily.forEach((point) => {
@@ -600,11 +623,11 @@ function capitalFlowSeries(snapshot: JqCapitalFlowSnapshot, period: CapitalFlowP
   return Array.from(grouped, ([label, value]) => ({ label: period === 'month' ? label.slice(2) : label.slice(5), value })).slice(-12);
 }
 
-function CapitalFlowChart({ snapshot, period }: { snapshot: JqCapitalFlowSnapshot; period: CapitalFlowPeriod }) {
+function CapitalFlowChart({ snapshot, period }: { snapshot: CloudCapitalFlowSnapshot; period: CapitalFlowPeriod }) {
   const gradientId = useId().replace(/:/g, '');
   const points = capitalFlowSeries(snapshot, period);
   if (points.length < 2) {
-    return <div className="stock-capital-chart-empty"><BarChart3 size={20} /><span>{period === 'intraday' ? '当前权限没有返回分钟资金流' : '资金流记录不足，暂时无法绘制趋势'}</span></div>;
+    return <div className="stock-capital-chart-empty"><BarChart3 size={20} /><span>{period === 'intraday' ? '当前免费数据源没有返回分钟资金流' : '资金流记录不足，暂时无法绘制趋势'}</span></div>;
   }
   const width = 320;
   const height = 124;
@@ -632,7 +655,7 @@ function CapitalFlowChart({ snapshot, period }: { snapshot: JqCapitalFlowSnapsho
   </div>;
 }
 
-function capitalDistributionGradient(buckets: JqCapitalFlowBucket[]): string {
+function capitalDistributionGradient(buckets: CloudCapitalFlowBucket[]): string {
   const entries = buckets.flatMap((bucket, index) => [
     { value: bucket.inflow ?? 0, color: [`#9f1830`, `#e72c4d`, `#f45f78`, `#fa8da0`][index] },
     { value: bucket.outflow ?? 0, color: [`#167655`, `#06aa6b`, `#08c98a`, `#10d5a1`][index] },
@@ -659,9 +682,9 @@ function capitalDistributionGradient(buckets: JqCapitalFlowBucket[]): string {
   return `conic-gradient(${stops.join(', ')})`;
 }
 
-function capitalFlowAgentPrompt(
+function dealerPresenceAgentPrompt(
   quote: ResearchQuote,
-  snapshot: JqCapitalFlowSnapshot | null,
+  snapshot: CloudCapitalFlowSnapshot | null,
   holding?: { quantity: number; avgCost: number; pnlPct: number },
 ): string {
   const recent = snapshot?.daily.slice(-10) ?? [];
@@ -669,21 +692,24 @@ function capitalFlowAgentPrompt(
   const fiveDay = recent.slice(-5).reduce((sum, point) => sum + (point.mainNet ?? 0), 0);
   const distribution = latest?.buckets.map((bucket) => `${bucket.label}净额 ${formatCapitalAmount(bucket.net, true)}`).join('，');
   return [
-    `请研判 ${quote.name}（${quote.code}）的大额资金是否仍在场，并帮助我复核持有风险。`,
+    `请对 ${quote.name}（${quote.code}）做“庄家去留研判”，推断是否仍有持续主导股价或维护筹码结构的资金在场，并辅助我的交易决策。`,
     `行情快照：现价 ${quote.price.toFixed(2)}，今日涨跌 ${formatPercent(quote.changePct)}，换手率 ${quote.turnoverRate === undefined ? '未知' : formatPercent(quote.turnoverRate)}，量比 ${quote.volumeRatio?.toFixed(2) ?? '未知'}。`,
     snapshot
       ? `资金数据：${snapshot.sourceLabel}；最新时点 ${latest?.time || '无'}；最新主力净额 ${formatCapitalAmount(latest?.mainNet ?? null, true)}；近5日主力净额合计 ${formatCapitalAmount(fiveDay, true)}；${distribution || '分单数据不足'}。`
-      : '资金数据：当前页面未取得 JQData 资金流，请先说明数据不足，并尝试在可用工具中核验。',
+      : '资金数据：当前页面未取得腾讯或东方财富免费资金流，请先说明数据不足，并尝试在可用工具中核验。',
     holding ? `我的持仓：${holding.quantity} 股，成本 ${holding.avgCost.toFixed(2)}，当前持仓收益率 ${formatPercent(holding.pnlPct)}。` : '我尚未在工作台登记该股持仓。',
-    '请把“主力”严格定义为大额成交资金的统计代理，不得把大单直接等同于可识别的机构或庄家。',
-    '结论只使用：资金仍在 / 分歧中 / 疑似撤退 / 证据不足。请给出数据时点、核心证据、与价格/成交/换手是否背离、反证条件、下一次复核时点。',
-    '不要得出“主力在就可以放心持有”的结论。若评估仍在，也必须列出失效条件和仓位风险；若评估撤退，给出可观察、可执行的减仓或退出触发，而不是情绪化地建议立刻逃跑。',
+    '研判口径：这里的“庄家”只是“可能持续影响价格与筹码结构的主导资金”这一待验证假设，不代表已识别任何真实席位、机构或操纵行为；不得把单笔大单或资金流标签直接等同于庄家。',
+    '请先核验数据时点与完整性；如工具允许，补充最近20—60个交易日的量价与换手、分时承接/抛压及尾盘行为、大小单持续性、筹码/成本分布、相对指数与板块强弱，并交叉核验龙虎榜、大宗交易、融资融券、股东户数/持股变化、解禁质押、公告和重大事件等公开信息。缺失项明确写“未知”，不要编造。',
+    '分析时区分“事实、推断、未知”，同时检查吸筹/控盘、洗盘、拉升、派发或纯市场合力等竞争性解释；重点识别价量背离、放量滞涨、缩量抗跌、高换手不跌、关键位反复承接、板块退潮后的相对强弱等证据，并列出至少两条反证。',
+    '结论只使用：高概率仍在 / 疑似仍在但有分歧 / 疑似派发或撤退 / 无法判断，并给出0—100的研判置信度（仅表示证据强弱，不是统计概率）。随后输出：关键证据、相反证据、所处阶段假设、对我持仓的影响、继续持有/减仓/退出各自的可观察触发条件，以及下一次复核时点。',
+    '“庄家仍在”不等于股价一定上涨或可以无条件持有。任何建议都要以价格、成交和风险阈值为条件；若证据不足，优先建议等待确认或降低仓位，而不是给出确定性结论。',
   ].join('\n');
 }
 
 function StockCapitalPanel({ quote, holding }: { quote: ResearchQuote; holding?: { quantity: number; avgCost: number; pnlPct: number } }) {
-  const [snapshot, setSnapshot] = useState<JqCapitalFlowSnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<CloudCapitalFlowSnapshot | null>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'unavailable'>('loading');
+  const [loadError, setLoadError] = useState('');
   const [period, setPeriod] = useState<CapitalFlowPeriod>('day');
   const requestId = useRef(0);
 
@@ -691,11 +717,19 @@ function StockCapitalPanel({ quote, holding }: { quote: ResearchQuote; holding?:
     const id = ++requestId.current;
     setStatus('loading');
     setSnapshot(null);
-    const result = await fetchJqCapitalFlow(quote.code);
-    if (id !== requestId.current) return;
-    setSnapshot(result);
-    setStatus(result ? 'ready' : 'unavailable');
-    setPeriod(result?.intraday.length ? 'intraday' : 'day');
+    setLoadError('');
+    try {
+      const result = await fetchCloudCapitalFlow(quote.code);
+      if (id !== requestId.current) return;
+      setSnapshot(result);
+      setStatus('ready');
+      setPeriod(result.intraday.length ? 'intraday' : 'day');
+    } catch (error) {
+      if (id !== requestId.current) return;
+      setLoadError(error instanceof Error ? error.message : String(error));
+      setStatus('unavailable');
+      setPeriod('day');
+    }
   }, [quote.code]);
 
   useEffect(() => { void load(); return () => { requestId.current += 1; }; }, [load]);
@@ -705,10 +739,12 @@ function StockCapitalPanel({ quote, holding }: { quote: ResearchQuote; holding?:
   const totalOut = latest ? capitalBucketTotal(latest.buckets, 'outflow') : null;
   const maxBucket = Math.max(...(latest?.buckets.flatMap((bucket) => [bucket.inflow ?? 0, bucket.outflow ?? 0, Math.abs(bucket.net ?? 0)]) ?? [1]), 1);
   const hasGrossDistribution = totalIn !== null && totalOut !== null;
+  const providerWarning = snapshot?.warnings.find((warning) =>
+    !warning.startsWith('免费版展示四档净额') && !warning.startsWith('“主力”是成交规模统计代理'));
 
   return <div className="stock-capital-sections">
     <section className="market-card stock-capital-overview">
-      <header className="market-section-heading"><span><strong>资金分布</strong><em>{snapshot?.sourceLabel ?? 'JQData'}</em></span><button type="button" onClick={() => void load()} disabled={status === 'loading'} aria-label="刷新资金流">{status === 'loading' ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />}刷新</button></header>
+      <header className="market-section-heading"><span><strong>资金分布</strong><em>{snapshot?.sourceLabel ?? '腾讯主源 · 东方财富备用'}</em></span><button type="button" onClick={() => void load()} disabled={status === 'loading'} aria-label="刷新资金流">{status === 'loading' ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />}刷新</button></header>
       {status === 'loading' ? <div className="stock-capital-loading"><Loader2 size={18} className="spin" /><span>正在读取资金流…</span></div> : latest ? <>
         <div className="stock-capital-summary">
           <div className="stock-capital-donut" style={{ backgroundImage: capitalDistributionGradient(latest.buckets) }}><span><em>主力净额</em><strong className={changeTone(latest.mainNet ?? 0)}>{formatCapitalAmount(latest.mainNet, true)}</strong></span></div>
@@ -719,21 +755,22 @@ function StockCapitalPanel({ quote, holding }: { quote: ResearchQuote; holding?:
             {hasGrossDistribution ? <><span className="stock-capital-bar inflow"><b style={{ width: `${((bucket.inflow ?? 0) / maxBucket) * 100}%` }} /></span><em>{formatCapitalAmount(bucket.inflow)}</em><strong>{bucket.label}</strong><em>{formatCapitalAmount(bucket.outflow)}</em><span className="stock-capital-bar outflow"><b style={{ width: `${((bucket.outflow ?? 0) / maxBucket) * 100}%` }} /></span></> : <><strong>{bucket.label}</strong><span className={`stock-capital-net ${changeTone(bucket.net ?? 0)}`}><b style={{ width: `${(Math.abs(bucket.net ?? 0) / maxBucket) * 100}%` }} /></span><em className={changeTone(bucket.net ?? 0)}>{formatCapitalAmount(bucket.net, true)}</em></>}
           </div>)}
         </div>
-        {!hasGrossDistribution && <p className="stock-capital-note"><Info size={12} />基础版只能获取各档净额；流入/流出双边分布需要 JQData 资金流因子 Pro。</p>}
-      </> : <div className="stock-capital-empty"><Database size={20} /><strong>资金流暂不可用</strong><span>{status === 'unavailable' ? '请在桌面版设置中启用 JQData；浏览器预览不会用样例数据冒充真实资金流。' : snapshot?.warnings[0] || '当前账号或日期没有返回资金流记录。'}</span></div>}
+        {!hasGrossDistribution && <p className="stock-capital-note"><Info size={12} />免费版仅展示各档净额，不把净额反推为各档流入/流出。</p>}
+        {snapshot?.stale && <p className="stock-capital-note"><Info size={12} />上游刷新失败，当前为最近一次缓存。</p>}
+      </> : <div className="stock-capital-empty"><Database size={20} /><strong>资金流暂不可用</strong><span>{loadError || '腾讯与东方财富当前均未返回可用资金流，页面不会用样例数据代替。'}</span></div>}
     </section>
 
     <section className="market-card stock-capital-trend">
-      <header className="market-section-heading"><span><strong>资金流向</strong><em>{snapshot?.daily.length ? `${snapshot.daily.length} 个交易日` : '等待数据'}</em></span></header>
+      <header className="market-section-heading"><span><strong>资金流向</strong><em>{snapshot ? `${snapshot.daily.length} 个交易日 · 截至 ${snapshot.asOf || '未知'}` : '等待数据'}</em></span></header>
       <div className="stock-capital-periods" role="tablist" aria-label="资金流向周期">{([['intraday', '分时'], ['day', '日'], ['week', '周'], ['month', '月']] as const).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={period === id} onClick={() => setPeriod(id)}>{label}</button>)}</div>
-      {snapshot ? <CapitalFlowChart snapshot={snapshot} period={period} /> : <div className="stock-capital-chart-empty"><BarChart3 size={20} /><span>连接 JQData 后展示资金流向</span></div>}
-      {snapshot?.warnings.length ? <p className="stock-capital-note"><Info size={12} />{snapshot.warnings[0]}</p> : null}
+      {snapshot ? <CapitalFlowChart snapshot={snapshot} period={period} /> : <div className="stock-capital-chart-empty"><BarChart3 size={20} /><span>等待免费资金流数据</span></div>}
+      {providerWarning ? <p className="stock-capital-note"><Info size={12} />{providerWarning}</p> : null}
     </section>
 
     <section className="market-card stock-capital-ai">
-      <span><Sparkles size={16} /><span><strong>AI 主力去留研判</strong><em>结合大额资金、价格、换手与持仓成本，输出证据和失效条件</em></span></span>
-      <button type="button" className="market-agent-action" onClick={() => insertIntoComposer(capitalFlowAgentPrompt(quote, snapshot, holding))}><Sparkles size={15} />进入对话分析“主力是否还在”</button>
-      <p>大额成交只能作为资金行为代理，不能识别真实席位；“资金仍在”也不等于可以无条件持有。</p>
+      <span><Sparkles size={16} /><span><strong>AI 庄家去留研判</strong><em>综合交易、量价、筹码与公开信息，推断庄家是否仍在场</em></span></span>
+      <button type="button" className="market-agent-action" onClick={() => insertIntoComposer(dealerPresenceAgentPrompt(quote, snapshot, holding))}><Sparkles size={15} />进入对话研判“庄家是否还在”</button>
+      <p>“庄家”仅指待验证的主导资金假设，无法据此识别真实主体；研判结论只用于辅助决策。</p>
     </section>
   </div>;
 }
@@ -743,8 +780,9 @@ function StockPage({ quote, quotes, state, summary, onToggle, onTrade, onStock }
   if (!quote) return <EmptyState title="股票行情不可用" detail="当前行情池未返回该标的，请稍后刷新。" />;
   const peers = quotes.filter((item) => item.sector === quote.sector && item.code !== quote.code).sort((a, b) => quoteTurnover(b) - quoteTurnover(a)).slice(0, 5);
   const range = quote.high > quote.low ? ((quote.price - quote.low) / (quote.high - quote.low)) * 100 : 50;
+  const recordedHolding = state.holdings.find((item) => item.code === quote.code);
   const holding = summary.holdings.find((item) => item.code === quote.code);
-  const openedLabel = holding ? new Date(holding.openedAt).toLocaleDateString('zh-CN') : '';
+  const openedLabel = recordedHolding ? new Date(recordedHolding.openedAt).toLocaleDateString('zh-CN') : '';
   return <div className="market-secondary-page stock-detail-page">
     <section className="stock-quote-hero" draggable onDragStart={(event) => startResearchDrag(event, securityPrompt(quote))}>
       <header><span><strong>{quote.name}</strong><em>{quote.code} · {quote.board}</em></span><button type="button" className={state.watchlist.includes(quote.code) ? 'active' : ''} onClick={() => onToggle(quote)}><Star size={16} fill={state.watchlist.includes(quote.code) ? 'currentColor' : 'none'} />{state.watchlist.includes(quote.code) ? '已自选' : '加自选'}</button></header>
@@ -753,7 +791,7 @@ function StockPage({ quote, quotes, state, summary, onToggle, onTrade, onStock }
     </section>
     <div className="stock-detail-tabs" role="tablist" aria-label="股票详情页签">
       <button type="button" role="tab" aria-selected={tab === 'quote'} onClick={() => setTab('quote')}>行情</button>
-      <button type="button" role="tab" aria-selected={tab === 'position'} onClick={() => setTab('position')}>持仓{holding && <i aria-hidden="true" />}</button>
+      <button type="button" role="tab" aria-selected={tab === 'position'} onClick={() => setTab('position')}>持仓{recordedHolding && <i aria-hidden="true" />}</button>
       <button type="button" role="tab" aria-selected={tab === 'capital'} onClick={() => setTab('capital')}>资金</button>
       <button type="button" role="tab" aria-selected={tab === 'research'} onClick={() => setTab('research')}>研究</button>
     </div>
@@ -770,12 +808,16 @@ function StockPage({ quote, quotes, state, summary, onToggle, onTrade, onStock }
         <span><em>摊薄成本</em><strong>{holding.avgCost.toFixed(2)}</strong></span>
         <span><em>可卖数量</em><strong>{holding.quantity.toLocaleString('zh-CN')} 股</strong></span>
         <span><em>当前价格</em><strong>{quote.price.toFixed(2)}</strong></span>
-        <span><em>持仓占比</em><strong>{formatPositionWeight(holding.weightPct)}</strong></span>
+        <span><em>持仓占比</em><strong>{summary.valuationComplete ? formatPositionWeight(holding.weightPct) : '—'}</strong></span>
       </div>
       <p className="stock-position-note">盈亏按最新行情与摊薄成本估算，暂未计入佣金、税费和滑点。</p>
       <button type="button" className="market-agent-action" onClick={() => insertIntoComposer(holdingPrompt(holding))}><Sparkles size={15} />交给 Agent 分析持仓</button>
+    </section> : recordedHolding ? <section className="market-card stock-position-card" aria-label={`${quote.name}持仓信息`}>
+      <header className="stock-position-heading"><span><i><BriefcaseBusiness size={15} /></i><span><strong>我的持仓</strong><em>本地实盘记录 · 建仓于 {openedLabel}</em></span></span><b>{recordedHolding.quantity.toLocaleString('zh-CN')} 股</b></header>
+      <p className="market-source-note stock-position-unpriced"><Info size={13} /><span><strong>等待可信行情</strong><br />当前行情为内置样例或暂不可用，系统已暂停市值、盈亏和仓位计算。</span></p>
+      <div className="stock-position-grid"><span><em>持股市值</em><strong>—</strong></span><span><em>持有数量</em><strong>{recordedHolding.quantity.toLocaleString('zh-CN')} 股</strong></span><span><em>摊薄成本</em><strong>{recordedHolding.avgCost.toFixed(2)}</strong></span><span><em>可卖数量</em><strong>{recordedHolding.quantity.toLocaleString('zh-CN')} 股</strong></span><span><em>当前价格</em><strong>—</strong></span><span><em>持仓占比</em><strong>—</strong></span></div>
     </section> : <section className="market-card stock-position-card" aria-label={`${quote.name}持仓信息`}><EmptyState title="暂无该股票持仓" detail="录入实盘买入记录后，这里会自动计算市值、持仓盈亏、今日盈亏和仓位占比。" action="记录买入" onAction={() => onTrade('buy', quote)} /></section>)}
-    {tab === 'capital' && <><section className="market-card"><SectionHeading title="资金与活跃度" meta="实时行情快照" /><div className="stock-metric-grid stock-capital-metrics"><span><em>成交额</em><strong>{formatMoney(quoteTurnover(quote))}</strong></span><span><em>成交量</em><strong>{quote.volumeShares ? formatMoney(quote.volumeShares) : formatMoney(quote.volume * 1_000_000)}</strong></span><span><em>换手率</em><strong>{quote.turnoverRate === undefined ? '—' : formatPercent(quote.turnoverRate)}</strong></span><span><em>量比</em><strong>{quote.volumeRatio?.toFixed(2) ?? '—'}</strong></span></div></section><StockCapitalPanel quote={quote} holding={holding ? { quantity: holding.quantity, avgCost: holding.avgCost, pnlPct: holding.pnlPct } : undefined} /></>}
+    {tab === 'capital' && <><section className="market-card"><SectionHeading title="资金与活跃度" meta="行情快照" /><div className="stock-metric-grid stock-capital-metrics"><span><em>成交额</em><strong>{formatMoney(quoteTurnover(quote))}</strong></span><span><em>成交量</em><strong>{quote.volumeShares ? formatMoney(quote.volumeShares) : formatMoney(quote.volume * 1_000_000)}</strong></span><span><em>换手率</em><strong>{quote.turnoverRate === undefined ? '—' : formatPercent(quote.turnoverRate)}</strong></span><span><em>量比</em><strong>{quote.volumeRatio?.toFixed(2) ?? '—'}</strong></span></div></section><StockCapitalPanel quote={quote} holding={holding ? { quantity: holding.quantity, avgCost: holding.avgCost, pnlPct: holding.pnlPct } : undefined} /></>}
     {tab === 'research' && <section className="market-card"><SectionHeading title="公司研究" meta="事实与观点分开" /><div className="stock-thesis"><strong>研究起点</strong><p>{quote.thesis || '从财务、行业、估值、催化和风险五个维度建立研究。'}</p></div><div className="market-feature-list">{(['earnings', 'dividend', 'calendar'] as FeatureKind[]).map((kind) => <button key={kind} type="button" onClick={() => insertIntoComposer(`${FEATURE_META[kind].prompt}\n重点研究：${quote.name}（${quote.code}）。`)}><span><strong>{FEATURE_META[kind].title}</strong><em>围绕 {quote.name} 深入核验</em></span><ChevronRight size={14} /></button>)}</div></section>}
     <div className="stock-trade-bar"><button type="button" className="sell" onClick={() => onTrade('sell', quote)}>记录卖出</button><button type="button" className="buy" onClick={() => onTrade('buy', quote)}>记录买入</button></div>
   </div>;
@@ -1225,12 +1267,19 @@ export function ResearchWorkbenchPanel() {
     try {
       const current = stateRef.current;
       const codes = Array.from(new Set([...RESEARCH_INDEXES.map((item) => item.code), ...RESEARCH_CATALOG.map((item) => item.code), ...current.watchlist, ...current.holdings.map((item) => item.code), ...Object.keys(current.customSecurities)]));
-      const [market, realtime] = await Promise.all([fetchCloudFullMarket(8000, { forceRefresh }), fetchCloudRealtimeBatch(codes, { forceRefresh })]);
+      let market: Awaited<ReturnType<typeof fetchCloudFullMarket>>;
+      let realtime: Awaited<ReturnType<typeof fetchCloudRealtimeBatch>>;
+      if (forceRefresh) {
+        market = await fetchCloudFullMarket(8000, { forceRefresh: true });
+        realtime = await fetchCloudRealtimeBatch(codes);
+      } else {
+        [market, realtime] = await Promise.all([fetchCloudFullMarket(8000), fetchCloudRealtimeBatch(codes)]);
+      }
       const nextOverrides = new Map(realtime.prices);
       market.quotes.forEach((quote) => nextOverrides.set(quote.code, quoteOverride(quote)));
       setQuotes(market.quotes); setOverrides(nextOverrides);
       const label = market.asOfLabel ?? realtime.asOfLabel ?? new Date().toLocaleTimeString('zh-CN', { hour12: false });
-      setStatus(market.quotes.length || realtime.prices.size ? `${market.cached || realtime.cached ? '云端缓存' : '云端实时'} ${label}` : '内置样例 · 云端暂不可用');
+      setStatus(market.quotes.length || realtime.prices.size ? `${market.cached || realtime.cached ? '云端缓存' : '云端行情快照'} ${label}` : '内置样例 · 云端暂不可用');
     } catch {
       setQuotes([]);
       setOverrides(new Map());
@@ -1245,7 +1294,7 @@ export function ResearchWorkbenchPanel() {
   useEffect(() => subscribeCloudMarket((update) => {
     setQuotes(update.quotes);
     setOverrides(update.prices);
-    setStatus(`${update.cached ? '云端缓存' : '云端推送'} ${update.asOfLabel ?? ''}`.trim());
+    setStatus(`${update.cached ? '云端缓存' : '云端行情更新'} ${update.asOfLabel ?? ''}`.trim());
   }, () => setStatus((current) => current.includes('内置样例') ? current : '云端广播重连中')), []);
 
   const catalogMap = useMemo(() => buildQuoteMap(state, overrides), [state, overrides]);
@@ -1298,7 +1347,7 @@ export function ResearchWorkbenchPanel() {
     if (route.kind === 'feature') return <FeaturePage kind={route.feature} quotes={route.feature === 'etf' ? universe : stockUniverse} state={state} onStock={openStock} onCommit={commit} />;
     if (primary === 'watchlist') return <WatchlistHome state={state} quotes={universe} onRoute={push} />;
     if (primary === 'trade') return <TradeHome quotes={universe} state={state} initial={tradePrefill} onCommit={commit} onRoute={push} />;
-    if (primary === 'assets') return <AssetsHome state={state} summary={summary} quoteMap={quoteMap} onRoute={push} />;
+    if (primary === 'assets') return <AssetsHome state={state} summary={summary} onRoute={push} />;
     if (primary === 'discover') return <DiscoverHome state={state} onRoute={push} />;
     return <MarketHome quotes={stockUniverse} indexQuotes={indexQuotes} state={state} loading={refreshing} onRoute={push} />;
   };

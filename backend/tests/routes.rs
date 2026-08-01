@@ -40,6 +40,27 @@ async fn admin_dynamic_delete_routes_match_before_auth() {
 }
 
 #[tokio::test]
+async fn admin_tenant_billing_route_requires_admin_auth() {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
+        .expect("lazy postgres pool");
+    let state = AppState::new(test_config(), pool, None);
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/admin/tenants/tenant_alpha/billing?page=1&pageSize=20")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn market_snapshot_requires_activated_device_headers() {
     let pool = PgPoolOptions::new()
         .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")

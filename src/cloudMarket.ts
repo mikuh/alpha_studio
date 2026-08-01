@@ -79,6 +79,39 @@ export interface CloudMarketUpdate extends CloudFullMarketBatch {
   source: CloudMarketSnapshot['source'];
 }
 
+export type CloudCapitalFlowBucketKey = 'xl' | 'l' | 'm' | 's';
+
+export interface CloudCapitalFlowBucket {
+  key: CloudCapitalFlowBucketKey;
+  label: '超大单' | '大单' | '中单' | '小单';
+  inflow: number | null;
+  outflow: number | null;
+  net: number | null;
+  netPct: number | null;
+}
+
+export interface CloudCapitalFlowPoint {
+  time: string;
+  mainNet: number | null;
+  mainNetPct: number | null;
+  changePct: number | null;
+  buckets: CloudCapitalFlowBucket[];
+}
+
+export interface CloudCapitalFlowSnapshot {
+  schemaVersion: number;
+  code: string;
+  daily: CloudCapitalFlowPoint[];
+  intraday: CloudCapitalFlowPoint[];
+  intradayMode: 'cumulative' | 'incremental';
+  source: 'tencent' | 'eastmoney';
+  sourceLabel: string;
+  asOf: string;
+  generatedAt: string;
+  stale: boolean;
+  warnings: string[];
+}
+
 const INDEX_CODES = new Set(RESEARCH_INDEXES.map((item) => item.code));
 const CATALOG_BY_CODE = new Map(RESEARCH_CATALOG.map((item) => [item.code, item]));
 
@@ -118,15 +151,30 @@ async function parseCloudError(response: Response): Promise<string> {
   }
 }
 
-async function fetchCloudSnapshot(codes?: string[], limit?: number): Promise<CloudMarketSnapshot> {
+async function fetchCloudSnapshot(codes?: string[], limit?: number, forceRefresh = false): Promise<CloudMarketSnapshot> {
   const session = cloudSession();
   const url = marketUrl(session, '/api/market/snapshot');
   if (codes?.length) url.searchParams.set('codes', codes.join(','));
   if (limit) url.searchParams.set('limit', String(limit));
+  if (forceRefresh) url.searchParams.set('forceRefresh', 'true');
   const response = await fetch(url, { headers: cloudHeaders(session) });
   if (!response.ok) throw new Error(await parseCloudError(response));
   const snapshot = await response.json() as CloudMarketSnapshot;
   if (!snapshot || !Array.isArray(snapshot.quotes)) throw new Error('云端行情响应格式无效。');
+  return snapshot;
+}
+
+export async function fetchCloudCapitalFlow(code: string): Promise<CloudCapitalFlowSnapshot> {
+  const normalized = normalizeCloudMarketCode(code);
+  if (!normalized) throw new Error('资金流证券代码格式无效。');
+  const session = cloudSession();
+  const url = marketUrl(session, `/api/market/capital-flow/${encodeURIComponent(normalized)}`);
+  const response = await fetch(url, { headers: cloudHeaders(session) });
+  if (!response.ok) throw new Error(await parseCloudError(response));
+  const snapshot = await response.json() as CloudCapitalFlowSnapshot;
+  if (!snapshot || !Array.isArray(snapshot.daily) || !Array.isArray(snapshot.intraday)) {
+    throw new Error('云端资金流响应格式无效。');
+  }
   return snapshot;
 }
 
@@ -231,12 +279,12 @@ export function normalizeCloudMarketCode(code: string): string | null {
 
 export async function fetchCloudRealtimeBatch(
   codes: string[],
-  _options: { forceRefresh?: boolean } = {},
+  options: { forceRefresh?: boolean } = {},
 ): Promise<CloudRealtimeBatch> {
   const unique = Array.from(new Set(codes.map(normalizeCloudMarketCode).filter((code): code is string => Boolean(code)))).slice(0, 220);
   if (!unique.length) return { prices: new Map(), errors: ['没有可用的证券代码。'], requested: 0 };
   try {
-    const snapshot = await fetchCloudSnapshot(unique, unique.length);
+    const snapshot = await fetchCloudSnapshot(unique, unique.length, options.forceRefresh);
     return {
       prices: snapshotPrices(snapshot),
       errors: snapshot.warnings ?? [],
@@ -252,10 +300,10 @@ export async function fetchCloudRealtimeBatch(
 
 export async function fetchCloudFullMarket(
   pageSize = 8000,
-  _options: { forceRefresh?: boolean } = {},
+  options: { forceRefresh?: boolean } = {},
 ): Promise<CloudFullMarketBatch> {
   try {
-    const snapshot = await fetchCloudSnapshot(undefined, pageSize);
+    const snapshot = await fetchCloudSnapshot(undefined, pageSize, options.forceRefresh);
     const update = updateFromSnapshot(snapshot, pageSize);
     return update;
   } catch (error) {

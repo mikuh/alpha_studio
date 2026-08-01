@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -15,6 +15,7 @@ use serde_json::Value;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 const MARKET_CACHE_KEY: &str = "alpha:market:a-share:snapshot:v2";
+const CAPITAL_FLOW_CACHE_PREFIX: &str = "alpha:market:a-share:capital-flow:v1";
 const EASTMONEY_FIELDS: &str =
     "f12,f13,f14,f2,f3,f4,f5,f6,f15,f16,f17,f18,f20,f21,f23,f8,f10,f100,f292";
 const EASTMONEY_A_SHARE_FILTER: &str = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
@@ -24,6 +25,136 @@ const EASTMONEY_A_SHARE_ETF_FILTER: &str = "b:MK0021,b:MK0022,b:MK0023,b:MK0024,
 const INDEX_CODES: &[&str] = &[
     "1.000001", "0.399001", "0.399006", "1.000300", "1.000688", "1.000016",
 ];
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapitalFlowBucket {
+    pub key: String,
+    pub label: String,
+    pub inflow: Option<f64>,
+    pub outflow: Option<f64>,
+    pub net: Option<f64>,
+    pub net_pct: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapitalFlowPoint {
+    pub time: String,
+    pub main_net: Option<f64>,
+    pub main_net_pct: Option<f64>,
+    pub change_pct: Option<f64>,
+    pub buckets: Vec<CapitalFlowBucket>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapitalFlowSnapshot {
+    pub schema_version: u32,
+    pub code: String,
+    pub daily: Vec<CapitalFlowPoint>,
+    pub intraday: Vec<CapitalFlowPoint>,
+    pub intraday_mode: String,
+    pub source: String,
+    pub source_label: String,
+    pub as_of: String,
+    pub generated_at: String,
+    pub stale: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone)]
+pub struct MarketCapitalFlowHub {
+    inner: Arc<MarketCapitalFlowHubInner>,
+}
+
+struct MarketCapitalFlowHubInner {
+    current: RwLock<HashMap<String, Arc<CapitalFlowSnapshot>>>,
+    refresh_gate: Mutex<()>,
+    refresh_seconds: u64,
+}
+
+impl MarketCapitalFlowHub {
+    pub fn new(refresh_seconds: u64) -> Self {
+        Self {
+            inner: Arc::new(MarketCapitalFlowHubInner {
+                current: RwLock::new(HashMap::new()),
+                refresh_gate: Mutex::new(()),
+                refresh_seconds: refresh_seconds.clamp(15, 300),
+            }),
+        }
+    }
+
+    pub async fn ensure_snapshot(
+        &self,
+        code: &str,
+        http: &Client,
+        redis: Option<&redis::Client>,
+    ) -> Result<Arc<CapitalFlowSnapshot>, String> {
+        let code = normalize_capital_flow_code(code)?;
+        if let Some(current) = self.inner.current.read().await.get(&code).cloned() {
+            if timestamp_age_seconds(&current.generated_at) < self.inner.refresh_seconds {
+                return Ok(current);
+            }
+        }
+
+        let _guard = self.inner.refresh_gate.lock().await;
+        if let Some(current) = self.inner.current.read().await.get(&code).cloned() {
+            if timestamp_age_seconds(&current.generated_at)
+                < self.inner.refresh_seconds.saturating_sub(2)
+            {
+                return Ok(current);
+            }
+        }
+
+        let result = match fetch_tencent_capital_flow(http, &code).await {
+            Ok(snapshot) => Ok(snapshot),
+            Err(tencent_error) => match fetch_eastmoney_capital_flow(http, &code).await {
+                Ok(mut snapshot) => {
+                    snapshot.warnings.insert(
+                        0,
+                        format!("腾讯资金流主源失败，已切换东方财富备用源：{tencent_error}"),
+                    );
+                    Ok(snapshot)
+                }
+                Err(eastmoney_error) => Err(format!(
+                    "腾讯资金流失败：{tencent_error}；东方财富备用源失败：{eastmoney_error}"
+                )),
+            },
+        };
+
+        match result {
+            Ok(mut snapshot) => {
+                snapshot.generated_at = Utc::now().to_rfc3339();
+                let snapshot = Arc::new(snapshot);
+                self.inner
+                    .current
+                    .write()
+                    .await
+                    .insert(code.clone(), snapshot.clone());
+                save_redis_capital_flow(
+                    redis,
+                    &code,
+                    snapshot.as_ref(),
+                    self.inner.refresh_seconds,
+                )
+                .await;
+                Ok(snapshot)
+            }
+            Err(error) => {
+                if let Some(current) = self.inner.current.read().await.get(&code).cloned() {
+                    return Ok(stale_capital_flow(&current, error));
+                }
+                if let Some(cached) = load_redis_capital_flow(redis, &code).await {
+                    let stale = stale_capital_flow(&Arc::new(cached), error);
+                    self.inner.current.write().await.insert(code, stale.clone());
+                    return Ok(stale);
+                }
+                Err(error)
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,10 +257,29 @@ impl MarketDataHub {
         http: &Client,
         redis: Option<&redis::Client>,
     ) -> Result<Arc<MarketSnapshot>, String> {
+        self.refresh_inner(http, redis, false).await
+    }
+
+    pub async fn force_refresh(
+        &self,
+        http: &Client,
+        redis: Option<&redis::Client>,
+    ) -> Result<Arc<MarketSnapshot>, String> {
+        self.refresh_inner(http, redis, true).await
+    }
+
+    async fn refresh_inner(
+        &self,
+        http: &Client,
+        redis: Option<&redis::Client>,
+        force: bool,
+    ) -> Result<Arc<MarketSnapshot>, String> {
         let _guard = self.inner.refresh_gate.lock().await;
-        if let Some(current) = self.current().await {
-            if snapshot_age_seconds(&current) < self.inner.refresh_seconds.saturating_sub(2) {
-                return Ok(current);
+        if !force {
+            if let Some(current) = self.current().await {
+                if snapshot_age_seconds(&current) < self.inner.refresh_seconds.saturating_sub(2) {
+                    return Ok(current);
+                }
             }
         }
 
@@ -250,6 +400,489 @@ async fn load_redis_snapshot(redis: Option<&redis::Client>) -> Option<MarketSnap
     let mut connection = client.get_multiplexed_async_connection().await.ok()?;
     let payload: String = connection.get(MARKET_CACHE_KEY).await.ok()?;
     serde_json::from_str(&payload).ok()
+}
+
+fn timestamp_age_seconds(value: &str) -> u64 {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|time| {
+            Utc::now()
+                .signed_duration_since(time.with_timezone(&Utc))
+                .num_seconds()
+                .max(0) as u64
+        })
+        .unwrap_or(u64::MAX)
+}
+
+fn normalize_capital_flow_code(code: &str) -> Result<String, String> {
+    let upper = code.trim().to_uppercase();
+    let normalized = if let Some(raw) = upper.strip_suffix(".XSHG") {
+        format!("{raw}.XSHG")
+    } else if let Some(raw) = upper.strip_suffix(".XSHE") {
+        format!("{raw}.XSHE")
+    } else if let Some(raw) = upper.strip_prefix("SH") {
+        format!("{raw}.XSHG")
+    } else if let Some(raw) = upper.strip_prefix("SZ") {
+        format!("{raw}.XSHE")
+    } else if upper.len() == 6 && upper.chars().all(|char| char.is_ascii_digit()) {
+        format!(
+            "{upper}.{}",
+            if upper.starts_with('6') || upper.starts_with('5') || upper.starts_with('9') {
+                "XSHG"
+            } else {
+                "XSHE"
+            }
+        )
+    } else {
+        return Err("资金流证券代码格式无效".to_string());
+    };
+    let raw = normalized.get(..6).unwrap_or_default();
+    if raw.len() != 6 || !raw.chars().all(|char| char.is_ascii_digit()) {
+        return Err("资金流证券代码格式无效".to_string());
+    }
+    Ok(normalized)
+}
+
+fn capital_flow_cache_key(code: &str) -> String {
+    format!("{CAPITAL_FLOW_CACHE_PREFIX}:{code}")
+}
+
+async fn save_redis_capital_flow(
+    redis: Option<&redis::Client>,
+    code: &str,
+    snapshot: &CapitalFlowSnapshot,
+    refresh_seconds: u64,
+) {
+    let (Some(client), Ok(payload)) = (redis, serde_json::to_string(snapshot)) else {
+        return;
+    };
+    if let Ok(mut connection) = client.get_multiplexed_async_connection().await {
+        // Keep the last valid viewed-stock snapshot across weekends and short
+        // upstream outages. It is explicitly marked stale before reuse.
+        let ttl = (refresh_seconds * 40).clamp(3 * 24 * 60 * 60, 7 * 24 * 60 * 60);
+        let _: Result<(), _> = connection
+            .set_ex(capital_flow_cache_key(code), payload, ttl)
+            .await;
+    }
+}
+
+async fn load_redis_capital_flow(
+    redis: Option<&redis::Client>,
+    code: &str,
+) -> Option<CapitalFlowSnapshot> {
+    let client = redis?;
+    let mut connection = client.get_multiplexed_async_connection().await.ok()?;
+    let payload: String = connection.get(capital_flow_cache_key(code)).await.ok()?;
+    serde_json::from_str(&payload).ok()
+}
+
+fn stale_capital_flow(
+    snapshot: &Arc<CapitalFlowSnapshot>,
+    error: String,
+) -> Arc<CapitalFlowSnapshot> {
+    let mut warnings = snapshot.warnings.clone();
+    warnings.push(format!("上游刷新失败，当前展示最近缓存：{error}"));
+    Arc::new(CapitalFlowSnapshot {
+        stale: true,
+        warnings,
+        ..snapshot.as_ref().clone()
+    })
+}
+
+fn empty_capital_buckets() -> Vec<CapitalFlowBucket> {
+    [
+        ("xl", "超大单"),
+        ("l", "大单"),
+        ("m", "中单"),
+        ("s", "小单"),
+    ]
+    .into_iter()
+    .map(|(key, label)| CapitalFlowBucket {
+        key: key.to_string(),
+        label: label.to_string(),
+        inflow: None,
+        outflow: None,
+        net: None,
+        net_pct: None,
+    })
+    .collect()
+}
+
+fn json_number(value: Option<&Value>) -> Option<f64> {
+    value
+        .and_then(|value| match value {
+            Value::Number(number) => number.as_f64(),
+            Value::String(text) => text.trim().parse::<f64>().ok(),
+            _ => None,
+        })
+        .filter(|value| value.is_finite())
+}
+
+fn tencent_time(value: &str) -> Option<String> {
+    let digits = value.trim();
+    if digits.len() != 12 || !digits.chars().all(|char| char.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!(
+        "{}-{}-{} {}:{}",
+        &digits[0..4],
+        &digits[4..6],
+        &digits[6..8],
+        &digits[8..10],
+        &digits[10..12]
+    ))
+}
+
+fn tencent_buckets(row: &Value, trend: bool) -> Vec<CapitalFlowBucket> {
+    let keys = if trend {
+        [
+            ("xl", "超大单", "SuperNetInflow"),
+            ("l", "大单", "BigNetInflow"),
+            ("m", "中单", "NormalNetInflow"),
+            ("s", "小单", "SmallNetInflow"),
+        ]
+    } else {
+        [
+            ("xl", "超大单", "superFlow"),
+            ("l", "大单", "bigFlow"),
+            ("m", "中单", "normalFlow"),
+            ("s", "小单", "smallFlow"),
+        ]
+    };
+    keys.into_iter()
+        .map(|(key, label, field)| CapitalFlowBucket {
+            key: key.to_string(),
+            label: label.to_string(),
+            inflow: None,
+            outflow: None,
+            net: json_number(row.get(field)),
+            net_pct: None,
+        })
+        .collect()
+}
+
+fn parse_tencent_capital_flow(code: &str, value: &Value) -> Result<CapitalFlowSnapshot, String> {
+    if value.get("code").and_then(Value::as_i64) != Some(0) {
+        return Err(value
+            .get("msg")
+            .and_then(Value::as_str)
+            .unwrap_or("腾讯返回非成功状态")
+            .to_string());
+    }
+    let data = value
+        .get("data")
+        .ok_or_else(|| "腾讯响应缺少 data".to_string())?;
+    let today = data.get("todayFundFlow").unwrap_or(&Value::Null);
+    let mut daily = data
+        .pointer("/historyFundFlow/oneDayKlineList")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let time = row.get("date")?.as_str()?.to_string();
+            Some(CapitalFlowPoint {
+                time,
+                main_net: json_number(row.get("mainNetIn")),
+                main_net_pct: None,
+                change_pct: None,
+                buckets: empty_capital_buckets(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let intraday = data
+        .pointer("/todayFundTrend/minList")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let time = tencent_time(row.get("time")?.as_str()?)?;
+            Some(CapitalFlowPoint {
+                time,
+                main_net: json_number(row.get("MainNetInflow")),
+                main_net_pct: None,
+                change_pct: None,
+                buckets: tencent_buckets(row, true),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let latest_time = intraday.last().map(|point| point.time.clone());
+    let today_main = json_number(today.get("mainNetIn"));
+    let today_buckets = tencent_buckets(today, false);
+    let has_today_buckets = today_buckets.iter().any(|bucket| bucket.net.is_some());
+    let today_day = latest_time
+        .as_deref()
+        .and_then(|time| time.get(..10))
+        .map(str::to_string)
+        .or_else(|| {
+            daily
+                .last()
+                .and_then(|point| point.time.get(..10))
+                .map(str::to_string)
+        });
+    if (today_main.is_some() || has_today_buckets) && today_day.is_some() {
+        let day = today_day.unwrap_or_default();
+        if let Some(point) = daily.iter_mut().find(|point| point.time.starts_with(&day)) {
+            point.main_net = today_main.or(point.main_net);
+            if has_today_buckets {
+                point.buckets = today_buckets;
+            }
+        } else {
+            daily.push(CapitalFlowPoint {
+                time: day,
+                main_net: today_main,
+                main_net_pct: None,
+                change_pct: None,
+                buckets: today_buckets,
+            });
+        }
+    }
+    daily.sort_by(|left, right| left.time.cmp(&right.time));
+    daily.dedup_by(|left, right| left.time == right.time);
+    if daily.is_empty() && intraday.is_empty() {
+        return Err("腾讯未返回可用资金流记录".to_string());
+    }
+    let as_of = latest_time
+        .or_else(|| daily.last().map(|point| point.time.clone()))
+        .unwrap_or_default();
+    Ok(CapitalFlowSnapshot {
+        schema_version: 1,
+        code: code.to_string(),
+        daily,
+        intraday,
+        intraday_mode: "cumulative".to_string(),
+        source: "tencent".to_string(),
+        source_label: "腾讯财经免费资金流".to_string(),
+        as_of,
+        generated_at: Utc::now().to_rfc3339(),
+        stale: false,
+        warnings: vec![
+            "免费版展示四档净额；未将净额反推为各档流入/流出。".to_string(),
+            "“主力”是成交规模统计代理，不代表可识别的机构或庄家。".to_string(),
+        ],
+    })
+}
+
+async fn fetch_tencent_capital_flow(
+    client: &Client,
+    code: &str,
+) -> Result<CapitalFlowSnapshot, String> {
+    let raw = &code[..6];
+    let vendor_code = format!(
+        "{}{}",
+        if code.ends_with(".XSHG") { "sh" } else { "sz" },
+        raw
+    );
+    let response = client
+        .get("https://proxy.finance.qq.com/cgi/cgi-bin/fundflow/hsfundtab")
+        .query(&[
+            ("code", vendor_code.as_str()),
+            (
+                "type",
+                "historyFundFlow,fiveDayFundFlow,todayFundTrend,todayFundFlow",
+            ),
+            // Tencent currently accepts values in [0, 51); request the largest
+            // supported history window without turning a valid response into code 51.
+            ("klineNeedDay", "50"),
+        ])
+        .header("Referer", format!("https://gu.qq.com/{vendor_code}/gp"))
+        .header("User-Agent", "Mozilla/5.0 AlphaStudioMarket/1.0")
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|error| error.to_string())?;
+    parse_tencent_capital_flow(code, &value)
+}
+
+fn parse_eastmoney_csv_point(row: &str, intraday: bool) -> Option<CapitalFlowPoint> {
+    let fields = row.split(',').collect::<Vec<_>>();
+    if fields.len() < 6 {
+        return None;
+    }
+    let parse = |index: usize| {
+        fields
+            .get(index)?
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+    };
+    let mut buckets = vec![
+        CapitalFlowBucket {
+            key: "xl".to_string(),
+            label: "超大单".to_string(),
+            inflow: None,
+            outflow: None,
+            net: parse(5),
+            net_pct: None,
+        },
+        CapitalFlowBucket {
+            key: "l".to_string(),
+            label: "大单".to_string(),
+            inflow: None,
+            outflow: None,
+            net: parse(4),
+            net_pct: None,
+        },
+        CapitalFlowBucket {
+            key: "m".to_string(),
+            label: "中单".to_string(),
+            inflow: None,
+            outflow: None,
+            net: parse(3),
+            net_pct: None,
+        },
+        CapitalFlowBucket {
+            key: "s".to_string(),
+            label: "小单".to_string(),
+            inflow: None,
+            outflow: None,
+            net: parse(2),
+            net_pct: None,
+        },
+    ];
+    if !intraday && fields.len() >= 13 {
+        buckets[0].net_pct = parse(10);
+        buckets[1].net_pct = parse(9);
+        buckets[2].net_pct = parse(8);
+        buckets[3].net_pct = parse(7);
+    }
+    Some(CapitalFlowPoint {
+        time: fields[0].trim().to_string(),
+        main_net: parse(1),
+        main_net_pct: if intraday { None } else { parse(6) },
+        change_pct: if intraday { None } else { parse(12) },
+        buckets,
+    })
+}
+
+fn eastmoney_points(value: &Value, intraday: bool) -> Vec<CapitalFlowPoint> {
+    value
+        .pointer("/data/klines")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|row| parse_eastmoney_csv_point(row, intraday))
+        .collect()
+}
+
+async fn fetch_eastmoney_capital_value(
+    client: &Client,
+    code: &str,
+    intraday: bool,
+) -> Result<Value, String> {
+    let raw = &code[..6];
+    let secid = format!(
+        "{}.{}",
+        if code.ends_with(".XSHG") { "1" } else { "0" },
+        raw
+    );
+    let (url, klt, lmt) = if intraday {
+        (
+            "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get",
+            "1",
+            "0",
+        )
+    } else {
+        (
+            "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get",
+            "101",
+            "120",
+        )
+    };
+    let response = client
+        .get(url)
+        .query(&[
+            ("lmt", lmt),
+            ("klt", klt),
+            ("secid", secid.as_str()),
+            ("fields1", "f1,f2,f3,f7"),
+            (
+                "fields2",
+                if intraday {
+                    "f51,f52,f53,f54,f55,f56"
+                } else {
+                    "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65"
+                },
+            ),
+        ])
+        .header("Referer", "https://data.eastmoney.com/zjlx/detail.html")
+        .header("User-Agent", "Mozilla/5.0 AlphaStudioMarket/1.0")
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    response
+        .json::<Value>()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn fetch_eastmoney_capital_flow(
+    client: &Client,
+    code: &str,
+) -> Result<CapitalFlowSnapshot, String> {
+    let (daily_result, intraday_result) = tokio::join!(
+        fetch_eastmoney_capital_value(client, code, false),
+        fetch_eastmoney_capital_value(client, code, true),
+    );
+    let daily = daily_result
+        .as_ref()
+        .map(|value| eastmoney_points(value, false))
+        .unwrap_or_default();
+    let intraday = intraday_result
+        .as_ref()
+        .map(|value| eastmoney_points(value, true))
+        .unwrap_or_default();
+    if daily.is_empty() && intraday.is_empty() {
+        return Err(format!(
+            "未返回可用记录（日线：{}；分时：{}）",
+            daily_result.err().unwrap_or_else(|| "空数据".to_string()),
+            intraday_result
+                .err()
+                .unwrap_or_else(|| "空数据".to_string())
+        ));
+    }
+    let as_of = intraday
+        .last()
+        .map(|point| point.time.clone())
+        .or_else(|| daily.last().map(|point| point.time.clone()))
+        .unwrap_or_default();
+    let mut warnings = vec![
+        "免费版展示四档净额；未将净额反推为各档流入/流出。".to_string(),
+        "“主力”是成交规模统计代理，不代表可识别的机构或庄家。".to_string(),
+    ];
+    if daily.is_empty() {
+        warnings.push("东方财富日级资金流暂不可用。".to_string());
+    }
+    if intraday.is_empty() {
+        warnings.push("东方财富分时资金流暂不可用。".to_string());
+    }
+    Ok(CapitalFlowSnapshot {
+        schema_version: 1,
+        code: code.to_string(),
+        daily,
+        intraday,
+        intraday_mode: "cumulative".to_string(),
+        source: "eastmoney".to_string(),
+        source_label: "东方财富免费资金流 · 备用源".to_string(),
+        as_of,
+        generated_at: Utc::now().to_rfc3339(),
+        stale: false,
+        warnings,
+    })
 }
 
 async fn fetch_eastmoney_snapshot(
@@ -680,5 +1313,66 @@ mod tests {
         assert_eq!(quote.price, 1350.6);
         assert_eq!(quote.source, "tencent");
         assert_eq!(quote.turnover_amount, Some(551_280_000.0));
+    }
+
+    #[test]
+    fn normalizes_tencent_capital_flow_and_enriches_latest_day() {
+        let value = serde_json::json!({
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "todayFundFlow": {
+                    "mainNetIn": "-232988160",
+                    "superFlow": "-216440637",
+                    "bigFlow": "-16547523",
+                    "normalFlow": "19882966",
+                    "smallFlow": "213105194"
+                },
+                "todayFundTrend": {"minList": [{
+                    "time": "202607311500",
+                    "MainNetInflow": "-232988160",
+                    "SuperNetInflow": "-216440637",
+                    "BigNetInflow": "-16547523",
+                    "NormalNetInflow": "19882966",
+                    "SmallNetInflow": "213105194"
+                }]},
+                "historyFundFlow": {"oneDayKlineList": [{
+                    "date": "2026-07-31",
+                    "mainNetIn": "-232988160"
+                }]}
+            }
+        });
+        let snapshot = parse_tencent_capital_flow("000001.XSHE", &value).unwrap();
+        assert_eq!(snapshot.source, "tencent");
+        assert_eq!(snapshot.intraday_mode, "cumulative");
+        assert_eq!(snapshot.as_of, "2026-07-31 15:00");
+        assert_eq!(snapshot.daily.len(), 1);
+        assert_eq!(snapshot.daily[0].buckets[0].net, Some(-216_440_637.0));
+        assert!(snapshot.daily[0].buckets[0].inflow.is_none());
+    }
+
+    #[test]
+    fn normalizes_eastmoney_daily_capital_flow_csv() {
+        let row = "2026-07-31,-242207872,217793248,24414640,-99886576,-142321296,-4.65,4.18,0.47,-1.92,-2.73,11.63,1.22,0,0";
+        let point = parse_eastmoney_csv_point(row, false).unwrap();
+        assert_eq!(point.time, "2026-07-31");
+        assert_eq!(point.main_net, Some(-242_207_872.0));
+        assert_eq!(point.buckets[0].label, "超大单");
+        assert_eq!(point.buckets[0].net, Some(-142_321_296.0));
+        assert_eq!(point.buckets[3].net, Some(217_793_248.0));
+        assert_eq!(point.change_pct, Some(1.22));
+    }
+
+    #[test]
+    fn normalizes_capital_flow_security_codes() {
+        assert_eq!(
+            normalize_capital_flow_code("sh600519").unwrap(),
+            "600519.XSHG"
+        );
+        assert_eq!(
+            normalize_capital_flow_code("000001.XSHE").unwrap(),
+            "000001.XSHE"
+        );
+        assert!(normalize_capital_flow_code("贵州茅台").is_err());
     }
 }

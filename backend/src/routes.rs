@@ -1,4 +1,4 @@
-use std::{convert::Infallible, time::Duration};
+use std::{collections::BTreeMap, convert::Infallible, time::Duration};
 
 use axum::{
     extract::{Path, Query, State},
@@ -20,13 +20,15 @@ use crate::{
     billing::{settle_usage_yuan, usage_from_openai_response, GatewayUsage, Pricing},
     error::{ApiError, ApiResult},
     gateway::{
-        build_upstream_request, mask_secret, normalize_upstream_success_body, ProviderConfig,
+        build_model_discovery_request, build_upstream_request, discover_models_from_body,
+        mask_secret, normalize_upstream_error_body, normalize_upstream_success_body_for_request,
+        ProviderApiFormat, ProviderAuthType, ProviderConfig, UpstreamRequest,
     },
     license::{
         can_activate_device, codex_subscription_available, normalize_authorization_code,
         normalize_company_name, CLIENT_DEVICE_LEASE_DAYS,
     },
-    market::MarketSnapshot,
+    market::{CapitalFlowSnapshot, MarketSnapshot},
     state::AppState,
     tokens::RunTokenClaims,
 };
@@ -40,6 +42,7 @@ pub async fn healthz() -> Json<Value> {
 pub struct MarketSnapshotQuery {
     codes: Option<String>,
     limit: Option<usize>,
+    force_refresh: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -61,12 +64,38 @@ pub async fn market_snapshot(
             "cloud market feed is disabled".to_string(),
         ));
     }
+    let snapshot = if query.force_refresh.unwrap_or(false) {
+        state
+            .market
+            .force_refresh(&state.http, state.redis.as_ref())
+            .await
+    } else {
+        state
+            .market
+            .ensure_snapshot(&state.http, state.redis.as_ref())
+            .await
+    }
+    .map_err(ApiError::Upstream)?;
+    Ok(Json(filter_market_snapshot(snapshot.as_ref(), &query)))
+}
+
+pub async fn market_capital_flow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(code): Path<String>,
+) -> ApiResult<Json<CapitalFlowSnapshot>> {
+    ensure_market_header_identity(&state, &headers).await?;
+    if !state.config.market_data_enabled {
+        return Err(ApiError::Upstream(
+            "cloud market feed is disabled".to_string(),
+        ));
+    }
     let snapshot = state
-        .market
-        .ensure_snapshot(&state.http, state.redis.as_ref())
+        .capital_flow
+        .ensure_snapshot(&code, &state.http, state.redis.as_ref())
         .await
         .map_err(ApiError::Upstream)?;
-    Ok(Json(filter_market_snapshot(snapshot.as_ref(), &query)))
+    Ok(Json(snapshot.as_ref().clone()))
 }
 
 pub async fn market_stream(
@@ -501,6 +530,8 @@ pub async fn client_revoke_device(
 pub struct ClientBillingSummaryRequest {
     tenant_id: String,
     device_id: String,
+    ledger_page: Option<i64>,
+    ledger_page_size: Option<i64>,
 }
 
 pub async fn client_billing_summary(
@@ -509,19 +540,9 @@ pub async fn client_billing_summary(
 ) -> ApiResult<Json<Value>> {
     ensure_device_lease(&state.db, &request.tenant_id, &request.device_id).await?;
     let now = Utc::now();
-    let current_month_start = Utc
-        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
-        .single()
-        .unwrap_or(now);
-    let next_month_start = if now.month() == 12 {
-        Utc.with_ymd_and_hms(now.year() + 1, 1, 1, 0, 0, 0)
-            .single()
-            .unwrap_or(now)
-    } else {
-        Utc.with_ymd_and_hms(now.year(), now.month() + 1, 1, 0, 0, 0)
-            .single()
-            .unwrap_or(now)
-    };
+    let (current_month_start, next_month_start) = current_billing_period(now);
+    let (ledger_page, ledger_page_size) =
+        bounded_pagination(request.ledger_page, request.ledger_page_size, 8);
 
     let tenant_row = sqlx::query(
         r#"
@@ -550,7 +571,10 @@ pub async fn client_billing_summary(
         usage_totals_since(&state.db, &request.tenant_id, current_month_start).await?;
     let all_time = usage_totals_all(&state.db, &request.tenant_id).await?;
     let model_usage = model_usage_since(&state.db, &request.tenant_id, current_month_start).await?;
-    let recent_ledger = recent_billing_ledger(&state.db, &request.tenant_id).await?;
+    let ledger =
+        billing_ledger_page(&state.db, &request.tenant_id, ledger_page, ledger_page_size).await?;
+    let ledger_pagination = ledger.pagination_json();
+    let recent_ledger = ledger.entries;
 
     Ok(Json(json!({
         "tenant": {
@@ -575,7 +599,8 @@ pub async fn client_billing_summary(
             "currentMonth": current_month,
             "allTime": all_time,
             "models": model_usage,
-            "recentLedger": recent_ledger
+            "recentLedger": recent_ledger,
+            "ledgerPagination": ledger_pagination
         }
     })))
 }
@@ -648,7 +673,7 @@ pub async fn admin_summary(
     .await?;
     let configured_providers = scalar_count(
         &state.db,
-        "select count(*) from provider_configs where enabled = true and api_key <> ''",
+        "select count(*) from provider_configs where enabled = true and (api_key <> '' or auth_type = 'none')",
     )
     .await?;
     Ok(Json(json!({
@@ -711,6 +736,77 @@ pub async fn admin_list_tenants(
     .await?;
     Ok(Json(json!({
         "tenants": rows.into_iter().map(tenant_json).collect::<Vec<_>>()
+    })))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminTenantBillingQuery {
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
+pub async fn admin_tenant_billing(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<AdminTenantBillingQuery>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&headers)?;
+    let tenant_id = id.trim();
+    if tenant_id.is_empty() {
+        return Err(ApiError::BadRequest("tenant id is required".to_string()));
+    }
+
+    let tenant = sqlx::query(
+        r#"
+        select id, name, status, billing_mode, balance_yuan,
+          subscription_plan, subscription_expires_at,
+          codex_subscription_enabled, codex_subscription_plan, codex_subscription_expires_at
+        from tenants
+        where id = $1
+        "#,
+    )
+    .bind(tenant_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("tenant was not found".to_string()))?;
+
+    let now = Utc::now();
+    let (current_month_start, next_month_start) = current_billing_period(now);
+    let (page, page_size) = bounded_pagination(query.page, query.page_size, 20);
+    let current_month = usage_totals_since(&state.db, tenant_id, current_month_start).await?;
+    let all_time = usage_totals_all(&state.db, tenant_id).await?;
+    let model_usage = model_usage_since(&state.db, tenant_id, current_month_start).await?;
+    let ledger = billing_ledger_page(&state.db, tenant_id, page, page_size).await?;
+    let ledger_pagination = ledger.pagination_json();
+    let recent_ledger = ledger.entries;
+
+    Ok(Json(json!({
+        "tenant": {
+            "id": tenant.get::<String, _>("id"),
+            "name": tenant.get::<String, _>("name"),
+            "status": tenant.get::<String, _>("status"),
+            "billingMode": tenant.get::<String, _>("billing_mode"),
+            "balanceYuan": tenant.get::<f64, _>("balance_yuan"),
+            "subscriptionPlan": tenant.try_get::<Option<String>, _>("subscription_plan").unwrap_or(None),
+            "subscriptionExpiresAt": tenant.try_get::<Option<chrono::DateTime<Utc>>, _>("subscription_expires_at").unwrap_or(None),
+            "codexSubscriptionEnabled": tenant.get::<bool, _>("codex_subscription_enabled"),
+            "codexSubscriptionPlan": tenant.try_get::<Option<String>, _>("codex_subscription_plan").unwrap_or(None),
+            "codexSubscriptionExpiresAt": tenant.try_get::<Option<chrono::DateTime<Utc>>, _>("codex_subscription_expires_at").unwrap_or(None)
+        },
+        "period": {
+            "currentMonthStart": current_month_start,
+            "currentMonthEnd": next_month_start,
+            "generatedAt": now
+        },
+        "usage": {
+            "currentMonth": current_month,
+            "allTime": all_time,
+            "models": model_usage,
+            "recentLedger": recent_ledger,
+            "ledgerPagination": ledger_pagination
+        }
     })))
 }
 
@@ -998,7 +1094,9 @@ pub async fn admin_list_provider_configs(
     require_admin(&headers)?;
     let rows = sqlx::query(
         r#"
-        select provider, label, base_url, endpoint_path, api_key, enabled, updated_at
+        select provider, label, base_url, endpoint_path, api_key, api_format, auth_type,
+          auth_header, custom_headers, query_params, request_timeout_ms, max_retries,
+          enabled, updated_at
         from provider_configs
         order by
           case provider
@@ -1036,6 +1134,13 @@ pub async fn admin_list_provider_configs(
                 "label": row.get::<String, _>("label"),
                 "baseUrl": row.get::<String, _>("base_url"),
                 "endpointPath": row.get::<String, _>("endpoint_path"),
+                "apiFormat": row.get::<String, _>("api_format"),
+                "authType": row.get::<String, _>("auth_type"),
+                "authHeader": row.get::<String, _>("auth_header"),
+                "customHeaders": row.get::<Value, _>("custom_headers"),
+                "queryParams": row.get::<Value, _>("query_params"),
+                "requestTimeoutMs": row.get::<i32, _>("request_timeout_ms"),
+                "maxRetries": row.get::<i32, _>("max_retries"),
                 "enabled": row.get::<bool, _>("enabled"),
                 "keyConfigured": !api_key.trim().is_empty(),
                 "keyMask": if api_key.trim().is_empty() { Value::Null } else { Value::String(mask_secret(&api_key)) },
@@ -1055,6 +1160,20 @@ pub struct ProviderConfigSaveRequest {
     endpoint_path: String,
     api_key: Option<String>,
     #[serde(default)]
+    api_format: ProviderApiFormat,
+    #[serde(default)]
+    auth_type: ProviderAuthType,
+    #[serde(default = "default_provider_auth_header")]
+    auth_header: String,
+    #[serde(default)]
+    custom_headers: BTreeMap<String, String>,
+    #[serde(default)]
+    query_params: BTreeMap<String, String>,
+    #[serde(default = "default_provider_request_timeout_ms")]
+    request_timeout_ms: u64,
+    #[serde(default = "default_provider_max_retries")]
+    max_retries: u32,
+    #[serde(default)]
     enabled: bool,
 }
 
@@ -1070,16 +1189,28 @@ pub async fn admin_save_provider_config(
             "provider and baseUrl are required".to_string(),
         ));
     }
+    validate_provider_fields(&request)?;
     let api_key = request.api_key.unwrap_or_default();
     sqlx::query(
         r#"
-        insert into provider_configs (provider, label, base_url, endpoint_path, api_key, enabled, updated_at)
-        values ($1, $2, $3, $4, $5, $6, now())
+        insert into provider_configs (
+          provider, label, base_url, endpoint_path, api_key, api_format, auth_type,
+          auth_header, custom_headers, query_params, request_timeout_ms, max_retries,
+          enabled, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
         on conflict (provider) do update set
           label = excluded.label,
           base_url = excluded.base_url,
           endpoint_path = excluded.endpoint_path,
           api_key = case when excluded.api_key = '' then provider_configs.api_key else excluded.api_key end,
+          api_format = excluded.api_format,
+          auth_type = excluded.auth_type,
+          auth_header = excluded.auth_header,
+          custom_headers = excluded.custom_headers,
+          query_params = excluded.query_params,
+          request_timeout_ms = excluded.request_timeout_ms,
+          max_retries = excluded.max_retries,
           enabled = excluded.enabled,
           updated_at = now()
         "#,
@@ -1089,6 +1220,13 @@ pub async fn admin_save_provider_config(
     .bind(request.base_url.trim())
     .bind(request.endpoint_path.trim())
     .bind(api_key.trim())
+    .bind(request.api_format.as_str())
+    .bind(request.auth_type.as_str())
+    .bind(request.auth_header.trim())
+    .bind(json!(request.custom_headers))
+    .bind(json!(request.query_params))
+    .bind(request.request_timeout_ms.clamp(1_000, 900_000) as i32)
+    .bind(request.max_retries.min(5) as i32)
     .bind(request.enabled)
     .execute(&state.db)
     .await?;
@@ -1096,10 +1234,85 @@ pub async fn admin_save_provider_config(
         &state.db,
         "system",
         "provider_config.save",
-        json!({ "provider": provider, "enabled": request.enabled }),
+        json!({
+            "provider": provider,
+            "enabled": request.enabled,
+            "apiFormat": request.api_format.as_str(),
+            "authType": request.auth_type.as_str()
+        }),
     )
     .await?;
     Ok(Json(json!({ "provider": provider })))
+}
+
+pub async fn admin_discover_provider_models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ProviderConfigSaveRequest>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&headers)?;
+    let provider_id = request.provider.trim().to_lowercase();
+    if provider_id.is_empty() || request.base_url.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "provider and baseUrl are required".to_string(),
+        ));
+    }
+    validate_provider_fields(&request)?;
+    let supplied_key = request.api_key.unwrap_or_default();
+    let api_key = if supplied_key.trim().is_empty() {
+        sqlx::query_scalar::<_, String>("select api_key from provider_configs where provider = $1")
+            .bind(&provider_id)
+            .fetch_optional(&state.db)
+            .await?
+            .unwrap_or_default()
+    } else {
+        supplied_key
+    };
+    if request.auth_type != ProviderAuthType::None && api_key.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "API key is required to discover models for this auth type".to_string(),
+        ));
+    }
+    let provider = ProviderConfig {
+        provider: provider_id.clone(),
+        base_url: request.base_url.trim().to_string(),
+        endpoint_path: request.endpoint_path.trim().to_string(),
+        api_key,
+        api_format: request.api_format,
+        auth_type: request.auth_type,
+        auth_header: request.auth_header,
+        custom_headers: request.custom_headers,
+        query_params: request.query_params,
+        request_timeout_ms: request.request_timeout_ms,
+        max_retries: request.max_retries,
+    };
+    let probe = build_model_discovery_request(&provider).map_err(ApiError::BadRequest)?;
+    let upstream = send_upstream_get(&state.http, &probe)
+        .await
+        .map_err(ApiError::Upstream)?;
+    let status = upstream.status();
+    let text = upstream.text().await?;
+    let body = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({ "raw": text }));
+    if !status.is_success() {
+        return Err(ApiError::Upstream(
+            normalize_upstream_error_body(&provider_id, status.as_u16(), body)
+                .get("error")
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("model discovery failed")
+                .to_string(),
+        ));
+    }
+    let models = discover_models_from_body(&body);
+    if models.is_empty() {
+        return Err(ApiError::Upstream(
+            "the provider returned no recognizable models; enter the model ID manually".to_string(),
+        ));
+    }
+    Ok(Json(json!({
+        "provider": provider_id,
+        "models": models
+    })))
 }
 
 pub async fn admin_delete_provider_config(
@@ -1152,7 +1365,7 @@ pub async fn admin_list_model_routes(
           m.upstream_model, m.enabled, m.sort_order,
           m.input_yuan_per_million, m.output_yuan_per_million,
           m.reasoning_yuan_per_million, m.cached_input_yuan_per_million, m.markup_bps,
-          coalesce(p.api_key <> '' and p.enabled = true, false) as provider_ready,
+          coalesce((p.api_key <> '' or p.auth_type = 'none') and p.enabled = true, false) as provider_ready,
           m.created_at, m.updated_at
         from model_routes m
         left join provider_configs p on p.provider = m.provider
@@ -1572,6 +1785,30 @@ pub async fn client_activate(
     })))
 }
 
+pub async fn gateway_models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Value>> {
+    let token = bearer_token(&headers)?;
+    let claims = state.run_tokens.verify(token)?;
+    let row = sqlx::query(
+        "select model_id, label from model_routes where model_id = $1 and enabled = true",
+    )
+    .bind(&claims.model_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("model {} is not available", claims.model_id)))?;
+    Ok(Json(json!({
+        "object": "list",
+        "data": [{
+            "id": row.get::<String, _>("model_id"),
+            "object": "model",
+            "owned_by": "alpha-studio",
+            "name": row.get::<String, _>("label")
+        }]
+    })))
+}
+
 pub async fn gateway_responses(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1581,6 +1818,7 @@ pub async fn gateway_responses(
     let claims = state.run_tokens.verify(token)?;
     let route = load_model_route(&state.db, &claims.model_id).await?;
     let provider = load_provider_config(&state.db, &route).await?;
+    let original_body = body.clone();
     let upstream_request = build_upstream_request(&provider, &route.upstream_model, &mut body)
         .map_err(ApiError::BadRequest)?;
 
@@ -1590,23 +1828,32 @@ pub async fn gateway_responses(
         .execute(&state.db)
         .await?;
 
-    let upstream = state
-        .http
-        .post(upstream_request.url.clone())
-        .header("authorization", upstream_request.authorization_header)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await?;
+    let upstream = send_upstream_post(&state.http, &upstream_request, &body, &claims.run_id)
+        .await
+        .map_err(ApiError::Upstream)?;
     let status = upstream.status();
     let text = upstream.text().await?;
     let upstream_body =
         serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({ "raw": text }));
 
     if status.is_success() {
-        let response_body =
-            normalize_upstream_success_body(upstream_request.response_format, upstream_body)
-                .map_err(ApiError::Upstream)?;
+        let response_body = match normalize_upstream_success_body_for_request(
+            upstream_request.response_format,
+            upstream_body,
+            &original_body,
+        ) {
+            Ok(body) => body,
+            Err(error) => {
+                sqlx::query(
+                    "update model_runs set status = 'failed', completed_at = now(), upstream_status = $2 where id = $1",
+                )
+                .bind(&claims.run_id)
+                .bind(status.as_u16() as i32)
+                .execute(&state.db)
+                .await?;
+                return Err(ApiError::Upstream(error));
+            }
+        };
         let usage = usage_from_openai_response(&response_body);
         settle_and_record_usage(
             &state.db,
@@ -1639,10 +1886,102 @@ pub async fn gateway_responses(
         .await?;
         Ok((
             StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-            Json(upstream_body),
+            Json(normalize_upstream_error_body(
+                &provider.provider,
+                status.as_u16(),
+                upstream_body,
+            )),
         )
             .into_response())
     }
+}
+
+async fn send_upstream_post(
+    client: &reqwest::Client,
+    request: &UpstreamRequest,
+    body: &Value,
+    idempotency_key: &str,
+) -> Result<reqwest::Response, String> {
+    let mut last_error = None;
+    for attempt in 0..=request.max_retries {
+        let mut builder = client
+            .post(&request.url)
+            .header("content-type", "application/json")
+            .header("idempotency-key", idempotency_key)
+            .timeout(Duration::from_millis(request.request_timeout_ms))
+            .query(&request.query_params)
+            .json(body);
+        for (name, value) in &request.headers {
+            builder = builder.header(name, value);
+        }
+        match builder.send().await {
+            Ok(response) => {
+                if attempt < request.max_retries && is_retryable_status(response.status()) {
+                    let delay = retry_delay(response.headers(), attempt);
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                return Ok(response);
+            }
+            Err(error) => {
+                let retryable = error.is_timeout() || error.is_connect() || error.is_request();
+                last_error = Some(error.to_string());
+                if attempt >= request.max_retries || !retryable {
+                    break;
+                }
+                tokio::time::sleep(retry_delay(&HeaderMap::new(), attempt)).await;
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "upstream request failed".to_string()))
+}
+
+async fn send_upstream_get(
+    client: &reqwest::Client,
+    request: &UpstreamRequest,
+) -> Result<reqwest::Response, String> {
+    let mut last_error = None;
+    for attempt in 0..=request.max_retries {
+        let mut builder = client
+            .get(&request.url)
+            .timeout(Duration::from_millis(request.request_timeout_ms))
+            .query(&request.query_params);
+        for (name, value) in &request.headers {
+            builder = builder.header(name, value);
+        }
+        match builder.send().await {
+            Ok(response) => {
+                if attempt < request.max_retries && is_retryable_status(response.status()) {
+                    let delay = retry_delay(response.headers(), attempt);
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                return Ok(response);
+            }
+            Err(error) => {
+                let retryable = error.is_timeout() || error.is_connect() || error.is_request();
+                last_error = Some(error.to_string());
+                if attempt >= request.max_retries || !retryable {
+                    break;
+                }
+                tokio::time::sleep(retry_delay(&HeaderMap::new(), attempt)).await;
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "upstream request failed".to_string()))
+}
+
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+fn retry_delay(headers: &HeaderMap, attempt: u32) -> Duration {
+    let retry_after = headers
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|seconds| Duration::from_secs(seconds.min(5)));
+    retry_after.unwrap_or_else(|| Duration::from_millis(250 * 2_u64.pow(attempt.min(4))))
 }
 
 #[derive(Debug)]
@@ -1713,9 +2052,10 @@ async fn load_model_route(pool: &PgPool, model_id: &str) -> ApiResult<ModelRoute
 async fn load_provider_config(pool: &PgPool, route: &ModelRoute) -> ApiResult<ProviderConfig> {
     let row = sqlx::query(
         r#"
-        select provider, base_url, endpoint_path, api_key
+        select provider, base_url, endpoint_path, api_key, api_format, auth_type,
+          auth_header, custom_headers, query_params, request_timeout_ms, max_retries
         from provider_configs
-        where provider = $1 and enabled = true and api_key <> ''
+        where provider = $1 and enabled = true and (api_key <> '' or auth_type = 'none')
         "#,
     )
     .bind(&route.provider)
@@ -1740,7 +2080,23 @@ async fn load_provider_config(pool: &PgPool, route: &ModelRoute) -> ApiResult<Pr
             route.endpoint_path.clone()
         },
         api_key: row.get("api_key"),
+        api_format: ProviderApiFormat::parse(&row.get::<String, _>("api_format")),
+        auth_type: ProviderAuthType::parse(&row.get::<String, _>("auth_type")),
+        auth_header: row.get("auth_header"),
+        custom_headers: json_value_to_string_map(row.get("custom_headers")),
+        query_params: json_value_to_string_map(row.get("query_params")),
+        request_timeout_ms: row.get::<i32, _>("request_timeout_ms").max(1_000) as u64,
+        max_retries: row.get::<i32, _>("max_retries").max(0) as u32,
     })
+}
+
+fn json_value_to_string_map(value: Value) -> BTreeMap<String, String> {
+    value
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.iter())
+        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+        .collect()
 }
 
 async fn ensure_tenant_capacity(
@@ -2274,20 +2630,61 @@ async fn model_usage_since(
         .collect())
 }
 
-async fn recent_billing_ledger(pool: &PgPool, tenant_id: &str) -> ApiResult<Vec<Value>> {
+struct BillingLedgerPage {
+    entries: Vec<Value>,
+    page: i64,
+    page_size: i64,
+    total: i64,
+    total_pages: i64,
+}
+
+impl BillingLedgerPage {
+    fn pagination_json(&self) -> Value {
+        json!({
+            "page": self.page,
+            "pageSize": self.page_size,
+            "total": self.total,
+            "totalPages": self.total_pages,
+            "hasPrevious": self.page > 1,
+            "hasNext": self.total_pages > 0 && self.page < self.total_pages
+        })
+    }
+}
+
+async fn billing_ledger_page(
+    pool: &PgPool,
+    tenant_id: &str,
+    requested_page: i64,
+    page_size: i64,
+) -> ApiResult<BillingLedgerPage> {
+    let total = sqlx::query_scalar::<_, i64>(
+        "select count(*)::bigint from billing_ledger where tenant_id = $1",
+    )
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await?;
+    let total_pages = if total == 0 {
+        0
+    } else {
+        (total + page_size - 1) / page_size
+    };
+    let page = requested_page.min(total_pages.max(1));
+    let offset = (page - 1) * page_size;
     let rows = sqlx::query(
         r#"
         select id, run_id, entry_type, amount_yuan, description, created_at
         from billing_ledger
         where tenant_id = $1
-        order by created_at desc
-        limit 8
+        order by created_at desc, id desc
+        limit $2 offset $3
         "#,
     )
     .bind(tenant_id)
+    .bind(page_size)
+    .bind(offset)
     .fetch_all(pool)
     .await?;
-    Ok(rows
+    let entries = rows
         .into_iter()
         .map(|row| {
             json!({
@@ -2299,7 +2696,44 @@ async fn recent_billing_ledger(pool: &PgPool, tenant_id: &str) -> ApiResult<Vec<
                 "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at")
             })
         })
-        .collect())
+        .collect();
+    Ok(BillingLedgerPage {
+        entries,
+        page,
+        page_size,
+        total,
+        total_pages,
+    })
+}
+
+fn bounded_pagination(
+    page: Option<i64>,
+    page_size: Option<i64>,
+    default_page_size: i64,
+) -> (i64, i64) {
+    (
+        page.unwrap_or(1).clamp(1, i64::MAX),
+        page_size.unwrap_or(default_page_size).clamp(1, 100),
+    )
+}
+
+fn current_billing_period(
+    now: chrono::DateTime<Utc>,
+) -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>) {
+    let current_month_start = Utc
+        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+        .single()
+        .unwrap_or(now);
+    let next_month_start = if now.month() == 12 {
+        Utc.with_ymd_and_hms(now.year() + 1, 1, 1, 0, 0, 0)
+            .single()
+            .unwrap_or(now)
+    } else {
+        Utc.with_ymd_and_hms(now.year(), now.month() + 1, 1, 0, 0, 0)
+            .single()
+            .unwrap_or(now)
+    };
+    (current_month_start, next_month_start)
 }
 
 fn usage_totals_json(row: &sqlx::postgres::PgRow) -> Value {
@@ -2391,6 +2825,59 @@ fn default_endpoint_path() -> String {
     "/responses".to_string()
 }
 
+fn default_provider_auth_header() -> String {
+    "authorization".to_string()
+}
+
+fn default_provider_request_timeout_ms() -> u64 {
+    300_000
+}
+
+fn default_provider_max_retries() -> u32 {
+    2
+}
+
+fn validate_provider_fields(request: &ProviderConfigSaveRequest) -> ApiResult<()> {
+    let base_url = request.base_url.trim();
+    if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+        return Err(ApiError::BadRequest(
+            "baseUrl must use http:// or https://".to_string(),
+        ));
+    }
+    if contains_header_control_chars(&request.endpoint_path)
+        || contains_header_control_chars(&request.auth_header)
+    {
+        return Err(ApiError::BadRequest(
+            "endpointPath and authHeader cannot contain control characters".to_string(),
+        ));
+    }
+    if request.auth_type != ProviderAuthType::None && request.auth_header.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "authHeader is required for the selected auth type".to_string(),
+        ));
+    }
+    for (name, value) in request
+        .custom_headers
+        .iter()
+        .chain(request.query_params.iter())
+    {
+        if name.trim().is_empty()
+            || contains_header_control_chars(name)
+            || contains_header_control_chars(value)
+        {
+            return Err(ApiError::BadRequest(
+                "custom header and query parameter names/values must be non-empty single-line strings"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn contains_header_control_chars(value: &str) -> bool {
+    value.chars().any(char::is_control)
+}
+
 fn default_monthly_plan() -> String {
     "monthly".to_string()
 }
@@ -2431,7 +2918,14 @@ fn normalized_codex_tenant_ids(
 
 #[cfg(test)]
 mod tests {
-    use super::normalized_codex_tenant_ids;
+    use super::{bounded_pagination, normalized_codex_tenant_ids};
+
+    #[test]
+    fn bounds_billing_ledger_pagination() {
+        assert_eq!(bounded_pagination(None, None, 8), (1, 8));
+        assert_eq!(bounded_pagination(Some(0), Some(0), 8), (1, 1));
+        assert_eq!(bounded_pagination(Some(4), Some(500), 8), (4, 100));
+    }
 
     #[test]
     fn normalizes_multiple_account_tenant_assignments() {

@@ -915,6 +915,9 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
     (row) =>
       `${row.quote.name}(${shortCode(row.code)}) ${row.quantity}股，占总资产${formatPercent(row.weightPct)}，浮盈亏${formatSignedMoney(row.pnl)}，行业${row.quote.sector}`,
   );
+  const unpricedHoldings = input.summary.unpricedHoldings.map(
+    (row) => `${row.quote?.name ?? shortCode(row.code)}(${shortCode(row.code)}) ${row.quantity}股，缺少可信行情，未参与账户估值`,
+  );
   const exposures = sectorExposure(input.summary).map((row) => `${row.sector} ${formatPercent(row.pct)}`);
   const marketQuotes = input.fullMarketQuotes.length ? input.fullMarketQuotes : Array.from(quotes.values());
   const gainers = topQuotes(marketQuotes, (a, b) => b.changePct - a.changePct, 10);
@@ -1028,10 +1031,14 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
     '当前本地上下文：',
     `- 生成时间：${generatedAt.toLocaleString('zh-CN', { hour12: false })}`,
     '- 数据口径：右侧投研工作台提供本地自选、持仓、组合、指数/全市场快照；正式结论必须重新验证最新市场、公告和新闻来源。',
-    `- 实盘记录：总资产 ${formatMoney(input.summary.totalAssets)}，现金 ${formatMoney(input.state.cash)}，仓位 ${formatPercent(input.summary.exposurePct)}，最大单票 ${formatPercent(input.summary.concentrationPct)}。`,
+    input.summary.valuationComplete
+      ? `- 实盘记录：总资产 ${formatMoney(input.summary.totalAssets)}，现金 ${formatMoney(input.state.cash)}，仓位 ${formatPercent(input.summary.exposurePct)}，最大单票 ${formatPercent(input.summary.concentrationPct)}。`
+      : `- 实盘记录：现金 ${formatMoney(input.state.cash)}；${input.summary.unpricedHoldings.length} 只持仓缺少可信行情，总资产、仓位与最大单票暂不可完整计算。`,
     `- 行业暴露：${exposures.join('；') || '暂无持仓暴露'}`,
     '- 持仓：',
-    ...(holdings.length ? holdings.map((line) => `  - ${line}`) : ['  - 暂无持仓']),
+    ...(holdings.length || unpricedHoldings.length
+      ? [...holdings, ...unpricedHoldings].map((line) => `  - ${line}`)
+      : ['  - 暂无持仓']),
     '- 自选：',
     ...(watchlist.length ? watchlist.map((line) => `  - ${line}`) : ['  - 暂无自选真实行情']),
     '- 组合：',

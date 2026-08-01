@@ -282,6 +282,8 @@ describe('account summary', () => {
     ]]);
     const quotes = buildQuoteMap(state, overrides);
     const summary = researchAccountSummary(state, quotes);
+    expect(summary.valuationComplete).toBe(true);
+    expect(summary.unpricedHoldings).toEqual([]);
     expect(summary.marketValue).toBe(110000);
     expect(summary.pnl).toBe(10000);
     expect(summary.holdings[0].todayPnl).toBe(10000);
@@ -300,6 +302,21 @@ describe('account summary', () => {
     expect(prompt).toContain('成本 1000.00');
     expect(prompt).toContain('现价 1100.00');
     expect(prompt).toContain('今日盈亏 +1.00万');
+  });
+
+  it('never uses sample quotes to value a recorded live holding', () => {
+    let state = blankState();
+    state = placeOrder(state, { side: 'buy', code: '600519.XSHG', name: '贵州茅台', price: 1000, quantity: 100 }).state;
+    const quotes = buildQuoteMap(state);
+    const summary = researchAccountSummary(state, quotes);
+
+    expect(quotes.get('600519.XSHG')?.source).toBe('sample');
+    expect(summary.valuationComplete).toBe(false);
+    expect(summary.holdings).toEqual([]);
+    expect(summary.unpricedHoldings).toHaveLength(1);
+    expect(summary.unpricedHoldings[0]).toMatchObject({ code: '600519.XSHG', reason: 'sample' });
+    expect(accountPrompt(state, summary)).toContain('不使用样例价格估值');
+    expect(accountPrompt(state, summary)).toContain('总资产、持仓盈亏、累计收益和仓位暂不可完整计算');
   });
 });
 

@@ -932,8 +932,17 @@ export interface ResearchHoldingRow extends ResearchHolding {
   weightPct: number;
 }
 
+export interface ResearchUnpricedHolding extends ResearchHolding {
+  quote?: ResearchQuote;
+  reason: 'missing' | 'sample';
+}
+
 export interface ResearchAccountSummary {
   holdings: ResearchHoldingRow[];
+  /** 缺少可信行情、因此不能参与真实账户估值的持仓。 */
+  unpricedHoldings: ResearchUnpricedHolding[];
+  /** 只有全部持仓均取得非样例行情时，账户总资产与收益才是完整口径。 */
+  valuationComplete: boolean;
   marketValue: number;
   cost: number;
   pnl: number;
@@ -949,9 +958,17 @@ export function researchAccountSummary(
   quotes: Map<string, ResearchQuote>,
 ): ResearchAccountSummary {
   const rows: ResearchHoldingRow[] = [];
+  const unpricedHoldings: ResearchUnpricedHolding[] = [];
   for (const holding of state.holdings) {
     const quote = quotes.get(holding.code);
-    if (!quote) continue;
+    if (!quote || quote.source === 'sample') {
+      unpricedHoldings.push({
+        ...holding,
+        quote,
+        reason: quote?.source === 'sample' ? 'sample' : 'missing',
+      });
+      continue;
+    }
     const marketValue = holding.quantity * quote.price;
     const cost = holding.quantity * holding.avgCost;
     const pnl = marketValue - cost;
@@ -973,12 +990,16 @@ export function researchAccountSummary(
   const pnl = marketValue - cost;
   const totalAssets = state.cash + marketValue;
   for (const row of rows) {
-    row.weightPct = totalAssets > 0 ? (row.marketValue / totalAssets) * 100 : 0;
+    row.weightPct = unpricedHoldings.length === 0 && totalAssets > 0
+      ? (row.marketValue / totalAssets) * 100
+      : Number.NaN;
   }
   rows.sort((a, b) => b.marketValue - a.marketValue);
   const totalReturn = totalAssets - state.netDeposits;
   return {
     holdings: rows,
+    unpricedHoldings,
+    valuationComplete: unpricedHoldings.length === 0,
     marketValue,
     cost,
     pnl,
@@ -1000,6 +1021,7 @@ export interface SectorExposureRow {
 }
 
 export function sectorExposure(summary: ResearchAccountSummary): SectorExposureRow[] {
+  if (!summary.valuationComplete) return [];
   const total = summary.marketValue || 1;
   const groups = new Map<string, number>();
   for (const row of summary.holdings) {
@@ -1109,11 +1131,18 @@ export function accountPrompt(state: ResearchState, summary: ResearchAccountSumm
     `市值 ${formatMoney(row.marketValue)}，浮盈亏 ${formatSignedMoney(row.pnl)}（${formatPercent(row.pnlPct)}），` +
     `今日盈亏 ${formatSignedMoney(row.todayPnl)}（${formatPercent(row.todayPnlPct)}），占总资产 ${formatPercent(row.weightPct)}。`
   ));
+  const unpricedLines = summary.unpricedHoldings.map((row) => {
+    const name = row.quote?.name ?? state.customSecurities[row.code]?.name ?? row.code;
+    return `- ${name}（${row.code}）：${row.quantity} 股，成本 ${row.avgCost.toFixed(2)}；当前缺少可信行情，不使用样例价格估值。`;
+  });
+  const valuationLine = summary.valuationComplete
+    ? `总资产 ${formatMoney(summary.totalAssets)}，现金 ${formatMoney(state.cash)}，持仓市值 ${formatMoney(summary.marketValue)}，浮盈亏 ${formatSignedMoney(summary.pnl)}，累计收益 ${formatSignedMoney(summary.totalReturn)}（${formatPercent(summary.totalReturnPct)}），仓位 ${formatPercent(summary.exposurePct)}。`
+    : `现金 ${formatMoney(state.cash)}；${summary.unpricedHoldings.length} 只持仓缺少可信行情，总资产、持仓盈亏、累计收益和仓位暂不可完整计算。`;
   return [
     '请基于我手工记录的实盘账户做一次投研和交易复盘。',
-    `总资产 ${formatMoney(summary.totalAssets)}，现金 ${formatMoney(state.cash)}，持仓市值 ${formatMoney(summary.marketValue)}，浮盈亏 ${formatSignedMoney(summary.pnl)}，累计收益 ${formatSignedMoney(summary.totalReturn)}（${formatPercent(summary.totalReturnPct)}），仓位 ${formatPercent(summary.exposurePct)}。`,
+    valuationLine,
     '当前持仓明细：',
-    ...(holdingLines.length ? holdingLines : ['- 暂无持仓。']),
+    ...(holdingLines.length || unpricedLines.length ? [...holdingLines, ...unpricedLines] : ['- 暂无持仓。']),
     '请输出仓位建议、风险来源、可执行观察清单和需要补充的 JQData 数据字段。',
   ].join('\n');
 }

@@ -206,20 +206,19 @@ import { activeDomain, type DomainConfig, type DomainSuggestion } from './domain
 import {
   activateClient,
   ALPHA_GATEWAY_PROVIDER_ID,
+  CLIENT_MODEL_CATALOG_SYNC_INTERVAL_MS,
   clearClientLicenseSession,
   defaultAlphaApiBaseUrl,
-  enterpriseAuthorizationValidUntil,
-  ENTERPRISE_AUTHORIZATION_CHECK_INTERVAL_MS,
   fetchClientBillingSummary,
   fetchClientDevices,
   getOrCreateDeviceFingerprint,
   isClientAuthorizationError,
   isEnterpriseAuthorizationFresh,
   loadClientLicenseSession,
-  renewClientLease,
   revokeClientDevice,
   validateCodexAuthorization,
   type BillingLedgerEntry,
+  type BillingLedgerPagination,
   type BillingModelUsage,
   type BillingUsageTotals,
   type ClientBillingSummary,
@@ -926,19 +925,19 @@ function useCloseOnOutsidePointer<T extends HTMLElement>(
 
 function ClientLicenseBoundary({ children }: { children: ReactNode }) {
   const hasClientLicenseSession = useChatStore((state) => Boolean(state.clientLicenseSession));
+  const session = useChatStore((state) => state.clientLicenseSession);
   const setClientLicenseSession = useChatStore((state) => state.setClientLicenseSession);
+  const refreshClientLicenseSession = useChatStore((state) => state.refreshClientLicenseSession);
   const initialSessionRef = useRef<ClientLicenseSession | null>(loadClientLicenseSession());
   const [status, setStatus] = useState<'checking' | 'inactive' | 'active'>(() => {
     const stored = initialSessionRef.current;
     if (!stored) return 'inactive';
     return isEnterpriseAuthorizationFresh(stored) ? 'active' : 'checking';
   });
-  const [session, setSession] = useState<ClientLicenseSession | null>(() => initialSessionRef.current);
   const [error, setError] = useState('');
 
   const activateSession = useCallback((next: ClientLicenseSession) => {
     setClientLicenseSession(next);
-    setSession(next);
     setStatus('active');
     setError('');
   }, [setClientLicenseSession]);
@@ -946,14 +945,12 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
   const deactivateSession = useCallback((message: string) => {
     clearClientLicenseSession();
     setClientLicenseSession(null);
-    setSession(null);
     setStatus('inactive');
     setError(message);
   }, [setClientLicenseSession]);
 
   useEffect(() => {
     if (status !== 'active' || hasClientLicenseSession || loadClientLicenseSession()) return;
-    setSession(null);
     setStatus('inactive');
     setError('');
   }, [hasClientLicenseSession, status]);
@@ -968,9 +965,9 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
     }
     if (isEnterpriseAuthorizationFresh(stored)) {
       activateSession(stored);
-      void renewClientLease(stored)
+      void refreshClientLicenseSession()
         .then((renewed) => {
-          if (!disposed) activateSession(renewed);
+          if (!disposed && renewed) activateSession(renewed);
         })
         .catch((leaseError) => {
           if (!disposed && isClientAuthorizationError(leaseError)) {
@@ -982,9 +979,12 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
         disposed = true;
       };
     }
-    void renewClientLease(stored)
+    // Keep the expired snapshot in the store only as the identity used for the
+    // blocking renewal request; the workspace remains behind the checking gate.
+    setClientLicenseSession(stored);
+    void refreshClientLicenseSession()
       .then((renewed) => {
-        if (!disposed) activateSession(renewed);
+        if (!disposed && renewed) activateSession(renewed);
       })
       .catch((leaseError) => {
         if (disposed) return;
@@ -993,31 +993,25 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
     return () => {
       disposed = true;
     };
-  }, [activateSession, deactivateSession, setClientLicenseSession]);
-
-  useLayoutEffect(() => {
-    if (status === 'active' && session) {
-      setClientLicenseSession(session);
-    }
-  }, [session, setClientLicenseSession, status]);
+  }, [activateSession, deactivateSession, refreshClientLicenseSession, setClientLicenseSession]);
 
   useEffect(() => {
     if (status !== 'active' || !session) return;
-    const delay = Math.max(
-      0,
-      enterpriseAuthorizationValidUntil(session) - Date.now() - 15_000,
-    );
-    const timeout = window.setTimeout(() => {
-      void renewClientLease(session)
-        .then(activateSession)
+    const refresh = () => {
+      void refreshClientLicenseSession()
         .catch((leaseError) => {
           if (isClientAuthorizationError(leaseError) || !isEnterpriseAuthorizationFresh(session)) {
             deactivateSession(`设备续租失败，请重新激活：${stringifyUnknownError(leaseError)}`);
           }
         });
-    }, Math.min(delay, ENTERPRISE_AUTHORIZATION_CHECK_INTERVAL_MS));
-    return () => window.clearTimeout(timeout);
-  }, [activateSession, deactivateSession, session, status]);
+    };
+    const interval = window.setInterval(refresh, CLIENT_MODEL_CATALOG_SYNC_INTERVAL_MS);
+    window.addEventListener('focus', refresh);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [deactivateSession, refreshClientLicenseSession, session, status]);
 
   if (status === 'checking') {
     return (
@@ -4498,6 +4492,7 @@ type LocalHtmlPreview = {
 };
 
 let browserWebviewSequence = 0;
+const YUANLIU_OFFICIAL_URL = 'https://yuanliu.ai';
 
 type BrowserDownloadStatus = {
   message: string;
@@ -4516,10 +4511,6 @@ function BrowserDockPanel({
   active: boolean;
   onTabTitleChange?: (title: string) => void;
 }) {
-  const localUrl = useMemo(() => {
-    if (typeof window === 'undefined') return 'http://localhost:1421';
-    return window.location.protocol.startsWith('http') ? window.location.origin : 'http://localhost:1421';
-  }, []);
   const [nativeBrowserId] = useState(() => `dock-${++browserWebviewSequence}`);
   const openBrowserTab = useBrowserDockOpener();
   const [draft, setDraft] = useState('');
@@ -4887,12 +4878,17 @@ function BrowserDockPanel({
         />
       ) : (
         <div className="browser-start">
-          <div className="dock-section-label">本地</div>
-          <button type="button" className="browser-local-card" onClick={() => openUrl(localUrl)}>
-            <span className="browser-local-thumb">AS</span>
+          <div className="dock-section-label">官网</div>
+          <button
+            type="button"
+            className="browser-local-card"
+            onClick={() => openUrl(YUANLIU_OFFICIAL_URL)}
+            aria-label="打开元流涌现官网"
+          >
+            <span className="browser-local-thumb">YL</span>
             <span>
-              <strong>Alpha Studio</strong>
-              <em>{localUrl.replace(/^https?:\/\//, '')}</em>
+              <strong>元流涌现</strong>
+              <em>yuanliu.ai</em>
             </span>
             <span className="browser-local-dot" />
           </button>
@@ -9685,17 +9681,20 @@ function ModelPicker() {
   const modelProfiles = useChatStore((state) => state.modelProfiles);
   const codexStatus = useChatStore((state) => state.codexStatus);
   const clientLicenseSession = useChatStore((state) => state.clientLicenseSession);
+  const refreshClientLicenseSession = useChatStore((state) => state.refreshClientLicenseSession);
+  const isRefreshingClientLicense = useChatStore((state) => state.isRefreshingClientLicense);
+  const refreshCodexModels = useChatStore((state) => state.refreshCodexModels);
+  const isRefreshingCodexModels = useChatStore((state) => state.isRefreshingCodexModels);
   const reasoningEffort = useChatStore((state) => state.reasoningEffort);
   const speed = useChatStore((state) => state.speed);
   const setModelProfile = useChatStore((state) => state.setModelProfile);
   const setReasoningEffort = useChatStore((state) => state.setReasoningEffort);
   const setSpeed = useChatStore((state) => state.setSpeed);
   const [open, setOpen] = useState(false);
-  const [submenu, setSubmenu] = useState<'model' | 'speed' | null>(null);
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const modelRowRef = useRef<HTMLDivElement>(null);
-  const speedRowRef = useRef<HTMLDivElement>(null);
+  const optionsAnchorRef = useRef<HTMLButtonElement | null>(null);
   const flyoutRef = useRef<HTMLDivElement>(null);
   const [menuStyle, setMenuStyle] = useState<CSSProperties>(HIDDEN_FLOATING_STYLE);
   const [flyoutStyle, setFlyoutStyle] = useState<CSSProperties>(HIDDEN_FLOATING_STYLE);
@@ -9704,11 +9703,45 @@ function ModelPicker() {
   const selectedModelProfile = visibleEnabledProfiles.find((profile) => profile.id === selectedModelProfileId) ?? visibleEnabledProfiles[0] ?? resolveModelProfile(modelProfiles, selectedModelProfileId);
   const builtInProfiles = visibleEnabledProfiles.filter((profile) => profile.builtIn);
   const customProfiles = visibleEnabledProfiles.filter((profile) => !profile.builtIn);
+  const editingProfile = visibleEnabledProfiles.find((profile) => profile.id === editingProfileId) ?? null;
   const effortOptions = useMemo(
+    () => reasoningEffortOptionsForProfile(editingProfile ?? selectedModelProfile),
+    [editingProfile, selectedModelProfile],
+  );
+  const selectedEffortOptions = useMemo(
     () => reasoningEffortOptionsForProfile(selectedModelProfile),
     [selectedModelProfile],
   );
-  const close = () => { setOpen(false); setSubmenu(null); };
+  const refreshManagedModels = useCallback(async (includeSubscriptionModels = false) => {
+    const requests: Promise<unknown>[] = [];
+    if (clientLicenseSession) requests.push(refreshClientLicenseSession());
+    if (includeSubscriptionModels && codexStatus?.loggedIn) requests.push(refreshCodexModels(true));
+    await Promise.allSettled(requests);
+  }, [clientLicenseSession, codexStatus?.loggedIn, refreshClientLicenseSession, refreshCodexModels]);
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next) void refreshManagedModels();
+  };
+  const close = () => {
+    setOpen(false);
+    setEditingProfileId(null);
+    optionsAnchorRef.current = null;
+  };
+  const openOptions = (event: ReactMouseEvent<HTMLButtonElement>, profile: ModelProfile) => {
+    event.stopPropagation();
+    optionsAnchorRef.current = event.currentTarget;
+    setModelProfile(profile.id);
+    setEditingProfileId(profile.id);
+  };
+  const profileSettingSummary = (profile: ModelProfile) => {
+    const supportedEfforts = reasoningEffortOptionsForProfile(profile);
+    const parts = supportedEfforts.length > 0
+      ? [effortLabel(resolveReasoningEffortForProfile(profile, reasoningEffort))]
+      : [];
+    if (speed === 'fast') parts.push('快速');
+    return parts.join(' · ');
+  };
   useLayoutEffect(() => {
     if (!open) {
       setMenuStyle(HIDDEN_FLOATING_STYLE);
@@ -9741,15 +9774,15 @@ function ModelPicker() {
       window.removeEventListener('resize', updateMenuPosition);
       window.removeEventListener('scroll', updateMenuPosition, true);
     };
-  }, [open, visibleEnabledProfiles.length, reasoningEffort, selectedModelProfile.id, speed, effortOptions]);
+  }, [open, visibleEnabledProfiles.length, reasoningEffort, selectedModelProfile.id, speed]);
   useLayoutEffect(() => {
-    if (!open || !submenu) {
+    if (!open || !editingProfile) {
       setFlyoutStyle(HIDDEN_FLOATING_STYLE);
       return;
     }
 
     const updateFlyoutPosition = () => {
-      const rowRect = (submenu === 'model' ? modelRowRef.current : speedRowRef.current)?.getBoundingClientRect();
+      const rowRect = optionsAnchorRef.current?.closest('.model-choice-row')?.getBoundingClientRect();
       const flyoutRect = flyoutRef.current?.getBoundingClientRect();
       if (!rowRect || !flyoutRect) return;
 
@@ -9781,43 +9814,98 @@ function ModelPicker() {
       window.removeEventListener('resize', updateFlyoutPosition);
       window.removeEventListener('scroll', updateFlyoutPosition, true);
     };
-  }, [open, submenu, builtInProfiles.length, customProfiles.length, selectedModelProfile.id, speed]);
+  }, [open, editingProfile, effortOptions.length, speed]);
+
+  const renderProfile = (profile: ModelProfile) => {
+    const selected = profile.id === selectedModelProfile.id;
+    const editing = profile.id === editingProfile?.id;
+    const summary = profileSettingSummary(profile);
+    return (
+      <div key={profile.id} className={`model-choice-row ${selected ? 'selected' : ''} ${editing ? 'editing' : ''}`}>
+        <button
+          type="button"
+          role="menuitemradio"
+          aria-checked={selected}
+          className="model-menu-item model-choice-select"
+          onClick={() => { setModelProfile(profile.id); close(); }}
+        >
+          <span className="model-choice-copy">
+            <strong>{profile.label}</strong>
+            {summary && <em>{summary}</em>}
+          </span>
+          {selected && <Check size={14} className="model-menu-check" />}
+        </button>
+        <button
+          type="button"
+          className="model-choice-edit"
+          aria-label={`编辑 ${profile.label} 的模型选项`}
+          aria-haspopup="menu"
+          aria-expanded={editing}
+          onClick={(event) => openOptions(event, profile)}
+        >
+          <Pencil size={12} />
+          <span>Edit</span>
+        </button>
+      </div>
+    );
+  };
+
   const menuLayer = open ? createPortal(
     <>
       <button className="menu-backdrop" type="button" aria-label="关闭模型菜单" onClick={close} />
-      <div ref={menuRef} className="model-menu model-choice-menu" role="menu" style={menuStyle}>
-        {effortOptions.length > 0 && <><div className="model-menu-label">智能</div>{effortOptions.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === reasoningEffort} className="model-menu-item" onMouseEnter={() => setSubmenu(null)} onClick={() => { setReasoningEffort(option.id); close(); }}><span>{option.label}</span>{option.id === reasoningEffort && <Check size={14} className="model-menu-check" />}</button>)}<div className="model-menu-divider" /></>}
-        <div ref={modelRowRef} className="model-flyout-row" onMouseEnter={() => setSubmenu('model')}>
-          <button type="button" className="model-menu-item submenu-trigger" aria-haspopup="menu" aria-expanded={submenu === 'model'} onClick={() => setSubmenu('model')}><span>{selectedModelProfile.label}</span><ChevronRight size={14} className="model-menu-chevron" /></button>
+      <div ref={menuRef} className="model-menu model-choice-menu model-list-menu" role="menu" aria-label="选择模型" style={menuStyle}>
+        <div className="model-list-toolbar">
+          <span>模型列表</span>
+          <button
+            type="button"
+            aria-label="刷新模型列表"
+            title="从管理后台刷新模型列表"
+            disabled={isRefreshingClientLicense || isRefreshingCodexModels}
+            onClick={() => void refreshManagedModels(true)}
+          >
+            <RefreshCw size={13} className={isRefreshingClientLicense || isRefreshingCodexModels ? 'spin' : ''} />
+          </button>
         </div>
-        <div ref={speedRowRef} className="model-flyout-row" onMouseEnter={() => setSubmenu('speed')}>
-          <button type="button" className="model-menu-item submenu-trigger" aria-haspopup="menu" aria-expanded={submenu === 'speed'} onClick={() => setSubmenu('speed')}><span>速度</span><ChevronRight size={14} className="model-menu-chevron" /></button>
-        </div>
+        <div className="model-menu-divider" />
+        {builtInProfiles.length > 0 && <div className="model-menu-label">订阅模型</div>}
+        {builtInProfiles.map(renderProfile)}
+        {builtInProfiles.length > 0 && customProfiles.length > 0 && <div className="model-menu-divider" />}
+        {customProfiles.length > 0 && <div className="model-menu-label">按量模型</div>}
+        {customProfiles.map(renderProfile)}
       </div>
-      {submenu === 'model' && (
-        <div ref={flyoutRef} className="model-flyout model-choice-flyout" style={flyoutStyle}>
-          <div className="model-flyout-panel" role="menu">
-            {builtInProfiles.length > 0 && <div className="model-menu-label">订阅模型</div>}
-            {builtInProfiles.map((option) => (
-              <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfile.id} className="model-menu-item" onClick={() => { setModelProfile(option.id); close(); }}>
-                <span>{option.label}</span>{option.id === selectedModelProfile.id && <Check size={14} className="model-menu-check" />}
+      {editingProfile && (
+        <div ref={flyoutRef} className="model-flyout model-choice-flyout model-options-flyout" style={flyoutStyle}>
+          <div className="model-flyout-panel" role="menu" aria-label={`${editingProfile.label} 模型选项`}>
+            <div className="model-options-heading">
+              <span>模型选项</span>
+              <strong>{editingProfile.label}</strong>
+            </div>
+            <div className="model-menu-divider" />
+            <div className="model-menu-label">思考强度</div>
+            {effortOptions.length > 0 ? effortOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={option.id === reasoningEffort}
+                className="model-menu-item"
+                onClick={() => setReasoningEffort(option.id)}
+              >
+                <span>{option.label}</span>
+                {option.id === reasoningEffort && <Check size={14} className="model-menu-check" />}
               </button>
-            ))}
-            {builtInProfiles.length > 0 && customProfiles.length > 0 && <div className="model-menu-divider" />}
-            {customProfiles.length > 0 && <div className="model-menu-label">按量模型</div>}
-            {customProfiles.map((option) => (
-              <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfile.id} className="model-menu-item model-profile-item" onClick={() => { setModelProfile(option.id); close(); }}>
-                <span><strong>{option.label}</strong><em>{option.providerId} · {option.model}</em></span>{option.id === selectedModelProfile.id && <Check size={14} className="model-menu-check" />}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      {submenu === 'speed' && (
-        <div ref={flyoutRef} className="model-flyout model-choice-flyout" style={flyoutStyle}>
-          <div className="model-flyout-panel" role="menu">
+            )) : <div className="model-options-empty">此模型不提供思考强度设置</div>}
+            <div className="model-menu-divider" />
             <div className="model-menu-label">速度</div>
-            {SPEED_OPTIONS.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === speed} className="model-menu-item speed-item" onClick={() => { setSpeed(option.id as Speed); close(); }}><span className="speed-main">{option.fast && <Zap size={13} className="speed-icon" />}<span className="speed-text"><span className="speed-title">{option.label}</span><span className="speed-sub">{option.description}</span></span></span>{option.id === speed && <Check size={14} className="model-menu-check" />}</button>)}
+            {SPEED_OPTIONS.map((option) => (
+              <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === speed} className="model-menu-item speed-item" onClick={() => setSpeed(option.id as Speed)}>
+                <span className="speed-main">
+                  {option.fast && <Zap size={13} className="speed-icon" />}
+                  <span className="speed-text"><span className="speed-title">{option.label}</span><span className="speed-sub">{option.description}</span></span>
+                </span>
+                {option.id === speed && <Check size={14} className="model-menu-check" />}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -9826,8 +9914,18 @@ function ModelPicker() {
   ) : null;
   return (
     <div className="model-picker">
-      <button ref={triggerRef} type="button" className={`composer-pill model-pill ${open ? 'active' : ''}`} onClick={() => setOpen((value) => !value)} title="选择模型与推理强度">
-        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelProfileLabel([selectedModelProfile], selectedModelProfile.id)}</span>{effortOptions.length > 0 && <span className="model-pill-effort">{effortLabel(reasoningEffort)}</span>}<ChevronDown size={12} />
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`composer-pill model-pill ${open ? 'active' : ''}`}
+        onClick={toggle}
+        aria-label={`选择模型，当前为 ${selectedModelProfile.label}`}
+        title="选择模型与推理强度"
+      >
+        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}
+        <span className="model-pill-label">{shortModelProfileLabel([selectedModelProfile], selectedModelProfile.id)}</span>
+        {selectedEffortOptions.length > 0 && <span className="model-pill-effort">{effortLabel(reasoningEffort)}</span>}
+        <ChevronDown size={12} />
       </button>
       {menuLayer}
     </div>
@@ -12341,9 +12439,7 @@ function ProfileSettings() {
       ? '本机授权'
       : `${profileUserName} · ${session.user.email}`
     : '@local · Noncommercial';
-  const codexLabel = codexSubscriptionEnabled
-    ? codexAccount?.email || '未分配账号'
-    : '未启用';
+  const codexAvailabilityLabel = codexSubscriptionEnabled ? '未分配账号' : '未启用';
   const codexPlanLabel = session?.tenant.codexSubscriptionPlan || codexAccount?.plan || '已启用';
   const codexDescription = codexSubscriptionEnabled
     ? codexCliAuthorized
@@ -12427,7 +12523,9 @@ function ProfileSettings() {
         </SettingsRow>
         <SettingsRow title="GPT 订阅账号" description={codexDescription}>
           <span className="settings-action-stack">
-            <span className="settings-static">{codexLabel}</span>
+            {(!codexSubscriptionEnabled || !codexAccount) && (
+              <span className="settings-static">{codexAvailabilityLabel}</span>
+            )}
             {codexSubscriptionEnabled && !showCodexRevokeButton && !showCodexLoginButton && <CodexAuthorizationBadge status={codexAuthorizationStatus} />}
             {showCodexLoginButton && <CodexLoginButton compact stateButton />}
             {showCodexRevokeButton && <CodexRevokeButton compact />}
@@ -12472,17 +12570,21 @@ function UsageSettings() {
   const [error, setError] = useState('');
   const [codexUsageError, setCodexUsageError] = useState('');
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (ledgerPage = 1, includeCodexUsage = true) => {
     if (!session) return;
     setLoading(true);
-    setCodexUsageLoading(true);
     setError('');
-    setCodexUsageError('');
+    if (includeCodexUsage) {
+      setCodexUsageLoading(true);
+      setCodexUsageError('');
+    }
 
     const shouldLoadCodexUsage = Boolean(session.tenant.codexSubscriptionEnabled || session.codexAccounts.length > 0);
     const [billingResult, codexResult] = await Promise.allSettled([
-      fetchClientBillingSummary(session),
-      shouldLoadCodexUsage ? fetchCodexSubscriptionUsage() : Promise.resolve(null),
+      fetchClientBillingSummary(session, { page: ledgerPage, pageSize: 8 }),
+      includeCodexUsage
+        ? shouldLoadCodexUsage ? fetchCodexSubscriptionUsage() : Promise.resolve(null)
+        : Promise.resolve(undefined),
     ]);
 
     if (billingResult.status === 'fulfilled') {
@@ -12491,14 +12593,14 @@ function UsageSettings() {
       setError(stringifyError(billingResult.reason));
     }
 
-    if (codexResult.status === 'fulfilled') {
+    if (codexResult.status === 'fulfilled' && codexResult.value !== undefined) {
       setCodexUsage(codexResult.value);
-    } else {
+    } else if (codexResult.status === 'rejected') {
       setCodexUsageError(stringifyError(codexResult.reason));
     }
 
     setLoading(false);
-    setCodexUsageLoading(false);
+    if (includeCodexUsage) setCodexUsageLoading(false);
   }, [session]);
 
   useEffect(() => {
@@ -12511,6 +12613,7 @@ function UsageSettings() {
   const allTime = summary?.usage?.allTime ?? EMPTY_BILLING_USAGE;
   const models = summary?.usage?.models ?? [];
   const recentLedger = summary?.usage?.recentLedger ?? [];
+  const ledgerPagination = summary?.usage?.ledgerPagination;
   const generatedAt = summary?.period?.generatedAt ? formatLicenseDate(summary.period.generatedAt) : loading ? '同步中' : '尚未同步';
   const monthLabel = summary?.period?.currentMonthStart
     ? `${formatMonthLabel(summary.period.currentMonthStart)}账期`
@@ -12526,7 +12629,7 @@ function UsageSettings() {
             <strong>{monthLabel}</strong>
             <span>数据更新时间：{generatedAt}</span>
           </div>
-          <button className="settings-btn" type="button" onClick={() => void refresh()} disabled={!session || loading} aria-label="刷新账单">
+          <button className="settings-btn" type="button" onClick={() => void refresh(ledgerPagination?.page ?? 1)} disabled={!session || loading} aria-label="刷新账单">
             <RefreshCw size={13} className={loading ? 'spin' : ''} />
             <span>刷新</span>
           </button>
@@ -12580,7 +12683,12 @@ function UsageSettings() {
       </SettingsGroup>
 
       <BillingModelTable models={models} />
-      <BillingLedgerList entries={recentLedger} />
+      <BillingLedgerList
+        entries={recentLedger}
+        pagination={ledgerPagination}
+        loading={loading}
+        onPageChange={(page) => void refresh(page, false)}
+      />
     </>
   );
 }
@@ -12748,12 +12856,18 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function BillingLedgerList({ entries }: { entries: BillingLedgerEntry[] }) {
+function BillingLedgerList({ entries, pagination, loading, onPageChange }: {
+  entries: BillingLedgerEntry[];
+  pagination?: BillingLedgerPagination;
+  loading: boolean;
+  onPageChange: (page: number) => void;
+}) {
+  const total = pagination?.total ?? entries.length;
   return (
     <section className="billing-ledger" aria-label="最近账单流水">
       <div className="billing-section-title">
         <strong>最近账单流水</strong>
-        <span>网关扣费和余额变动</span>
+        <span>网关扣费和余额变动{total > 0 ? ` · 共 ${formatWholeNumber(total)} 条` : ''}</span>
       </div>
       {entries.length === 0 ? (
         <div className="billing-empty">暂无账单流水。</div>
@@ -12762,12 +12876,21 @@ function BillingLedgerList({ entries }: { entries: BillingLedgerEntry[] }) {
           {entries.map((entry) => (
             <div className="billing-ledger-row" key={entry.id}>
               <div>
-                <strong>{entry.description || formatLedgerEntryType(entry.entryType)}</strong>
-                <span>{formatLicenseDate(entry.createdAt)}{entry.runId ? ` · ${entry.runId}` : ''}</span>
+                <strong title={entry.description || formatLedgerEntryType(entry.entryType)}>{entry.description || formatLedgerEntryType(entry.entryType)}</strong>
+                <span title={entry.runId || undefined}>{formatLicenseDate(entry.createdAt)}{entry.runId ? ` · ${entry.runId}` : ''}</span>
               </div>
               <em className={entry.amountYuan < 0 ? 'charge' : 'credit'}>{formatSignedYuan(entry.amountYuan)}</em>
             </div>
           ))}
+          {pagination && pagination.totalPages > 1 && (
+            <div className="billing-pagination" aria-label="账单流水分页">
+              <span>第 {pagination.page} / {pagination.totalPages} 页</span>
+              <div>
+                <button className="settings-btn" type="button" disabled={loading || !pagination.hasPrevious} onClick={() => onPageChange(pagination.page - 1)}>上一页</button>
+                <button className="settings-btn" type="button" disabled={loading || !pagination.hasNext} onClick={() => onPageChange(pagination.page + 1)}>下一页</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </section>

@@ -6,7 +6,10 @@ import {
   isScheduledAutomationTaskDue,
   loadScheduledAutomationTasks,
 } from './automation';
-import { INTRADAY_MONITOR_CARD_PROMPT } from './themeAbilities';
+import {
+  ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
+  INTRADAY_MONITOR_CARD_PROMPT,
+} from './themeAbilities';
 
 describe('automation intent detection', () => {
   beforeEach(() => {
@@ -33,7 +36,7 @@ describe('automation intent detection', () => {
       schedule: '每 10 分钟',
       environment: '当前对话',
       kind: 'intraday-monitor',
-      skillId: 'alpha-studio-intraday-monitor',
+      skillId: ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
       activeWindow: {
         timezone: 'Asia/Shanghai',
         weekdays: [1, 2, 3, 4, 5],

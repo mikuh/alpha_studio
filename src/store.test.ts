@@ -15,7 +15,11 @@ import {
   visibleConversations,
 } from './store';
 import type { ChatMessage, Conversation, CoworkerSelection, MessageAttachment, SelectedTextContext, SkillSelection } from './types';
-import { INTRADAY_MONITOR_CARD_PROMPT } from './themeAbilities';
+import {
+  ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
+  INTRADAY_MONITOR_CARD_PROMPT,
+} from './themeAbilities';
+import { ALPHA_STUDIO_DAILY_THEME_SKILL_ID } from './themeResearch';
 import { DAILY_DECISION_STATE_KEY, JOINT_RESEARCH_EVIDENCE_SCHEMA, beginJointResearch, loadDailyDecisionState } from './dailyDecision';
 import { loadResearchState } from './research';
 
@@ -220,7 +224,7 @@ describe('daily theme report completion', () => {
         messages: [
           {
             id: 'daily-user', role: 'user', timestamp: 1,
-            selectedSkill: { id: 'alpha-studio-daily-theme-research', title: '每日主题研究' },
+            selectedSkill: { id: ALPHA_STUDIO_DAILY_THEME_SKILL_ID, title: '每日主题研究' },
             blocks: [{ type: 'text', content: '生成今日报告' }],
           },
           {
@@ -753,7 +757,7 @@ describe('automation turns', () => {
       title: '盘中触发监控',
       schedule: '每 10 分钟',
       kind: 'intraday-monitor',
-      skillId: 'alpha-studio-intraday-monitor',
+      skillId: ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
       conversationId: 'conv-automation',
     });
   });

@@ -56,7 +56,7 @@
     "shortDescription": "Alpha Studio - noncommercial local coding workspace",
     "longDescription": "Alpha Studio wraps OpenAI Codex CLI with a source-available noncommercial coding workspace UI.",
     "resources": {
-      "../skills/": "skills/"
+      "../.alpha-encoded/": ".alpha-encoded/"
     },
     "macOS": {
       "minimumSystemVersion": "10.15"

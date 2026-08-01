@@ -52,6 +52,7 @@ import {
   isCodexAccountAllowed,
   loadClientLicenseSession,
   modelProfilesFromClientLicense,
+  renewClientLease,
   type ClientLicenseSession,
 } from './license';
 import {
@@ -105,6 +106,11 @@ const LEGACY_DEFAULT_CONVERSATION_TITLE = ['\u65b0\u7684', '\u5bf9\u8bdd'].join(
 // Kept outside the persisted store because functions are not serializable.
 const authorizationResolvers = new Map<string, (decision: ApprovalDecision) => void>();
 
+// Device renewal also returns the current admin-managed Gateway model catalog.
+// Keep one request in flight so startup, focus and an explicit menu refresh can
+// never apply responses out of order.
+let clientLicenseRefreshPromise: Promise<ClientLicenseSession | null> | null = null;
+
 interface ChatState {
   conversations: Conversation[];
   projects: Project[];
@@ -117,6 +123,7 @@ interface ChatState {
   speed: Speed;
   workModeId: WorkModeId;
   clientLicenseSession: ClientLicenseSession | null;
+  isRefreshingClientLicense: boolean;
   codexStatus: CodexStatus | null;
   codexModelCatalog: CodexModelCatalogItem[] | null;
   codexModelCatalogError: string | null;
@@ -159,6 +166,7 @@ interface ChatState {
   setSpeed: (speed: Speed) => void;
   setWorkModeId: (modeId: WorkModeId) => void;
   setClientLicenseSession: (session: ClientLicenseSession | null) => void;
+  refreshClientLicenseSession: () => Promise<ClientLicenseSession | null>;
   setApprovalMode: (mode: ApprovalMode) => void;
   resolveAuthorization: (id: string, decision: ApprovalDecision) => void;
   refreshCodexStatus: (options?: { forceModelRefetch?: boolean }) => Promise<void>;
@@ -557,6 +565,7 @@ export const useChatStore = create<ChatState>()(
         speed: DEFAULT_SPEED,
       workModeId: DEFAULT_WORK_MODE_ID,
       clientLicenseSession: loadClientLicenseSession(),
+      isRefreshingClientLicense: false,
       codexStatus: null,
       codexModelCatalog: null,
       codexModelCatalogError: null,
@@ -985,6 +994,30 @@ export const useChatStore = create<ChatState>()(
           modelProfiles,
           ...selection,
         });
+      },
+
+      refreshClientLicenseSession: () => {
+        if (clientLicenseRefreshPromise) return clientLicenseRefreshPromise;
+        const session = get().clientLicenseSession;
+        if (!session) return Promise.resolve(null);
+
+        set({ isRefreshingClientLicense: true });
+        const refresh = renewClientLease(session)
+          .then((renewed) => {
+            const current = get().clientLicenseSession;
+            if (current?.tenant.id === session.tenant.id && current.device.id === session.device.id) {
+              get().setClientLicenseSession(renewed);
+            }
+            return renewed;
+          })
+          .finally(() => {
+            if (clientLicenseRefreshPromise === refresh) {
+              clientLicenseRefreshPromise = null;
+              set({ isRefreshingClientLicense: false });
+            }
+          });
+        clientLicenseRefreshPromise = refresh;
+        return refresh;
       },
 
       setApprovalMode: (mode: ApprovalMode) => set({ approvalMode: mode }),
