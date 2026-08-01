@@ -22,7 +22,7 @@ const codexCatalogMockState = vi.hoisted(() => ({
 }));
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
-  invoke: vi.fn((command: string, args?: { request?: { method?: string; name?: string; data?: string; currentPath?: string; path?: string; params?: Record<string, unknown>; codes?: string[]; tickCode?: string; tickCount?: number; fullMarket?: boolean; pageSize?: number } }) => {
+  invoke: vi.fn((command: string, args?: { request?: { method?: string; name?: string; data?: string; currentPath?: string; path?: string; params?: Record<string, unknown> } }) => {
     if (command === 'plugin:window|is_fullscreen') return Promise.resolve(windowMockState.fullscreen);
     if (command === 'codex_check') {
       return Promise.resolve({ ...codexCatalogMockState.status });
@@ -76,63 +76,6 @@ vi.mock('@tauri-apps/api/core', () => ({
         queryCount: { total: 1000 },
         sample: { tradeDays: ['2024-01-02'], priceRows: [{ index: '2024-01-02', close: 9.1 }] },
       });
-    }
-    if (command === 'eastmoney_realtime_query') {
-      const request = args?.request;
-      const codes = Array.isArray(request?.codes) ? request.codes : [];
-      if (request?.fullMarket) {
-        const fullRows = [
-          ['600519.XSHG', '贵州茅台', '白酒', 1190, 1200, 9_000_000_000],
-          ['000001.XSHE', '平安银行', '银行', 10.4, 10.5, 310_000_000],
-          ['300750.XSHE', '宁德时代', '电池', 210, 205, 1_500_000_000],
-          ['688981.XSHG', '中芯国际', '半导体', 58, 56, 2_100_000_000],
-          ['600036.XSHG', '招商银行', '银行', 35.5, 35.1, 980_000_000],
-          ['601127.XSHG', '赛力斯', '汽车', 88.8, 86.4, 1_280_000_000],
-        ].map(([code, name, sector, price, prevClose, turnoverAmount]) => ({
-          code,
-          name,
-          sector,
-          source: 'eastmoney',
-          price,
-          prevClose,
-          changeAmt: Number(price) - Number(prevClose),
-          changePct: ((Number(price) - Number(prevClose)) / Number(prevClose)) * 100,
-          high: Number(price) * 1.01,
-          low: Number(price) * 0.99,
-          volumeShares: 1_000_000,
-          turnoverAmount,
-          marketCapAmount: Number(price) * 100_000_000,
-          status: 2,
-        }));
-        return Promise.resolve({ ok: true, quoteRows: fullRows, tickRows: [] });
-      }
-      const quoteRows = codes.map((code) => {
-        const seed = Array.from(code).reduce((sum, char) => sum + char.charCodeAt(0), 0);
-        const prevClose = 10 + (seed % 80);
-        const price = Number((prevClose * (1 + (((seed % 7) - 3) / 100))).toFixed(2));
-        return {
-          code,
-          name: '测试标的',
-          source: 'eastmoney',
-          price,
-          prevClose,
-          changeAmt: Number((price - prevClose).toFixed(2)),
-          changePct: Number((((price - prevClose) / prevClose) * 100).toFixed(2)),
-          high: Math.max(prevClose, price) * 1.01,
-          low: Math.min(prevClose, price) * 0.99,
-          volumeShares: 1_200_000 + seed * 100,
-          turnoverAmount: price * 1_200_000,
-          marketCapAmount: price * 100_000_000,
-          status: 2,
-        };
-      });
-      const tickRows = request?.tickCode
-        ? [
-            { code: request.tickCode, time: '10:29:54', price: 11.2, volumeHands: 12, volumeShares: 1200, side: '买盘', sideCode: 2 },
-            { code: request.tickCode, time: '10:29:57', price: 11.19, volumeHands: 8, volumeShares: 800, side: '卖盘', sideCode: 1 },
-          ]
-        : [];
-      return Promise.resolve({ ok: quoteRows.length > 0 || tickRows.length > 0, quoteRows, tickRows });
     }
     if (command === 'jqdata_query') {
       const request = args?.request;
@@ -338,6 +281,56 @@ function jsonResponse(body: unknown) {
   } as Response;
 }
 
+function cloudMarketSnapshot(codes?: string[]) {
+  const rows = [
+    ['000001.XSHG', '上证指数', '主要指数', 3832.26, 3804.69, 810_000_000_000],
+    ['399001.XSHE', '深证成指', '主要指数', 13578.93, 13285.80, 920_000_000_000],
+    ['399006.XSHE', '创业板指', '主要指数', 3343.96, 3244.61, 420_000_000_000],
+    ['600519.XSHG', '贵州茅台', '白酒', 1190, 1200, 9_000_000_000],
+    ['000001.XSHE', '平安银行', '银行', 10.4, 10.5, 310_000_000],
+    ['300750.XSHE', '宁德时代', '电池', 210, 205, 1_500_000_000],
+    ['688981.XSHG', '中芯国际', '半导体', 58, 56, 2_100_000_000],
+    ['600036.XSHG', '招商银行', '银行', 35.5, 35.1, 980_000_000],
+    ['601127.XSHG', '赛力斯', '汽车', 88.8, 86.4, 1_280_000_000],
+    ['510300.XSHG', '沪深300ETF', '宽基ETF', 4.12, 4.08, 5_900_000_000],
+    ['159915.XSHE', '创业板ETF', '宽基ETF', 2.31, 2.28, 2_100_000_000],
+  ].map(([code, name, sector, price, prevClose, turnoverAmount]) => ({
+    code,
+    rawCode: String(code).slice(0, 6),
+    name,
+    market: String(code).endsWith('XSHG') ? 'SH' : 'SZ',
+    board: String(sector).endsWith('ETF') ? `${String(code).endsWith('XSHG') ? '沪' : '深'}市ETF` : String(code).startsWith('688') ? '科创板' : String(code).startsWith('3') ? '创业板' : '主板',
+    sector,
+    securityType: String(sector).endsWith('ETF') ? 'etf' : String(sector) === '主要指数' ? 'index' : 'stock',
+    source: 'eastmoney',
+    price,
+    prevClose,
+    changeAmt: Number(price) - Number(prevClose),
+    changePct: ((Number(price) - Number(prevClose)) / Number(prevClose)) * 100,
+    open: prevClose,
+    high: Number(price) * 1.01,
+    low: Number(price) * 0.99,
+    volumeShares: 1_000_000,
+    turnoverAmount,
+    marketCapAmount: Number(price) * 100_000_000,
+    turnoverRate: 2.3,
+    volumeRatio: 1.4,
+    status: 2,
+  }));
+  const requested = codes?.length ? new Set(codes) : null;
+  return {
+    schemaVersion: 1,
+    sequence: 7,
+    market: 'a-share',
+    source: 'eastmoney',
+    asOf: '2026-08-01T03:35:00.000Z',
+    generatedAt: '2026-08-01T03:35:00.000Z',
+    stale: false,
+    quotes: requested ? rows.filter((row) => requested.has(String(row.code))) : rows,
+    warnings: [],
+  };
+}
+
 function mockLocalHtmlPreviewFiles() {
   vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
     const request = args && typeof args === 'object' && 'request' in args
@@ -386,9 +379,15 @@ describe('right feature panel', () => {
     codexCatalogMockState.models = [];
     codexCatalogMockState.error = null;
     seedClientLicenseSession();
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse({
-      leaseExpiresAt: futureIso(),
-    }))));
+    vi.stubGlobal('fetch', vi.fn((input?: RequestInfo | URL) => {
+      const url = String(input ?? '');
+      if (url.includes('/api/market/snapshot')) {
+        const parsed = new URL(url);
+        const codes = parsed.searchParams.get('codes')?.split(',').filter(Boolean);
+        return Promise.resolve(jsonResponse(cloudMarketSnapshot(codes)));
+      }
+      return Promise.resolve(jsonResponse({ leaseExpiresAt: futureIso() }));
+    }));
     useChatStore.setState({
       conversations: [conversation()],
       projects: [],
@@ -529,6 +528,8 @@ describe('right feature panel', () => {
     expect(workbenchToggle.querySelector('svg')).toHaveClass('lucide-chart-line');
     expect(browserToggle).toHaveAttribute('aria-pressed', 'false');
     expect(browserToggle.querySelector('svg')).toHaveClass('lucide-globe');
+    expect(browserToggle.closest('.top-bar')).toBeNull();
+    expect(browserToggle.closest('.top-bar-actions')?.parentElement).toBe(document.body);
     expect(container.querySelector('.features-panel')).not.toBeInTheDocument();
 
     await user.click(browserToggle);
@@ -591,117 +592,163 @@ describe('right feature panel', () => {
     });
   });
 
-  it('opens the research workbench from the finance right sidebar', async () => {
+  it('opens the mobile market console and navigates into secondary pages', async () => {
     const user = userEvent.setup();
-    (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     const { container } = render(<App />);
 
     await user.click(screen.getByLabelText('打开投研工作台'));
 
     const workbench = await screen.findByLabelText('投研工作台');
-    expect(workbench).toBeInTheDocument();
-    expect(within(workbench).getByRole('heading', { name: '投研工作台' })).toBeInTheDocument();
-    expect(within(workbench).getByRole('tab', { name: '日报跟踪' })).toBeInTheDocument();
-    await waitFor(() => expect(within(workbench).getAllByText(/实时/).length).toBeGreaterThan(0));
-    expect(within(workbench).getByText('总资产')).toBeInTheDocument();
-    expect(within(workbench).queryByText('聚宽数据雷达')).not.toBeInTheDocument();
-    expect(within(workbench).queryByText('财务基本面')).not.toBeInTheDocument();
-    expect(within(workbench).getByRole('tab', { name: '研究数据' })).toBeInTheDocument();
+    await waitFor(() => expect(within(workbench).getByText(/云端实时/)).toBeInTheDocument());
+    expect(within(workbench).getByRole('heading', { name: '市场' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('tab', { name: /自选/ })).toBeInTheDocument();
     expect(within(workbench).getByRole('tab', { name: '市场' })).toHaveAttribute('aria-selected', 'true');
-    expect(within(workbench).getByText('股票排行')).toBeInTheDocument();
-    expect(within(workbench).getByText('上证指数')).toBeInTheDocument();
-    expect(within(workbench).queryByRole('tab', { name: '盘前主题' })).not.toBeInTheDocument();
-    expect(within(workbench).queryByText('盘前主题')).not.toBeInTheDocument();
-    expect(workbench.querySelector('.rw-data-pill')).toHaveTextContent(/实时 \d{1,2}:\d{2}:\d{2}/);
-    await user.click(within(workbench).getByRole('tab', { name: '研究数据' }));
-    expect(within(workbench).getByLabelText('研究数据筛选')).toBeInTheDocument();
-    expect(within(workbench).getByRole('button', { name: '基本面' })).toBeInTheDocument();
-    expect(within(workbench).getByRole('button', { name: '资金交易' })).toBeInTheDocument();
-    expect(within(workbench).getByRole('button', { name: '行业成分' })).toBeInTheDocument();
-    expect(within(workbench).getByRole('button', { name: '公司事件' })).toBeInTheDocument();
-    expect(within(workbench).getByRole('button', { name: '多资产' })).toBeInTheDocument();
-    await waitFor(() => expect(within(workbench).getByRole('heading', { name: '核心财务快照' })).toBeInTheDocument());
-    expect(within(workbench).getByText('净资产收益率（ROE）')).toBeInTheDocument();
-    expect(within(workbench).getByRole('heading', { name: '研究动作' })).toBeInTheDocument();
-    expect(workbench.querySelectorAll('.rw-research-draggable[draggable="true"]').length).toBeGreaterThanOrEqual(14);
-    await user.click(within(workbench).getByRole('button', { name: '资金交易' }));
-    expect(within(workbench).getByRole('heading', { name: '资金流向' })).toBeInTheDocument();
-    expect(workbench.querySelectorAll('.rw-capital-lens .rw-research-draggable[draggable="true"]').length).toBeGreaterThanOrEqual(8);
-    await user.click(within(workbench).getByRole('button', { name: '行业成分' }));
-    expect(workbench.querySelectorAll('.rw-industry-lens .rw-research-draggable[draggable="true"]').length).toBeGreaterThanOrEqual(2);
-    await user.click(within(workbench).getByRole('button', { name: '公司事件' }));
-    expect(workbench.querySelectorAll('.rw-events-lens .rw-research-draggable[draggable="true"]').length).toBeGreaterThanOrEqual(8);
-    await user.click(within(workbench).getByRole('button', { name: '多资产' }));
-    await waitFor(() => expect(workbench.querySelector('.rw-assets-lens .rw-research-draggable[draggable="true"]')).not.toBeNull());
-    expect(within(workbench).queryByText('待接入')).not.toBeInTheDocument();
-    expect(within(workbench).queryByText('接口可查')).not.toBeInTheDocument();
-    await user.click(within(workbench).getByRole('tab', { name: /行情/ }));
-    await waitFor(() => expect(within(workbench).getByText('行情仪表盘')).toBeInTheDocument());
-    expect(within(workbench).getByText('市场宽度')).toBeInTheDocument();
-    expect(within(workbench).getByText('成交额结构')).toBeInTheDocument();
-    expect(within(workbench).getByText('市场分层')).toBeInTheDocument();
-    expect(within(workbench).getByText('板块强弱')).toBeInTheDocument();
-    expect(within(workbench).getByText('活跃度排行')).toBeInTheDocument();
-    await waitFor(() => expect(within(workbench).getByText('市场快照')).toBeInTheDocument());
-    expect(within(workbench).getByText('行业热力图')).toBeInTheDocument();
-    expect(within(workbench).getByText('涨跌分布')).toBeInTheDocument();
-    expect(within(workbench).getByText(/D3 treemap · 行情池 6 只/)).toBeInTheDocument();
-    expect(workbench.querySelector('.rw-treemap-canvas')).toBeInTheDocument();
-    const treemapMode = within(workbench).getByRole('group', { name: '热力图显示模式' });
-    expect(within(treemapMode).getByRole('button', { name: '核心' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(treemapMode).getByRole('button', { name: '板块' })).toBeInTheDocument();
-    expect(within(treemapMode).getByRole('button', { name: '细节' })).toBeInTheDocument();
-    expect(within(workbench).getByLabelText('强弱行业')).toBeInTheDocument();
-    expect(workbench.querySelector('.rw-data-pill')).toHaveTextContent(/实时 \d{1,2}:\d{2}:\d{2}/);
-    expect(within(workbench).queryByRole('tab', { name: '盘前主题' })).not.toBeInTheDocument();
+    expect(within(workbench).getByRole('tab', { name: '实盘' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('tab', { name: '资产' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('tab', { name: '发现' })).toBeInTheDocument();
+    expect(within(workbench).getByLabelText('主要指数')).toBeInTheDocument();
+    expect(within(workbench).getByLabelText('热门榜单')).toBeInTheDocument();
+    expect(within(workbench).getByLabelText('投资主题')).toBeInTheDocument();
+    expect(within(workbench).getByLabelText('智能盯盘')).toBeInTheDocument();
+    expect(within(workbench).getByLabelText('产业链')).toBeInTheDocument();
+    expect(within(workbench).getByLabelText('市场热力')).toBeInTheDocument();
+    const marketScope = within(workbench).getByRole('tablist', { name: '市场范围' });
+    expect(within(marketScope).getByRole('tab', { name: '沪深' })).toBeInTheDocument();
+    expect(within(marketScope).getByRole('tab', { name: 'ETF' })).toBeInTheDocument();
+    expect(within(marketScope).queryByRole('tab', { name: '港股' })).not.toBeInTheDocument();
+    expect(within(marketScope).queryByRole('tab', { name: '美股' })).not.toBeInTheDocument();
+    expect(workbench.querySelectorAll('[draggable="true"]').length).toBeGreaterThan(5);
+
+    await user.click(within(marketScope).getByRole('tab', { name: 'ETF' }));
+    expect(within(workbench).getByRole('heading', { name: 'ETF 专区' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '查看沪深300ETF详情' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '查看创业板ETF详情' })).toBeInTheDocument();
+    expect(within(workbench).getByText('2 只')).toBeInTheDocument();
+    await user.click(within(workbench).getByRole('button', { name: '返回上一级' }));
+
+    await user.click(within(workbench).getByRole('button', { name: '查看全部市场热力' }));
+    expect(within(workbench).getByRole('heading', { name: '热力图' })).toBeInTheDocument();
+    const heatViewSwitch = within(workbench).getByRole('tablist', { name: '热力图显示方式' });
+    expect(within(heatViewSwitch).getByRole('tab', { name: '矩形热力图' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(workbench).getByLabelText('板块热力图')).toBeInTheDocument();
+    await user.click(within(heatViewSwitch).getByRole('tab', { name: '排行列表' }));
+    expect(within(workbench).getByLabelText('板块涨跌幅排行')).toBeInTheDocument();
+    await user.click(within(workbench).getByRole('button', { name: '返回上一级' }));
+
+    await user.click(within(workbench).getAllByRole('button', { name: /查看贵州茅台详情/ })[0]);
+    expect(within(workbench).getByRole('heading', { name: '贵州茅台' })).toBeInTheDocument();
+    expect(within(workbench).queryByText('二级页面')).not.toBeInTheDocument();
+    expect(within(workbench).getByRole('tab', { name: '行情' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(workbench).getByRole('tab', { name: '持仓' })).toBeInTheDocument();
+    expect(within(workbench).getByLabelText('贵州茅台 K线图')).toBeInTheDocument();
+    const klineTabs = within(workbench).getByRole('tablist', { name: 'K线周期' });
+    expect(within(klineTabs).getByRole('tab', { name: '日K' })).toHaveAttribute('aria-selected', 'true');
+    await user.click(within(klineTabs).getByRole('tab', { name: '周K' }));
+    expect(within(klineTabs).getByRole('tab', { name: '周K' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(workbench).getByText(/云端 · 东方财富/)).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '返回上一级' })).toBeInTheDocument();
+
+    await user.click(within(workbench).getByRole('button', { name: '返回上一级' }));
+    expect(within(workbench).getByRole('heading', { name: '市场' })).toBeInTheDocument();
+    expect(container.querySelector('.market-app')).toBeInTheDocument();
   });
 
-  it('searches full-market-only stocks when creating a research portfolio', async () => {
+  it('shows all starred stocks by default and filters the watchlist to current holdings', async () => {
     const user = userEvent.setup();
-    (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-    const { container } = render(<App />);
+    window.localStorage.setItem('alpha-studio.research-state.v2', JSON.stringify({
+      version: 3,
+      cash: 100_000,
+      netDeposits: 121_000,
+      watchlist: ['600519.XSHG', '300750.XSHE'],
+      holdings: [{ code: '300750.XSHE', quantity: 100, avgCost: 210, openedAt: Date.now() }],
+      portfolios: [],
+      trades: [],
+      customSecurities: {},
+    }));
+    render(<App />);
 
     await user.click(screen.getByLabelText('打开投研工作台'));
-
     const workbench = await screen.findByLabelText('投研工作台');
-    await waitFor(() => expect(within(workbench).getByText('赛力斯')).toBeInTheDocument());
+    await waitFor(() => expect(within(workbench).getByText(/云端实时/)).toBeInTheDocument());
+    await user.click(within(workbench).getByRole('tab', { name: /自选/ }));
 
-    await user.click(within(workbench).getByRole('tab', { name: /组合/ }));
-    await user.click(within(workbench).getByRole('button', { name: /新建组合/ }));
-    await user.type(within(workbench).getByPlaceholderText('组合名称，如：AI 算力观察'), '智能车观察');
-    await user.type(within(workbench).getByPlaceholderText('搜索加入成分股（默认展示自选与持仓）'), '赛力斯');
-    await user.click(await within(workbench).findByRole('button', { name: /赛力斯/ }));
-    await user.click(within(workbench).getByRole('button', { name: /创建组合（1 只）/ }));
+    const scopeTabs = within(workbench).getByRole('tablist', { name: '自选范围' });
+    expect(within(scopeTabs).getByRole('tab', { name: /全部/ })).toHaveAttribute('aria-selected', 'true');
+    expect(within(workbench).getByText('全部自选')).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '查看贵州茅台详情' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '查看宁德时代详情' })).toBeInTheDocument();
+    expect(within(workbench).queryByRole('button', { name: '查看赛力斯详情' })).not.toBeInTheDocument();
+    expect(workbench.querySelectorAll('.market-stock-sparkline').length).toBeGreaterThan(0);
+    expect(workbench.querySelector('.market-stock-row-main > i')).not.toBeInTheDocument();
+    expect(workbench.querySelectorAll('.market-stock-price').length).toBeGreaterThan(0);
+    expect(workbench.querySelectorAll('.market-stock-change').length).toBeGreaterThan(0);
+    expect(workbench.querySelector('.market-watchlist-card .market-watch-toggle')).not.toBeInTheDocument();
+    expect(workbench.querySelector('.market-watchlist-card .market-stock-row-main > .lucide-chevron-right')).not.toBeInTheDocument();
 
-    expect(within(workbench).getByText('智能车观察')).toBeInTheDocument();
-    expect(within(workbench).getByText('赛力斯')).toBeInTheDocument();
+    await user.click(within(scopeTabs).getByRole('tab', { name: /持仓/ }));
+    expect(within(scopeTabs).getByRole('tab', { name: /持仓/ })).toHaveAttribute('aria-selected', 'true');
+    expect(within(workbench).getByText('我的持仓')).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '查看宁德时代详情' })).toBeInTheDocument();
+    expect(within(workbench).queryByRole('button', { name: '查看贵州茅台详情' })).not.toBeInTheDocument();
+
+    await user.click(within(workbench).getByRole('button', { name: '查看宁德时代详情' }));
+    await user.click(within(workbench).getByRole('tab', { name: '持仓' }));
+    const position = within(workbench).getByRole('region', { name: '宁德时代持仓信息' });
+    expect(within(position).getByText('持仓盈亏')).toBeInTheDocument();
+    expect(within(position).getByText('今日盈亏')).toBeInTheDocument();
+    expect(within(position).getByText('+500.00')).toBeInTheDocument();
+    expect(within(position).getByText('21,000.00')).toBeInTheDocument();
+    expect(within(position).getByText('17.36%')).toBeInTheDocument();
+    expect(within(position).getAllByText('100 股')).toHaveLength(3);
+  });
+
+  it('searches cloud-market stocks and opens a dedicated stock page', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByLabelText('打开投研工作台'));
+    const workbench = await screen.findByLabelText('投研工作台');
+    await waitFor(() => expect(within(workbench).getAllByText('赛力斯').length).toBeGreaterThan(0));
+
+    await user.click(within(workbench).getByLabelText('搜索股票'));
+    expect(within(workbench).getByRole('heading', { name: '搜索' })).toBeInTheDocument();
+    await user.type(within(workbench).getByPlaceholderText('股票名称、代码或行业'), '赛力斯');
+    expect(workbench.querySelector('.market-secondary-page .market-stock-row-main > .lucide-chevron-right')).not.toBeInTheDocument();
+    await user.click(within(workbench).getByRole('button', { name: '添加自选赛力斯' }));
+
     const persisted = JSON.parse(window.localStorage.getItem('alpha-studio.research-state.v2') || '{}');
     expect(persisted.customSecurities?.['601127.XSHG']?.name).toBe('赛力斯');
-    expect(persisted.portfolios?.some((portfolio: { codes?: string[] }) => portfolio.codes?.includes('601127.XSHG'))).toBe(true);
+    expect(persisted.watchlist).toContain('601127.XSHG');
+
+    await user.click(within(workbench).getByRole('button', { name: '查看赛力斯详情' }));
+    expect(within(workbench).getByRole('heading', { name: '赛力斯' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '返回上一级' })).toBeInTheDocument();
   });
 
-  it('supports simulated funding and trading inside the research workbench', async () => {
+  it('supports local live-trade records, funding and assets in the bottom navigation', async () => {
     const user = userEvent.setup();
-    (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-    const { container } = render(<App />);
+    render(<App />);
 
     await user.click(screen.getByLabelText('打开投研工作台'));
-
     const workbench = await screen.findByLabelText('投研工作台');
-    await user.click(within(workbench).getByRole('tab', { name: /交易/ }));
+    await waitFor(() => expect(within(workbench).getByText(/云端实时/)).toBeInTheDocument());
+    await user.click(within(workbench).getByRole('tab', { name: '实盘' }));
 
+    expect(within(workbench).getByLabelText('实盘交易记录')).toBeInTheDocument();
+    expect(within(workbench).getByLabelText('成交日期与时间')).toHaveAttribute('type', 'datetime-local');
     expect(within(workbench).getByLabelText('入金出金金额')).toBeInTheDocument();
-    expect(within(workbench).getByRole('button', { name: /入金/ })).toBeInTheDocument();
-    expect(within(workbench).getByRole('button', { name: /出金/ })).toBeInTheDocument();
-    expect(within(workbench).getByText('模拟下单')).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '记录入金' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '记录出金' })).toBeInTheDocument();
 
-    await user.click(within(workbench).getByRole('button', { name: /入金/ }));
-    expect(within(workbench).getByText(/入金 10\.00万 成功/)).toBeInTheDocument();
+    await user.click(within(workbench).getByRole('button', { name: '记录入金' }));
+    expect(within(workbench).getByText(/入金 10\.00万 记录已保存/)).toBeInTheDocument();
 
-    await user.click(within(workbench).getByRole('tab', { name: /组合/ }));
-    expect(within(workbench).getByText('股票组合')).toBeInTheDocument();
-    expect(within(workbench).getByText('核心资产观察')).toBeInTheDocument();
-    expect(within(workbench).getByRole('button', { name: /新建组合/ })).toBeInTheDocument();
+    await user.click(within(workbench).getByRole('tab', { name: '资产' }));
+    expect(within(workbench).getByRole('heading', { name: '资产' })).toBeInTheDocument();
+    expect(within(workbench).getByText(/总资产 · 实盘记录/)).toBeInTheDocument();
+    await user.click(within(workbench).getByRole('button', { name: /股票组合/ }));
+    expect(within(workbench).getByRole('heading', { name: '股票组合' })).toBeInTheDocument();
+    expect(within(workbench).getByRole('button', { name: '返回上一级' })).toBeInTheDocument();
   });
 
   it('closes the right sidebar before opening the skills page', async () => {
@@ -785,7 +832,7 @@ describe('right feature panel', () => {
 
     await user.click(screen.getByLabelText('打开浏览器'));
 
-    expect(container.querySelector('.right-dock-tab.active')).toHaveTextContent('浏览器');
+    expect(container.querySelector('.right-dock-tab.active')).toHaveTextContent('新标签');
     expect(container.querySelector('.browser-dock-panel')).toBeInTheDocument();
 
     await user.click(screen.getByLabelText('打开 AI 同事面板'));
@@ -794,7 +841,7 @@ describe('right feature panel', () => {
     await user.click(screen.getByLabelText('打开浏览器'));
 
     expect(container.querySelector('.coworkers-panel')).not.toBeInTheDocument();
-    expect(container.querySelector('.right-dock-tab.active')).toHaveTextContent('浏览器');
+    expect(container.querySelector('.right-dock-tab.active')).toHaveTextContent('新标签');
     expect(container.querySelector('.browser-dock-panel')).toBeInTheDocument();
     expect(container.querySelectorAll('.right-dock-tab')).toHaveLength(1);
   });
@@ -845,19 +892,65 @@ describe('right feature panel', () => {
       request: { name: 'notes.pdf', data: 'cmVzZWFyY2ggbm90ZXM=' },
     }));
     expect(await within(composerCard).findByAltText('chart.png')).toBeInTheDocument();
+    expect(within(composerCard).getByRole('button', { name: '查看图片 chart.png' })).toHaveClass('att-thumb-preview');
+    expect(within(composerCard).getByRole('button', { name: '移除 chart.png' })).toBeInTheDocument();
     expect(within(composerCard).getByText('notes.pdf')).toBeInTheDocument();
     expect(within(composerCard).getByLabelText('发送')).toBeEnabled();
   });
 
-  it('shows the background context window usage in the composer', () => {
+  it('renders sent images as clickable thumbnail buttons', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      conversations: [conversation({
+        messages: [{
+          id: 'msg-with-images',
+          role: 'user',
+          timestamp: 1,
+          blocks: [{ type: 'text', content: '参考图' }],
+          attachments: [
+            { id: 'image-1', name: 'one.png', kind: 'image', ext: 'png', previewUrl: 'data:image/png;base64,one' },
+            { id: 'image-2', name: 'two.png', kind: 'image', ext: 'png', previewUrl: 'data:image/png;base64,two' },
+          ],
+        }],
+      })],
+    });
+    const { container } = render(<App />);
+    const list = container.querySelector('.message-list') as HTMLElement;
+
+    expect(list.querySelectorAll('.message-image')).toHaveLength(2);
+    await user.click(within(list).getByRole('button', { name: '查看图片 one.png' }));
+    expect(screen.getByRole('dialog', { name: 'one.png' })).toBeInTheDocument();
+  });
+
+  it('does not show persistent context window usage in the composer', () => {
     const { container } = render(<App />);
     const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
-    const indicator = composerCard.querySelector('.context-window-indicator') as HTMLElement;
 
-    expect(indicator).toBeInTheDocument();
-    expect(indicator).toHaveTextContent('% 已用');
-    expect(indicator).toHaveAttribute('title', expect.stringContaining('背景信息窗口'));
-    expect(indicator).toHaveAttribute('title', expect.stringContaining('共 258k'));
+    expect(composerCard.querySelector('.context-window-indicator')).not.toBeInTheDocument();
+    expect(within(composerCard).queryByText(/% 已用/)).not.toBeInTheDocument();
+  });
+
+  it('shows automatic context compaction only as a conversation event while it is running', () => {
+    useChatStore.setState({
+      conversations: [conversation({
+        status: 'streaming',
+        messages: [
+          { id: 'msg-1', role: 'user', timestamp: 1, blocks: [{ type: 'text', content: '继续分析' }] },
+          {
+            id: 'msg-2',
+            role: 'assistant',
+            timestamp: 2,
+            isStreaming: true,
+            blocks: [{ type: 'tool', id: 'compact-1', title: 'context_compaction', status: 'in_progress' }],
+          },
+        ],
+      })],
+    });
+
+    const { container } = render(<App />);
+
+    expect(screen.getByText('正在自动压缩上下文')).toBeInTheDocument();
+    expect(container.querySelector('.context-window-indicator')).not.toBeInTheDocument();
   });
 
   it('imports a coworker preset task into the composer with one click', async () => {
@@ -1408,7 +1501,7 @@ describe('right feature panel', () => {
     await user.click(within(container.querySelector('.nav-menu') as HTMLElement).getByRole('button', { name: '新对话' }));
 
     expect(container.querySelector('.skills-page')).not.toBeInTheDocument();
-    expect(screen.getByPlaceholderText('询问市场、行业、公司或组合问题')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('询问投研问题，或录入实盘持仓与买卖记录')).toBeInTheDocument();
   });
 
   it('renders Codex-style relative times in the sidebar', () => {
@@ -1604,12 +1697,44 @@ describe('right feature panel', () => {
     await user.click(screen.getByTitle('选择模型与推理强度'));
     const modelMenu = document.querySelector('.model-choice-menu') as HTMLElement;
     const modelRow = within(modelMenu).getByText(/GPT-5\.5 API|5\.5 API/).closest('.model-flyout-row') as HTMLElement;
+    const modelButton = within(modelRow).getByRole('button');
     fireEvent.mouseEnter(modelRow);
+    await user.click(modelButton);
 
-    expect(await screen.findByText('订阅模型')).toBeInTheDocument();
+    expect(modelButton).toHaveAttribute('aria-expanded', 'true');
+    const subscriptionModels = await screen.findByText('订阅模型');
+    expect(subscriptionModels.closest('.model-choice-flyout')?.parentElement).toBe(document.body);
     expect(screen.getByText('按量模型')).toBeInTheDocument();
     expect(screen.queryByText('内置模型')).not.toBeInTheDocument();
     expect(screen.queryByText('自定义模型')).not.toBeInTheDocument();
+  });
+
+  it('opens speed choices when the speed row is clicked after pointer entry', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    const speedButton = screen.getByRole('button', { name: '速度' });
+    fireEvent.mouseEnter(speedButton.closest('.model-flyout-row') as HTMLElement);
+    await user.click(speedButton);
+
+    expect(speedButton).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('默认速度')).toBeVisible();
+    expect(screen.getByText('1.5x speed, increased usage')).toBeVisible();
+  });
+
+  it('keeps the active model flyout open while the pointer crosses the menu gap', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByTitle('选择模型与推理强度'));
+    const modelMenu = document.querySelector('.model-choice-menu') as HTMLElement;
+    const modelButton = within(modelMenu).getByRole('button', { name: /GPT-5\.5 API|5\.5 API/ });
+    await user.click(modelButton);
+    fireEvent.mouseLeave(modelMenu);
+
+    expect(modelButton).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('订阅模型')).toBeVisible();
   });
 
   it('loads authorized Codex catalog models into the picker', async () => {
@@ -2529,8 +2654,8 @@ describe('right feature panel', () => {
 
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     expect(container.querySelectorAll('.browser-dock-panel')).toHaveLength(1);
-    expect(within(dock).getAllByRole('tab', { name: '浏览器' })).toHaveLength(1);
-    expect(within(dock).getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(dock).getAllByRole('tab', { name: 'index' })).toHaveLength(1);
+    expect(within(dock).getByRole('tab', { name: 'index' })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('opens local HTML markdown links in the browser dock', async () => {
@@ -2673,7 +2798,7 @@ describe('right feature panel', () => {
     expect(sideChat).toBeInTheDocument();
     expect(container.querySelector('.features-panel')).not.toBeInTheDocument();
     expect(within(container.querySelector('.right-dock-workspace') as HTMLElement).getByRole('tab', { name: '侧边聊天' })).toHaveAttribute('aria-selected', 'true');
-    expect(within(sideChat).getByPlaceholderText('询问市场、行业、公司或组合问题')).toBeInTheDocument();
+    expect(within(sideChat).getByPlaceholderText('询问投研问题，或录入实盘持仓与买卖记录')).toBeInTheDocument();
   });
 
   it('shows browser as a tabbed finance workspace with a pruned add-tab menu', async () => {
@@ -2685,7 +2810,7 @@ describe('right feature panel', () => {
     const browser = container.querySelector('.browser-dock-panel') as HTMLElement;
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     expect(browser).toBeInTheDocument();
-    expect(within(dock).getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(dock).getByRole('tab', { name: '新标签' })).toHaveAttribute('aria-selected', 'true');
 
     await user.click(within(dock).getByLabelText('添加侧边栏标签'));
     const tabMenu = container.querySelector('.right-dock-tab-menu') as HTMLElement;
@@ -2760,7 +2885,8 @@ describe('right feature panel', () => {
     expect(overlay).toBeInTheDocument();
     expect(container.querySelector('.side-chat-composer')).not.toBeInTheDocument();
     const card = within(overlay).getByRole('textbox').closest('.composer-card') as HTMLElement;
-    expect(card).toHaveClass('compact');
+    expect(card).not.toHaveClass('compact');
+    expect(card.querySelector('.composer-toolbar .composer-meta')).toBeInTheDocument();
 
     const textarea = within(overlay).getByPlaceholderText('继续追问投研问题');
     await user.type(textarea, '继续检查');
@@ -2797,10 +2923,22 @@ describe('right feature panel', () => {
     const browsers = Array.from(container.querySelectorAll('.browser-dock-panel'));
     const activeBrowser = container.querySelector('.right-dock-pane.active .browser-dock-panel') as HTMLElement;
     expect(browsers).toHaveLength(2);
-    expect(within(dock).getAllByRole('tab', { name: '浏览器' })).toHaveLength(2);
+    const browserTabs = within(dock).getAllByRole('tab', { name: /robotics/ });
+    expect(browserTabs).toHaveLength(2);
+    expect(browserTabs[0]).toHaveTextContent('robotics · finance.sina.com.cn');
+    expect(browserTabs[1]).toHaveTextContent('robotics · cls.cn');
     expect(within(activeBrowser).getByPlaceholderText('搜索或输入网址')).toHaveValue(secondUrl);
     expect(activeBrowser.querySelector('.browser-frame')).toHaveAttribute('src', secondUrl);
     expect(browsers[0].querySelector('.browser-frame')).toHaveAttribute('src', firstUrl);
+
+    const tabScroller = dock.querySelector('.right-dock-tab-scroll') as HTMLElement;
+    Object.defineProperties(tabScroller, {
+      scrollWidth: { value: 520, configurable: true },
+      clientWidth: { value: 200, configurable: true },
+    });
+    tabScroller.scrollLeft = 0;
+    fireEvent.wheel(tabScroller, { deltaY: 96 });
+    expect(tabScroller.scrollLeft).toBe(96);
   });
 
   it('opens the active browser address externally from the address bar action', async () => {
@@ -3027,7 +3165,7 @@ describe('right feature panel', () => {
     const dock = container.querySelector('.right-dock-workspace') as HTMLElement;
     const browser = container.querySelector('.browser-dock-panel') as HTMLElement;
     expect(browser).toBeInTheDocument();
-    expect(within(dock).getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(dock).getByRole('tab', { name: '新标签' })).toHaveAttribute('aria-selected', 'true');
 
     await user.click(screen.getByLabelText('关闭浏览器'));
     expect(dock).toHaveClass('collapsed');
@@ -3036,8 +3174,8 @@ describe('right feature panel', () => {
     await user.click(screen.getByLabelText('打开浏览器'));
     expect(dock).not.toHaveClass('collapsed');
     expect(container.querySelector('.browser-dock-panel')).toBe(browser);
-    expect(within(dock).getByRole('tab', { name: '浏览器' })).toHaveAttribute('aria-selected', 'true');
-    expect(within(dock).getAllByRole('tab', { name: '浏览器' })).toHaveLength(1);
+    expect(within(dock).getByRole('tab', { name: '新标签' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(dock).getAllByRole('tab', { name: '新标签' })).toHaveLength(1);
   });
 
   it('closes right dock tabs from the hover-only tab close button', async () => {
@@ -3084,7 +3222,7 @@ describe('right feature panel', () => {
 
     expect(css).toMatch(/\.right-dock-workspace\s*{[^}]*width:\s*min\(\s*var\(--right-sidebar-width, 416px\),\s*calc\(100% - var\(--right-panel-main-min-width, 360px\)\)\s*\);/s);
     expect(css).toMatch(/\.main-stage\s*{[^}]*container-name:\s*main-stage;[^}]*container-type:\s*inline-size;/s);
-    expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.composer-toolbar\s*{[^}]*flex-wrap:\s*nowrap;[\s\S]*?\.context-window-indicator > span\s*{[^}]*display:\s*none;/s);
+    expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.composer-toolbar\s*{[^}]*flex-wrap:\s*nowrap;[\s\S]*?\.approval-pill > span,[\s\S]*?\.approval-pill > \.lucide-chevron-down\s*{[^}]*display:\s*none;/s);
   });
 
   it('keeps panel actions fixed while environment actions move beside an open right dock', () => {
@@ -3130,7 +3268,7 @@ describe('right feature panel', () => {
     const cssPath = `${process.cwd()}/src/styles.css`;
     const css = readFileSync(cssPath, 'utf8');
 
-    expect(css).toMatch(/\.right-dock-tabbar\s*{[^}]*height:\s*44px;[^}]*border-bottom:\s*1px solid var\(--border\);/s);
+    expect(css).toMatch(/\.right-dock-tabbar\s*{[^}]*height:\s*56px;[^}]*border-bottom:\s*1px solid var\(--border\);/s);
     expect(css).toMatch(/\.right-dock-tab\.active\s*{[^}]*background:\s*var\(--accent-soft\);[^}]*font-weight:\s*600;/s);
     expect(css).toMatch(/\.right-dock-workspace\.collapsed\s*{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.review-status-menu\s*{[^}]*min-width:\s*212px;[^}]*border-radius:\s*13px;/s);

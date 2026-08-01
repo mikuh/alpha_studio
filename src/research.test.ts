@@ -3,6 +3,7 @@ import {
   RESEARCH_CATALOG,
   applyCashFlow,
   buildQuoteMap,
+  clearLiveAccountRecords,
   computeMarketOverview,
   computeSectorHeat,
   createPortfolio,
@@ -11,6 +12,7 @@ import {
   distributionPrompt,
   loadResearchState,
   marketSnapshotPrompt,
+  normalizeResearchState,
   normalizeSecurityCode,
   placeOrder,
   rankListPrompt,
@@ -29,7 +31,7 @@ import {
 
 function blankState(): ResearchState {
   return {
-    version: 2,
+    version: 3,
     cash: 100000,
     netDeposits: 100000,
     watchlist: [],
@@ -261,6 +263,8 @@ describe('account summary', () => {
     const summary = researchAccountSummary(state, quotes);
     expect(summary.marketValue).toBe(110000);
     expect(summary.pnl).toBe(10000);
+    expect(summary.holdings[0].todayPnl).toBe(10000);
+    expect(summary.holdings[0].todayPnlPct).toBeCloseTo(10, 6);
     expect(summary.totalAssets).toBe(state.cash + 110000);
     expect(summary.totalReturn).toBeCloseTo(summary.totalAssets - state.netDeposits, 6);
     expect(summary.holdings[0].weightPct).toBeCloseTo((110000 / summary.totalAssets) * 100, 6);
@@ -285,10 +289,40 @@ describe('trade drag prompts', () => {
       createdAt: Date.UTC(2026, 6, 8, 9, 30),
     };
 
-    expect(tradePrompt(trade)).toContain('模拟买入');
+    expect(tradePrompt(trade)).toContain('实盘买入记录');
     expect(tradePrompt(trade)).toContain('止盈止损');
     expect(tradeLogPrompt([trade])).toContain('交易纪律');
     expect(tradeLogPrompt([trade])).toContain('贵州茅台');
+  });
+});
+
+describe('实盘记录管理', () => {
+  it('保存用户设置的成交时间，并用该时间标记首次建仓', () => {
+    const createdAt = Date.UTC(2026, 6, 7, 1, 35);
+    const result = placeOrder(blankState(), {
+      side: 'buy',
+      code: '000001.XSHE',
+      name: '平安银行',
+      price: 10,
+      quantity: 100,
+      createdAt,
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.state.trades[0].createdAt).toBe(createdAt);
+    expect(result.state.holdings[0].openedAt).toBe(createdAt);
+  });
+
+  it('清空资金、持仓和交易记录，保留自选与观察组合', () => {
+    let state = applyCashFlow(blankState(), 'deposit', 50_000).state;
+    state = placeOrder(state, { side: 'buy', code: '000001.XSHE', name: '平安银行', price: 10, quantity: 100 }).state;
+    state.watchlist = ['000001.XSHE'];
+    state.portfolios = [{ id: 'p1', name: '观察', codes: ['000001.XSHE'], note: '', createdAt: 1 }];
+
+    const cleared = clearLiveAccountRecords(state);
+    expect(cleared).toMatchObject({ cash: 0, netDeposits: 0, holdings: [], trades: [] });
+    expect(cleared.watchlist).toEqual(['000001.XSHE']);
+    expect(cleared.portfolios).toHaveLength(1);
   });
 });
 
@@ -297,14 +331,15 @@ describe('persistence', () => {
     window.localStorage.clear();
   });
 
-  it('round-trips v2 state through localStorage', () => {
+  it('round-trips v3 state through localStorage', () => {
     let state = defaultResearchState();
+    state = applyCashFlow(state, 'deposit', 200000).state;
     state = placeOrder(state, { side: 'buy', code: '600519.XSHG', name: '贵州茅台', price: 1000, quantity: 100 }).state;
     saveResearchState(state);
     const loaded = loadResearchState();
     expect(loaded.cash).toBe(state.cash);
     expect(loaded.holdings).toHaveLength(state.holdings.length);
-    expect(loaded.version).toBe(2);
+    expect(loaded.version).toBe(3);
   });
 
   it('migrates legacy v1 state and derives net deposits', () => {
@@ -319,7 +354,7 @@ describe('persistence', () => {
       }),
     );
     const loaded = loadResearchState();
-    expect(loaded.version).toBe(2);
+    expect(loaded.version).toBe(3);
     expect(loaded.cash).toBe(500000);
     expect(loaded.netDeposits).toBe(500000 + 10000);
     expect(loaded.holdings[0]).toMatchObject({ code: '000001.XSHE', quantity: 1000 });
@@ -330,5 +365,35 @@ describe('persistence', () => {
     window.localStorage.setItem('alpha-studio.research-state.v2', '{not json');
     const loaded = loadResearchState();
     expect(loaded.cash).toBe(defaultResearchState().cash);
+  });
+
+  it('starts new installs without seeded cash or holdings', () => {
+    const state = defaultResearchState();
+    expect(state.cash).toBe(0);
+    expect(state.netDeposits).toBe(0);
+    expect(state.holdings).toEqual([]);
+  });
+
+  it('clears the exact legacy demo account without deleting user-modified accounts', () => {
+    const legacyDemo = {
+      version: 2,
+      cash: 1_000_000,
+      netDeposits: 1_000_000,
+      watchlist: [],
+      holdings: [
+        { code: '000001.XSHE', quantity: 12000, avgCost: 10.96, openedAt: 1 },
+        { code: '300750.XSHE', quantity: 800, avgCost: 198.4, openedAt: 1 },
+        { code: '600036.XSHG', quantity: 5000, avgCost: 34.2, openedAt: 1 },
+      ],
+      portfolios: [],
+      trades: [],
+      customSecurities: {},
+    };
+    const demo = normalizeResearchState(legacyDemo);
+    expect(demo).toMatchObject({ version: 3, cash: 0, netDeposits: 0, holdings: [] });
+
+    const modified = normalizeResearchState({ ...legacyDemo, cash: 900_000 });
+    expect(modified.cash).toBe(900_000);
+    expect(modified.holdings).toHaveLength(3);
   });
 });

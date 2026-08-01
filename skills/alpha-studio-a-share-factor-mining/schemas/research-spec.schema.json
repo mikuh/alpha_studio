@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alpha-studio.local/schemas/a-share-factor-research-spec.v1.json",
+  "title": "A-share Factor Research Specification",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "research_id",
+    "objective",
+    "primary_archetype",
+    "trial_family_id",
+    "hypothesis",
+    "universe",
+    "timing",
+    "data_split",
+    "search_policy",
+    "guardrails"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "alpha.factor_research.v1"
+    },
+    "research_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 10
+    },
+    "primary_archetype": {
+      "enum": [
+        "cross_sectional",
+        "time_series",
+        "event",
+        "fundamental",
+        "alternative_data",
+        "microstructure",
+        "risk"
+      ]
+    },
+    "trial_family_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "hypothesis": {
+      "type": "object",
+      "required": [
+        "mechanism",
+        "falsifiable_prediction",
+        "expected_direction",
+        "failure_scenarios"
+      ],
+      "properties": {
+        "mechanism": {
+          "type": "string",
+          "minLength": 10
+        },
+        "falsifiable_prediction": {
+          "type": "string",
+          "minLength": 10
+        },
+        "expected_direction": {
+          "enum": [
+            "positive",
+            "negative",
+            "two_sided"
+          ]
+        },
+        "failure_scenarios": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "universe": {
+      "type": "object",
+      "required": [
+        "market",
+        "exchanges",
+        "boards",
+        "historical_membership",
+        "include_delisted",
+        "tradability_policy"
+      ],
+      "properties": {
+        "market": {
+          "const": "CN_A"
+        },
+        "exchanges": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "SSE",
+              "SZSE",
+              "BSE"
+            ]
+          }
+        },
+        "boards": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "historical_membership": {
+          "const": true
+        },
+        "include_delisted": {
+          "type": "boolean"
+        },
+        "tradability_policy": {
+          "type": "object",
+          "required": [
+            "st",
+            "suspension",
+            "price_limit",
+            "t_plus_one",
+            "lot_size"
+          ],
+          "properties": {
+            "st": {
+              "type": "string"
+            },
+            "suspension": {
+              "type": "string"
+            },
+            "price_limit": {
+              "type": "string"
+            },
+            "t_plus_one": {
+              "type": "boolean"
+            },
+            "lot_size": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "required": [
+        "frequency",
+        "timezone",
+        "decision_time",
+        "earliest_order_time",
+        "earliest_fill_time",
+        "label_interval",
+        "holding_period",
+        "rebalance_frequency"
+      ],
+      "properties": {
+        "frequency": {
+          "type": "string"
+        },
+        "timezone": {
+          "const": "Asia/Shanghai"
+        },
+        "decision_time": {
+          "type": "string"
+        },
+        "earliest_order_time": {
+          "type": "string"
+        },
+        "earliest_fill_time": {
+          "type": "string"
+        },
+        "label_interval": {
+          "type": "string",
+          "minLength": 3
+        },
+        "holding_period": {
+          "type": "string"
+        },
+        "rebalance_frequency": {
+          "type": "string"
+        }
+      }
+    },
+    "data_split": {
+      "type": "object",
+      "required": [
+        "discovery",
+        "validation",
+        "final_holdout"
+      ],
+      "properties": {
+        "discovery": {
+          "$ref": "#/$defs/dateRange"
+        },
+        "validation": {
+          "$ref": "#/$defs/dateRange"
+        },
+        "final_holdout": {
+          "$ref": "#/$defs/dateRange"
+        },
+        "shadow": {
+          "$ref": "#/$defs/dateRange"
+        }
+      }
+    },
+    "search_policy": {
+      "type": "object",
+      "required": [
+        "allowed_methods",
+        "max_trials",
+        "stopping_rule"
+      ],
+      "properties": {
+        "allowed_methods": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_trials": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stopping_rule": {
+          "type": "string",
+          "minLength": 5
+        }
+      }
+    },
+    "guardrails": {
+      "type": "object",
+      "required": [
+        "point_in_time_required",
+        "record_all_trials",
+        "final_holdout_single_use"
+      ],
+      "properties": {
+        "point_in_time_required": {
+          "const": true
+        },
+        "record_all_trials": {
+          "const": true
+        },
+        "final_holdout_single_use": {
+          "const": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "dateRange": {
+      "type": "object",
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date"
+        },
+        "end": {
+          "type": "string",
+          "format": "date"
+        }
+      }
+    }
+  }
+}

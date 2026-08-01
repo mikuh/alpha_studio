@@ -1,7 +1,12 @@
+use std::{convert::Infallible, time::Duration};
+
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
 use chrono::{Datelike, TimeZone, Utc};
@@ -21,12 +26,139 @@ use crate::{
         can_activate_device, codex_subscription_available, normalize_authorization_code,
         normalize_company_name, CLIENT_DEVICE_LEASE_DAYS,
     },
+    market::MarketSnapshot,
     state::AppState,
     tokens::RunTokenClaims,
 };
 
 pub async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketSnapshotQuery {
+    codes: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketStreamQuery {
+    tenant_id: String,
+    device_id: String,
+    fingerprint: String,
+}
+
+pub async fn market_snapshot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<MarketSnapshotQuery>,
+) -> ApiResult<Json<MarketSnapshot>> {
+    ensure_market_header_identity(&state, &headers).await?;
+    if !state.config.market_data_enabled {
+        return Err(ApiError::Upstream(
+            "cloud market feed is disabled".to_string(),
+        ));
+    }
+    let snapshot = state
+        .market
+        .ensure_snapshot(&state.http, state.redis.as_ref())
+        .await
+        .map_err(ApiError::Upstream)?;
+    Ok(Json(filter_market_snapshot(snapshot.as_ref(), &query)))
+}
+
+pub async fn market_stream(
+    State(state): State<AppState>,
+    Query(query): Query<MarketStreamQuery>,
+) -> ApiResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    ensure_device_identity(
+        &state.db,
+        &query.tenant_id,
+        &query.device_id,
+        &query.fingerprint,
+    )
+    .await?;
+    if !state.config.market_data_enabled {
+        return Err(ApiError::Upstream(
+            "cloud market feed is disabled".to_string(),
+        ));
+    }
+    let first = state
+        .market
+        .ensure_snapshot(&state.http, state.redis.as_ref())
+        .await
+        .map_err(ApiError::Upstream)?;
+    let mut receiver = state.market.subscribe();
+    let stream = async_stream::stream! {
+        if let Ok(event) = Event::default().event("snapshot").id(first.sequence.to_string()).json_data(first.as_ref()) {
+            yield Ok::<Event, Infallible>(event);
+        }
+        loop {
+            match receiver.recv().await {
+                Ok(snapshot) => {
+                    if let Ok(event) = Event::default().event("snapshot").id(snapshot.sequence.to_string()).json_data(snapshot.as_ref()) {
+                        yield Ok::<Event, Infallible>(event);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    ))
+}
+
+async fn ensure_market_header_identity(state: &AppState, headers: &HeaderMap) -> ApiResult<()> {
+    let value = |name: &'static str| -> ApiResult<&str> {
+        headers
+            .get(name)
+            .and_then(|header| header.to_str().ok())
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| ApiError::Unauthorized(format!("missing {name}")))
+    };
+    ensure_device_identity(
+        &state.db,
+        value("x-alpha-tenant-id")?,
+        value("x-alpha-device-id")?,
+        value("x-alpha-device-fingerprint")?,
+    )
+    .await
+}
+
+fn filter_market_snapshot(
+    snapshot: &MarketSnapshot,
+    query: &MarketSnapshotQuery,
+) -> MarketSnapshot {
+    let requested = query.codes.as_deref().map(|codes| {
+        codes
+            .split(',')
+            .map(|code| code.trim().to_uppercase())
+            .filter(|code| !code.is_empty())
+            .collect::<std::collections::HashSet<_>>()
+    });
+    let limit = query.limit.unwrap_or(snapshot.quotes.len()).clamp(1, 8000);
+    let quotes = snapshot
+        .quotes
+        .iter()
+        .filter(|quote| {
+            requested
+                .as_ref()
+                .map(|codes| codes.contains(&quote.code) || codes.contains(&quote.raw_code))
+                .unwrap_or(true)
+        })
+        .take(limit)
+        .cloned()
+        .collect();
+    MarketSnapshot {
+        quotes,
+        ..snapshot.clone()
+    }
 }
 
 pub async fn readyz(State(state): State<AppState>) -> ApiResult<Json<Value>> {

@@ -1,0 +1,38 @@
+{
+  "schema_version": "alpha.factor_trial.v1",
+  "run_id": "run-20260723-001",
+  "trial_id": "trial-0001",
+  "trial_family_id": "cn-a-reversal-quality-family",
+  "parent_trial_id": null,
+  "factor_id": "sha256:example-factor-hash",
+  "normalized_ast_hash": "sha256:example-ast-hash",
+  "dataset_snapshot_id": "cn-a-daily-pit-20260722",
+  "universe_snapshot_id": "cn-a-historical-universe-v1",
+  "code_commit": "abcdef1234567890",
+  "environment_hash": "sha256:example-environment-hash",
+  "random_seed": 20260723,
+  "parameters": {
+    "lookback": 20,
+    "holding_period": 5
+  },
+  "preprocessing": {
+    "winsorize": "mad_5",
+    "standardize": "rank_normal",
+    "neutralize": [
+      "industry",
+      "log_float_market_cap"
+    ]
+  },
+  "label": "executable_open(t+1) to executable_open(t+6)",
+  "split": "discovery",
+  "status": "succeeded",
+  "failure_reason": null,
+  "metrics_uri": "artifacts/run-20260723-001/factor_metrics.json",
+  "artifact_uri": "artifacts/run-20260723-001/",
+  "model_prompt_version": "hypothesis-agent-v1",
+  "token_cost": 0,
+  "compute_seconds": 12.4,
+  "holdout_seen": false,
+  "created_at": "2026-07-23T10:00:00+08:00",
+  "owner": "alpha-research"
+}

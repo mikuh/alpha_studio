@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alpha Studio A股因子挖掘"
+  short_description: "挖掘、验证、去冗余并治理可交易的 A 股量化因子研究"
+  default_prompt: "使用 $alpha-studio-a-share-factor-mining 设计并评测一个 A 股量化因子，输出完整研究账本和准入结论。"

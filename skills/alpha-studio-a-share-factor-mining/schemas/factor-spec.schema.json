@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alpha-studio.local/schemas/a-share-factor-spec.v1.json",
+  "title": "A-share Factor Specification",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "name",
+    "trial_family_id",
+    "primary_archetype",
+    "hypothesis",
+    "expected_direction",
+    "implementation",
+    "data_fields",
+    "universe_ref",
+    "timing",
+    "preprocessing",
+    "parameters",
+    "falsification"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "alpha.factor_spec.v1"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+    },
+    "trial_family_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "primary_archetype": {
+      "enum": [
+        "cross_sectional",
+        "time_series",
+        "event",
+        "fundamental",
+        "alternative_data",
+        "microstructure",
+        "risk"
+      ]
+    },
+    "hypothesis": {
+      "type": "string",
+      "minLength": 10
+    },
+    "expected_direction": {
+      "enum": [
+        "positive",
+        "negative",
+        "two_sided"
+      ]
+    },
+    "implementation": {
+      "type": "object",
+      "oneOf": [
+        {
+          "required": [
+            "expression",
+            "dsl_version"
+          ]
+        },
+        {
+          "required": [
+            "code_ref",
+            "code_hash"
+          ]
+        }
+      ],
+      "properties": {
+        "expression": {
+          "type": "string",
+          "minLength": 3
+        },
+        "dsl_version": {
+          "type": "string"
+        },
+        "code_ref": {
+          "type": "string"
+        },
+        "code_hash": {
+          "type": "string"
+        }
+      }
+    },
+    "data_fields": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "source",
+          "frequency",
+          "known_at_rule",
+          "availability_lag",
+          "adjustment"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "frequency": {
+            "type": "string"
+          },
+          "known_at_rule": {
+            "type": "string",
+            "minLength": 3
+          },
+          "availability_lag": {
+            "type": "string"
+          },
+          "adjustment": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "universe_ref": {
+      "type": "string",
+      "minLength": 3
+    },
+    "timing": {
+      "type": "object",
+      "required": [
+        "formation_window",
+        "decision_time",
+        "earliest_fill_time",
+        "holding_period",
+        "rebalance_frequency"
+      ],
+      "properties": {
+        "formation_window": {
+          "type": "string"
+        },
+        "decision_time": {
+          "type": "string"
+        },
+        "earliest_fill_time": {
+          "type": "string"
+        },
+        "holding_period": {
+          "type": "string"
+        },
+        "rebalance_frequency": {
+          "type": "string"
+        }
+      }
+    },
+    "preprocessing": {
+      "type": "object",
+      "required": [
+        "missing",
+        "winsorize",
+        "standardize",
+        "neutralize"
+      ],
+      "properties": {
+        "missing": {
+          "type": "string"
+        },
+        "winsorize": {
+          "type": "string"
+        },
+        "standardize": {
+          "type": "string"
+        },
+        "neutralize": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "parameters": {
+      "type": "object"
+    },
+    "falsification": {
+      "type": "object",
+      "required": [
+        "expected_failures",
+        "invalidation_rules"
+      ],
+      "properties": {
+        "expected_failures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "invalidation_rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

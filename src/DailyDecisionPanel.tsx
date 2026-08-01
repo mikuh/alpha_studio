@@ -38,7 +38,7 @@ import {
   type ResearchRecommendation,
 } from './dailyDecision';
 import { insertIntoComposer } from './composerBridge';
-import { fetchEastmoneyRealtimeBatch } from './eastmoney';
+import { fetchCloudRealtimeBatch } from './cloudMarket';
 import { buildQuoteMap, loadResearchState, sectorExposure, researchAccountSummary } from './research';
 import { useChatStore, useCurrentConversation } from './store';
 import {
@@ -149,7 +149,7 @@ export function DailyDecisionPanel() {
         ...researchState.watchlist,
         ...researchState.holdings.map((holding) => holding.code),
       ]));
-      const live = codes.length ? await fetchEastmoneyRealtimeBatch(codes) : null;
+      const live = codes.length ? await fetchCloudRealtimeBatch(codes) : null;
       const quotes = buildQuoteMap(researchState, live?.prices ?? undefined);
       const summary = researchAccountSummary(researchState, quotes);
       const context = [

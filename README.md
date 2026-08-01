@@ -27,6 +27,19 @@ npm run dev
 npm run tauri:dev
 ```
 
+To run the development client against the production service configured in
+`.env.production`:
+
+```bash
+npm run tauri:dev:prod
+```
+
+Production frontend builds, including the macOS DMG, load `.env.production`:
+
+```bash
+npm run tauri:build:dmg
+```
+
 Useful checks:
 
 ```bash
@@ -68,6 +81,35 @@ The admin app now covers the commercial operating loop:
 - configure upstream provider keys, model aliases, endpoint paths, prices, and markup
 - assign GPT subscription accounts to customers for monthly or yearly subscription access
 - inspect audit logs and usage-ledger totals
+
+### Cloud market data
+
+The securities console never calls a public market-data website from the
+client. The Rust API owns the complete data path:
+
+1. poll Eastmoney as the primary A-share stock and exchange-listed ETF snapshot source;
+2. fail over to Tencent when the primary source is empty or unavailable;
+3. normalize both providers into the same `MarketSnapshot` / `MarketQuote`
+   schema and preserve the provider name on every quote;
+4. keep the latest snapshot in memory and Redis;
+5. serve an authenticated snapshot at `GET /api/market/snapshot` and broadcast
+   updates as SSE `snapshot` events from `GET /api/market/stream`.
+
+Both routes validate the activated tenant, device, and device fingerprint.
+The frontend uses the snapshot for first paint and the SSE stream for later
+updates. Configure the feed in `.env`:
+
+```bash
+MARKET_DATA_ENABLED=true
+MARKET_REFRESH_SECONDS=45
+MARKET_SNAPSHOT_LIMIT=8000
+```
+
+Eastmoney and Tencent are public web data sources, not contractual licensed
+redistribution feeds. Before exposing this service to production customers,
+obtain the required display/redistribution authorization or replace the
+provider adapters with licensed feeds. `MARKET_DATA_ENABLED=false` disables
+both cloud endpoints without changing the client contract.
 
 ## Product Shape
 

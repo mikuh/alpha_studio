@@ -20,6 +20,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex};
 
+mod jqdata_http;
 mod local_store;
 
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
@@ -311,434 +312,9 @@ pub struct JqDataQueryResult {
 }
 
 #[derive(Default)]
-struct JqDataQueryState;
-
-#[derive(Clone, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct EastmoneyRealtimeRequest {
-    #[serde(default)]
-    codes: Vec<String>,
-    #[serde(default)]
-    tick_code: Option<String>,
-    #[serde(default)]
-    tick_count: Option<u32>,
-    #[serde(default)]
-    full_market: bool,
-    #[serde(default)]
-    page_size: Option<u32>,
+struct JqDataQueryState {
+    http: jqdata_http::JqDataHttpClient,
 }
-
-#[derive(Clone, Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct EastmoneyRealtimeResult {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    quote_rows: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tick_rows: Option<Value>,
-}
-
-const JQDATA_SDK_QUERY_SCRIPT: &str = r#"
-import contextlib
-import datetime as _dt
-import io
-import json
-import math
-import sys
-
-def _jsonable(value):
-    try:
-        import pandas as _pd
-        if _pd.isna(value):
-            return None
-    except Exception:
-        pass
-    try:
-        import numpy as _np
-        if isinstance(value, _np.generic):
-            value = value.item()
-    except Exception:
-        pass
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, _dt.datetime):
-        return value.isoformat(sep=" ")
-    if isinstance(value, _dt.date):
-        return value.isoformat()
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_jsonable(v) for v in value]
-    if hasattr(value, "isoformat"):
-        try:
-            return value.isoformat()[:10]
-        except Exception:
-            pass
-    return str(value)
-
-def _date_text(value):
-    converted = _jsonable(value)
-    if converted is None:
-        return ""
-    return str(converted)[:10]
-
-def _df_rows(df):
-    if df is None:
-        return []
-    rows = []
-    for index, row in df.iterrows():
-        item = {str(key): _jsonable(value) for key, value in row.items()}
-        if "date" not in item or item.get("date") in (None, ""):
-            for key in ("time", "day"):
-                if item.get(key) not in (None, ""):
-                    item["date"] = _date_text(item.get(key))
-                    break
-        if ("date" not in item or item.get("date") in (None, "")) and index is not None:
-            item["date"] = _date_text(index)
-        if "index" not in item and index is not None:
-            item["index"] = _jsonable(index)
-        rows.append(item)
-    return rows
-
-def _frequency(value):
-    value = value or "daily"
-    if value == "1d":
-        return "daily"
-    if value == "1m":
-        return "minute"
-    return value
-
-def _security_param(params):
-    return (
-        params.get("codes")
-        or params.get("code")
-        or params.get("security")
-        or params.get("security_list")
-        or params.get("stock_list")
-    )
-
-def _fields(params):
-    fields = params.get("fields")
-    return fields if fields else None
-
-def _fq(value):
-    if value in (None, "", "none", "raw"):
-        return None
-    return value
-
-def _security_info_row(info, code):
-    if not info:
-        return []
-    return [{
-        "code": getattr(info, "code", code),
-        "display_name": getattr(info, "display_name", "") or getattr(info, "name", "") or code,
-        "name": getattr(info, "name", ""),
-        "start_date": _jsonable(getattr(info, "start_date", None)),
-        "end_date": _jsonable(getattr(info, "end_date", None)),
-        "type": getattr(info, "type", ""),
-        "parent": getattr(info, "parent", None),
-    }]
-
-def _industry_rows(data):
-    rows = []
-    if not isinstance(data, dict):
-        return rows
-    for code, groups in data.items():
-        if not isinstance(groups, dict):
-            continue
-        for category, info in groups.items():
-            if not isinstance(info, dict):
-                continue
-            name = info.get("industry_name") or info.get("name") or ""
-            rows.append({
-                "code": code,
-                "category": category,
-                "industry_code": info.get("industry_code") or "",
-                "industry_name": name,
-                "name": name,
-            })
-    return rows
-
-def _mapping_rows(data, code, value_key):
-    if not isinstance(data, dict):
-        return []
-    rows = []
-    for key, value in data.items():
-        if isinstance(value, dict):
-            item = {str(k): _jsonable(v) for k, v in value.items()}
-            item.setdefault(value_key, str(key))
-        else:
-            item = {value_key: str(key), "name": _jsonable(value)}
-        item.setdefault("code", code)
-        rows.append(item)
-    return rows
-
-def _concept_rows(data, code):
-    if not isinstance(data, dict):
-        return []
-    rows = []
-    for security, groups in data.items():
-        if not isinstance(groups, dict):
-            continue
-        for category, concepts in groups.items():
-            if not isinstance(concepts, list):
-                continue
-            for concept in concepts:
-                if not isinstance(concept, dict):
-                    continue
-                item = {str(k): _jsonable(v) for k, v in concept.items()}
-                item["code"] = security or code
-                item["category"] = category
-                rows.append(item)
-    return rows
-
-def _fundamentals_query(jq, code):
-    return jq.query(
-        jq.valuation.code,
-        jq.valuation.pe_ratio,
-        jq.valuation.pb_ratio,
-        jq.valuation.ps_ratio,
-        jq.valuation.pcf_ratio,
-        jq.valuation.market_cap,
-        jq.valuation.circulating_market_cap,
-        jq.indicator.roe,
-        jq.indicator.roa,
-        jq.indicator.gross_profit_margin,
-        jq.indicator.net_profit_margin,
-        jq.indicator.inc_revenue_year_on_year,
-        jq.indicator.inc_net_profit_year_on_year,
-        jq.balance.total_assets,
-        jq.balance.total_liability,
-        jq.cash_flow.net_operate_cash_flow,
-        jq.income.operating_revenue,
-        jq.income.net_profit,
-    ).filter(jq.valuation.code == code)
-
-def _company_research_rows(jq, code, date):
-    from jqdatasdk import finance as _finance
-    specs = [
-        ("shareholders", _finance.STK_SHAREHOLDER_TOP10, "pub_date", 20),
-        ("pledge", _finance.STK_SHARES_PLEDGE, "pub_date", 20),
-        ("northbound", _finance.STK_HK_HOLD_INFO, "day", 30),
-        ("forecast", _finance.STK_FIN_FORCAST, "pub_date", 20),
-        ("performance", _finance.STK_PERFORMANCE_LETTERS, "pub_date", 12),
-    ]
-    rows = []
-    for section, table, date_field, limit in specs:
-        try:
-            field = getattr(table, date_field)
-            query_object = jq.query(table).filter(table.code == code)
-            if date:
-                query_object = query_object.filter(field <= date)
-            df = _finance.run_query(query_object.order_by(field.desc()).limit(limit))
-            for row in _df_rows(df):
-                row["section"] = section
-                rows.append(row)
-        except Exception:
-            continue
-    return rows
-
-def _handle(jq, method, params):
-    if method == "__probe":
-        query_count = _jsonable(jq.get_query_count())
-        price = jq.get_price(
-            "000001.XSHE",
-            count=3,
-            end_date=_dt.date.today().isoformat(),
-            frequency="daily",
-            fields=["open", "close", "high", "low", "volume", "money"],
-        )
-        return {"ok": True, "queryCount": query_count, "rows": _df_rows(price)}
-
-    if method == "get_query_count":
-        return {"ok": True, "rows": [_jsonable(jq.get_query_count())]}
-
-    if method == "get_privilege":
-        value = str(jq.get_privilege() or "")
-        return {"ok": True, "rows": [{"privilege": item} for item in value.split("|") if item]}
-
-    if method == "get_trade_days":
-        values = jq.get_trade_days(
-            start_date=params.get("start_date"),
-            end_date=params.get("end_date"),
-            count=params.get("count"),
-        )
-        return {"ok": True, "rows": [{"date": _jsonable(value)} for value in values]}
-
-    if method == "get_all_securities":
-        security_types = params.get("types") or params.get("security_types") or ["stock"]
-        if isinstance(security_types, str):
-            security_types = [security_types]
-        df = jq.get_all_securities(types=security_types, date=params.get("date"))
-        rows = _df_rows(df)
-        limit = int(params.get("limit") or 0)
-        return {"ok": True, "rows": rows[:limit] if limit > 0 else rows}
-
-    if method == "get_fundamentals_snapshot":
-        code = params.get("code") or params.get("security")
-        if not code:
-            return {"ok": False, "message": "财务快照缺少 code 参数。"}
-        df = jq.get_fundamentals(
-            _fundamentals_query(jq, code),
-            date=params.get("date"),
-            statDate=params.get("stat_date"),
-        )
-        return {"ok": True, "rows": _df_rows(df)}
-
-    if method == "get_company_research":
-        code = params.get("code") or params.get("security")
-        if not code:
-            return {"ok": False, "message": "公司研究缺少 code 参数。"}
-        return {"ok": True, "rows": _company_research_rows(jq, code, params.get("date"))}
-
-    if method == "get_industries":
-        df = jq.get_industries(name=params.get("name") or "sw_l1", date=params.get("date"))
-        return {"ok": True, "rows": _df_rows(df)}
-
-    if method == "get_concepts":
-        return {"ok": True, "rows": _df_rows(jq.get_concepts())}
-
-    if method == "get_concept":
-        code = params.get("code") or params.get("security")
-        if not code:
-            return {"ok": False, "message": "概念归属缺少 code 参数。"}
-        data = jq.get_concept(code, date=params.get("date"))
-        return {"ok": True, "rows": _concept_rows(data, code)}
-
-    if method == "get_constituents":
-        kind = str(params.get("kind") or "industry")
-        target = params.get("target") or params.get("code")
-        if not target:
-            return {"ok": False, "message": "成分查询缺少 target 参数。"}
-        if kind == "concept":
-            values = jq.get_concept_stocks(target, date=params.get("date"))
-        elif kind == "index":
-            values = jq.get_index_stocks(target, date=params.get("date"))
-        else:
-            values = jq.get_industry_stocks(target, date=params.get("date"))
-        return {"ok": True, "rows": [{"code": value} for value in values]}
-
-    if method == "get_index_weights":
-        target = params.get("code") or params.get("index")
-        if not target:
-            return {"ok": False, "message": "指数权重缺少 code 参数。"}
-        return {"ok": True, "rows": _df_rows(jq.get_index_weights(target, date=params.get("date")))}
-
-    if method == "get_billboard_list":
-        stock_list = params.get("stock_list") or params.get("codes") or params.get("code")
-        if isinstance(stock_list, str):
-            stock_list = [stock_list]
-        df = jq.get_billboard_list(
-            stock_list=stock_list,
-            start_date=params.get("start_date"),
-            end_date=params.get("end_date"),
-            count=params.get("count"),
-        )
-        return {"ok": True, "rows": _df_rows(df)}
-
-    if method == "get_preopen_infos":
-        security = _security_param(params)
-        if not security:
-            return {"ok": False, "message": "盘前信息缺少 code/codes 参数。"}
-        return {"ok": True, "rows": _df_rows(jq.get_preopen_infos(security, fields=_fields(params) or ("paused", "factor", "high_limit", "low_limit")))}
-
-    if method == "get_price":
-        security = _security_param(params)
-        if not security:
-            return {"ok": False, "message": "get_price 缺少 code/codes 参数。"}
-        is_batch = isinstance(security, list)
-        df = jq.get_price(
-            security,
-            start_date=params.get("start_date") or params.get("date"),
-            end_date=params.get("end_date"),
-            frequency=_frequency(params.get("frequency") or params.get("unit")),
-            fields=_fields(params),
-            skip_paused=bool(params.get("skip_paused", False)),
-            fq=_fq(params.get("fq", "pre")),
-            count=params.get("count"),
-            panel=False if is_batch else True,
-            fill_paused=bool(params.get("fill_paused", True)),
-        )
-        return {"ok": True, "rows": _df_rows(df)}
-
-    if method == "get_security_info":
-        code = params.get("code") or params.get("security")
-        if not code:
-            return {"ok": False, "message": "get_security_info 缺少 code 参数。"}
-        return {"ok": True, "rows": _security_info_row(jq.get_security_info(code, date=params.get("date")), code)}
-
-    if method == "get_money_flow":
-        security = _security_param(params)
-        if not security:
-            return {"ok": False, "message": "get_money_flow 缺少 code/codes 参数。"}
-        df = jq.get_money_flow(
-            security,
-            start_date=params.get("start_date") or params.get("date"),
-            end_date=params.get("end_date"),
-            fields=_fields(params),
-            count=params.get("count"),
-        )
-        return {"ok": True, "rows": _df_rows(df)}
-
-    if method == "get_mtss":
-        security = _security_param(params)
-        if not security:
-            return {"ok": False, "message": "get_mtss 缺少 code/codes 参数。"}
-        df = jq.get_mtss(
-            security,
-            start_date=params.get("start_date") or params.get("date"),
-            end_date=params.get("end_date"),
-            fields=_fields(params),
-            count=params.get("count"),
-        )
-        return {"ok": True, "rows": _df_rows(df)}
-
-    if method == "get_industry":
-        security = params.get("code") or params.get("security")
-        if not security:
-            return {"ok": False, "message": "get_industry 缺少 code 参数。"}
-        return {"ok": True, "rows": _industry_rows(jq.get_industry(security, date=params.get("date"), df=False))}
-
-    if method == "get_locked_shares":
-        stock_list = params.get("stock_list") or params.get("codes") or params.get("code")
-        if isinstance(stock_list, str):
-            stock_list = [stock_list]
-        df = jq.get_locked_shares(
-            stock_list=stock_list,
-            start_date=params.get("start_date") or params.get("date"),
-            end_date=params.get("end_date"),
-            forward_count=params.get("forward_count"),
-        )
-        return {"ok": True, "rows": _df_rows(df)}
-
-    return {"ok": False, "message": "JQData SDK/RPC 暂不支持方法：" + str(method)}
-
-try:
-    payload = json.load(sys.stdin)
-    username = str(payload.get("username") or "").strip()
-    password = str(payload.get("password") or "").strip()
-    method = str(payload.get("method") or "").strip()
-    params = payload.get("params") or {}
-    import jqdatasdk as jq
-    with contextlib.redirect_stdout(io.StringIO()):
-        jq.auth(username, password)
-    try:
-        authed = bool(jq.is_auth())
-    except Exception:
-        authed = True
-    if not authed:
-        result = {"ok": False, "message": "JQData SDK/RPC 认证失败。"}
-    else:
-        result = _handle(jq, method, params)
-except Exception as exc:
-    result = {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
-
-sys.stdout.write(json.dumps(result, ensure_ascii=False, allow_nan=False))
-"#;
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -1295,6 +871,7 @@ async fn jqdata_config_load() -> Result<JqDataConfigLoadResult, String> {
 
 #[tauri::command]
 async fn jqdata_config_save(
+    state: State<'_, JqDataQueryState>,
     request: JqDataConfigSaveRequest,
 ) -> Result<JqDataConfigSaveResult, String> {
     let path = jqdata_config_path()?;
@@ -1330,13 +907,16 @@ async fn jqdata_config_save(
         updated_at: unix_millis_string(),
     };
     write_jqdata_config_file(&path, &config)?;
+    state.http.clear_token().await;
     Ok(JqDataConfigSaveResult {
         path: path.to_string_lossy().to_string(),
     })
 }
 
 #[tauri::command]
-async fn jqdata_test_connection() -> Result<JqDataProbeResult, String> {
+async fn jqdata_test_connection(
+    state: State<'_, JqDataQueryState>,
+) -> Result<JqDataProbeResult, String> {
     let path = jqdata_config_path()?;
     let config = read_jqdata_config_file(&path)?;
     if !config.enabled {
@@ -1356,12 +936,12 @@ async fn jqdata_test_connection() -> Result<JqDataProbeResult, String> {
         });
     }
 
-    run_jqdata_probe(config).await
+    run_jqdata_probe(config, &state).await
 }
 
 #[tauri::command]
 async fn jqdata_query(
-    _state: State<'_, JqDataQueryState>,
+    state: State<'_, JqDataQueryState>,
     request: JqDataQueryRequest,
 ) -> Result<JqDataQueryResult, String> {
     let path = jqdata_config_path()?;
@@ -1376,14 +956,7 @@ async fn jqdata_query(
             rows: None,
         });
     }
-    run_jqdata_sdk_query(&config, &request).await
-}
-
-#[tauri::command]
-async fn eastmoney_realtime_query(
-    request: EastmoneyRealtimeRequest,
-) -> Result<EastmoneyRealtimeResult, String> {
-    run_eastmoney_realtime_query(request).await
+    run_jqdata_http_query(&config, &request, &state).await
 }
 
 #[tauri::command]
@@ -4284,196 +3857,64 @@ fn unix_millis_string() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
-async fn run_jqdata_probe(config: JqDataConfigFile) -> Result<JqDataProbeResult, String> {
-    run_jqdata_sdk_probe(&config).await
-}
-
-async fn run_jqdata_sdk_probe(config: &JqDataConfigFile) -> Result<JqDataProbeResult, String> {
-    let result = run_jqdata_sdk_python(config, "__probe", &Map::new()).await?;
-    if !jqdata_value_ok(&result) {
-        return Ok(JqDataProbeResult {
-            ok: false,
-            message: jqdata_value_message(&result)
-                .unwrap_or_else(|| "JQData SDK/RPC 连接失败。".to_string()),
-            query_count: None,
-            sample: None,
-        });
-    }
-
-    let mut sample = Map::new();
-    sample.insert(
-        "transport".to_string(),
-        Value::String("sdk_rpc".to_string()),
-    );
-    if let Some(rows) = result.get("rows").cloned() {
-        sample.insert("priceRows".to_string(), rows);
-    }
-
-    Ok(JqDataProbeResult {
-        ok: true,
-        message: "JQData SDK/RPC 连接成功，投研工作台将使用 SDK/RPC 读取真实数据。".to_string(),
-        query_count: result.get("queryCount").cloned(),
-        sample: Some(Value::Object(sample)),
-    })
-}
-
-async fn run_jqdata_sdk_query(
-    config: &JqDataConfigFile,
-    request: &JqDataQueryRequest,
-) -> Result<JqDataQueryResult, String> {
-    let result = run_jqdata_sdk_python(config, &request.method, &request.params).await?;
-    if !jqdata_value_ok(&result) {
-        return Ok(JqDataQueryResult {
-            ok: false,
-            message: jqdata_value_message(&result)
-                .or_else(|| Some("JQData SDK/RPC 未返回可用数据。".to_string())),
-            rows: None,
-        });
-    }
-
-    Ok(JqDataQueryResult {
-        ok: true,
-        message: None,
-        rows: Some(
-            result
-                .get("rows")
-                .cloned()
-                .unwrap_or_else(|| Value::Array(Vec::new())),
-        ),
-    })
-}
-
-async fn run_jqdata_sdk_python(
-    config: &JqDataConfigFile,
-    method: &str,
-    params: &Map<String, Value>,
-) -> Result<Value, String> {
-    let payload = json!({
-        "username": config.username.trim(),
-        "password": config.password.trim(),
-        "method": method,
-        "params": params,
-    });
-    let payload_bytes = serde_json::to_vec(&payload)
-        .map_err(|e| format!("Failed to encode JQData SDK/RPC payload: {e}"))?;
-    let mut errors = Vec::new();
-
-    for python in jqdata_python_candidates() {
-        let mut command = Command::new(&python);
-        command
-            .arg("-c")
-            .arg(JQDATA_SDK_QUERY_SCRIPT)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(err) => {
-                errors.push(format!("{python}: {err}"));
-                continue;
-            }
-        };
-
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(err) = stdin.write_all(&payload_bytes).await {
-                errors.push(format!("{python}: JQData SDK/RPC 输入失败：{err}"));
-                continue;
-            }
-        }
-
-        let output = match tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            child.wait_with_output(),
+async fn run_jqdata_probe(
+    config: JqDataConfigFile,
+    state: &JqDataQueryState,
+) -> Result<JqDataProbeResult, String> {
+    match state
+        .http
+        .probe(
+            &upgrade_legacy_jqdata_api_url(&config.api_url),
+            config.username.trim(),
+            config.password.trim(),
         )
         .await
-        {
-            Ok(Ok(output)) => output,
-            Ok(Err(err)) => {
-                errors.push(format!("{python}: JQData SDK/RPC 执行失败：{err}"));
-                continue;
-            }
-            Err(_) => {
-                errors.push(format!("{python}: JQData SDK/RPC 查询超时"));
-                continue;
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if let Ok(value) = serde_json::from_str::<Value>(&stdout) {
-            if jqdata_value_missing_sdk_module(&value) {
-                errors.push(format!(
-                    "{python}: {}",
-                    jqdata_value_message(&value).unwrap_or_else(|| "未安装 jqdatasdk".to_string())
-                ));
-                continue;
-            }
-            return Ok(value);
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = if stdout.is_empty() {
-            stderr.trim().to_string()
-        } else {
-            stdout
-        };
-        errors.push(format!(
-            "{python}: {}",
-            scrub_jqdata_secret(config, truncate_for_message(&detail).as_str())
-        ));
+    {
+        Ok(result) => Ok(JqDataProbeResult {
+            ok: true,
+            message: "JQData 原生 HTTP 连接成功；安装包无需额外数据运行时。".to_string(),
+            query_count: Some(result.query_count),
+            sample: Some(json!({
+                "transport": "native_http",
+                "priceRows": result.price_rows,
+            })),
+        }),
+        Err(error) => Ok(JqDataProbeResult {
+            ok: false,
+            message: scrub_jqdata_secret(&config, &error),
+            query_count: None,
+            sample: None,
+        }),
     }
-
-    Err(format!(
-        "无法通过 JQData SDK/RPC 查询。{}",
-        errors.join("；")
-    ))
 }
 
-fn jqdata_python_candidates() -> Vec<String> {
-    let mut candidates = Vec::new();
-    if let Ok(value) = env::var("ALPHA_STUDIO_JQDATA_PYTHON") {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            candidates.push(trimmed.to_string());
-        }
+async fn run_jqdata_http_query(
+    config: &JqDataConfigFile,
+    request: &JqDataQueryRequest,
+    state: &JqDataQueryState,
+) -> Result<JqDataQueryResult, String> {
+    match state
+        .http
+        .query(
+            &upgrade_legacy_jqdata_api_url(&config.api_url),
+            config.username.trim(),
+            config.password.trim(),
+            &request.method,
+            &request.params,
+        )
+        .await
+    {
+        Ok(rows) => Ok(JqDataQueryResult {
+            ok: true,
+            message: None,
+            rows: Some(Value::Array(rows)),
+        }),
+        Err(error) => Ok(JqDataQueryResult {
+            ok: false,
+            message: Some(scrub_jqdata_secret(config, &error)),
+            rows: None,
+        }),
     }
-    candidates.extend([
-        "/opt/miniconda3/bin/python3".to_string(),
-        "/opt/homebrew/bin/python3".to_string(),
-        "/usr/local/bin/python3".to_string(),
-        "/usr/bin/python3".to_string(),
-        "python3".to_string(),
-        "python".to_string(),
-    ]);
-    let mut seen = HashSet::new();
-    candidates
-        .into_iter()
-        .filter(|candidate| seen.insert(candidate.clone()))
-        .collect()
-}
-
-fn jqdata_value_missing_sdk_module(value: &Value) -> bool {
-    if jqdata_value_ok(value) {
-        return false;
-    }
-    jqdata_value_message(value)
-        .map(|message| {
-            message.contains("No module named 'jqdatasdk'")
-                || message.contains("No module named jqdatasdk")
-                || message.contains("ModuleNotFoundError")
-        })
-        .unwrap_or(false)
-}
-
-fn jqdata_value_ok(value: &Value) -> bool {
-    value.get("ok").and_then(Value::as_bool).unwrap_or(false)
-}
-
-fn jqdata_value_message(value: &Value) -> Option<String> {
-    value
-        .get("message")
-        .and_then(Value::as_str)
-        .map(|message| truncate_for_message(message.trim()))
 }
 
 fn scrub_jqdata_secret(config: &JqDataConfigFile, text: &str) -> String {
@@ -4501,442 +3942,6 @@ fn upgrade_legacy_jqdata_api_url(value: &str) -> String {
         return default_jqdata_api_url();
     }
     url.to_string()
-}
-
-fn truncate_for_message(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.chars().count() <= 180 {
-        return trimmed.to_string();
-    }
-    let mut short = trimmed.chars().take(180).collect::<String>();
-    short.push_str("...");
-    short
-}
-
-async fn run_eastmoney_realtime_query(
-    request: EastmoneyRealtimeRequest,
-) -> Result<EastmoneyRealtimeResult, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 AlphaStudio/0.1")
-        .timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|e| format!("东方财富实时行情客户端初始化失败：{e}"))?;
-    let mut quote_rows = Vec::new();
-    let mut errors = Vec::new();
-
-    let mut secids = Vec::new();
-    let mut seen = HashSet::new();
-    for code in request.codes.iter().take(220) {
-        if let Some(secid) = eastmoney_secid(code) {
-            if seen.insert(secid.clone()) {
-                secids.push(secid);
-            }
-        }
-    }
-
-    for chunk in secids.chunks(80) {
-        match fetch_eastmoney_quote_chunk(&client, chunk).await {
-            Ok(rows) => quote_rows.extend(rows),
-            Err(error) => errors.push(error),
-        }
-    }
-
-    if request.full_market {
-        match fetch_eastmoney_full_market(&client, request.page_size.unwrap_or(6000)).await {
-            Ok(rows) => quote_rows.extend(rows),
-            Err(error) => errors.push(error),
-        }
-    }
-
-    let mut tick_rows = Vec::new();
-    if let Some(code) = request.tick_code.as_deref() {
-        if let Some(secid) = eastmoney_secid(code) {
-            match fetch_eastmoney_ticks(&client, code, &secid, request.tick_count.unwrap_or(20))
-                .await
-            {
-                Ok(rows) => tick_rows = rows,
-                Err(error) => errors.push(error),
-            }
-        } else {
-            errors.push(format!("东方财富不支持该代码：{code}"));
-        }
-    }
-
-    let ok = !quote_rows.is_empty() || !tick_rows.is_empty();
-    Ok(EastmoneyRealtimeResult {
-        ok,
-        message: if ok {
-            if errors.is_empty() {
-                None
-            } else {
-                Some(truncate_for_message(&errors.join("；")))
-            }
-        } else {
-            Some(if errors.is_empty() {
-                "东方财富实时接口未返回可用数据。".to_string()
-            } else {
-                truncate_for_message(&errors.join("；"))
-            })
-        },
-        quote_rows: if quote_rows.is_empty() {
-            None
-        } else {
-            Some(Value::Array(quote_rows))
-        },
-        tick_rows: if tick_rows.is_empty() {
-            None
-        } else {
-            Some(Value::Array(tick_rows))
-        },
-    })
-}
-
-async fn fetch_eastmoney_quote_chunk(
-    client: &reqwest::Client,
-    secids: &[String],
-) -> Result<Vec<Value>, String> {
-    if secids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let fields = "f12,f13,f14,f2,f3,f4,f5,f6,f15,f16,f17,f18,f20,f21,f23,f8,f10,f292";
-    let path = format!(
-        "/api/qt/ulist.np/get?fltt=2&invt=2&fields={fields}&secids={}",
-        secids.join(",")
-    );
-    let value = fetch_eastmoney_json_from_hosts(client, &path).await?;
-    let diff = value
-        .get("data")
-        .and_then(|data| data.get("diff"))
-        .and_then(Value::as_array)
-        .ok_or_else(|| "东方财富实时接口未返回 quote diff。".to_string())?;
-    Ok(diff
-        .iter()
-        .filter_map(eastmoney_quote_row)
-        .collect::<Vec<Value>>())
-}
-
-async fn fetch_eastmoney_full_market(
-    client: &reqwest::Client,
-    page_size: u32,
-) -> Result<Vec<Value>, String> {
-    let requested_limit = page_size.clamp(100, 8000) as usize;
-    let market_page_size = 100_u32;
-    let fields = "f12,f13,f14,f2,f3,f4,f5,f6,f15,f16,f17,f18,f20,f21,f23,f8,f10,f100,f292";
-    let first_page = fetch_eastmoney_full_market_page(client, 1, market_page_size, fields).await?;
-    let total = first_page
-        .get("data")
-        .and_then(|data| data.get("total"))
-        .and_then(Value::as_u64)
-        .map(|value| value as usize)
-        .unwrap_or(requested_limit)
-        .min(requested_limit);
-    let mut rows = eastmoney_full_market_diff(&first_page)?;
-    let page_count =
-        ((total as u32).saturating_add(market_page_size - 1) / market_page_size).max(1);
-
-    for page in 2..=page_count {
-        if rows.len() >= total {
-            break;
-        }
-        let value =
-            fetch_eastmoney_full_market_page(client, page, market_page_size, fields).await?;
-        let page_rows = eastmoney_full_market_diff(&value)?;
-        if page_rows.is_empty() {
-            break;
-        }
-        rows.extend(page_rows);
-    }
-
-    let mut seen = HashSet::new();
-    let mut unique_rows = Vec::new();
-    for row in rows {
-        let key = row
-            .get("code")
-            .and_then(Value::as_str)
-            .or_else(|| row.get("rawCode").and_then(Value::as_str))
-            .unwrap_or_default()
-            .to_string();
-        if !key.is_empty() && seen.insert(key) {
-            unique_rows.push(row);
-        }
-        if unique_rows.len() >= requested_limit {
-            break;
-        }
-    }
-    Ok(unique_rows)
-}
-
-async fn fetch_eastmoney_full_market_page(
-    client: &reqwest::Client,
-    page: u32,
-    page_size: u32,
-    fields: &str,
-) -> Result<Value, String> {
-    let path = format!(
-        "/api/qt/clist/get?pn={page}&pz={page_size}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields={fields}"
-    );
-    fetch_eastmoney_json_from_hosts(client, &path).await
-}
-
-fn eastmoney_full_market_diff(value: &Value) -> Result<Vec<Value>, String> {
-    let diff = value
-        .get("data")
-        .and_then(|data| data.get("diff"))
-        .and_then(Value::as_array)
-        .ok_or_else(|| "东方财富全市场接口未返回 quote diff。".to_string())?;
-    Ok(diff.iter().filter_map(eastmoney_quote_row).collect())
-}
-
-async fn fetch_eastmoney_ticks(
-    client: &reqwest::Client,
-    original_code: &str,
-    secid: &str,
-    count: u32,
-) -> Result<Vec<Value>, String> {
-    let safe_count = count.clamp(1, 80);
-    let path = format!(
-        "/api/qt/stock/details/get?secid={secid}&fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55&pos=-{safe_count}&iscca=1"
-    );
-    let value = fetch_eastmoney_json_from_hosts(client, &path).await?;
-    let details = value
-        .get("data")
-        .and_then(|data| data.get("details"))
-        .and_then(Value::as_array)
-        .ok_or_else(|| "东方财富分笔接口未返回 details。".to_string())?;
-    Ok(details
-        .iter()
-        .filter_map(|item| item.as_str())
-        .filter_map(|line| eastmoney_tick_row(original_code, line))
-        .collect::<Vec<Value>>())
-}
-
-async fn fetch_eastmoney_json(client: &reqwest::Client, url: &str) -> Result<Value, String> {
-    let response = client
-        .get(url)
-        .header("Referer", "https://quote.eastmoney.com/")
-        .header("Accept", "application/json,text/plain,*/*")
-        .send()
-        .await
-        .map_err(|e| format!("东方财富实时接口请求失败：{e}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|e| format!("东方财富实时接口响应读取失败：{e}"))?;
-    if !status.is_success() {
-        return Err(format!("东方财富实时接口 HTTP {status}。"));
-    }
-    serde_json::from_str::<Value>(&text).map_err(|e| format!("东方财富实时接口返回格式异常：{e}"))
-}
-
-async fn fetch_eastmoney_json_from_hosts(
-    client: &reqwest::Client,
-    path_and_query: &str,
-) -> Result<Value, String> {
-    let mut errors = Vec::new();
-    for host in [
-        "https://push2delay.eastmoney.com",
-        "https://push2.eastmoney.com",
-    ] {
-        let url = format!("{host}{path_and_query}");
-        match fetch_eastmoney_json(client, &url).await {
-            Ok(value) => return Ok(value),
-            Err(error) => errors.push(error),
-        }
-    }
-    Err(truncate_for_message(&errors.join("；")))
-}
-
-fn eastmoney_secid(code: &str) -> Option<String> {
-    let raw = code.trim().to_uppercase();
-    let digits = raw
-        .strip_suffix(".XSHG")
-        .or_else(|| raw.strip_prefix("SH"))
-        .map(|value| ("1", value))
-        .or_else(|| {
-            raw.strip_suffix(".XSHE")
-                .or_else(|| raw.strip_prefix("SZ"))
-                .map(|value| ("0", value))
-        });
-    if let Some((market, value)) = digits {
-        if is_six_digit_code(value) {
-            return Some(format!("{market}.{value}"));
-        }
-    }
-    if is_six_digit_code(&raw) {
-        let market = if raw.starts_with('6') || raw.starts_with('5') || raw.starts_with('9') {
-            "1"
-        } else {
-            "0"
-        };
-        return Some(format!("{market}.{raw}"));
-    }
-    None
-}
-
-fn is_six_digit_code(value: &str) -> bool {
-    value.len() == 6 && value.chars().all(|ch| ch.is_ascii_digit())
-}
-
-fn eastmoney_quote_row(row: &Value) -> Option<Value> {
-    let code = eastmoney_string(row, "f12")?;
-    let market = eastmoney_i64(row, "f13").unwrap_or(0);
-    let jq_code = if market == 1 {
-        format!("{code}.XSHG")
-    } else {
-        format!("{code}.XSHE")
-    };
-    let raw_price = eastmoney_f64(row, "f2");
-    let prev_close = eastmoney_f64(row, "f18");
-    let price = raw_price.or(prev_close)?;
-    if price <= 0.0 {
-        return None;
-    }
-    let is_paused = raw_price.is_none();
-    let volume_hands = eastmoney_f64(row, "f5");
-    let mut item = Map::new();
-    item.insert("code".to_string(), Value::String(jq_code));
-    item.insert("rawCode".to_string(), Value::String(code));
-    item.insert(
-        "name".to_string(),
-        Value::String(eastmoney_string(row, "f14").unwrap_or_default()),
-    );
-    item.insert(
-        "sector".to_string(),
-        Value::String(eastmoney_string(row, "f100").unwrap_or_else(|| "未分类".to_string())),
-    );
-    item.insert("source".to_string(), Value::String("eastmoney".to_string()));
-    insert_f64(&mut item, "price", Some(price));
-    insert_f64(&mut item, "prevClose", prev_close.or(Some(price)));
-    insert_f64(
-        &mut item,
-        "changePct",
-        eastmoney_f64(row, "f3").or(if is_paused { Some(0.0) } else { None }),
-    );
-    insert_f64(
-        &mut item,
-        "changeAmt",
-        eastmoney_f64(row, "f4").or(if is_paused { Some(0.0) } else { None }),
-    );
-    insert_f64(
-        &mut item,
-        "volumeShares",
-        volume_hands.map(|value| value * 100.0),
-    );
-    insert_f64(&mut item, "turnoverAmount", eastmoney_f64(row, "f6"));
-    insert_f64(&mut item, "high", eastmoney_f64(row, "f15"));
-    insert_f64(&mut item, "low", eastmoney_f64(row, "f16"));
-    insert_f64(&mut item, "open", eastmoney_f64(row, "f17"));
-    insert_f64(&mut item, "marketCapAmount", eastmoney_f64(row, "f20"));
-    insert_f64(&mut item, "floatMarketCapAmount", eastmoney_f64(row, "f21"));
-    insert_f64(&mut item, "pb", eastmoney_f64(row, "f23"));
-    insert_f64(&mut item, "turnoverRate", eastmoney_f64(row, "f8"));
-    insert_f64(&mut item, "volumeRatio", eastmoney_f64(row, "f10"));
-    let status = if is_paused {
-        Some(0)
-    } else {
-        eastmoney_i64(row, "f292")
-    };
-    if let Some(status) = status {
-        item.insert("status".to_string(), Value::Number(status.into()));
-    }
-    Some(Value::Object(item))
-}
-
-fn eastmoney_tick_row(code: &str, line: &str) -> Option<Value> {
-    let parts = line.split(',').collect::<Vec<&str>>();
-    if parts.len() < 5 {
-        return None;
-    }
-    let time = parts[0].trim();
-    let price = parts[1].trim().parse::<f64>().ok()?;
-    let volume_hands = parts[2].trim().parse::<f64>().ok();
-    let trade_count = parts[3].trim().parse::<f64>().ok();
-    let side_code = parts[4].trim().parse::<i64>().ok();
-    let mut item = Map::new();
-    item.insert(
-        "code".to_string(),
-        Value::String(code.trim().to_uppercase()),
-    );
-    item.insert("time".to_string(), Value::String(time.to_string()));
-    item.insert("source".to_string(), Value::String("eastmoney".to_string()));
-    insert_f64(&mut item, "price", Some(price));
-    insert_f64(&mut item, "volumeHands", volume_hands);
-    insert_f64(
-        &mut item,
-        "volumeShares",
-        volume_hands.map(|value| value * 100.0),
-    );
-    insert_f64(&mut item, "tradeCount", trade_count);
-    insert_f64(
-        &mut item,
-        "turnoverAmount",
-        volume_hands.map(|value| value * price * 100.0),
-    );
-    if let Some(side) = side_code {
-        item.insert("sideCode".to_string(), Value::Number(side.into()));
-        item.insert(
-            "side".to_string(),
-            Value::String(
-                match side {
-                    1 => "卖盘",
-                    2 => "买盘",
-                    _ => "中性",
-                }
-                .to_string(),
-            ),
-        );
-    }
-    Some(Value::Object(item))
-}
-
-fn eastmoney_string(row: &Value, key: &str) -> Option<String> {
-    row.get(key).and_then(|value| match value {
-        Value::String(text) => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() || trimmed == "-" {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
-        Value::Number(number) => Some(number.to_string()),
-        _ => None,
-    })
-}
-
-fn eastmoney_i64(row: &Value, key: &str) -> Option<i64> {
-    row.get(key).and_then(|value| match value {
-        Value::Number(number) => number.as_i64(),
-        Value::String(text) => text.trim().parse::<i64>().ok(),
-        _ => None,
-    })
-}
-
-fn eastmoney_f64(row: &Value, key: &str) -> Option<f64> {
-    row.get(key).and_then(|value| match value {
-        Value::Number(number) => number.as_f64().filter(|value| value.is_finite()),
-        Value::String(text) => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() || trimmed == "-" {
-                None
-            } else {
-                trimmed
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|value| value.is_finite())
-            }
-        }
-        _ => None,
-    })
-}
-
-fn insert_f64(map: &mut Map<String, Value>, key: &str, value: Option<f64>) {
-    if let Some(value) = value {
-        if let Some(number) = serde_json::Number::from_f64(value) {
-            map.insert(key.to_string(), Value::Number(number));
-        }
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -8073,7 +7078,6 @@ pub fn run() {
             jqdata_config_save,
             jqdata_test_connection,
             jqdata_query,
-            eastmoney_realtime_query,
             local_store::local_store_info,
             local_store::local_store_load,
             local_store::local_store_commit,

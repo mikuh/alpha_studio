@@ -10,6 +10,9 @@ pub struct AppConfig {
     pub admin_email: String,
     pub admin_password: String,
     pub bind_addr: SocketAddr,
+    pub market_data_enabled: bool,
+    pub market_refresh_seconds: u64,
+    pub market_snapshot_limit: usize,
 }
 
 impl AppConfig {
@@ -23,6 +26,17 @@ impl AppConfig {
             admin_email: env_or("ADMIN_EMAIL", "admin@alpha-studio.local"),
             admin_password: env_or("ADMIN_PASSWORD", "alpha-admin"),
             bind_addr: env_or("BIND_ADDR", "0.0.0.0:8080").parse()?,
+            market_data_enabled: env_or("MARKET_DATA_ENABLED", "true")
+                .parse::<bool>()
+                .unwrap_or(true),
+            market_refresh_seconds: env_or("MARKET_REFRESH_SECONDS", "45")
+                .parse::<u64>()
+                .unwrap_or(45)
+                .clamp(15, 300),
+            market_snapshot_limit: env_or("MARKET_SNAPSHOT_LIMIT", "8000")
+                .parse::<usize>()
+                .unwrap_or(8000)
+                .clamp(100, 8000),
         })
     }
 }

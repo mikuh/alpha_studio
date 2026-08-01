@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alpha-studio.local/schemas/a-share-factor-trial-record.v1.json",
+  "title": "A-share Factor Trial Record",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "run_id",
+    "trial_id",
+    "trial_family_id",
+    "factor_id",
+    "normalized_ast_hash",
+    "dataset_snapshot_id",
+    "universe_snapshot_id",
+    "code_commit",
+    "environment_hash",
+    "parameters",
+    "preprocessing",
+    "label",
+    "split",
+    "status",
+    "holdout_seen",
+    "created_at",
+    "owner"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "alpha.factor_trial.v1"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "trial_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "trial_family_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "parent_trial_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "factor_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "normalized_ast_hash": {
+      "type": "string",
+      "minLength": 8
+    },
+    "dataset_snapshot_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "universe_snapshot_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "code_commit": {
+      "type": "string",
+      "minLength": 7
+    },
+    "environment_hash": {
+      "type": "string",
+      "minLength": 8
+    },
+    "random_seed": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "parameters": {
+      "type": "object"
+    },
+    "preprocessing": {
+      "type": "object"
+    },
+    "label": {
+      "type": "string"
+    },
+    "split": {
+      "enum": [
+        "discovery",
+        "validation",
+        "final_holdout",
+        "shadow",
+        "production"
+      ]
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "invalid",
+        "cancelled"
+      ]
+    },
+    "failure_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "metrics_uri": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "artifact_uri": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model_prompt_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "token_cost": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "compute_seconds": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "holdout_seen": {
+      "type": "boolean"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

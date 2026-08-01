@@ -5,6 +5,7 @@ pub mod db;
 pub mod error;
 pub mod gateway;
 pub mod license;
+pub mod market;
 pub mod routes;
 pub mod state;
 pub mod tokens;

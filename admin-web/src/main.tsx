@@ -178,6 +178,39 @@ const navItems: Array<[Tab, string]> = [
   ['audit', '审计'],
 ];
 
+const navIcons: Record<Tab, React.JSX.Element> = {
+  overview: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" />
+      <rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" />
+    </svg>
+  ),
+  tenants: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9.5" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M15.5 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  ),
+  gateway: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="5" cy="12" r="2.5" /><circle cx="19" cy="6" r="2.5" /><circle cx="19" cy="18" r="2.5" />
+      <path d="M7.3 10.8 16.7 7.2" /><path d="M7.3 13.2 16.7 16.8" />
+    </svg>
+  ),
+  codex: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8" /><path d="M12 17v4" />
+      <path d="m9 8 2 2.5L9 13" /><path d="M13 13h3" />
+    </svg>
+  ),
+  audit: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" /><path d="M9 13h6" /><path d="M9 17h4" />
+    </svg>
+  ),
+};
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('alpha-admin-token') || '');
   const [email, setEmail] = useState('admin@alpha-studio.local');
@@ -244,6 +277,12 @@ function App() {
   useEffect(() => {
     document.title = `${tabTitle(activeTab)} - Alpha Studio Admin`;
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(''), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   const navigateTab = (tab: Tab) => {
     setActiveTab(tab);
@@ -603,8 +642,9 @@ function App() {
       <main className="login-screen">
         <form className="login-panel" onSubmit={login}>
           <div>
-            <h1>Alpha Studio Admin</h1>
-            <p>内部运营后台</p>
+            <div className="login-brand" aria-hidden="true">AS</div>
+            <h1 style={{ marginTop: 18 }}>Alpha Studio Admin</h1>
+            <p>内部运营后台 · 请使用管理员账号登录</p>
           </div>
           <label>
             邮箱
@@ -639,6 +679,7 @@ function App() {
               type="button"
               onClick={() => navigateTab(tab)}
             >
+              <span className="nav-icon" aria-hidden="true">{navIcons[tab]}</span>
               {label}
             </button>
           ))}
@@ -881,7 +922,15 @@ function TenantAuthorizationPanel({
                 <Field label="到期时间" type="datetime-local" value={form.expiresAt} onChange={(expiresAt) => setForm({ ...form, expiresAt })} />
                 <Field label="备注" value={form.note} onChange={(note) => setForm({ ...form, note })} />
               </div>
-              {generatedCode && <div className="secret-box"><span>新授权码</span><strong>{generatedCode}</strong></div>}
+              {generatedCode && (
+                <div className="secret-box">
+                  <div className="secret-box-head">
+                    <span>新授权码</span>
+                    <CopyButton text={generatedCode} />
+                  </div>
+                  <strong>{generatedCode}</strong>
+                </div>
+              )}
               <div className="form-actions embedded-actions">
                 <button type="submit" disabled={loading}>生成授权码</button>
               </div>
@@ -1310,6 +1359,55 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, loadi
   );
 }
 
+function TenantPicker({ tenants, selected, onChange }: {
+  tenants: Tenant[];
+  selected: string[];
+  onChange: (tenantIds: string[]) => void;
+}) {
+  const toggle = (tenantId: string) => {
+    onChange(selected.includes(tenantId)
+      ? selected.filter((id) => id !== tenantId)
+      : [...selected, tenantId]);
+  };
+
+  return (
+    <div className="field-wide tenant-picker-field">
+      <div className="tenant-picker-head">
+        <span>分配客户</span>
+        {selected.length > 0 && (
+          <button type="button" className="linklike" onClick={() => onChange([])}>清空（{selected.length}）</button>
+        )}
+      </div>
+      {tenants.length === 0 ? (
+        <div className="tenant-picker-empty">暂无客户，先在「客户」页创建后再分配。</div>
+      ) : (
+        <div className="tenant-picker" role="group" aria-label="分配客户">
+          {tenants.map((tenant) => {
+            const active = selected.includes(tenant.id);
+            return (
+              <button
+                type="button"
+                key={tenant.id}
+                className={active ? 'tenant-chip active' : 'tenant-chip'}
+                aria-pressed={active}
+                onClick={() => toggle(tenant.id)}
+              >
+                <span className="tenant-chip-check" aria-hidden="true">
+                  {active ? (
+                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m5 10.5 3.2 3.2L15 6.5" /></svg>
+                  ) : null}
+                </span>
+                {tenant.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <small>可多选，不选择表示暂不分配给任何客户。</small>
+    </div>
+  );
+}
+
 function CodexAccountForm({ form, setForm, tenants, onSubmit, loading }: {
   form: typeof emptyCodexForm;
   setForm: (form: typeof emptyCodexForm) => void;
@@ -1324,28 +1422,18 @@ function CodexAccountForm({ form, setForm, tenants, onSubmit, loading }: {
         {form.id && <button type="button" className="secondary" onClick={() => setForm(emptyCodexForm)}>新建</button>}
       </div>
       <div className="form-grid">
-        <label>
-          <span>分配客户（可多选）</span>
-          <select
-            multiple
-            aria-label="分配客户（可多选）"
-            value={form.tenantIds}
-            onChange={(event) => setForm({
-              ...form,
-              tenantIds: Array.from(event.currentTarget.selectedOptions, (option) => option.value),
-            })}
-          >
-            {tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
-          </select>
-          <small>按住 Command（macOS）或 Ctrl（Windows）可选择多个客户；不选择表示暂不分配。</small>
-        </label>
         <Field label="GPT 登录邮箱" value={form.email} onChange={(email) => setForm({ ...form, email })} />
-        <Field label="登录凭据/一次性说明" type="password" value={form.loginSecret} onChange={(loginSecret) => setForm({ ...form, loginSecret })} placeholder="留空保留原值" />
         <Field label="登录提示" value={form.loginHint} onChange={(loginHint) => setForm({ ...form, loginHint })} />
-        <Select label="套餐" value={form.plan} onChange={(plan) => setForm({ ...form, plan })} options={['monthly', 'yearly']} />
-        <Select label="状态" value={form.status} onChange={(status) => setForm({ ...form, status })} options={['active', 'suspended']} />
+        <Field label="登录凭据/一次性说明" type="password" value={form.loginSecret} onChange={(loginSecret) => setForm({ ...form, loginSecret })} placeholder="留空保留原值" />
+        <Select label="套餐" value={form.plan} onChange={(plan) => setForm({ ...form, plan })} options={['monthly', 'yearly']} optionLabels={{ monthly: '按月', yearly: '按年' }} />
+        <Select label="状态" value={form.status} onChange={(status) => setForm({ ...form, status })} options={['active', 'suspended']} optionLabels={{ active: '启用', suspended: '停用' }} />
         <NumberField label="席位数" value={form.seatLimit} onChange={(seatLimit) => setForm({ ...form, seatLimit })} />
         <Field label="到期时间" type="datetime-local" value={form.expiresAt} onChange={(expiresAt) => setForm({ ...form, expiresAt })} />
+        <TenantPicker
+          tenants={tenants}
+          selected={form.tenantIds}
+          onChange={(tenantIds) => setForm({ ...form, tenantIds })}
+        />
       </div>
       <div className="form-actions"><button type="submit" disabled={loading}>保存账号</button></div>
     </form>
@@ -1363,16 +1451,18 @@ function TenantTable({ tenants, onEdit, onDelete, onManageCodes, selectedTenantI
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>客户</th><th>设备</th><th>余额</th><th>GPT</th><th>状态</th><th /></tr></thead>
+        <thead><tr><th>客户</th><th>设备</th><th>余额</th><th>GPT</th><th>状态</th><th className="col-actions" /></tr></thead>
         <tbody>
           {tenants.map((tenant) => (
             <tr className={tenant.id === selectedTenantId ? 'selected-row' : ''} key={tenant.id}>
               <td><strong>{tenant.name}</strong><span>{tenant.id}</span></td>
-              <td>{tenant.activeDevices}/{tenant.maxDevices}</td>
-              <td>{formatYuan(tenant.balanceYuan)}</td>
-              <td>{tenant.codexSubscriptionEnabled ? `${tenant.codexSubscriptionPlan || '-'} / ${formatDate(tenant.codexSubscriptionExpiresAt)}` : '未启用'}</td>
+              <td className="nowrap">{tenant.activeDevices}/{tenant.maxDevices}</td>
+              <td className="nowrap">{formatYuan(tenant.balanceYuan)}</td>
+              <td className="nowrap">{tenant.codexSubscriptionEnabled
+                ? <><PlanBadge plan={tenant.codexSubscriptionPlan || 'monthly'} /><span>{formatDate(tenant.codexSubscriptionExpiresAt)}</span></>
+                : <span className="cell-muted">未启用</span>}</td>
               <td><Status value={tenant.status} /></td>
-              <td>
+              <td className="col-actions">
                 <div className="table-actions">
                   {onManageCodes && (
                     <button className="secondary" type="button" onClick={() => onManageCodes(tenant)}>授权码</button>
@@ -1391,7 +1481,7 @@ function TenantTable({ tenants, onEdit, onDelete, onManageCodes, selectedTenantI
                     codexSubscriptionExpiresAt: toLocalInput(tenant.codexSubscriptionExpiresAt),
                   })}>编辑</button>
                   {onDelete && (
-                    <button className="secondary danger" type="button" onClick={() => onDelete(tenant)}>删除客户</button>
+                    <button className="secondary danger" type="button" onClick={() => onDelete(tenant)}>删除</button>
                   )}
                 </div>
               </td>
@@ -1421,7 +1511,7 @@ function AuthorizationCodeTable({ codes, onRevoke, onDelete, showTenant = true }
             <th>到期</th>
             <th>最近使用</th>
             <th>状态</th>
-            <th />
+            <th className="col-actions" />
           </tr>
         </thead>
         <tbody>
@@ -1429,11 +1519,11 @@ function AuthorizationCodeTable({ codes, onRevoke, onDelete, showTenant = true }
             <tr key={code.id}>
               {showTenant && <td><strong>{code.tenantName}</strong><span>{code.note || code.tenantId}</span></td>}
               <td><code className="secret-code">{code.authorizationCode || code.codeHint}</code></td>
-              <td>{code.maxDevices}</td>
-              <td>{formatDate(code.expiresAt)}</td>
-              <td>{formatDate(code.lastUsedAt)}</td>
+              <td className="nowrap">{code.maxDevices}</td>
+              <td className="nowrap">{formatDate(code.expiresAt)}</td>
+              <td className="nowrap">{formatDate(code.lastUsedAt)}</td>
               <td><Status value={code.status} /></td>
-              <td>
+              <td className="col-actions">
                 <div className="table-actions">
                   {onRevoke && code.status === 'active' && (
                     <button className="secondary" type="button" onClick={() => onRevoke(code)}>撤销授权码</button>
@@ -1460,15 +1550,15 @@ function ModelTable({ models, onEdit, onDelete }: {
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>模型</th><th>上游模型</th><th>价格 元/百万</th><th>状态</th><th /></tr></thead>
+        <thead><tr><th>模型</th><th>上游模型</th><th>价格 元/百万</th><th>状态</th><th className="col-actions" /></tr></thead>
         <tbody>
           {models.map((model) => (
             <tr key={model.id}>
               <td><strong>{model.label}</strong><span>{model.modelId}</span></td>
               <td><strong>{model.upstreamModel}</strong><span>{model.endpointPath}</span></td>
-              <td>{formatYuanPerMillion(model.inputYuanPerMillion)}/{formatYuanPerMillion(model.outputYuanPerMillion)} + {model.markupBps}bps</td>
+              <td className="nowrap">{formatYuanPerMillion(model.inputYuanPerMillion)}/{formatYuanPerMillion(model.outputYuanPerMillion)} + {model.markupBps}bps</td>
               <td><Status value={model.enabled && model.providerReady ? 'ready' : model.enabled ? 'provider missing' : 'disabled'} /></td>
-              <td>
+              <td className="col-actions">
                 <div className="table-actions">
                   <button className="secondary" type="button" onClick={() => onEdit(model)}>编辑</button>
                   <button className="secondary danger" type="button" onClick={() => onDelete(model)}>删除</button>
@@ -1488,34 +1578,50 @@ function CodexAccountTable({ accounts, onEdit, onDelete, onSetStatus }: {
   onDelete: (account: CodexAccount) => void;
   onSetStatus: (account: CodexAccount, status: string) => void;
 }) {
-  if (accounts.length === 0) return <div className="empty">暂无 GPT 账号。</div>;
+  if (accounts.length === 0) {
+    return (
+      <div className="empty">
+        <strong>暂无 GPT 账号</strong>
+        <span>在右侧「新增 GPT 账号」中录入第一个订阅账号。</span>
+      </div>
+    );
+  }
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>账号</th><th>客户</th><th>套餐</th><th>凭据</th><th>状态</th><th /></tr></thead>
+        <thead><tr><th>账号</th><th>分配客户</th><th>套餐</th><th>凭据</th><th>状态</th><th className="col-actions" /></tr></thead>
         <tbody>
-          {accounts.map((account) => (
-            <tr key={account.id}>
-              <td><strong>{account.email}</strong><span>{account.loginHint || account.id}</span></td>
-              <td>{codexAccountTenantNames(account).length > 0 ? codexAccountTenantNames(account).join('、') : '未分配'}</td>
-              <td>{account.plan} / {formatDate(account.expiresAt)}</td>
-              <td>{account.loginSecretConfigured ? account.loginSecretMask : '未配置'}</td>
-              <td><Status value={account.status} /></td>
-              <td>
-                <div className="table-actions">
-                  <button className="secondary" type="button" onClick={() => onEdit(codexFormFromAccount(account))}>编辑</button>
-                  <button
-                    className="secondary"
-                    type="button"
-                    onClick={() => onSetStatus(account, account.status === 'active' ? 'suspended' : 'active')}
-                  >
-                    {account.status === 'active' ? '停用' : '启用'}
-                  </button>
-                  <button className="secondary danger" type="button" onClick={() => onDelete(account)}>删除账号</button>
-                </div>
-              </td>
-            </tr>
-          ))}
+          {accounts.map((account) => {
+            const tenantNames = codexAccountTenantNames(account);
+            return (
+              <tr key={account.id}>
+                <td><strong>{account.email}</strong><span>{account.loginHint || account.id}</span></td>
+                <td>
+                  {tenantNames.length > 0 ? (
+                    <TagList items={tenantNames} />
+                  ) : <span className="cell-muted">未分配</span>}
+                </td>
+                <td className="nowrap"><PlanBadge plan={account.plan} /><span>{formatDate(account.expiresAt)}</span></td>
+                <td className="nowrap">{account.loginSecretConfigured
+                  ? <code className="secret-code">{account.loginSecretMask}</code>
+                  : <span className="cell-muted">未配置</span>}</td>
+                <td><Status value={account.status} /></td>
+                <td className="col-actions">
+                  <div className="table-actions">
+                    <button className="secondary" type="button" onClick={() => onEdit(codexFormFromAccount(account))}>编辑</button>
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={() => onSetStatus(account, account.status === 'active' ? 'suspended' : 'active')}
+                    >
+                      {account.status === 'active' ? '停用' : '启用'}
+                    </button>
+                    <button className="secondary danger" type="button" onClick={() => onDelete(account)}>删除</button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -1557,6 +1663,31 @@ function ConfirmDialog({ dialog, loading, onCancel, onConfirm }: {
 
 function GridSection({ children }: { children: React.ReactNode }) {
   return <div className="work-grid">{children}</div>;
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      // Clipboard unavailable (e.g. insecure context); silently ignore.
+    }
+  };
+
+  return (
+    <button type="button" className={copied ? 'copy-button copied' : 'copy-button'} onClick={() => void copy()}>
+      {copied ? '已复制' : '复制'}
+    </button>
+  );
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -1627,7 +1758,36 @@ function Select({ label, value, onChange, options, optionLabels = {} }: {
 }
 
 function Status({ value }: { value: string }) {
-  return <span className={`status ${value.includes('ready') || value === 'active' ? 'ok' : 'warn'}`}>{value}</span>;
+  const tone = value.includes('ready') || value === 'active'
+    ? 'ok'
+    : ['suspended', 'revoked', 'disabled', 'expired'].includes(value)
+      ? 'bad'
+      : 'warn';
+  return <span className={`status ${tone}`}>{statusLabel(value)}</span>;
+}
+
+function statusLabel(value: string) {
+  return ({
+    active: '启用',
+    suspended: '停用',
+    revoked: '已撤销',
+    disabled: '已停用',
+    ready: '就绪',
+    'provider missing': '缺少供应商',
+  } as Record<string, string>)[value] || value;
+}
+
+function TagList({ items }: { items: string[] }) {
+  return (
+    <div className="tag-list">
+      {items.map((item) => <span className="tag" key={item}>{item}</span>)}
+    </div>
+  );
+}
+
+function PlanBadge({ plan }: { plan: string }) {
+  const label = ({ monthly: '按月', yearly: '按年' } as Record<string, string>)[plan] || plan;
+  return <span className={`plan-badge plan-${plan}`}>{label}</span>;
 }
 
 async function api<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {

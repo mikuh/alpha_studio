@@ -169,7 +169,6 @@ import {
   type CodexSubscriptionUsage,
   type BrowserWebviewEvent,
 } from './codexBridge';
-import { contextWindowUsage, formatTokenCount, type ContextWindowUsage } from './contextWindow';
 import { BrowserPdfViewer } from './BrowserPdfViewer';
 import { NativeBrowserSurface } from './NativeBrowserSurface';
 import {
@@ -311,6 +310,7 @@ interface RightDockTab {
   id: string;
   kind: RightDockKind;
   url?: string;
+  title?: string;
   requestKey?: number;
 }
 type Theme = 'light' | 'dark';
@@ -1067,6 +1067,7 @@ function ClientActivationScreen({
     <main className="license-screen">
       <LicenseWindowDragRegion />
       <form className="license-card" onSubmit={submit}>
+        <div className="license-eyebrow"><span aria-hidden="true" /> Institutional AI Terminal</div>
         <div className="license-mark">
           <ShieldCheck size={24} />
         </div>
@@ -1522,6 +1523,14 @@ function AppWorkspace() {
     }
   }, [activeRightDockTabId, rightDockTabs]);
 
+  const updateRightDockTabTitle = useCallback((id: string, title: string) => {
+    setRightDockTabs((tabs) => {
+      const current = tabs.find((tab) => tab.id === id);
+      if (!current || current.title === title) return tabs;
+      return tabs.map((tab) => tab.id === id ? { ...tab, title } : tab);
+    });
+  }, []);
+
   useEffect(() => {
     if (dailyDecisionAvailable || !rightDockTabs.some((tab) => tab.kind === 'daily-decision')) return;
     const nextTabs = rightDockTabs.filter((tab) => tab.kind !== 'daily-decision');
@@ -1722,6 +1731,7 @@ function AppWorkspace() {
                 onSelectTab={selectRightDockTab}
                 onCloseTab={closeRightDockTab}
                 onAddTab={addRightDockTab}
+                onUpdateTabTitle={updateRightDockTabTitle}
                 expanded={rightDockExpanded}
                 onToggleExpanded={() => setRightDockExpanded((expanded) => !expanded)}
                 onCloseGit={() => {
@@ -2232,10 +2242,15 @@ function Sidebar({
     <>
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`} aria-hidden={collapsed}>
         <div className="sidebar-traffic" data-tauri-drag-region>
+          <div className="sidebar-brand" data-tauri-drag-region aria-label="Alpha Studio">
+            <span className="sidebar-brand-mark" aria-hidden="true"><i /><i /><i /><i /></span>
+            <span className="sidebar-brand-copy" data-tauri-drag-region><strong>ALPHA</strong><em>STUDIO</em></span>
+          </div>
           <button className="sidebar-collapse-btn" type="button" onClick={onCollapse} aria-label="收起侧栏" title="收起侧栏">
             <PanelLeftClose size={16} />
           </button>
           <div className="sidebar-account" title={activatedUserTitle} data-tauri-drag-region>
+            <i className="sidebar-account-status" aria-hidden="true" />
             <span>{activatedTenantName}</span>
           </div>
         </div>
@@ -2963,6 +2978,7 @@ function TopBar({
       {sidebarCollapsed && <button className="icon-btn" type="button" onClick={onToggleSidebar} aria-label="展开侧栏"><PanelLeftOpen size={16} /></button>}
       {conversation ? (
         <div className={`top-bar-title ${editing ? 'editing' : ''}`} data-tauri-drag-region>
+          <span className="top-bar-context">WORKSPACE</span>
           {editing ? (
             <NameInput defaultValue={conversation.title} onCommit={(name) => { renameConversation(conversation.id, name); setEditing(false); }} onCancel={() => setEditing(false)} />
           ) : (
@@ -2978,7 +2994,7 @@ function TopBar({
       ) : (
         <div className="top-bar-title" data-tauri-drag-region>{domain.name}</div>
       )}
-      {!hidePanelActions && (
+      {!hidePanelActions && createPortal(
         <div className="top-bar-actions">
           <div className="top-bar-panel-actions">
             <CoworkersToggleButton open={coworkersPanelOpen} onToggle={onToggleCoworkersPanel} />
@@ -2998,7 +3014,8 @@ function TopBar({
             />
             <RightDockToggleButton kind="browser" open={browserOpen} onToggle={onToggleBrowser} />
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
     </header>
@@ -3893,6 +3910,44 @@ function rightDockIcon(kind: RightDockKind, size = 14): ReactNode {
   }
 }
 
+function compactDockTabTitle(value: string): string {
+  const title = value.replace(/\s+/g, ' ').trim();
+  return title.length > 80 ? `${title.slice(0, 79)}…` : title;
+}
+
+function browserDockTabTitle(pageTitle = '', rawUrl = ''): string {
+  const title = compactDockTabTitle(pageTitle);
+  if (title) return title;
+
+  const localPath = localFilePath(rawUrl);
+  if (localPath) return compactDockTabTitle(basename(localPath).replace(/\.[^.]+$/, '')) || '新标签';
+
+  const normalizedUrl = normalizeBrowserDockUrl(rawUrl);
+  if (!normalizedUrl) return '新标签';
+  try {
+    const parsed = new URL(normalizedUrl);
+    const host = parsed.hostname.replace(/^www\./i, '');
+    const pathParts = parsed.pathname.split('/').filter(Boolean);
+    const rawLeaf = pathParts[pathParts.length - 1] || '';
+    let leaf = rawLeaf;
+    try {
+      leaf = decodeURIComponent(rawLeaf);
+    } catch {
+      // Keep the encoded path segment if it cannot be decoded safely.
+    }
+    const readableLeaf = compactDockTabTitle(leaf.replace(/\.[a-z0-9]{1,8}$/i, '').replace(/[-_]+/g, ' '));
+    return readableLeaf ? `${readableLeaf} · ${host}` : host || '新标签';
+  } catch {
+    return compactDockTabTitle(rawUrl) || '新标签';
+  }
+}
+
+function rightDockTabTitle(tab: RightDockTab): string {
+  if (tab.kind === 'browser') return browserDockTabTitle(tab.title, tab.url);
+  if (tab.kind === 'files' && tab.url) return compactDockTabTitle(basename(tab.url)) || RIGHT_DOCK_META.files.label;
+  return RIGHT_DOCK_META[tab.kind].label;
+}
+
 function RightDockWorkspace({
   visible,
   mode,
@@ -3903,6 +3958,7 @@ function RightDockWorkspace({
   onSelectTab,
   onCloseTab,
   onAddTab,
+  onUpdateTabTitle,
   expanded,
   onToggleExpanded,
   onCloseGit,
@@ -3916,6 +3972,7 @@ function RightDockWorkspace({
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onAddTab: (kind: RightDockKind) => void;
+  onUpdateTabTitle: (id: string, title: string) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
   onCloseGit: () => void;
@@ -3947,10 +4004,11 @@ function RightDockWorkspace({
                     requestedUrl={tab.url}
                     requestKey={tab.requestKey}
                     active={visible && tab.id === activeId}
+                    onTabTitleChange={(title) => onUpdateTabTitle(tab.id, title)}
                   />
                 )}
                 {tab.kind === 'files' && <FilesDockPanel filePath={tab.url} />}
-                {tab.kind === 'side-chat' && <SideChatPanel domain={domain} sidebarExpanded={expanded} />}
+                {tab.kind === 'side-chat' && <SideChatPanel domain={domain} />}
                 {tab.kind === 'research-workbench' && <ResearchWorkbenchPanel />}
                 {tab.kind === 'daily-decision' && <DailyDecisionPanel />}
               </div>
@@ -3986,48 +4044,79 @@ function RightDockTabBar({
   onToggleExpanded: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const tabScrollRef = useRef<HTMLDivElement>(null);
   const add = (kind: RightDockKind) => {
     setMenuOpen(false);
     onAddTab(kind);
   };
 
+  useLayoutEffect(() => {
+    const scroller = tabScrollRef.current;
+    if (!scroller || !activeId) return;
+    const activeTab = Array.from(scroller.children).find((element) => (
+      element instanceof HTMLElement && element.dataset.tabId === activeId
+    ));
+    if (!(activeTab instanceof HTMLElement)) return;
+    const left = activeTab.offsetLeft;
+    const right = left + activeTab.offsetWidth;
+    if (left < scroller.scrollLeft) scroller.scrollLeft = Math.max(0, left - 6);
+    else if (right > scroller.scrollLeft + scroller.clientWidth) scroller.scrollLeft = right - scroller.clientWidth + 6;
+  }, [activeId, tabs]);
+
   return (
     <header className="right-dock-tabbar" data-tauri-drag-region>
-      <div className="right-dock-tabs" role="tablist" aria-label="侧边栏标签" data-tauri-drag-region>
-        {tabs.map((tab) => {
-          const meta = RIGHT_DOCK_META[tab.kind];
-          return (
-            <div
-              key={tab.id}
-              role="tab"
-              tabIndex={0}
-              aria-selected={tab.id === activeId}
-              className={`right-dock-tab ${tab.id === activeId ? 'active' : ''}`}
-              onClick={() => onSelectTab(tab.id)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  onSelectTab(tab.id);
-                }
-              }}
-            >
-              {rightDockIcon(tab.kind)}
-              <span className="right-dock-tab-label">{meta.label}</span>
-              <button
-                type="button"
-                className="right-dock-tab-close"
-                aria-label={`关闭${meta.label}标签`}
-                title="关闭标签"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onCloseTab(tab.id);
+      <div className="right-dock-tabs" data-tauri-drag-region>
+        <div
+          ref={tabScrollRef}
+          className="right-dock-tab-scroll"
+          role="tablist"
+          aria-label="侧边栏标签"
+          onWheel={(event) => {
+            const scroller = event.currentTarget;
+            if (scroller.scrollWidth <= scroller.clientWidth) return;
+            const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+            if (!delta) return;
+            scroller.scrollLeft += delta;
+            event.preventDefault();
+          }}
+        >
+          {tabs.map((tab) => {
+            const label = rightDockTabTitle(tab);
+            return (
+              <div
+                key={tab.id}
+                data-tab-id={tab.id}
+                role="tab"
+                tabIndex={0}
+                aria-selected={tab.id === activeId}
+                title={tab.kind === 'browser' && tab.url ? `${label}\n${tab.url}` : label}
+                className={`right-dock-tab ${tab.id === activeId ? 'active' : ''}`}
+                onClick={() => onSelectTab(tab.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSelectTab(tab.id);
+                  }
                 }}
               >
-                <X size={12} />
-              </button>
-            </div>
-          );
-        })}
+                {rightDockIcon(tab.kind)}
+                <span className="right-dock-tab-label">{label}</span>
+                <button
+                  type="button"
+                  className="right-dock-tab-close"
+                  aria-label={`关闭${label}标签`}
+                  title="关闭标签"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCloseTab(tab.id);
+                  }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
         <div className="right-dock-tab-add-wrap">
           <button
             type="button"
@@ -4320,10 +4409,12 @@ function BrowserDockPanel({
   requestedUrl,
   requestKey,
   active,
+  onTabTitleChange,
 }: {
   requestedUrl?: string;
   requestKey?: number;
   active: boolean;
+  onTabTitleChange?: (title: string) => void;
 }) {
   const localUrl = useMemo(() => {
     if (typeof window === 'undefined') return 'http://localhost:1421';
@@ -4347,6 +4438,11 @@ function BrowserDockPanel({
   const historyIndexRef = useRef(-1);
   const pendingHistoryIndexRef = useRef<number | null>(null);
   const htmlPreviewRequestRef = useRef(0);
+  const onTabTitleChangeRef = useRef(onTabTitleChange);
+
+  useEffect(() => {
+    onTabTitleChangeRef.current = onTabTitleChange;
+  }, [onTabTitleChange]);
 
   const loadUrl = useCallback((value: string) => {
     const displayUrl = browserDockDisplayUrl(value);
@@ -4529,6 +4625,10 @@ function BrowserDockPanel({
   }, [openUrl, requestedUrl, requestKey]);
 
   useEffect(() => {
+    onTabTitleChangeRef.current?.(browserDockTabTitle(pageTitle, activeDisplay || requestedUrl));
+  }, [activeDisplay, pageTitle, requestedUrl]);
+
+  useEffect(() => {
     if (!downloadStatus || downloadStatus.success === undefined) return;
     const timer = window.setTimeout(() => setDownloadStatus(null), 6000);
     return () => window.clearTimeout(timer);
@@ -4637,7 +4737,17 @@ function BrowserDockPanel({
           </button>
         </div>
       ) : htmlPreview?.status === 'ready' ? (
-        <iframe key={`${htmlPreview.path}-${frameKey}`} className="browser-frame" srcDoc={htmlPreview.srcDoc} title={activeDisplay || htmlPreview.path} onLoad={() => setIsLoading(false)} />
+        <iframe
+          key={`${htmlPreview.path}-${frameKey}`}
+          className="browser-frame"
+          srcDoc={htmlPreview.srcDoc}
+          title={activeDisplay || htmlPreview.path}
+          onLoad={(event) => {
+            setIsLoading(false);
+            const title = event.currentTarget.contentDocument?.title.trim();
+            if (title) setPageTitle(title);
+          }}
+        />
       ) : localPdfPath ? (
         <BrowserPdfViewer path={localPdfPath} revision={frameKey} onOpenExternal={() => void openExternal(localPdfPath)} />
       ) : frameError ? (
@@ -4662,7 +4772,15 @@ function BrowserDockPanel({
           className="browser-frame"
           src={url}
           title={activeDisplay || url}
-          onLoad={() => setIsLoading(false)}
+          onLoad={(event) => {
+            setIsLoading(false);
+            try {
+              const title = event.currentTarget.contentDocument?.title.trim();
+              if (title) setPageTitle(title);
+            } catch {
+              // Cross-origin frames expose their title through the native browser event instead.
+            }
+          }}
           onError={() => { setIsLoading(false); setFrameError('目标网页拒绝连接或当前网络不可用。'); }}
           allow="clipboard-read; clipboard-write; fullscreen; geolocation"
           referrerPolicy="strict-origin-when-cross-origin"
@@ -4944,7 +5062,7 @@ function FilePreviewDockPanel({ path }: { path: string }) {
   );
 }
 
-function SideChatPanel({ domain, sidebarExpanded }: { domain: DomainConfig; sidebarExpanded: boolean }) {
+function SideChatPanel({ domain }: { domain: DomainConfig }) {
   const conversation = useCurrentConversation();
   const { codexReady } = useComposerRuntimeState();
 
@@ -4953,7 +5071,7 @@ function SideChatPanel({ domain, sidebarExpanded }: { domain: DomainConfig; side
       <div className="side-chat-body" />
       {conversation ? (
         <div className="side-chat-composer">
-          <Composer domain={domain} conversation={conversation} disabled={!codexReady} allowCompact={sidebarExpanded} />
+          <Composer domain={domain} conversation={conversation} disabled={!codexReady} />
         </div>
       ) : (
         <div className="dock-empty">
@@ -6285,7 +6403,7 @@ function DockOverlayComposer({ domain }: { domain: DomainConfig }) {
   if (!conversation) return null;
   return (
     <div className="dock-composer-overlay">
-      <Composer domain={domain} conversation={conversation} disabled={!codexReady} bottom allowCompact />
+      <Composer domain={domain} conversation={conversation} disabled={!codexReady} bottom />
     </div>
   );
 }
@@ -6314,7 +6432,11 @@ function EmptyState({ domain, conversation, disabled }: { domain: DomainConfig; 
   };
   return (
     <div className="empty-state">
-      <h1 className="empty-heading">{domain.ui.emptyHeading}</h1>
+      <div className="empty-intro">
+        <span className="empty-kicker"><i aria-hidden="true" /> Research workspace</span>
+        <h1 className="empty-heading">{domain.ui.emptyHeading}</h1>
+        <p>从市场线索到投资结论，在同一个工作区完成研究、验证与决策。</p>
+      </div>
       <Composer domain={domain} conversation={conversation} disabled={disabled} prefillRequest={prefillRequest} />
       <div className="suggestion-row">
         {domain.ui.suggestions.map((suggestion) => (
@@ -7023,14 +7145,12 @@ function Composer({
   disabled,
   bottom,
   prefillRequest,
-  allowCompact,
 }: {
   domain: DomainConfig;
   conversation: Conversation;
   disabled?: boolean;
   bottom?: boolean;
   prefillRequest?: ComposerPrefillRequest | null;
-  allowCompact?: boolean;
 }) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
@@ -7049,18 +7169,12 @@ function Composer({
   const stopCurrentConversation = useChatStore((state) => state.stopCurrentConversation);
   const isStreaming = conversation.status === 'streaming';
   const queuedMessages = conversation.queuedMessages ?? [];
-  const contextUsage = useMemo(() => contextWindowUsage(conversation), [conversation]);
-  const compact = Boolean(allowCompact) && !value && attachments.length === 0 && !selectedSkill && selectedCoworkers.length === 0;
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
-    if (compact) {
-      el.style.height = '24px';
-      return;
-    }
     el.style.height = '0px';
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
-  }, [compact, value]);
+  }, [value]);
   useEffect(() => {
     if (!queuedSkill) return;
     setSelectedSkill(queuedSkill);
@@ -7196,7 +7310,7 @@ function Composer({
         />
       )}
       <div
-        className={`composer-card ${compact ? 'compact' : ''} ${coworkerDragOver ? 'coworker-drag-over' : ''}`}
+        className={`composer-card ${coworkerDragOver ? 'coworker-drag-over' : ''}`}
         onDragOver={handleCoworkerDragOver}
         onDragLeave={() => setCoworkerDragOver(false)}
         onDrop={handleCoworkerDrop}
@@ -7266,8 +7380,8 @@ function Composer({
         <div className="composer-toolbar">
           <ComposerPlusMenu domain={domain} onAttach={addAttachments} onSelectSkill={setSelectedSkill} disabled={disabled} />
           <ApprovalPicker />
+          <ComposerMeta conversation={conversation} />
           <span className="spacer" />
-          <ContextWindowIndicator usage={contextUsage} />
           <ModelPicker />
           {isStreaming && canSend && (
             <button className="send-button queue" type="button" onClick={submit} disabled={disabled} aria-label="加入队列">
@@ -7285,30 +7399,7 @@ function Composer({
           )}
         </div>
       </div>
-      <ComposerMeta conversation={conversation} />
     </div>
-  );
-}
-
-function ContextWindowIndicator({ usage }: { usage: ContextWindowUsage }) {
-  const label = usage.source === 'codex' ? 'GPT 实际上下文窗口' : '本地估算背景信息窗口';
-  const detail = [
-    `${label}：${usage.usedPercent}% 已用（剩余 ${usage.remainingPercent}%）`,
-    `已用 ${formatTokenCount(usage.usedTokens)} 标记，共 ${formatTokenCount(usage.totalTokens)}`,
-    `压缩阈值 ${usage.compactThresholdPercent}%（${formatTokenCount(usage.compactThresholdTokens)} 标记）`,
-    usage.source === 'codex'
-      ? (usage.compacted ? 'GPT 已执行上下文压缩' : '尚未收到 GPT 压缩事件')
-      : (usage.compacted ? `已压缩前 ${usage.compactedMessageCount} 条消息` : '尚未压缩'),
-  ].join('\n');
-  return (
-    <span
-      className={`context-window-indicator ${usage.shouldCompact ? 'warning' : ''} ${usage.compacted ? 'compacted' : ''}`}
-      title={detail}
-      aria-label={detail}
-    >
-      <Layers size={12} />
-      <span>{usage.usedPercent}% 已用</span>
-    </span>
   );
 }
 
@@ -7715,13 +7806,16 @@ function AttachmentCard({ attachment, onRemove }: { attachment: MessageAttachmen
   const openViewer = useImageViewer((state) => state.open);
   if (attachment.kind === 'image' && attachment.previewUrl && !previewFailed) {
     return (
-      <div className="att-thumb" title={`查看原图 · ${attachment.name}`}>
-        <img
-          src={attachment.previewUrl}
-          alt={attachment.name}
-          onError={() => setPreviewFailed(true)}
+      <div className="att-thumb">
+        <button
+          type="button"
+          className="att-thumb-preview"
+          title={`查看原图 · ${attachment.name}`}
+          aria-label={`查看图片 ${attachment.name}`}
           onClick={() => attachment.previewUrl && openViewer(attachment.previewUrl, attachment.name)}
-        />
+        >
+          <img src={attachment.previewUrl} alt={attachment.name} onError={() => setPreviewFailed(true)} />
+        </button>
         <button type="button" className="att-remove" onClick={onRemove} aria-label={`移除 ${attachment.name}`}><X size={12} /></button>
       </div>
     );
@@ -7771,6 +7865,7 @@ function MessageImageAttachment({ attachment }: { attachment: MessageAttachment 
       type="button"
       className="message-image"
       title={`查看原图 · ${attachment.name}`}
+      aria-label={`查看图片 ${attachment.name}`}
       onClick={() => attachment.previewUrl && openViewer(attachment.previewUrl, attachment.name)}
     >
       <img src={attachment.previewUrl} alt={attachment.name} onError={() => setFailed(true)} />
@@ -8537,8 +8632,8 @@ function ComposerPlusMenu({
   );
 }
 
-// The data-directory pill beneath the composer doubles as a switcher: it lists
-// existing research folders and lets a conversation bind to local materials.
+// The data-directory control in the composer toolbar doubles as a switcher: it
+// lists existing research folders and lets a conversation bind local materials.
 function DirectoryPicker({ conversation }: { conversation: Conversation }) {
   const projects = useChatStore((state) => state.projects);
   const setConversationCwd = useChatStore((state) => state.setConversationCwd);
@@ -8952,45 +9047,54 @@ function ModelPicker() {
       window.removeEventListener('scroll', updateFlyoutPosition, true);
     };
   }, [open, submenu, builtInProfiles.length, customProfiles.length, selectedModelProfile.id, speed]);
+  const menuLayer = open ? createPortal(
+    <>
+      <button className="menu-backdrop" type="button" aria-label="关闭模型菜单" onClick={close} />
+      <div ref={menuRef} className="model-menu model-choice-menu" role="menu" style={menuStyle}>
+        {effortOptions.length > 0 && <><div className="model-menu-label">智能</div>{effortOptions.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === reasoningEffort} className="model-menu-item" onMouseEnter={() => setSubmenu(null)} onClick={() => { setReasoningEffort(option.id); close(); }}><span>{option.label}</span>{option.id === reasoningEffort && <Check size={14} className="model-menu-check" />}</button>)}<div className="model-menu-divider" /></>}
+        <div ref={modelRowRef} className="model-flyout-row" onMouseEnter={() => setSubmenu('model')}>
+          <button type="button" className="model-menu-item submenu-trigger" aria-haspopup="menu" aria-expanded={submenu === 'model'} onClick={() => setSubmenu('model')}><span>{selectedModelProfile.label}</span><ChevronRight size={14} className="model-menu-chevron" /></button>
+        </div>
+        <div ref={speedRowRef} className="model-flyout-row" onMouseEnter={() => setSubmenu('speed')}>
+          <button type="button" className="model-menu-item submenu-trigger" aria-haspopup="menu" aria-expanded={submenu === 'speed'} onClick={() => setSubmenu('speed')}><span>速度</span><ChevronRight size={14} className="model-menu-chevron" /></button>
+        </div>
+      </div>
+      {submenu === 'model' && (
+        <div ref={flyoutRef} className="model-flyout model-choice-flyout" style={flyoutStyle}>
+          <div className="model-flyout-panel" role="menu">
+            {builtInProfiles.length > 0 && <div className="model-menu-label">订阅模型</div>}
+            {builtInProfiles.map((option) => (
+              <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfile.id} className="model-menu-item" onClick={() => { setModelProfile(option.id); close(); }}>
+                <span>{option.label}</span>{option.id === selectedModelProfile.id && <Check size={14} className="model-menu-check" />}
+              </button>
+            ))}
+            {builtInProfiles.length > 0 && customProfiles.length > 0 && <div className="model-menu-divider" />}
+            {customProfiles.length > 0 && <div className="model-menu-label">按量模型</div>}
+            {customProfiles.map((option) => (
+              <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfile.id} className="model-menu-item model-profile-item" onClick={() => { setModelProfile(option.id); close(); }}>
+                <span><strong>{option.label}</strong><em>{option.providerId} · {option.model}</em></span>{option.id === selectedModelProfile.id && <Check size={14} className="model-menu-check" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {submenu === 'speed' && (
+        <div ref={flyoutRef} className="model-flyout model-choice-flyout" style={flyoutStyle}>
+          <div className="model-flyout-panel" role="menu">
+            <div className="model-menu-label">速度</div>
+            {SPEED_OPTIONS.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === speed} className="model-menu-item speed-item" onClick={() => { setSpeed(option.id as Speed); close(); }}><span className="speed-main">{option.fast && <Zap size={13} className="speed-icon" />}<span className="speed-text"><span className="speed-title">{option.label}</span><span className="speed-sub">{option.description}</span></span></span>{option.id === speed && <Check size={14} className="model-menu-check" />}</button>)}
+          </div>
+        </div>
+      )}
+    </>,
+    document.body,
+  ) : null;
   return (
     <div className="model-picker">
       <button ref={triggerRef} type="button" className={`composer-pill model-pill ${open ? 'active' : ''}`} onClick={() => setOpen((value) => !value)} title="选择模型与推理强度">
-        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelProfileLabel([selectedModelProfile], selectedModelProfile.id)}</span>{effortOptions.length > 0 && <span className="model-pill-effort">{effortLabel(reasoningEffort)}</span>}<ChevronDown size={12} />
+        <Cpu size={12} className="model-pill-icon" />{speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelProfileLabel([selectedModelProfile], selectedModelProfile.id)}</span>{effortOptions.length > 0 && <span className="model-pill-effort">{effortLabel(reasoningEffort)}</span>}<ChevronDown size={12} />
       </button>
-      {open && (
-        <>
-          <button className="menu-backdrop" type="button" aria-label="关闭模型菜单" onClick={close} />
-          <div ref={menuRef} className="model-menu model-choice-menu" role="menu" style={menuStyle} onMouseLeave={() => setSubmenu(null)}>
-            {effortOptions.length > 0 && <><div className="model-menu-label">智能</div>{effortOptions.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === reasoningEffort} className="model-menu-item" onMouseEnter={() => setSubmenu(null)} onClick={() => { setReasoningEffort(option.id); close(); }}><span>{option.label}</span>{option.id === reasoningEffort && <Check size={14} className="model-menu-check" />}</button>)}<div className="model-menu-divider" /></>}
-            <div ref={modelRowRef} className="model-flyout-row" onMouseEnter={() => setSubmenu('model')}>
-              <button type="button" className="model-menu-item submenu-trigger" aria-haspopup="menu" aria-expanded={submenu === 'model'} onClick={() => setSubmenu((current) => (current === 'model' ? null : 'model'))}><span>{selectedModelProfile.label}</span><ChevronRight size={14} className="model-menu-chevron" /></button>
-              {submenu === 'model' && (
-                <div ref={flyoutRef} className="model-flyout model-choice-flyout" style={flyoutStyle}>
-                  <div className="model-flyout-panel" role="menu">
-                    {builtInProfiles.length > 0 && <div className="model-menu-label">订阅模型</div>}
-                    {builtInProfiles.map((option) => (
-                      <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfile.id} className="model-menu-item" onClick={() => { setModelProfile(option.id); close(); }}>
-                        <span>{option.label}</span>{option.id === selectedModelProfile.id && <Check size={14} className="model-menu-check" />}
-                      </button>
-                    ))}
-                    {builtInProfiles.length > 0 && customProfiles.length > 0 && <div className="model-menu-divider" />}
-                    {customProfiles.length > 0 && <div className="model-menu-label">按量模型</div>}
-                    {customProfiles.map((option) => (
-                      <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === selectedModelProfile.id} className="model-menu-item model-profile-item" onClick={() => { setModelProfile(option.id); close(); }}>
-                        <span><strong>{option.label}</strong><em>{option.providerId} · {option.model}</em></span>{option.id === selectedModelProfile.id && <Check size={14} className="model-menu-check" />}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            <div ref={speedRowRef} className="model-flyout-row" onMouseEnter={() => setSubmenu('speed')}>
-              <button type="button" className="model-menu-item submenu-trigger" aria-haspopup="menu" aria-expanded={submenu === 'speed'} onClick={() => setSubmenu((current) => (current === 'speed' ? null : 'speed'))}><span>速度</span><ChevronRight size={14} className="model-menu-chevron" /></button>
-              {submenu === 'speed' && <div ref={flyoutRef} className="model-flyout model-choice-flyout" style={flyoutStyle}><div className="model-flyout-panel" role="menu"><div className="model-menu-label">速度</div>{SPEED_OPTIONS.map((option) => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === speed} className="model-menu-item speed-item" onClick={() => { setSpeed(option.id as Speed); close(); }}><span className="speed-main">{option.fast && <Zap size={13} className="speed-icon" />}<span className="speed-text"><span className="speed-title">{option.label}</span><span className="speed-sub">{option.description}</span></span></span>{option.id === speed && <Check size={14} className="model-menu-check" />}</button>)}</div></div>}
-            </div>
-          </div>
-        </>
-      )}
+      {menuLayer}
     </div>
   );
 }
@@ -12149,7 +12253,7 @@ function toolPresentation(title: string): { kind: ToolKind; icon: ReactNode; run
   const normalized = title.trim().toLowerCase();
   const has = (...keys: string[]) => keys.some((key) => normalized.includes(key));
   if (has('context_compaction', 'contextcompaction', 'context compaction')) {
-    return { kind: 'generic', icon: <Workflow size={14} />, running: '正在压缩上下文', done: '已压缩上下文', failed: '上下文压缩失败' };
+    return { kind: 'generic', icon: <Workflow size={14} />, running: '正在自动压缩上下文', done: '已自动压缩上下文', failed: '自动压缩上下文失败' };
   }
   if (has('stderr')) return { kind: 'log', icon: <FileText size={14} />, running: 'GPT 日志', done: 'GPT 日志', failed: 'GPT 日志' };
   if (/image[\s._-]*gen|generate[\s._-]*image|image[\s._-]*generation|text[\s._-]*to[\s._-]*image/.test(normalized)) {

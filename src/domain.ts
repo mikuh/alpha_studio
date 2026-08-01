@@ -99,7 +99,7 @@ export const financeResearchDomain: DomainConfig = {
   },
   ui: {
     emptyHeading: '把投研问题交给 Alpha Studio',
-    composerPlaceholder: '询问市场、行业、公司或组合问题',
+    composerPlaceholder: '询问投研问题，或录入实盘持仓与买卖记录',
     followupPlaceholder: '继续追问投研问题',
     sidebar: {
       newConversationLabel: '新对话',

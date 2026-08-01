@@ -1,0 +1,56 @@
+{
+  "schema_version": "alpha.factor_spec.v1",
+  "name": "volume_amplified_reversal_5_20",
+  "trial_family_id": "cn-a-volume-reversal-family-v1",
+  "primary_archetype": "cross_sectional",
+  "hypothesis": "放量的5日价格冲击包含更强过度反应，后续5个交易日更可能反转",
+  "expected_direction": "positive",
+  "implementation": {
+    "expression": "-return(close,5) * log1p(volume / median(volume,20))",
+    "dsl_version": "alpha-studio-factor-dsl.v1"
+  },
+  "data_fields": [
+    {
+      "name": "close",
+      "source": "JQData.get_price.close",
+      "frequency": "1d",
+      "known_at_rule": "official daily close after market close",
+      "availability_lag": "0d after confirmed ingestion",
+      "adjustment": "pre_adjusted_for_signal"
+    },
+    {
+      "name": "volume",
+      "source": "JQData.get_price.volume",
+      "frequency": "1d",
+      "known_at_rule": "official daily volume after market close",
+      "availability_lag": "0d after confirmed ingestion",
+      "adjustment": "provider_adjusted_with_pre_adjusted_price"
+    }
+  ],
+  "universe_ref": "cn-a-volume-reversal-20260723.universe",
+  "timing": {
+    "formation_window": "20 trading days ending at t; return lookback 5 trading days",
+    "decision_time": "close(t) after confirmed ingestion",
+    "earliest_fill_time": "open(t+1)",
+    "holding_period": "5 trading days",
+    "rebalance_frequency": "1 trading day"
+  },
+  "preprocessing": {
+    "missing": "exclude and report",
+    "winsorize": "cross_section_mad_5",
+    "standardize": "cross_section_percentile_rank",
+    "neutralize": ["log_adv20", "realized_volatility20"]
+  },
+  "parameters": {"return_lookback": 5, "volume_lookback": 20, "holding_period": 5},
+  "falsification": {
+    "expected_failures": [
+      "单边趋势与流动性持续收缩阶段反转效应可能减弱",
+      "高换手和双边冲击成本可能吞噬毛收益"
+    ],
+    "invalidation_rules": [
+      "最终样本外RankIC方向为负且不确定性区间不支持正向",
+      "增加1日执行延迟后验证集RankIC方向反转",
+      "悲观成本后多空净收益不为正"
+    ]
+  }
+}

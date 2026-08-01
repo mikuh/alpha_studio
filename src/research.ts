@@ -1,7 +1,7 @@
 // 投研工作台的数据与业务逻辑层（无 React 依赖，便于单元测试）。
 // - 内置约 40 只 A 股样例目录，用确定性伪随机序列生成可复现的行情；
 // - JQData（聚宽）可用时，用真实价格覆盖样例快照；
-// - 模拟账户引擎：入金出金、限价买卖、自选、组合，全部本地持久化；
+// - 实盘记录账户：手工录入资金、成交和持仓，全部本地持久化，不连接券商；
 // - 为拖拽到对话框生成自然语言 prompt，供 Agent 使用。
 
 export type ResearchOrderSide = 'buy' | 'sell';
@@ -37,6 +37,8 @@ export interface ResearchQuote {
   name: string;
   board: string;
   sector: string;
+  /** 云端行情标的类型；旧缓存和内置样例可能为空。 */
+  securityType?: 'stock' | 'etf' | 'index';
   price: number;
   prevClose: number;
   changePct: number;
@@ -67,7 +69,7 @@ export interface ResearchQuote {
   source: ResearchQuoteSource;
 }
 
-export type ResearchQuoteSource = 'sample' | 'jqdata' | 'eastmoney';
+export type ResearchQuoteSource = 'sample' | 'jqdata' | 'eastmoney' | 'tencent';
 
 export const RESEARCH_CATALOG: ResearchCatalogEntry[] = [
   { code: '600519.XSHG', name: '贵州茅台', board: '沪市主板', sector: '白酒', basePrice: 1518.8, shares: 12.6, tags: ['核心资产', '高ROE'], thesis: '消费龙头，跟踪批价、估值中枢和机构仓位变化。' },
@@ -471,7 +473,7 @@ export function computeSectorHeat(quotes: Iterable<ResearchQuote>): SectorHeatTi
     .sort((a, b) => b.avgPct - a.avgPct);
 }
 
-// ---- 模拟账户状态 -----------------------------------------------------------
+// ---- 本地实盘记录状态 -------------------------------------------------------
 
 export interface ResearchHolding {
   code: string;
@@ -506,7 +508,7 @@ export interface CustomSecurity {
 }
 
 export interface ResearchState {
-  version: 2;
+  version: 3;
   cash: number;
   /** 净入金（入金 - 出金），用于计算账户总收益 */
   netDeposits: number;
@@ -517,6 +519,8 @@ export interface ResearchState {
   customSecurities: Record<string, CustomSecurity>;
 }
 
+type ResearchStateInput = Partial<Omit<ResearchState, 'version'>> & { version?: number };
+
 export interface ResearchActionResult {
   state: ResearchState;
   error?: string;
@@ -524,19 +528,16 @@ export interface ResearchActionResult {
 
 const RESEARCH_STATE_KEY_V2 = 'alpha-studio.research-state.v2';
 const RESEARCH_STATE_KEY_V1 = 'alpha-studio.research-state.v1';
+export const RESEARCH_STATE_CHANGE_EVENT = 'alpha-studio:research-state-change';
 
 export function defaultResearchState(): ResearchState {
   const now = Date.now();
   return {
-    version: 2,
-    cash: 1_000_000,
-    netDeposits: 1_000_000,
+    version: 3,
+    cash: 0,
+    netDeposits: 0,
     watchlist: ['600519.XSHG', '300750.XSHE', '688981.XSHG', '000001.XSHE', '301308.XSHE'],
-    holdings: [
-      { code: '000001.XSHE', quantity: 12000, avgCost: 10.96, openedAt: now },
-      { code: '300750.XSHE', quantity: 800, avgCost: 198.4, openedAt: now },
-      { code: '600036.XSHG', quantity: 5000, avgCost: 34.2, openedAt: now },
-    ],
+    holdings: [],
     portfolios: [
       { id: 'core', name: '核心资产观察', codes: ['600519.XSHG', '000858.XSHE', '600036.XSHG'], note: '消费与金融的估值修复观察组。', createdAt: now },
       { id: 'growth', name: '成长制造组合', codes: ['300750.XSHE', '688981.XSHG', '002594.XSHE'], note: '新能源、半导体和先进制造方向。', createdAt: now },
@@ -562,6 +563,7 @@ export function loadResearchState(): ResearchState {
 export function saveResearchState(state: ResearchState): void {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(RESEARCH_STATE_KEY_V2, JSON.stringify(state));
+  window.dispatchEvent(new CustomEvent(RESEARCH_STATE_CHANGE_EVENT));
 }
 
 export function resetResearchState(): ResearchState {
@@ -585,7 +587,7 @@ function migrateV1State(input: Record<string, unknown>): ResearchState {
     : base.holdings;
   const holdingsCost = holdings.reduce((sum, item) => sum + item.quantity * item.avgCost, 0);
   return normalizeResearchState({
-    version: 2,
+    version: 1,
     cash,
     netDeposits: cash + holdingsCost,
     watchlist: Array.isArray(input.watchlist) ? (input.watchlist as string[]) : base.watchlist,
@@ -617,20 +619,29 @@ function migrateV1State(input: Record<string, unknown>): ResearchState {
   });
 }
 
-export function normalizeResearchState(input: Partial<ResearchState>): ResearchState {
+export function normalizeResearchState(input: ResearchStateInput): ResearchState {
   const base = defaultResearchState();
-  const cash = typeof input.cash === 'number' && Number.isFinite(input.cash) && input.cash >= 0 ? input.cash : base.cash;
+  const clearLegacyDemoAccount = isLegacyDemoResearchAccount(input);
+  const cash = clearLegacyDemoAccount
+    ? 0
+    : typeof input.cash === 'number' && Number.isFinite(input.cash) && input.cash >= 0
+      ? input.cash
+      : base.cash;
   return {
-    version: 2,
+    version: 3,
     cash,
     netDeposits:
-      typeof input.netDeposits === 'number' && Number.isFinite(input.netDeposits)
+      clearLegacyDemoAccount
+        ? 0
+        : typeof input.netDeposits === 'number' && Number.isFinite(input.netDeposits)
         ? input.netDeposits
         : cash,
     watchlist: Array.isArray(input.watchlist)
       ? Array.from(new Set(input.watchlist.filter((code) => typeof code === 'string' && code)))
       : base.watchlist,
-    holdings: Array.isArray(input.holdings)
+    holdings: clearLegacyDemoAccount
+      ? []
+      : Array.isArray(input.holdings)
       ? input.holdings
           .filter((item) => item && typeof item.code === 'string' && item.quantity > 0 && item.avgCost > 0)
           .map((item) => ({
@@ -663,12 +674,32 @@ export function normalizeResearchState(input: Partial<ResearchState>): ResearchS
   };
 }
 
-function createTrade(input: Omit<ResearchTrade, 'id' | 'createdAt'>): ResearchTrade {
+function isLegacyDemoResearchAccount(input: ResearchStateInput): boolean {
+  if (input.version !== 2 || input.cash !== 1_000_000 || input.netDeposits !== 1_000_000) return false;
+  if (!Array.isArray(input.trades) || input.trades.length !== 0 || !Array.isArray(input.holdings)) return false;
+  const expected = new Map([
+    ['000001.XSHE', { quantity: 12000, avgCost: 10.96 }],
+    ['300750.XSHE', { quantity: 800, avgCost: 198.4 }],
+    ['600036.XSHG', { quantity: 5000, avgCost: 34.2 }],
+  ]);
+  return input.holdings.length === expected.size && input.holdings.every((holding) => {
+    const seeded = expected.get(holding.code);
+    return seeded?.quantity === holding.quantity && seeded.avgCost === holding.avgCost;
+  });
+}
+
+type ResearchTradeInput = Omit<ResearchTrade, 'id' | 'createdAt'> & { createdAt?: number };
+
+function createTrade(input: ResearchTradeInput): ResearchTrade {
   return {
     ...input,
     id: `trade-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-    createdAt: Date.now(),
+    createdAt: input.createdAt ?? Date.now(),
   };
+}
+
+function addTrade(trades: ResearchTrade[], input: ResearchTradeInput): ResearchTrade[] {
+  return [createTrade(input), ...trades].sort((a, b) => b.createdAt - a.createdAt).slice(0, 400);
 }
 
 // ---- 账户操作（入金出金 / 买卖 / 自选 / 组合） -------------------------------
@@ -677,6 +708,7 @@ export function applyCashFlow(
   state: ResearchState,
   side: ResearchCashFlowSide,
   amount: number,
+  createdAt = Date.now(),
 ): ResearchActionResult {
   if (!Number.isFinite(amount) || amount <= 0) {
     return { state, error: '请输入大于 0 的金额。' };
@@ -685,12 +717,15 @@ export function applyCashFlow(
   if (side === 'withdraw' && normalized > state.cash) {
     return { state, error: `可用资金不足，当前现金 ${formatMoney(state.cash)}。` };
   }
+  if (!Number.isFinite(createdAt) || createdAt <= 0) {
+    return { state, error: '请输入有效的资金变动时间。' };
+  }
   return {
     state: {
       ...state,
       cash: side === 'deposit' ? state.cash + normalized : state.cash - normalized,
       netDeposits: side === 'deposit' ? state.netDeposits + normalized : state.netDeposits - normalized,
-      trades: [createTrade({ kind: side, amount: normalized }), ...state.trades],
+      trades: addTrade(state.trades, { kind: side, amount: normalized, createdAt }),
     },
   };
 }
@@ -701,15 +736,19 @@ export interface ResearchOrderInput {
   name: string;
   price: number;
   quantity: number;
+  /** 实际成交时间；不传时使用当前时间。 */
+  createdAt?: number;
 }
 
 export function placeOrder(state: ResearchState, order: ResearchOrderInput): ResearchActionResult {
   const { side, code, name } = order;
   const price = Number(order.price);
   const quantity = Math.floor(Number(order.quantity));
+  const createdAt = order.createdAt ?? Date.now();
   if (!code || !name) return { state, error: '请先选择股票。' };
-  if (!Number.isFinite(price) || price <= 0) return { state, error: '请输入有效的委托价格。' };
-  if (!Number.isFinite(quantity) || quantity <= 0) return { state, error: '请输入有效的委托数量。' };
+  if (!Number.isFinite(price) || price <= 0) return { state, error: '请输入有效的成交价格。' };
+  if (!Number.isFinite(quantity) || quantity <= 0) return { state, error: '请输入有效的成交数量。' };
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return { state, error: '请输入有效的成交时间。' };
 
   if (side === 'buy') {
     if (quantity % 100 !== 0) {
@@ -731,14 +770,14 @@ export function placeOrder(state: ResearchState, order: ResearchOrderInput): Res
           const nextCost = item.quantity * item.avgCost + cost;
           return { ...item, quantity: nextQuantity, avgCost: nextCost / nextQuantity };
         })
-      : [...state.holdings, { code, quantity, avgCost: price, openedAt: Date.now() }];
+      : [...state.holdings, { code, quantity, avgCost: price, openedAt: createdAt }];
     return {
       state: {
         ...state,
         cash: state.cash - cost,
         holdings,
         watchlist: state.watchlist.includes(code) ? state.watchlist : [...state.watchlist, code],
-        trades: [createTrade({ kind: 'buy', code, name, price, quantity, amount: cost }), ...state.trades],
+        trades: addTrade(state.trades, { kind: 'buy', code, name, price, quantity, amount: cost, createdAt }),
       },
     };
   }
@@ -760,8 +799,22 @@ export function placeOrder(state: ResearchState, order: ResearchOrderInput): Res
       ...state,
       cash: state.cash + proceeds,
       holdings,
-      trades: [createTrade({ kind: 'sell', code, name, price, quantity, amount: proceeds }), ...state.trades],
+      trades: addTrade(state.trades, { kind: 'sell', code, name, price, quantity, amount: proceeds, createdAt }),
     },
+  };
+}
+
+/**
+ * 清空用户手工录入的实盘账户数据，保留自选、观察组合和自定义证券。
+ * 资金与持仓、流水必须一起归零，避免清空后仍展示旧账户余额。
+ */
+export function clearLiveAccountRecords(state: ResearchState): ResearchState {
+  return {
+    ...state,
+    cash: 0,
+    netDeposits: 0,
+    holdings: [],
+    trades: [],
   };
 }
 
@@ -834,6 +887,9 @@ export interface ResearchHoldingRow extends ResearchHolding {
   cost: number;
   pnl: number;
   pnlPct: number;
+  /** 按最新价相对昨收估算的当日浮动盈亏 */
+  todayPnl: number;
+  todayPnlPct: number;
   /** 占总资产比例（%） */
   weightPct: number;
 }
@@ -861,6 +917,7 @@ export function researchAccountSummary(
     const marketValue = holding.quantity * quote.price;
     const cost = holding.quantity * holding.avgCost;
     const pnl = marketValue - cost;
+    const todayPnl = holding.quantity * (quote.price - quote.prevClose);
     rows.push({
       ...holding,
       quote,
@@ -868,6 +925,8 @@ export function researchAccountSummary(
       cost,
       pnl,
       pnlPct: cost > 0 ? (pnl / cost) * 100 : 0,
+      todayPnl,
+      todayPnlPct: quote.prevClose > 0 ? ((quote.price - quote.prevClose) / quote.prevClose) * 100 : 0,
       weightPct: 0,
     });
   }
@@ -969,7 +1028,9 @@ export function securityPrompt(quote: ResearchQuote): string {
   if (quote.tags.length) lines.push(`标签：${quote.tags.join('、')}。`);
   if (quote.thesis) lines.push(`初始观察：${quote.thesis}`);
   if (quote.source === 'eastmoney') {
-    lines.push('价格来自东方财富盘中实时快照。请结合我的持仓与风险偏好，给出可验证的投研结论、关键风险和下一步需要补充的数据。');
+    lines.push('价格由云端行情服务从东方财富主源归一化后推送。请结合我的持仓与风险偏好，给出可验证的投研结论、关键风险和下一步需要补充的数据。');
+  } else if (quote.source === 'tencent') {
+    lines.push('价格由云端行情服务从腾讯备源归一化后推送，部分板块或估值字段可能缺失。请结合我的持仓与风险偏好，给出可验证的投研结论、关键风险和下一步需要补充的数据。');
   } else if (quote.source === 'jqdata') {
     lines.push('价格来自聚宽（JQData）日线快照。请结合我的持仓与风险偏好，给出可验证的投研结论、关键风险和下一步需要补充的数据。');
   } else {
@@ -980,7 +1041,7 @@ export function securityPrompt(quote: ResearchQuote): string {
 
 export function holdingPrompt(row: ResearchHoldingRow): string {
   return [
-    `请复盘我的模拟持仓：${row.quote.name}（${row.code}）。`,
+    `请复盘我记录的实盘持仓：${row.quote.name}（${row.code}）。`,
     `持仓 ${row.quantity} 股，成本 ${row.avgCost.toFixed(2)}，现价 ${row.quote.price.toFixed(2)}，浮盈亏 ${formatSignedMoney(row.pnl)}（${formatPercent(row.pnlPct)}），占总资产 ${formatPercent(row.weightPct)}。`,
     '请判断仓位是否合理、止盈止损位如何设置，以及是否需要与组合内其它标的做对冲或替换。',
   ].join('\n');
@@ -1010,7 +1071,7 @@ export function accountPrompt(state: ResearchState, summary: ResearchAccountSumm
       .map((row) => `${row.quote.name} ${row.quantity}股（浮盈亏 ${formatSignedMoney(row.pnl)}，占比 ${formatPercent(row.weightPct)}）`)
       .join('；') || '暂无持仓';
   return [
-    '请基于我的模拟账户做一次投研和交易复盘。',
+    '请基于我手工记录的实盘账户做一次投研和交易复盘。',
     `总资产 ${formatMoney(summary.totalAssets)}，现金 ${formatMoney(state.cash)}，持仓市值 ${formatMoney(summary.marketValue)}，浮盈亏 ${formatSignedMoney(summary.pnl)}，累计收益 ${formatSignedMoney(summary.totalReturn)}（${formatPercent(summary.totalReturnPct)}），仓位 ${formatPercent(summary.exposurePct)}。`,
     `当前持仓：${holdingsLine}。`,
     '请输出仓位建议、风险来源、可执行观察清单和需要补充的 JQData 数据字段。',
@@ -1119,7 +1180,7 @@ export function tradePrompt(trade: ResearchTrade): string {
     ].join('\n');
   }
   return [
-    `请复盘这笔模拟${trade.kind === 'buy' ? '买入' : '卖出'}交易。`,
+    `请复盘这笔实盘${trade.kind === 'buy' ? '买入' : '卖出'}记录。`,
     `标的 ${trade.name ?? trade.code ?? '未知'}（${trade.code ?? '无代码'}），数量 ${trade.quantity ?? 0} 股，价格 ${trade.price?.toFixed(2) ?? '-'}，成交金额 ${formatMoney(trade.amount)}，时间 ${time}。`,
     '请判断交易动机是否成立、执行价格是否合理、后续止盈止损和仓位调整怎么做。',
   ].join('\n');
@@ -1133,7 +1194,7 @@ export function tradeLogPrompt(trades: ResearchTrade[]): string {
     return `${index + 1}. ${TRADE_KIND_COPY[trade.kind]} ${trade.name ?? trade.code ?? ''} ${trade.quantity ?? 0}股 @ ${trade.price?.toFixed(2) ?? '-'}，${formatMoney(trade.amount)}`;
   });
   return [
-    '请复盘我的模拟交易与资金流水。',
+    '请复盘我的实盘交易记录与资金流水。',
     ...(lines.length ? lines : ['暂无交易流水。']),
     '请识别交易纪律、追涨杀跌、仓位节奏、胜率/赔率问题，并给出下一步改进清单。',
   ].join('\n');
@@ -1153,9 +1214,9 @@ export interface ResearchAnalysisTask {
 }
 
 export const RESEARCH_ANALYSIS_TASKS: ResearchAnalysisTask[] = [
-  { id: 'position-risk', title: '持仓体检', prompt: '请对我的模拟持仓做一次风险体检，重点看集中度、行业暴露、浮盈亏结构和止损止盈安排。' },
+  { id: 'position-risk', title: '持仓体检', prompt: '请对我记录的实盘持仓做一次风险体检，重点看集中度、行业暴露、浮盈亏结构和止损止盈安排。' },
   { id: 'portfolio-compare', title: '组合比较', prompt: '请比较我的股票组合，判断哪个组合的主线更清晰、风险收益比更好，并列出需要补充验证的数据。' },
-  { id: 'trade-plan', title: '交易计划', prompt: '请基于当前模拟账户、持仓和自选股，给出一份只读交易计划：观察位、买卖触发条件、仓位上限和证伪信号。' },
+  { id: 'trade-plan', title: '交易计划', prompt: '请基于当前实盘记录、持仓和自选股，给出一份只读交易计划：观察位、买卖触发条件、仓位上限和证伪信号。' },
   { id: 'jq-fundamental-gap', title: '财务缺口', prompt: '请优先补齐聚宽财务基本面数据：估值、利润表、资产负债表、现金流和连续财务指标，判断当前结论有哪些盲区。' },
   { id: 'jq-factor-risk', title: '因子风控', prompt: '请用聚宽因子/风险模型视角检查我的组合，重点看风格暴露、行业暴露、拥挤度、回撤风险和需要降低的共性因子。' },
 ];

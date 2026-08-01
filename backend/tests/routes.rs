@@ -39,6 +39,27 @@ async fn admin_dynamic_delete_routes_match_before_auth() {
     }
 }
 
+#[tokio::test]
+async fn market_snapshot_requires_activated_device_headers() {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
+        .expect("lazy postgres pool");
+    let state = AppState::new(test_config(), pool, None);
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/market/snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
 fn test_config() -> AppConfig {
     AppConfig {
         database_url: "postgres://postgres:postgres@localhost/alpha_studio_test".to_string(),
@@ -49,5 +70,8 @@ fn test_config() -> AppConfig {
         admin_email: "admin@alpha-studio.local".to_string(),
         admin_password: "alpha-admin".to_string(),
         bind_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+        market_data_enabled: false,
+        market_refresh_seconds: 45,
+        market_snapshot_limit: 6000,
     }
 }

@@ -15,6 +15,7 @@ import {
 import type { ChatMessage, Conversation, CoworkerSelection, SkillSelection } from './types';
 import { INTRADAY_MONITOR_CARD_PROMPT } from './themeAbilities';
 import { DAILY_DECISION_STATE_KEY, JOINT_RESEARCH_EVIDENCE_SCHEMA, beginJointResearch, loadDailyDecisionState } from './dailyDecision';
+import { loadResearchState } from './research';
 
 function textMessage(content = 'hi'): ChatMessage {
   return { id: `msg-${content}`, role: 'user', timestamp: 1, blocks: [{ type: 'text', content }] };
@@ -294,6 +295,35 @@ describe('skill selections on user messages', () => {
     // Automation intents short-circuit into an instant reply; coworker turns
     // must instead go through the normal (streaming) chat pipeline.
     expect(useChatStore.getState().conversations[0].status).not.toBe('idle');
+  });
+});
+
+describe('实盘账户对话写入', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    window.localStorage.removeItem('alpha-studio.research-state.v2');
+    useChatStore.setState({
+      conversations: [conversation('conv-research-command')],
+      projects: [],
+      currentConversationId: 'conv-research-command',
+      selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+      modelProfiles: defaultModelProfiles(),
+      approvalMode: 'auto',
+      projectSort: 'updated',
+      conversationSort: 'updated',
+      error: null,
+    });
+  });
+
+  it('在对话内执行明确的持仓修正，并返回本地确认消息', async () => {
+    await useChatStore.getState().sendMessage('把宁德时代持仓修正为 300 股，成本 210 元');
+
+    const conversationState = useChatStore.getState().conversations[0];
+    expect(conversationState.status).toBe('idle');
+    expect(conversationState.messages).toHaveLength(2);
+    expect(conversationState.messages[1]).toMatchObject({ role: 'assistant', isStreaming: false });
+    expect(conversationState.messages[1].blocks[0]).toMatchObject({ type: 'text', content: expect.stringContaining('当前持仓修正为 300 股') });
+    expect(loadResearchState().holdings[0]).toMatchObject({ code: '300750.XSHE', quantity: 300, avgCost: 210 });
   });
 });
 

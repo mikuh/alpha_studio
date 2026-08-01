@@ -208,7 +208,7 @@ describe('admin model gateway', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'GPT 账号' }));
     await screen.findByText('codex-alpha@example.com');
 
-    fireEvent.click(screen.getByRole('button', { name: '删除账号' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除' }));
     const dialog = await screen.findByRole('dialog', { name: '删除 GPT 账号' });
     fireEvent.click(within(dialog).getByRole('button', { name: '删除账号' }));
 
@@ -226,10 +226,7 @@ describe('admin model gateway', () => {
     await screen.findByText('codex-alpha@example.com');
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
 
-    const customerSelect = screen.getByLabelText('分配客户（可多选）') as HTMLSelectElement;
-    customerSelect.options[0].selected = true;
-    customerSelect.options[1].selected = true;
-    fireEvent.change(customerSelect);
+    fireEvent.click(screen.getByRole('button', { name: 'Beta Fund', pressed: false }));
     fireEvent.click(screen.getByRole('button', { name: '保存账号' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -332,7 +329,7 @@ describe('admin model gateway', () => {
     fireEvent.click(await screen.findByRole('button', { name: '客户' }));
     await waitFor(() => expect(screen.getAllByText('Alpha Fund').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: '删除客户' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除', exact: true }));
     const dialog = await screen.findByRole('dialog', { name: '删除客户' });
     fireEvent.click(within(dialog).getByRole('button', { name: '删除客户' }));
 

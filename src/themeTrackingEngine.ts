@@ -4,7 +4,7 @@
 // 面板只负责展示：通过 THEME_ENGINE_TICK_EVENT 订阅最新行情快照与评估结果。
 
 import { useEffect } from 'react';
-import { fetchEastmoneyRealtimeBatch } from './eastmoney';
+import { fetchCloudRealtimeBatch } from './cloudMarket';
 import type { ResearchQuote } from './research';
 import {
   loadPremarketThemeRuns,
@@ -68,7 +68,7 @@ export function collectReportCodes(reports: PremarketThemeRun[]): string[] {
 
 export function buildQuoteMap(
   reports: PremarketThemeRun[],
-  prices: Awaited<ReturnType<typeof fetchEastmoneyRealtimeBatch>>['prices'],
+  prices: Awaited<ReturnType<typeof fetchCloudRealtimeBatch>>['prices'],
 ): Map<string, ResearchQuote> {
   const stocks = new Map<string, { name: string; sector: string }>();
   for (const report of reports) {
@@ -106,7 +106,7 @@ export function buildQuoteMap(
       paused: live.paused,
       tags: [],
       thesis: '',
-      source: 'eastmoney',
+      source: live.source ?? 'eastmoney',
     });
   }
   return quotes;
@@ -149,7 +149,7 @@ export async function runTrackingTick(options: { force?: boolean } = {}): Promis
   if (!codes.length) return null;
   ticking = true;
   try {
-    const batch = await fetchEastmoneyRealtimeBatch(codes, { forceRefresh: true });
+    const batch = await fetchCloudRealtimeBatch(codes, { forceRefresh: true });
     const quotes = buildQuoteMap(reports, batch.prices);
     const evaluateBreadth = options.force || now.getTime() - lastBreadthAt >= 60_000;
     if (evaluateBreadth) lastBreadthAt = now.getTime();

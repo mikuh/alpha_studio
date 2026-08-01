@@ -1,0 +1,9 @@
+{
+  "run_id": "run-20260723-volume-reversal",
+  "created_at": "2026-07-23T20:00:00+08:00",
+  "modes": ["discover", "compile", "evaluate", "validate", "backtest"],
+  "skill": "alpha-studio-a-share-factor-mining",
+  "candidate_count": 1,
+  "holdout_policy": "single_view_after_contract_freeze",
+  "artifact_root": "artifacts/factor-mining/run-20260723-volume-reversal"
+}

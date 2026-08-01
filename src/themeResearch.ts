@@ -1028,7 +1028,7 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
     '当前本地上下文：',
     `- 生成时间：${generatedAt.toLocaleString('zh-CN', { hour12: false })}`,
     '- 数据口径：右侧投研工作台提供本地自选、持仓、组合、指数/全市场快照；正式结论必须重新验证最新市场、公告和新闻来源。',
-    `- 模拟账户：总资产 ${formatMoney(input.summary.totalAssets)}，现金 ${formatMoney(input.state.cash)}，仓位 ${formatPercent(input.summary.exposurePct)}，最大单票 ${formatPercent(input.summary.concentrationPct)}。`,
+    `- 实盘记录：总资产 ${formatMoney(input.summary.totalAssets)}，现金 ${formatMoney(input.state.cash)}，仓位 ${formatPercent(input.summary.exposurePct)}，最大单票 ${formatPercent(input.summary.concentrationPct)}。`,
     `- 行业暴露：${exposures.join('；') || '暂无持仓暴露'}`,
     '- 持仓：',
     ...(holdings.length ? holdings.map((line) => `  - ${line}`) : ['  - 暂无持仓']),

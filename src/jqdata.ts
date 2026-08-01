@@ -86,7 +86,7 @@ const catalogItem = (
 // Official JQData domains, mapped to Alpha Studio's actual desktop bridge.
 // "embedded" means a visible workbench workflow exists; "queryable" means
 // get_price/get_security_info can query the asset but no dedicated workflow
-// exists; "planned" means the current Rust/Python bridge does not expose it.
+// exists; "planned" means the current native HTTP bridge does not expose it.
 export const JQDATA_CATALOG: readonly JqDataCatalogItem[] = [
   catalogItem({
     id: 'bars', domain: '行情与 Bar', group: '市场基础', methods: ['get_price', 'get_bars'],
@@ -264,7 +264,7 @@ export async function testJqDataConnection(): Promise<JqDataProbeResult> {
   if (!isTauriRuntime()) {
     return {
       ok: false,
-      message: '浏览器预览模式不会调用本地 JQData SDK/RPC。请在桌面应用中测试 JQData。',
+      message: '浏览器预览模式不会调用 JQData HTTP API。请在桌面应用中测试 JQData。',
     };
   }
   return invoke<JqDataProbeResult>('jqdata_test_connection');
@@ -276,7 +276,7 @@ export function jqDataUpdatedAtLabel(value: string): string {
   return new Date(millis).toLocaleString('zh-CN', { hour12: false });
 }
 
-// ---- Generic JQData SDK/RPC query bridge ----------------------------------
+// ---- Generic JQData native HTTP query bridge -------------------------------
 
 export interface JqDataQueryResult {
   ok: boolean;
@@ -610,7 +610,7 @@ export interface JqLatestPriceBatch {
 }
 
 // Latest close plus previous close for a batch of securities. The desktop side
-// maps this to jqdatasdk SDK/RPC and returns tidy rows.
+// maps this to JQData's HTTP API and returns tidy rows.
 export async function fetchJqLatestPriceBatch(
   codes: string[],
   options: { forceRefresh?: boolean } = {},
@@ -643,7 +643,7 @@ export async function fetchJqLatestPriceBatch(
     if (cached?.normalizedPayload) {
       return {
         prices: jqLiveMapFromRows(cached.normalizedPayload),
-        errors: unique.map((code) => `${code}：${result.message || '聚宽 SDK/RPC 未返回可用报价。'}`),
+        errors: unique.map((code) => `${code}：${result.message || '聚宽 HTTP API 未返回可用报价。'}`),
         requested: unique.length,
         asOfDate: marketCacheLabel(cached),
         cached: true,
@@ -652,7 +652,7 @@ export async function fetchJqLatestPriceBatch(
     }
     return {
       prices: map,
-      errors: unique.map((code) => `${code}：${result.message || '聚宽 SDK/RPC 未返回可用报价。'}`),
+      errors: unique.map((code) => `${code}：${result.message || '聚宽 HTTP API 未返回可用报价。'}`),
       requested: unique.length,
     };
   }

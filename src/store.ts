@@ -15,6 +15,7 @@ import { coworkerSelectionsByIds } from './coworkers';
 import { checkCodex, isTauriRuntime, listCodexModels, localTextFileRead, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
+import { executeResearchChatCommand } from './researchChat';
 import { addThemeAbilityContext, inferThemeAbilitySkill } from './themeAbilities';
 import {
   ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
@@ -388,6 +389,37 @@ export const useChatStore = create<ChatState>()(
         const nextTitle = conversation.messages.length === 0
           ? buildConversationTitle(trimmed || attachmentList?.[0]?.name || '')
           : conversation.title;
+        const researchCommand = !attachmentList && !explicitSelectedSkill && !coworkerList
+          ? executeResearchChatCommand(trimmed)
+          : { handled: false };
+
+        if (researchCommand.handled) {
+          set((state) => ({
+            conversations: state.conversations.map((item) =>
+              item.id === conversationId
+                ? {
+                    ...removeQueuedMessageFromConversation(item, queuedMessageId),
+                    title: nextTitle,
+                    messages: [
+                      ...item.messages,
+                      userMessage,
+                      {
+                        ...assistantMessage,
+                        isStreaming: false,
+                        blocks: [{ type: 'text', content: researchCommand.reply ?? '实盘记录已更新。' }],
+                      },
+                    ],
+                    status: 'idle',
+                    updatedAt: Date.now(),
+                    runId: undefined,
+                  }
+                : item
+            ),
+            error: null,
+          }));
+          if (queuedMessageId) startNextQueuedMessage(conversationId);
+          return;
+        }
         const automationIntent = !attachmentList && !explicitSelectedSkill && !coworkerList ? detectAutomationIntent(trimmed) : null;
 
         if (automationIntent) {

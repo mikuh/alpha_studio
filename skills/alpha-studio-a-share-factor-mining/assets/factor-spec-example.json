@@ -1,0 +1,56 @@
+{
+  "schema_version": "alpha.factor_spec.v1",
+  "name": "reversal_20d_quality_liquidity",
+  "trial_family_id": "cn-a-reversal-quality-family",
+  "primary_archetype": "cross_sectional",
+  "hypothesis": "对行业、规模、质量和流动性进行控制后，过去20日相对弱势股票存在未来5日均值回归",
+  "expected_direction": "positive",
+  "implementation": {
+    "expression": "rank(-return(close, 20))",
+    "dsl_version": "alpha-studio-factor-dsl.v1"
+  },
+  "data_fields": [
+    {
+      "name": "close",
+      "source": "market.daily.close",
+      "frequency": "1d",
+      "known_at_rule": "official close after market close",
+      "availability_lag": "0d after confirmed ingestion",
+      "adjustment": "total_return_adjusted_for_signal"
+    }
+  ],
+  "universe_ref": "cn-a-reversal-quality-001.universe",
+  "timing": {
+    "formation_window": "20 trading days ending at t",
+    "decision_time": "close(t) after confirmed ingestion",
+    "earliest_fill_time": "open(t+1) or configured VWAP window",
+    "holding_period": "5 trading days",
+    "rebalance_frequency": "1 trading day"
+  },
+  "preprocessing": {
+    "missing": "exclude and report",
+    "winsorize": "cross_section_mad_5",
+    "standardize": "cross_section_rank_normal",
+    "neutralize": [
+      "industry",
+      "log_float_market_cap",
+      "quality",
+      "liquidity"
+    ]
+  },
+  "parameters": {
+    "lookback": 20,
+    "holding_period": 5
+  },
+  "falsification": {
+    "expected_failures": [
+      "趋势行情中反转效应可能减弱或转负",
+      "极端流动性收缩时冲击成本可能吞噬毛收益"
+    ],
+    "invalidation_rules": [
+      "最终样本外RankIC方向反转且置信区间不支持预期方向",
+      "增加1日执行延迟后成本前Top-Bottom收益消失",
+      "目标AUM悲观成本情景下净alpha为负"
+    ]
+  }
+}

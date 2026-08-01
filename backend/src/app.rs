@@ -12,6 +12,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/readyz", get(routes::readyz))
         .route("/api/auth/login", post(routes::auth_login))
         .route("/api/client/bootstrap", get(routes::client_bootstrap))
+        .route("/api/market/snapshot", get(routes::market_snapshot))
+        .route("/api/market/stream", get(routes::market_stream))
         .route("/api/client/activate", post(routes::client_activate))
         .route(
             "/api/client/billing-summary",

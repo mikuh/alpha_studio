@@ -29,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let bind_addr = config.bind_addr;
     let redis = db::redis_client(&config);
     let state = AppState::new(config, pool, redis);
+    state.start_market_feed();
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     tracing::info!(%bind_addr, "alpha studio backend listening");

@@ -1,0 +1,58 @@
+{
+  "schema_version": "alpha.factor_research.v1",
+  "research_id": "cn-a-volume-reversal-20260723",
+  "objective": "检验量能强化的5日短期价格反转能否预测中证500历史成分股未来5个交易日横截面收益",
+  "primary_archetype": "cross_sectional",
+  "trial_family_id": "cn-a-volume-reversal-family-v1",
+  "hypothesis": {
+    "mechanism": "高成交量伴随的短期价格冲击更可能包含投资者过度反应和流动性需求，随后出现均值回归",
+    "falsifiable_prediction": "过去5日跌幅越大且当日成交量相对20日中位数越高，下一可交易开盘起未来5日收益越高",
+    "expected_direction": "positive",
+    "failure_scenarios": [
+      "预测力仅存在于不可成交的涨跌停或停牌样本",
+      "流动性和波动残差化后预测方向反转",
+      "验证集或最终封存样本方向反转",
+      "加入一个交易日延迟后信号消失",
+      "悲观成本情景下多空净收益为负"
+    ]
+  },
+  "universe": {
+    "market": "CN_A",
+    "exchanges": ["SSE", "SZSE"],
+    "boards": ["main", "chinext", "star"],
+    "historical_membership": true,
+    "include_delisted": true,
+    "tradability_policy": {
+      "st": "exclude_at_decision_time",
+      "suspension": "exclude_if_not_executable",
+      "price_limit": "exclude_open_locked_at_entry_or_exit",
+      "t_plus_one": true,
+      "lot_size": "not_applied_in_factor_diagnostics"
+    }
+  },
+  "timing": {
+    "frequency": "1d",
+    "timezone": "Asia/Shanghai",
+    "decision_time": "close(t) after official close and volume data are available",
+    "earliest_order_time": "open_auction(t+1)",
+    "earliest_fill_time": "open(t+1)",
+    "label_interval": "open(t+1) to open(t+6)",
+    "holding_period": "5 trading days",
+    "rebalance_frequency": "1 trading day"
+  },
+  "data_split": {
+    "discovery": {"start": "2018-01-01", "end": "2021-12-31"},
+    "validation": {"start": "2022-01-01", "end": "2023-12-31"},
+    "final_holdout": {"start": "2024-01-01", "end": "2025-12-31"}
+  },
+  "search_policy": {
+    "allowed_methods": ["economic_template"],
+    "max_trials": 1,
+    "stopping_rule": "本次仅评测预先冻结的单一候选，不依据结果调参"
+  },
+  "guardrails": {
+    "point_in_time_required": true,
+    "record_all_trials": true,
+    "final_holdout_single_use": true
+  }
+}
