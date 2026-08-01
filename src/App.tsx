@@ -26,12 +26,15 @@ import {
   Archive,
   ArrowDownAZ,
   ArrowDownUp,
+  ArrowLeftToLine,
+  ArrowRightToLine,
   ArrowUp,
   Box,
   Braces,
   CalendarDays,
   Check,
   CheckCheck,
+  ChartCandlestick,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -40,9 +43,9 @@ import {
   Clock3,
   Code2,
   Columns2,
+  Compass,
   Copy,
   CornerDownRight,
-  Cpu,
   Database,
   Download,
   Eye,
@@ -50,6 +53,7 @@ import {
   ExternalLink,
   File,
   FileChartColumn,
+  FileCheck2,
   FileCode2,
   FileDiff,
   FileSpreadsheet,
@@ -91,8 +95,6 @@ import {
   Network,
   PanelBottom,
   PanelBottomClose,
-  PanelLeftClose,
-  PanelLeftOpen,
   PanelRight,
   Paperclip,
   Pause,
@@ -121,6 +123,7 @@ import {
   Upload,
   UserCircle,
   Users,
+  UsersRound,
   Workflow,
   Wrench,
   X,
@@ -149,6 +152,7 @@ import {
   copyLocalFileToClipboard,
   isTauriRuntime,
   listOpenApps,
+  localDirectoryList,
   localImageDataUrl,
   localTextFileRead,
   loginCodex,
@@ -168,6 +172,7 @@ import {
   type CodexRateLimitWindow,
   type CodexSubscriptionUsage,
   type BrowserWebviewEvent,
+  type LocalDirectoryEntry,
 } from './codexBridge';
 import { BrowserPdfViewer } from './BrowserPdfViewer';
 import { NativeBrowserSurface } from './NativeBrowserSurface';
@@ -300,6 +305,7 @@ import type {
   ReviewFinding,
   ReviewReport,
   ReviewRequest,
+  SelectedTextContext,
   SkillSelection,
 } from './types';
 
@@ -312,6 +318,8 @@ interface RightDockTab {
   url?: string;
   title?: string;
   requestKey?: number;
+  sourceConversationId?: string;
+  selectedTextContexts?: SelectedTextContext[];
 }
 type Theme = 'light' | 'dark';
 type SettingsSection =
@@ -355,7 +363,7 @@ const RIGHT_DOCK_META: Record<RightDockKind, { label: string; shortcut?: string 
   'research-workbench': { label: '投研工作台' },
   'daily-decision': { label: '日报决策' },
 };
-const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['research-workbench', 'browser'];
+const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['research-workbench', 'files', 'browser'];
 
 function conversationHasDailyThemeTurn(conversation: Conversation | null | undefined): boolean {
   return Boolean(conversation?.messages.some((message) => message.role === 'user' && (
@@ -805,6 +813,8 @@ const AUTOMATION_TEMPLATES: readonly AutomationTemplate[] = [
 
 // Drag payload MIME for coworker cards dropped onto the composer.
 const COWORKER_DRAG_MIME = 'application/x-alpha-coworker';
+// Absolute file or directory paths dragged from the research tree into the composer.
+const LOCAL_PATH_DRAG_MIME = 'application/x-alpha-local-path';
 
 // One or more coworkers (optionally with a preset task prompt) queued from the
 // coworkers panel, waiting for the composer to pick them up.
@@ -1174,6 +1184,7 @@ function AppWorkspace() {
   const [rightDockExpanded, setRightDockExpanded] = useState(false);
   const [rightDockTabs, setRightDockTabs] = useState<RightDockTab[]>([]);
   const [activeRightDockTabId, setActiveRightDockTabId] = useState<string | null>(null);
+  const [mainComposerContexts, setMainComposerContexts] = useState<Record<string, SelectedTextContext[]>>({});
   const [dailyReportsForShell, setDailyReportsForShell] = useState(() => loadPremarketThemeRuns());
   const lastRegularRightPanelRef = useRef<{
     panel: Exclude<RightPanel, 'none' | 'coworkers'>;
@@ -1422,7 +1433,7 @@ function AppWorkspace() {
     setRightPanelVisible(true);
   }, []);
 
-  const addRightDockTab = useCallback((kind: RightDockKind, url?: string) => {
+  const addRightDockTab = useCallback((kind: RightDockKind, url?: string, selectedTextContexts?: SelectedTextContext[]) => {
     if (kind === 'daily-decision') {
       const existing = rightDockTabs.find((tab) => tab.kind === kind);
       if (existing) {
@@ -1436,13 +1447,70 @@ function AppWorkspace() {
       kind,
       url,
       requestKey: url ? 1 : undefined,
+      sourceConversationId: currentConversationId ?? undefined,
+      selectedTextContexts,
     };
     setRightDockTabs((prev) => [...prev, tab]);
     setActiveRightDockTabId(tab.id);
     setRightPanel(kind);
     setRightDockMounted(true);
     setRightPanelVisible(true);
-  }, [activateRightDockTab, rightDockTabs]);
+  }, [activateRightDockTab, currentConversationId, rightDockTabs]);
+
+  const addSelectionToMainChat = useCallback((context: SelectedTextContext) => {
+    const conversationId = currentConversationId;
+    if (!conversationId) return;
+    setMainComposerContexts((current) => {
+      const existing = current[conversationId] ?? [];
+      if (existing.some((item) => item.id === context.id || item.text === context.text)) return current;
+      return { ...current, [conversationId]: [...existing, context] };
+    });
+  }, [currentConversationId]);
+
+  const removeMainComposerContext = useCallback((contextId: string) => {
+    const conversationId = currentConversationId;
+    if (!conversationId) return;
+    setMainComposerContexts((current) => ({
+      ...current,
+      [conversationId]: (current[conversationId] ?? []).filter((item) => item.id !== contextId),
+    }));
+  }, [currentConversationId]);
+
+  const consumeMainComposerContexts = useCallback(() => {
+    const conversationId = currentConversationId;
+    if (!conversationId) return;
+    setMainComposerContexts((current) => ({ ...current, [conversationId]: [] }));
+  }, [currentConversationId]);
+
+  const askSelectionInSideChat = useCallback((context: SelectedTextContext) => {
+    const existing = rightDockTabs.find((tab) => tab.id === activeRightDockTabId && tab.kind === 'side-chat')
+      ?? [...rightDockTabs].reverse().find((tab) => tab.kind === 'side-chat');
+    if (existing) {
+      setRightDockTabs((tabs) => tabs.map((tab) => {
+        if (tab.id !== existing.id) return tab;
+        const contexts = tab.selectedTextContexts ?? [];
+        if (contexts.some((item) => item.id === context.id || item.text === context.text)) return tab;
+        return { ...tab, selectedTextContexts: [...contexts, context] };
+      }));
+      activateRightDockTab(existing);
+      return;
+    }
+    addRightDockTab('side-chat', undefined, [context]);
+  }, [activateRightDockTab, activeRightDockTabId, addRightDockTab, rightDockTabs]);
+
+  const removeRightDockTextContext = useCallback((tabId: string, contextId: string) => {
+    setRightDockTabs((tabs) => tabs.map((tab) => (
+      tab.id === tabId
+        ? { ...tab, selectedTextContexts: (tab.selectedTextContexts ?? []).filter((item) => item.id !== contextId) }
+        : tab
+    )));
+  }, []);
+
+  const consumeRightDockTextContexts = useCallback((tabId: string) => {
+    setRightDockTabs((tabs) => tabs.map((tab) => (
+      tab.id === tabId ? { ...tab, selectedTextContexts: [] } : tab
+    )));
+  }, []);
 
   const openBrowserUrl = useCallback((rawUrl: string) => {
     const displayUrl = browserDockDisplayUrl(rawUrl);
@@ -1709,7 +1777,14 @@ function AppWorkspace() {
                   onOpenChat={() => setMainView('chat')}
                 />
               ) : (
-                <ChatArea domain={domain} />
+                <ChatArea
+                  domain={domain}
+                  selectedTextContexts={currentConversationId ? mainComposerContexts[currentConversationId] ?? [] : []}
+                  onRemoveSelectedTextContext={removeMainComposerContext}
+                  onConsumeSelectedTextContexts={consumeMainComposerContexts}
+                  onAddSelectionToChat={addSelectionToMainChat}
+                  onAskSelectionInSideChat={askSelectionInSideChat}
+                />
               )}
             </main>
             {rightPanelResizer && (
@@ -1732,6 +1807,8 @@ function AppWorkspace() {
                 onCloseTab={closeRightDockTab}
                 onAddTab={addRightDockTab}
                 onUpdateTabTitle={updateRightDockTabTitle}
+                onRemoveTextContext={removeRightDockTextContext}
+                onConsumeTextContexts={consumeRightDockTextContexts}
                 expanded={rightDockExpanded}
                 onToggleExpanded={() => setRightDockExpanded((expanded) => !expanded)}
                 onCloseGit={() => {
@@ -1741,7 +1818,14 @@ function AppWorkspace() {
               />
             )}
           </div>
-          {rightPanelVisible && rightDockExpanded && currentRightPanel !== 'side-chat' && <DockOverlayComposer domain={domain} />}
+          {rightPanelVisible && rightDockExpanded && currentRightPanel !== 'side-chat' && (
+            <DockOverlayComposer
+              domain={domain}
+              selectedTextContexts={currentConversationId ? mainComposerContexts[currentConversationId] ?? [] : []}
+              onRemoveSelectedTextContext={removeMainComposerContext}
+              onConsumeSelectedTextContexts={consumeMainComposerContexts}
+            />
+          )}
         </div>
         <SettingsPage
           domain={domain}
@@ -1771,10 +1855,10 @@ function CollapsedSidebarToggle({
   className?: string;
 }) {
   if (!collapsed) return null;
-  const classes = ['icon-btn', className].filter(Boolean).join(' ');
+  const classes = ['icon-btn', 'chrome-tool-button', className].filter(Boolean).join(' ');
   return (
     <button className={classes} type="button" onClick={onToggle} aria-label="展开侧栏" title="展开侧栏">
-      <PanelLeftOpen size={16} />
+      <ArrowRightToLine size={16} />
     </button>
   );
 }
@@ -1788,14 +1872,14 @@ function CoworkersToggleButton({
 }) {
   return (
     <button
-      className={`icon-btn ${open ? 'active' : ''}`}
+      className={`icon-btn chrome-tool-button topbar-tool-button ${open ? 'active' : ''}`}
       type="button"
       onClick={onToggle}
       aria-label={open ? '关闭 AI 同事面板' : '打开 AI 同事面板'}
       aria-pressed={open}
       title="AI 同事"
     >
-      <Users size={16} />
+      <UsersRound size={16} />
     </button>
   );
 }
@@ -1812,7 +1896,7 @@ function RightDockToggleButton({
   const label = RIGHT_DOCK_META[kind].label;
   return (
     <button
-      className={`icon-btn ${open ? 'active' : ''}`}
+      className={`icon-btn chrome-tool-button topbar-tool-button ${open ? 'active' : ''}`}
       type="button"
       onClick={onToggle}
       aria-label={`${open ? '关闭' : '打开'}${label}`}
@@ -1844,14 +1928,14 @@ function DailyDecisionToggleButton({
       : '日报决策';
   return (
     <button
-      className={`icon-btn daily-decision-toggle ${open ? 'active' : ''} ${warning ? 'warning' : ''}`}
+      className={`icon-btn chrome-tool-button topbar-tool-button daily-decision-toggle ${open ? 'active' : ''} ${warning ? 'warning' : ''}`}
       type="button"
       onClick={onToggle}
       aria-label={title}
       aria-pressed={open}
       title={title}
     >
-      {loading ? <Loader2 size={16} className="spin" /> : warning ? <AlertTriangle size={16} /> : <FileChartColumn size={16} />}
+      {loading ? <Loader2 size={16} className="spin" /> : warning ? <AlertTriangle size={16} /> : <FileCheck2 size={16} />}
       {badge > 0 && <span className="daily-decision-badge">{badge > 99 ? '99+' : badge}</span>}
     </button>
   );
@@ -2243,11 +2327,10 @@ function Sidebar({
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`} aria-hidden={collapsed}>
         <div className="sidebar-traffic" data-tauri-drag-region>
           <div className="sidebar-brand" data-tauri-drag-region aria-label="Alpha Studio">
-            <span className="sidebar-brand-mark" aria-hidden="true"><i /><i /><i /><i /></span>
             <span className="sidebar-brand-copy" data-tauri-drag-region><strong>ALPHA</strong><em>STUDIO</em></span>
           </div>
-          <button className="sidebar-collapse-btn" type="button" onClick={onCollapse} aria-label="收起侧栏" title="收起侧栏">
-            <PanelLeftClose size={16} />
+          <button className="sidebar-collapse-btn chrome-tool-button" type="button" onClick={onCollapse} aria-label="收起侧栏" title="收起侧栏">
+            <ArrowLeftToLine size={16} />
           </button>
           <div className="sidebar-account" title={activatedUserTitle} data-tauri-drag-region>
             <i className="sidebar-account-status" aria-hidden="true" />
@@ -2256,20 +2339,21 @@ function Sidebar({
         </div>
         <div className="sidebar-scroll">
           <div className="sidebar-menu-panel nav-menu">
-            <button className="nav-item primary" type="button" onClick={() => { createConversationInContext(); onOpenChat(); }}>
+            <div className="sidebar-index-label" aria-hidden="true"><span>WORKSPACE MENU</span><em>04</em></div>
+            <button className="nav-item primary" data-index="01" type="button" onClick={() => { createConversationInContext(); onOpenChat(); }}>
               <SquarePen size={15} />
               <span className="nav-label">{sidebarCopy.newConversationLabel}</span>
             </button>
-            <button className={`nav-item ${searchOpen ? 'active' : ''}`} type="button" onClick={() => setSearchOpen(true)}>
+            <button className={`nav-item ${searchOpen ? 'active' : ''}`} data-index="02" type="button" onClick={() => setSearchOpen(true)}>
               <Search size={15} />
               <span className="nav-label">搜索</span>
               <span className="nav-shortcut">⌘K</span>
             </button>
-            <button className={`nav-item ${activeView === 'skills' ? 'active' : ''}`} type="button" onClick={onOpenSkills}>
+            <button className={`nav-item ${activeView === 'skills' ? 'active' : ''}`} data-index="03" type="button" onClick={onOpenSkills}>
               <Plug size={15} />
               <span className="nav-label">{sidebarCopy.pluginsLabel}</span>
             </button>
-            <button className={`nav-item ${activeView === 'automations' ? 'active' : ''}`} type="button" onClick={onOpenAutomations}>
+            <button className={`nav-item ${activeView === 'automations' ? 'active' : ''}`} data-index="04" type="button" onClick={onOpenAutomations}>
               <Clock3 size={15} />
               <span className="nav-label">{sidebarCopy.automationLabel}</span>
             </button>
@@ -2277,7 +2361,7 @@ function Sidebar({
 
           {pinnedConversations.length > 0 && (
             <>
-              <SectionLabel>置顶</SectionLabel>
+              <SectionLabel meta={String(pinnedConversations.length).padStart(2, '0')}>置顶</SectionLabel>
               <div className="sidebar-menu-panel conv-group">
                 {pinnedConversations.map((conversation) => (
                   <ConversationRow
@@ -2299,7 +2383,7 @@ function Sidebar({
             </>
           )}
 
-          <SidebarHead label={sidebarCopy.projectSectionLabel} menuOpen={menu?.owner === 'project-section' || menu?.owner === 'add'}>
+          <SidebarHead label={sidebarCopy.projectSectionLabel} meta={String(sortedProjects.length).padStart(2, '0')} menuOpen={menu?.owner === 'project-section' || menu?.owner === 'add'}>
             <button className="group-action" type="button" onClick={openProjectSectionMenu} aria-label="研究主题排序与整理" title="排序与整理">
               <MoreHorizontal size={15} />
             </button>
@@ -2346,7 +2430,7 @@ function Sidebar({
             )}
           </div>
 
-          <SidebarHead label={sidebarCopy.conversationSectionLabel} menuOpen={menu?.owner === 'conversation-section'}>
+          <SidebarHead label={sidebarCopy.conversationSectionLabel} meta={String(sortedStandalone.length).padStart(2, '0')} menuOpen={menu?.owner === 'conversation-section'}>
             <button className="group-action" type="button" onClick={() => setConversationsCollapsed((value) => !value)} aria-label="展开或收起对话">
               {conversationsCollapsed ? <ChevronsUpDown size={15} /> : <ChevronsDownUp size={15} />}
             </button>
@@ -2386,6 +2470,7 @@ function Sidebar({
           <button className="nav-item settings-entry" type="button" onClick={() => onOpenSettings('general')}>
             <Settings size={15} />
             <span className="nav-label">{sidebarCopy.settingsLabel}</span>
+            <span className="sidebar-footer-code" aria-hidden="true">SYS.CONFIG</span>
           </button>
         </div>
       </aside>
@@ -2420,17 +2505,18 @@ function Sidebar({
   );
 }
 
-function SidebarHead({ label, menuOpen, children }: { label: string; menuOpen?: boolean; children: ReactNode }) {
+function SidebarHead({ label, meta, menuOpen, children }: { label: string; meta?: string; menuOpen?: boolean; children: ReactNode }) {
   return (
     <div className={`sidebar-group-head ${menuOpen ? 'menu-open' : ''}`}>
       <span className="sidebar-group-label">{label}</span>
+      {meta && <span className="sidebar-group-meta" aria-hidden="true">{meta}</span>}
       <span className="sidebar-group-actions">{children}</span>
     </div>
   );
 }
 
-function SectionLabel({ children }: { children: ReactNode }) {
-  return <div className="sidebar-section-label">{children}</div>;
+function SectionLabel({ children, meta }: { children: ReactNode; meta?: string }) {
+  return <div className="sidebar-section-label"><span>{children}</span>{meta && <em aria-hidden="true">{meta}</em>}</div>;
 }
 
 function ConversationRow({
@@ -2697,6 +2783,10 @@ function SearchDialog({
     <div className="dialog-layer" role="presentation">
       <button className="dialog-backdrop" type="button" aria-label="关闭搜索" onClick={onClose} />
       <section className="command-dialog" role="dialog" aria-modal="true" aria-label="搜索">
+        <div className="command-dialog-label" aria-hidden="true">
+          <span>GLOBAL INDEX</span>
+          <em>SEARCH</em>
+        </div>
         <div className="command-input-row">
           <Search size={16} />
           <input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.searchPlaceholder} />
@@ -2914,9 +3004,6 @@ function TopBar({
       } else if (event.altKey && event.code === 'KeyR') {
         event.preventDefault();
         setEditing(true);
-      } else if (event.shiftKey && !event.altKey && event.code === 'KeyA') {
-        event.preventDefault();
-        archiveConversation(conversation.id);
       } else if (!event.altKey && !event.shiftKey && event.code === 'Backspace') {
         event.preventDefault();
         archiveConversation(conversation.id);
@@ -2945,7 +3032,7 @@ function TopBar({
           onSelect: () => toggleConversationPin(conversation.id),
         },
         { kind: 'item', icon: <Pencil size={15} />, label: '重命名对话', shortcut: '⌥⌘R', onSelect: () => setEditing(true) },
-        { kind: 'item', icon: <Archive size={15} />, label: '归档对话', shortcut: '⇧⌘A', onSelect: () => archiveConversation(conversation.id) },
+        { kind: 'item', icon: <Archive size={15} />, label: '归档对话', onSelect: () => archiveConversation(conversation.id) },
         { kind: 'separator' },
         { kind: 'item', icon: <MessageSquarePlus size={15} />, label: '打开侧边聊天', onSelect: openSideChat },
         {
@@ -2975,7 +3062,7 @@ function TopBar({
 
   return (
     <header className="top-bar" data-tauri-drag-region>
-      {sidebarCollapsed && <button className="icon-btn" type="button" onClick={onToggleSidebar} aria-label="展开侧栏"><PanelLeftOpen size={16} /></button>}
+      {sidebarCollapsed && <button className="icon-btn chrome-tool-button" type="button" onClick={onToggleSidebar} aria-label="展开侧栏"><ArrowRightToLine size={16} /></button>}
       {conversation ? (
         <div className={`top-bar-title ${editing ? 'editing' : ''}`} data-tauri-drag-region>
           <span className="top-bar-context">WORKSPACE</span>
@@ -3898,15 +3985,15 @@ function rightDockIcon(kind: RightDockKind, size = 14): ReactNode {
     case 'terminal':
       return <SquareTerminal size={size} />;
     case 'browser':
-      return <Globe size={size} />;
+      return <Compass size={size} />;
     case 'files':
       return <Folder size={size} />;
     case 'side-chat':
       return <MessageSquare size={size} />;
     case 'research-workbench':
-      return <LineChart size={size} />;
+      return <ChartCandlestick size={size} />;
     case 'daily-decision':
-      return <FileChartColumn size={size} />;
+      return <FileCheck2 size={size} />;
   }
 }
 
@@ -3959,6 +4046,8 @@ function RightDockWorkspace({
   onCloseTab,
   onAddTab,
   onUpdateTabTitle,
+  onRemoveTextContext,
+  onConsumeTextContexts,
   expanded,
   onToggleExpanded,
   onCloseGit,
@@ -3973,6 +4062,8 @@ function RightDockWorkspace({
   onCloseTab: (id: string) => void;
   onAddTab: (kind: RightDockKind) => void;
   onUpdateTabTitle: (id: string, title: string) => void;
+  onRemoveTextContext: (tabId: string, contextId: string) => void;
+  onConsumeTextContexts: (tabId: string) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
   onCloseGit: () => void;
@@ -4008,7 +4099,16 @@ function RightDockWorkspace({
                   />
                 )}
                 {tab.kind === 'files' && <FilesDockPanel filePath={tab.url} />}
-                {tab.kind === 'side-chat' && <SideChatPanel domain={domain} />}
+                {tab.kind === 'side-chat' && (
+                  <SideChatPanel
+                    domain={domain}
+                    tabId={tab.id}
+                    sourceConversationId={tab.sourceConversationId}
+                    selectedTextContexts={tab.selectedTextContexts ?? []}
+                    onRemoveSelectedTextContext={(contextId) => onRemoveTextContext(tab.id, contextId)}
+                    onConsumeSelectedTextContexts={() => onConsumeTextContexts(tab.id)}
+                  />
+                )}
                 {tab.kind === 'research-workbench' && <ResearchWorkbenchPanel />}
                 {tab.kind === 'daily-decision' && <DailyDecisionPanel />}
               </div>
@@ -4149,7 +4249,7 @@ function RightDockTabBar({
       <div className="right-dock-tabbar-actions">
         <button
           type="button"
-          className={`right-dock-expand-btn ${expanded ? 'active' : ''}`}
+          className={`right-dock-expand-btn chrome-tool-button ${expanded ? 'active' : ''}`}
           aria-label={expanded ? '还原侧边栏' : '展开侧边栏'}
           title={expanded ? '还原侧边栏' : '展开侧边栏'}
           aria-pressed={expanded}
@@ -4868,69 +4968,308 @@ function FilesDockPanel({ filePath }: { filePath?: string }) {
   const conversation = useCurrentConversation();
   const cwd = conversation?.cwd || '';
   if (filePath) return <FilePreviewDockPanel path={filePath} />;
-  return <FilesChangeListDockPanel cwd={cwd} />;
+  return <WorkspaceFilesDockPanel cwd={cwd} />;
 }
 
-function FilesChangeListDockPanel({ cwd }: { cwd: string }) {
-  const [status, setStatus] = useState<GitStatus | null>(null);
-  const [filter, setFilter] = useState('');
+interface DirectoryLoadState {
+  entries: LocalDirectoryEntry[];
+  loading: boolean;
+  error: string;
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    if (!cwd) {
-      setStatus(null);
-      return;
+function WorkspaceFilesDockPanel({ cwd }: { cwd: string }) {
+  const openFileInDock = useFileDockOpener();
+  const [filter, setFilter] = useState('');
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [directories, setDirectories] = useState<Record<string, DirectoryLoadState>>({});
+  const [selectedPath, setSelectedPath] = useState('');
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
+
+  const loadDirectory = useCallback(async (path: string) => {
+    if (!path) return;
+    setDirectories((current) => ({
+      ...current,
+      [path]: {
+        entries: current[path]?.entries ?? [],
+        loading: true,
+        error: '',
+      },
+    }));
+    try {
+      const entries = await localDirectoryList(path);
+      if (cwdRef.current !== cwd) return;
+      setDirectories((current) => ({
+        ...current,
+        [path]: { entries, loading: false, error: '' },
+      }));
+    } catch (error) {
+      if (cwdRef.current !== cwd) return;
+      setDirectories((current) => ({
+        ...current,
+        [path]: {
+          entries: current[path]?.entries ?? [],
+          loading: false,
+          error: stringifyError(error),
+        },
+      }));
     }
-    void gitStatus(cwd)
-      .then((next) => {
-        if (!cancelled) setStatus(next);
-      })
-      .catch(() => {
-        if (!cancelled) setStatus(null);
-      });
-    return () => {
-      cancelled = true;
-    };
   }, [cwd]);
 
+  useEffect(() => {
+    setFilter('');
+    setSelectedPath('');
+    setDirectories({});
+    if (!cwd) {
+      setExpanded(new Set());
+      return;
+    }
+    setExpanded(new Set([cwd]));
+    void loadDirectory(cwd);
+  }, [cwd, loadDirectory]);
+
+  const toggleDirectory = (path: string) => {
+    if (expanded.has(path) && directories[path]?.error) {
+      void loadDirectory(path);
+      return;
+    }
+    const willExpand = !expanded.has(path);
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (willExpand) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+    if (willExpand && !directories[path]?.entries.length && !directories[path]?.loading) {
+      void loadDirectory(path);
+    }
+  };
+
+  const refresh = () => {
+    if (!cwd) return;
+    setDirectories({});
+    setExpanded(new Set([cwd]));
+    setSelectedPath('');
+    void loadDirectory(cwd);
+  };
+
   const normalizedFilter = filter.trim().toLowerCase();
-  const changes = (status?.changes ?? []).filter((change) => !normalizedFilter || change.path.toLowerCase().includes(normalizedFilter));
+  const rootState = directories[cwd];
 
   return (
-    <section className="files-dock-panel" aria-label="文件">
-      <div className="files-path-row" title={cwd}>{cwd ? shortenPath(cwd) : '未指定工作目录'}</div>
+    <section className="files-dock-panel workspace-files-panel" aria-label="研究主题文件">
+      <div
+        className="workspace-files-head"
+        draggable={Boolean(cwd)}
+        title={cwd ? '拖到对话框可引入整个研究主题目录' : undefined}
+        onDragStart={(event) => {
+          if (!cwd) return;
+          event.dataTransfer.effectAllowed = 'copy';
+          event.dataTransfer.setData(LOCAL_PATH_DRAG_MIME, JSON.stringify({
+            path: cwd,
+            name: basename(cwd),
+            isDirectory: true,
+          }));
+          event.dataTransfer.setData('text/plain', cwd);
+        }}
+      >
+        <span className="workspace-files-root-icon"><FolderOpen size={17} /></span>
+        <span className="workspace-files-root">
+          <strong>{cwd ? basename(cwd) : '打开文件'}</strong>
+          <span title={cwd}>{cwd ? shortenPath(cwd) : '未指定研究主题目录'}</span>
+        </span>
+        {cwd && (
+          <>
+            <button type="button" className="icon-mini" onClick={refresh} aria-label="刷新目录" title="刷新目录">
+              <RefreshCw size={13} />
+            </button>
+            <button type="button" className="icon-mini" onClick={() => void revealPath(cwd)} aria-label="在 Finder 中显示目录" title="在 Finder 中显示">
+              <ExternalLink size={13} />
+            </button>
+          </>
+        )}
+      </div>
       <label className="files-filter">
         <Search size={13} />
-        <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选文件..." spellCheck={false} disabled={!cwd} />
+        <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选文件…" spellCheck={false} disabled={!cwd} />
       </label>
+      {cwd && (
+        <div className="workspace-files-drag-hint">
+          <Upload size={13} />
+          <span>将文件或文件夹拖到对话框即可引入路径</span>
+        </div>
+      )}
       <div className="files-dock-body">
         {!cwd ? (
           <div className="dock-empty">
             <Folder size={24} />
             <strong>打开文件</strong>
-            <span>先为当前对话选择一个工作目录。</span>
+            <span>先在对话框下方为当前研究主题选择资料目录。</span>
           </div>
-        ) : changes.length > 0 ? (
-          <div className="files-change-list">
-            <div className="dock-section-label">更改的文件</div>
-            {changes.map((change) => (
-              <button key={`${change.path}-${change.indexStatus}-${change.workingTreeStatus}`} type="button" className="files-change-row" onClick={() => void revealPath(joinPath(cwd, change.path))}>
-                {fileGlyph(extOf(change.path), 15)}
-                <span>{change.path}</span>
-                <em>{gitStatusLabel(change.status)}</em>
-              </button>
-            ))}
+        ) : rootState?.loading && !rootState.entries.length ? (
+          <div className="dock-empty compact">
+            <Loader2 size={22} className="spin" />
+            <strong>正在读取目录</strong>
+            <span>{shortenPath(cwd)}</span>
+          </div>
+        ) : rootState?.error && !rootState.entries.length ? (
+          <div className="dock-empty compact">
+            <AlertCircle size={22} />
+            <strong>目录读取失败</strong>
+            <span>{rootState.error}</span>
+            <button type="button" className="generated-file-open" onClick={refresh}>重试</button>
+          </div>
+        ) : rootState?.entries.length ? (
+          <div className="workspace-file-tree" role="tree" aria-label={`${basename(cwd)} 文件目录`}>
+            <WorkspaceFileTreeBranch
+              directory={cwd}
+              depth={0}
+              directories={directories}
+              expanded={expanded}
+              filter={normalizedFilter}
+              selectedPath={selectedPath}
+              onSelect={setSelectedPath}
+              onToggle={toggleDirectory}
+              onOpenFile={(path) => openFileInDock?.(path)}
+            />
           </div>
         ) : (
-          <div className="dock-empty">
+          <div className="dock-empty compact">
             <FolderOpen size={24} />
-            <strong>{filter ? '没有匹配的文件' : '暂无文件更改'}</strong>
-            <span>{filter ? '换个关键词再试。' : '可以用右上角按钮在访达中打开工作目录。'}</span>
+            <strong>目录为空</strong>
+            <span>这个研究主题目录里暂时没有文件。</span>
           </div>
         )}
       </div>
     </section>
   );
+}
+
+function WorkspaceFileTreeBranch({
+  directory,
+  depth,
+  directories,
+  expanded,
+  filter,
+  selectedPath,
+  onSelect,
+  onToggle,
+  onOpenFile,
+}: {
+  directory: string;
+  depth: number;
+  directories: Record<string, DirectoryLoadState>;
+  expanded: Set<string>;
+  filter: string;
+  selectedPath: string;
+  onSelect: (path: string) => void;
+  onToggle: (path: string) => void;
+  onOpenFile: (path: string) => void;
+}) {
+  const state = directories[directory];
+  const entries = (state?.entries ?? []).filter((entry) => (
+    !filter || entry.isDirectory || entry.name.toLowerCase().includes(filter)
+  ));
+
+  return (
+    <>
+      {entries.map((entry) => {
+        const isOpen = entry.isDirectory && expanded.has(entry.path);
+        const childState = directories[entry.path];
+        return (
+          <Fragment key={entry.path}>
+            <div
+              className={`workspace-file-row ${entry.isDirectory ? 'directory' : 'file'} ${selectedPath === entry.path ? 'selected' : ''}`}
+              role="treeitem"
+              aria-expanded={entry.isDirectory ? isOpen : undefined}
+              aria-selected={selectedPath === entry.path}
+              draggable
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = 'copy';
+                event.dataTransfer.setData(LOCAL_PATH_DRAG_MIME, JSON.stringify({
+                  path: entry.path,
+                  name: entry.name,
+                  isDirectory: entry.isDirectory,
+                }));
+                event.dataTransfer.setData('text/plain', entry.path);
+              }}
+              onDoubleClick={() => {
+                if (!entry.isDirectory) onOpenFile(entry.path);
+              }}
+            >
+              <button
+                type="button"
+                className="workspace-file-row-main"
+                style={{ paddingLeft: `${8 + depth * 18}px` }}
+                title={entry.path}
+                onClick={() => {
+                  onSelect(entry.path);
+                  if (entry.isDirectory) onToggle(entry.path);
+                }}
+              >
+                <span className="workspace-file-chevron">
+                  {entry.isDirectory ? (isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : null}
+                </span>
+                <span className="workspace-file-icon">
+                  {entry.isDirectory ? <Folder size={15} /> : fileGlyph(extOf(entry.name), 15)}
+                </span>
+                <span className="workspace-file-name">{entry.name}</span>
+                {!entry.isDirectory && entry.bytes > 0 && <span className="workspace-file-size">{formatCompactBytes(entry.bytes)}</span>}
+              </button>
+              {!entry.isDirectory && (
+                <button
+                  type="button"
+                  className="workspace-file-open"
+                  onClick={() => onOpenFile(entry.path)}
+                  aria-label={`预览 ${entry.name}`}
+                  title="预览文件"
+                >
+                  <Eye size={13} />
+                </button>
+              )}
+            </div>
+            {entry.isDirectory && isOpen && (
+              <div role="group">
+                {childState?.loading && !childState.entries.length ? (
+                  <div className="workspace-file-tree-state" style={{ paddingLeft: `${30 + depth * 18}px` }}>
+                    <Loader2 size={12} className="spin" />正在读取…
+                  </div>
+                ) : childState?.error && !childState.entries.length ? (
+                  <button type="button" className="workspace-file-tree-state error" style={{ paddingLeft: `${30 + depth * 18}px` }} onClick={() => onToggle(entry.path)}>
+                    <AlertCircle size={12} />读取失败，点击重试
+                  </button>
+                ) : childState?.entries.length ? (
+                  <WorkspaceFileTreeBranch
+                    directory={entry.path}
+                    depth={depth + 1}
+                    directories={directories}
+                    expanded={expanded}
+                    filter={filter}
+                    selectedPath={selectedPath}
+                    onSelect={onSelect}
+                    onToggle={onToggle}
+                    onOpenFile={onOpenFile}
+                  />
+                ) : (
+                  <div className="workspace-file-tree-state" style={{ paddingLeft: `${30 + depth * 18}px` }}>空文件夹</div>
+                )}
+              </div>
+            )}
+          </Fragment>
+        );
+      })}
+      {filter && entries.every((entry) => entry.isDirectory) && (
+        <div className="workspace-file-tree-state filter-note" style={{ paddingLeft: `${12 + depth * 18}px` }}>当前层没有匹配文件</div>
+      )}
+    </>
+  );
+}
+
+function formatCompactBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function FilePreviewDockPanel({ path }: { path: string }) {
@@ -5062,22 +5401,79 @@ function FilePreviewDockPanel({ path }: { path: string }) {
   );
 }
 
-function SideChatPanel({ domain }: { domain: DomainConfig }) {
-  const conversation = useCurrentConversation();
+function SideChatPanel({
+  domain,
+  tabId,
+  sourceConversationId,
+  selectedTextContexts,
+  onRemoveSelectedTextContext,
+  onConsumeSelectedTextContexts,
+}: {
+  domain: DomainConfig;
+  tabId: string;
+  sourceConversationId?: string;
+  selectedTextContexts: SelectedTextContext[];
+  onRemoveSelectedTextContext: (id: string) => void;
+  onConsumeSelectedTextContexts: () => void;
+}) {
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const conversation = useChatStore((state) => (
+    conversationId ? state.conversations.find((item) => item.id === conversationId) ?? null : null
+  ));
+  const createEphemeralConversation = useChatStore((state) => state.createEphemeralConversation);
+  const discardEphemeralConversation = useChatStore((state) => state.discardEphemeralConversation);
+  const sendMessageToConversation = useChatStore((state) => state.sendMessageToConversation);
+  const stopConversation = useChatStore((state) => state.stopConversation);
   const { codexReady } = useComposerRuntimeState();
+
+  useEffect(() => {
+    const id = createEphemeralConversation(sourceConversationId);
+    setConversationId(id);
+    return () => discardEphemeralConversation(id);
+  }, [createEphemeralConversation, discardEphemeralConversation, sourceConversationId, tabId]);
 
   return (
     <section className="side-chat-panel" aria-label="侧边聊天">
-      <div className="side-chat-body" />
       {conversation ? (
-        <div className="side-chat-composer">
-          <Composer domain={domain} conversation={conversation} disabled={!codexReady} />
-        </div>
+        <>
+          <div className={`side-chat-body ${conversation.messages.length === 0 ? 'empty' : ''}`}>
+            {conversation.messages.length > 0 ? (
+              <MessageList conversation={conversation} />
+            ) : (
+              <div className="side-chat-empty">
+                <MessageCircleQuestionMark size={24} />
+                <strong>临时侧边聊天</strong>
+                <span>这段对话只保留在当前标签中，关闭标签后即会消失。</span>
+              </div>
+            )}
+          </div>
+          <div className="side-chat-composer">
+            <Composer
+              domain={domain}
+              conversation={conversation}
+              disabled={!codexReady}
+              selectedTextContexts={selectedTextContexts}
+              onRemoveSelectedTextContext={onRemoveSelectedTextContext}
+              onConsumeSelectedTextContexts={onConsumeSelectedTextContexts}
+              onSendMessage={(message, attachments, selectedSkill, coworkers, contexts) => (
+                sendMessageToConversation(
+                  conversation.id,
+                  message,
+                  attachments,
+                  selectedSkill,
+                  coworkers,
+                  false,
+                  contexts,
+                )
+              )}
+              onStop={() => stopConversation(conversation.id)}
+            />
+          </div>
+        </>
       ) : (
         <div className="dock-empty">
-          <MessageSquare size={24} />
-          <strong>侧边聊天</strong>
-          <span>请选择一个对话。</span>
+          <Loader2 size={24} className="spin" />
+          <strong>正在开启临时会话</strong>
         </div>
       )}
     </section>
@@ -5328,6 +5724,7 @@ function AutomationsPage({
           {tab === 'tasks' ? (
             <div className="automation-view">
               <header className="automation-head">
+                <span className="workspace-section-kicker">SCHEDULER / TASKS</span>
                 <div>
                   <h1>已安排的任务</h1>
                   <div className="automation-subtitle">
@@ -5414,6 +5811,7 @@ function AutomationsPage({
           ) : (
             <div className="automation-view">
               <header className="automation-head templates">
+                <span className="workspace-section-kicker">SCHEDULER / TEMPLATES</span>
                 <div>
                   <h1>任务模板</h1>
                   <p>从金融投研预设开始创建计划任务</p>
@@ -6020,6 +6418,7 @@ function SkillsPage({
       <CollapsedSidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} className="skills-sidebar-open-btn" />
       <div className="skills-page-shell">
         <header className="skills-page-head">
+          <span className="workspace-section-kicker">CAPABILITY REGISTRY / SKILLS</span>
           <div className="skills-page-title-row">
             <div>
               <h1>技能</h1>
@@ -6375,7 +6774,21 @@ function skillIcon(skill: SkillCatalogItem | SkillSelection, size = 16): ReactNo
   }
 }
 
-function ChatArea({ domain }: { domain: DomainConfig }) {
+function ChatArea({
+  domain,
+  selectedTextContexts,
+  onRemoveSelectedTextContext,
+  onConsumeSelectedTextContexts,
+  onAddSelectionToChat,
+  onAskSelectionInSideChat,
+}: {
+  domain: DomainConfig;
+  selectedTextContexts: SelectedTextContext[];
+  onRemoveSelectedTextContext: (id: string) => void;
+  onConsumeSelectedTextContexts: () => void;
+  onAddSelectionToChat: (context: SelectedTextContext) => void;
+  onAskSelectionInSideChat: (context: SelectedTextContext) => void;
+}) {
   const conversation = useCurrentConversation();
   const { codexStatus, previewRuntime, codexReady } = useComposerRuntimeState();
   if (!conversation) return null;
@@ -6392,18 +6805,62 @@ function ChatArea({ domain }: { domain: DomainConfig }) {
           </div>
         </div>
       )}
-      {isEmpty ? <EmptyState domain={domain} conversation={conversation} disabled={!codexReady} /> : <><div className="message-scroll"><MessageList conversation={conversation} /></div><Composer domain={domain} conversation={conversation} disabled={!codexReady} bottom /></>}
+      {isEmpty ? (
+        <EmptyState
+          domain={domain}
+          conversation={conversation}
+          disabled={!codexReady}
+          selectedTextContexts={selectedTextContexts}
+          onRemoveSelectedTextContext={onRemoveSelectedTextContext}
+          onConsumeSelectedTextContexts={onConsumeSelectedTextContexts}
+        />
+      ) : (
+        <>
+          <MessageList
+            conversation={conversation}
+            onAddSelectionToChat={onAddSelectionToChat}
+            onAskSelectionInSideChat={onAskSelectionInSideChat}
+          />
+          <Composer
+            domain={domain}
+            conversation={conversation}
+            disabled={!codexReady}
+            bottom
+            selectedTextContexts={selectedTextContexts}
+            onRemoveSelectedTextContext={onRemoveSelectedTextContext}
+            onConsumeSelectedTextContexts={onConsumeSelectedTextContexts}
+          />
+        </>
+      )}
     </div>
   );
 }
 
-function DockOverlayComposer({ domain }: { domain: DomainConfig }) {
+function DockOverlayComposer({
+  domain,
+  selectedTextContexts,
+  onRemoveSelectedTextContext,
+  onConsumeSelectedTextContexts,
+}: {
+  domain: DomainConfig;
+  selectedTextContexts: SelectedTextContext[];
+  onRemoveSelectedTextContext: (id: string) => void;
+  onConsumeSelectedTextContexts: () => void;
+}) {
   const conversation = useCurrentConversation();
   const { codexReady } = useComposerRuntimeState();
   if (!conversation) return null;
   return (
     <div className="dock-composer-overlay">
-      <Composer domain={domain} conversation={conversation} disabled={!codexReady} bottom />
+      <Composer
+        domain={domain}
+        conversation={conversation}
+        disabled={!codexReady}
+        bottom
+        selectedTextContexts={selectedTextContexts}
+        onRemoveSelectedTextContext={onRemoveSelectedTextContext}
+        onConsumeSelectedTextContexts={onConsumeSelectedTextContexts}
+      />
     </div>
   );
 }
@@ -6425,7 +6882,21 @@ interface ComposerPrefillRequest {
   text: string;
 }
 
-function EmptyState({ domain, conversation, disabled }: { domain: DomainConfig; conversation: Conversation; disabled: boolean }) {
+function EmptyState({
+  domain,
+  conversation,
+  disabled,
+  selectedTextContexts,
+  onRemoveSelectedTextContext,
+  onConsumeSelectedTextContexts,
+}: {
+  domain: DomainConfig;
+  conversation: Conversation;
+  disabled: boolean;
+  selectedTextContexts: SelectedTextContext[];
+  onRemoveSelectedTextContext: (id: string) => void;
+  onConsumeSelectedTextContexts: () => void;
+}) {
   const [prefillRequest, setPrefillRequest] = useState<ComposerPrefillRequest | null>(null);
   const prefillComposer = (text: string) => {
     setPrefillRequest((prev) => ({ id: (prev?.id ?? 0) + 1, text }));
@@ -6437,10 +6908,24 @@ function EmptyState({ domain, conversation, disabled }: { domain: DomainConfig; 
         <h1 className="empty-heading">{domain.ui.emptyHeading}</h1>
         <p>从市场线索到投资结论，在同一个工作区完成研究、验证与决策。</p>
       </div>
-      <Composer domain={domain} conversation={conversation} disabled={disabled} prefillRequest={prefillRequest} />
+      <Composer
+        domain={domain}
+        conversation={conversation}
+        disabled={disabled}
+        prefillRequest={prefillRequest}
+        selectedTextContexts={selectedTextContexts}
+        onRemoveSelectedTextContext={onRemoveSelectedTextContext}
+        onConsumeSelectedTextContexts={onConsumeSelectedTextContexts}
+      />
       <div className="suggestion-row">
-        {domain.ui.suggestions.map((suggestion) => (
-          <button key={suggestion.id} type="button" className="suggestion-card" onClick={() => prefillComposer(suggestion.prompt)}>
+        {domain.ui.suggestions.map((suggestion, index) => (
+          <button
+            key={suggestion.id}
+            type="button"
+            className="suggestion-card"
+            data-index={String(index + 1).padStart(2, '0')}
+            onClick={() => prefillComposer(suggestion.prompt)}
+          >
             {domainSuggestionIcon(suggestion)}
             <strong>{suggestion.title}</strong>
             <span>{suggestion.prompt}</span>
@@ -6451,19 +6936,114 @@ function EmptyState({ domain, conversation, disabled }: { domain: DomainConfig; 
   );
 }
 
-function MessageList({ conversation }: { conversation: Conversation }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
+const MESSAGE_SCROLL_BOTTOM_TOLERANCE_PX = 80;
+
+function MessageList({
+  conversation,
+  onAddSelectionToChat,
+  onAskSelectionInSideChat,
+}: {
+  conversation: Conversation;
+  onAddSelectionToChat?: (context: SelectedTextContext) => void;
+  onAskSelectionInSideChat?: (context: SelectedTextContext) => void;
+}) {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const followLatestRef = useRef(true);
+  const activeConversationIdRef = useRef(conversation.id);
   const streaming = conversation.status === 'streaming';
   const answerLength = streaming ? streamingAnswerLength(conversation) : 0;
   const typing = useActiveTyping(answerLength, streaming);
+  const latestMessage = conversation.messages[conversation.messages.length - 1];
+  const [selectionMenu, setSelectionMenu] = useState<{
+    context: SelectedTextContext;
+    left: number;
+    top: number;
+  } | null>(null);
+  useLayoutEffect(() => {
+    if (activeConversationIdRef.current !== conversation.id) {
+      activeConversationIdRef.current = conversation.id;
+      followLatestRef.current = true;
+    }
+    const container = scrollContainerRef.current;
+    if (container && followLatestRef.current) container.scrollTop = container.scrollHeight;
+  }, [conversation.id, conversation.messages.length, latestMessage, streaming]);
   useEffect(() => {
-    scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [conversation.messages.length, conversation.messages[conversation.messages.length - 1], streaming]);
+    if (!selectionMenu) return;
+    const dismiss = (event: MouseEvent) => {
+      if ((event.target as Element | null)?.closest('.text-selection-actions')) return;
+      setSelectionMenu(null);
+    };
+    window.addEventListener('mousedown', dismiss);
+    return () => window.removeEventListener('mousedown', dismiss);
+  }, [selectionMenu]);
+  const captureSelection = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!onAddSelectionToChat || !onAskSelectionInSideChat) return;
+    const selection = window.getSelection();
+    const text = selection?.toString().trim();
+    if (!selection || selection.isCollapsed || !text || selection.rangeCount === 0) {
+      setSelectionMenu(null);
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    const startElement = range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement;
+    const messageElement = startElement?.closest<HTMLElement>('[data-message-id]');
+    if (!messageElement || !event.currentTarget.contains(messageElement)) {
+      setSelectionMenu(null);
+      return;
+    }
+    const rect = typeof range.getBoundingClientRect === 'function'
+      ? range.getBoundingClientRect()
+      : ({ left: event.clientX, right: event.clientX, top: event.clientY } as DOMRect);
+    const center = rect.left + Math.max(0, rect.right - rect.left) / 2;
+    setSelectionMenu({
+      context: {
+        id: `selected-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        text: text.slice(0, 12_000),
+        sourceConversationId: conversation.id,
+        sourceMessageId: messageElement.dataset.messageId,
+        sourceRole: messageElement.dataset.messageRole === 'user' ? 'user' : 'assistant',
+      },
+      left: Math.min(Math.max(center, 180), Math.max(180, window.innerWidth - 180)),
+      top: Math.max(10, rect.top - 52),
+    });
+  };
   return (
-    <div className="message-list">
-      {conversation.messages.map((message) => <MessageBubble key={message.id} message={message} conversation={conversation} />)}
-      {streaming && !typing && <ThinkingIndicator />}
-      <div ref={scrollRef} />
+    <div
+      className="message-scroll"
+      ref={scrollContainerRef}
+      onMouseUp={captureSelection}
+      onScroll={(event) => {
+        const container = event.currentTarget;
+        const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        followLatestRef.current = distanceFromBottom <= MESSAGE_SCROLL_BOTTOM_TOLERANCE_PX;
+      }}
+    >
+      <div className="message-list">
+        {conversation.messages.map((message, index) => <MessageBubble key={message.id} message={message} conversation={conversation} index={index} />)}
+        {streaming && !typing && <ThinkingIndicator />}
+      </div>
+      {selectionMenu && createPortal(
+        <div
+          className="text-selection-actions"
+          role="toolbar"
+          aria-label="选中文本操作"
+          style={{ left: selectionMenu.left, top: selectionMenu.top }}
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          <button type="button" onClick={() => {
+            onAddSelectionToChat?.(selectionMenu.context);
+            setSelectionMenu(null);
+          }}>添加到对话</button>
+          <span aria-hidden />
+          <button type="button" onClick={() => {
+            onAskSelectionInSideChat?.(selectionMenu.context);
+            setSelectionMenu(null);
+          }}>在侧边聊天中提问</button>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
@@ -6519,14 +7099,32 @@ function ThinkingIndicator() {
   );
 }
 
-function MessageBubble({ message, conversation }: { message: ChatMessage; conversation: Conversation }) {
+function MessageBubble({ message, conversation, index }: { message: ChatMessage; conversation: Conversation; index: number }) {
   const editUserMessageAndResend = useChatStore((state) => state.editUserMessageAndResend);
   const [editing, setEditing] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copyResetTimer = useRef<number | null>(null);
   const isReviewRequest = message.role === 'user' && Boolean(message.reviewRequest);
   const plainText = messageToPlainText(message);
+  const generatedFiles = useMemo(
+    () => message.role === 'assistant' ? generatedFilesFromMessageBlocks(message.blocks) : [],
+    [message.blocks, message.role],
+  );
   const canCopy = plainText.length > 0 && !isReviewRequest;
   const canEdit = message.role === 'user' && !isReviewRequest && conversation.status !== 'streaming';
   const lastBlockIndex = message.blocks.length - 1;
+  useEffect(() => () => {
+    if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current);
+  }, []);
+  const handleCopy = async () => {
+    if (!await tryCopyToClipboard(plainText)) return;
+    setCopied(true);
+    if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current);
+    copyResetTimer.current = window.setTimeout(() => {
+      setCopied(false);
+      copyResetTimer.current = null;
+    }, 1800);
+  };
   const submitEdit = (next: string, attachments: MessageAttachment[]) => {
     const trimmed = next.trim();
     if (!trimmed && attachments.length === 0) return;
@@ -6537,7 +7135,16 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
     return null;
   }
   return (
-    <article className={`message ${message.role} ${editing ? 'editing' : ''}`}>
+    <article
+      className={`message ${message.role} ${editing ? 'editing' : ''}`}
+      data-message-id={message.id}
+      data-message-role={message.role}
+    >
+      <header className="message-record-head">
+        <span className="message-record-index">{String(index + 1).padStart(2, '0')}</span>
+        <span className="message-record-role"><i aria-hidden="true" />{message.role === 'user' ? 'USER / 用户指令' : message.review ? 'ALPHA / 审查结论' : 'ALPHA / 研究回应'}</span>
+        <time dateTime={new Date(message.timestamp).toISOString()}>{formatMessageRecordTime(message.timestamp)}</time>
+      </header>
       {editing && canEdit ? (
         <MessageEditBubble initialValue={plainText} initialAttachments={message.attachments ?? []} onCancel={() => setEditing(false)} onSubmit={submitEdit} />
       ) : isReviewRequest && message.reviewRequest ? (
@@ -6554,6 +7161,9 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
                     <>
                       {message.coworkers && message.coworkers.length > 0 && <MessageCoworkersLabel coworkers={message.coworkers} />}
                       {message.selectedSkill && <MessageSkillLabel skill={message.selectedSkill} />}
+                      {message.selectedTextContexts && message.selectedTextContexts.length > 0 && (
+                        <MessageSelectedTextContexts contexts={message.selectedTextContexts} />
+                      )}
                       {message.blocks.map((block, index) => block.type === 'text' ? <MarkdownText key={index} content={block.content} variant="user" /> : <BlockRenderer key={index} block={block} />)}
                     </>
                   )
@@ -6568,8 +7178,21 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
 	                          ? (unit.blocks.length === 1
 	                              ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
 	                              : <WebSearchGroup key={`web-group-${unit.startIndex}`} blocks={unit.blocks} />)
-	                        : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={Boolean(message.isStreaming) && unit.index === lastBlockIndex} />,
+	                        : unit.block.type === 'file_result'
+	                          ? null
+	                          : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={Boolean(message.isStreaming) && unit.index === lastBlockIndex} />,
 	                    )}
+              {generatedFiles.length > 0 && (
+                <GeneratedFileResultView
+                  grouped
+                  block={{
+                    type: 'file_result',
+                    id: `message-files-${message.id}`,
+                    title: '交付文件',
+                    files: generatedFiles,
+                  }}
+                />
+              )}
             </div>
           )}
         </>
@@ -6577,7 +7200,17 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
       {!editing && !message.isStreaming && (canCopy || canEdit) && (
         <div className="message-meta">
           <span className="message-actions">
-            {canCopy && <button type="button" className="message-action" onClick={() => void copyToClipboard(plainText)} aria-label="复制"><Copy size={13} /></button>}
+            {canCopy && (
+              <button
+                type="button"
+                className={`message-action${copied ? ' copied' : ''}`}
+                onClick={() => void handleCopy()}
+                aria-label={copied ? '已复制' : '复制'}
+                aria-live="polite"
+              >
+                {copied ? <Check size={13} strokeWidth={2.5} /> : <Copy size={13} />}
+              </button>
+            )}
             {canEdit && <button type="button" className="message-action" onClick={() => setEditing(true)} aria-label="编辑并重新发送"><Pencil size={13} /></button>}
           </span>
         </div>
@@ -6586,12 +7219,36 @@ function MessageBubble({ message, conversation }: { message: ChatMessage; conver
   );
 }
 
+function formatMessageRecordTime(timestamp: number): string {
+  if (!Number.isFinite(timestamp)) return '--:--';
+  return new Date(timestamp).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
 function MessageSkillLabel({ skill }: { skill: SkillSelection }) {
   const name = skill.title.trim() || skill.id;
   return (
     <span className="message-skill-label" title={`指定 Skill：${name}`}>
       {`$${name}`}
     </span>
+  );
+}
+
+function MessageSelectedTextContexts({ contexts }: { contexts: SelectedTextContext[] }) {
+  return (
+    <div className="message-selected-contexts" aria-label={`${contexts.length} 个引用文本片段`}>
+      {contexts.map((context, index) => (
+        <blockquote key={context.id}>
+          <span>选中文本片段 {index + 1}</span>
+          {context.text}
+        </blockquote>
+      ))}
+    </div>
   );
 }
 
@@ -6731,20 +7388,9 @@ function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: 
 }
 
 function MarkdownText({ content, streaming, variant = 'assistant' }: { content: string; streaming?: boolean; variant?: 'assistant' | 'user' }) {
-  const fileRefs = useMemo(() => variant === 'assistant' ? generatedFilesFromPlainText(content) : [], [content, variant]);
   return (
     <div className={`markdown-content markdown-${variant} ${streaming ? 'streaming' : ''}`}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
-      {fileRefs.length > 0 && (
-        <GeneratedFileResultView
-          block={{
-            type: 'file_result',
-            id: `inline-files-${fileRefs.map((file) => file.path).join('|')}`,
-            title: '生成文件',
-            files: fileRefs,
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -7145,12 +7791,28 @@ function Composer({
   disabled,
   bottom,
   prefillRequest,
+  selectedTextContexts = [],
+  onRemoveSelectedTextContext,
+  onConsumeSelectedTextContexts,
+  onSendMessage,
+  onStop,
 }: {
   domain: DomainConfig;
   conversation: Conversation;
   disabled?: boolean;
   bottom?: boolean;
   prefillRequest?: ComposerPrefillRequest | null;
+  selectedTextContexts?: SelectedTextContext[];
+  onRemoveSelectedTextContext?: (id: string) => void;
+  onConsumeSelectedTextContexts?: () => void;
+  onSendMessage?: (
+    message: string,
+    attachments?: MessageAttachment[],
+    selectedSkill?: SkillSelection | null,
+    coworkers?: CoworkerSelection[] | null,
+    selectedContexts?: SelectedTextContext[] | null,
+  ) => void | Promise<void>;
+  onStop?: () => void | Promise<void>;
 }) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
@@ -7158,7 +7820,7 @@ function Composer({
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<SkillCatalogItem | null>(null);
   const [selectedCoworkers, setSelectedCoworkers] = useState<CoworkerSelection[]>([]);
-  const [coworkerDragOver, setCoworkerDragOver] = useState(false);
+  const [composerDragKind, setComposerDragKind] = useState<'context' | 'path' | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { queuedSkill, queuedSkillPrompt, consumeQueuedSkill, queuedCoworkerTask, consumeQueuedCoworkerTask } = useSkillRuntime();
   const sendMessage = useChatStore((state) => state.sendMessage);
@@ -7193,6 +7855,10 @@ function Composer({
       textareaRef.current?.setSelectionRange(text.length, text.length);
     });
   }, [prefillRequest]);
+  useEffect(() => {
+    if (selectedTextContexts.length === 0) return;
+    textareaRef.current?.focus();
+  }, [selectedTextContexts]);
   const addCoworker = useCallback((coworker: CoworkerSelection) => {
     setSelectedCoworkers((prev) => (prev.some((item) => item.id === coworker.id) ? prev : [...prev, coworker]));
   }, []);
@@ -7243,16 +7909,44 @@ function Composer({
   const readResearchDrag = (event: ReactDragEvent<HTMLElement>): string => {
     return event.dataTransfer.getData(RESEARCH_DRAG_MIME) || event.dataTransfer.getData('text/plain') || '';
   };
-  const handleCoworkerDragOver = (event: ReactDragEvent<HTMLElement>) => {
-    if (!event.dataTransfer.types.includes(COWORKER_DRAG_MIME) && !event.dataTransfer.types.includes(RESEARCH_DRAG_MIME)) return;
+  const readLocalPathDrag = (event: ReactDragEvent<HTMLElement>): { path: string; isDirectory: boolean } | null => {
+    const raw = event.dataTransfer.getData(LOCAL_PATH_DRAG_MIME);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as { path?: unknown; isDirectory?: unknown };
+      const path = typeof parsed.path === 'string' ? parsed.path.trim() : '';
+      return path ? { path, isDirectory: parsed.isDirectory === true } : null;
+    } catch {
+      return null;
+    }
+  };
+  const handleComposerDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    const types = event.dataTransfer.types;
+    const draggingPath = types.includes(LOCAL_PATH_DRAG_MIME);
+    if (!draggingPath && !types.includes(COWORKER_DRAG_MIME) && !types.includes(RESEARCH_DRAG_MIME)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
-    setCoworkerDragOver(true);
+    setComposerDragKind(draggingPath ? 'path' : 'context');
   };
-  const handleCoworkerDrop = (event: ReactDragEvent<HTMLElement>) => {
+  const handleComposerDrop = async (event: ReactDragEvent<HTMLElement>) => {
+    const localPath = readLocalPathDrag(event);
+    setComposerDragKind(null);
+    if (localPath) {
+      event.preventDefault();
+      setAttachmentError(null);
+      setPendingAttachmentBatches((count) => count + 1);
+      try {
+        addAttachments([await buildAttachmentFromPath(localPath.path, localPath.isDirectory)]);
+      } catch (error) {
+        setAttachmentError(`路径引入失败：${stringifyError(error)}`);
+      } finally {
+        setPendingAttachmentBatches((count) => Math.max(0, count - 1));
+        textareaRef.current?.focus();
+      }
+      return;
+    }
     const coworker = readCoworkerDrag(event);
     const researchPrompt = coworker ? '' : readResearchDrag(event);
-    setCoworkerDragOver(false);
     if (!coworker && !researchPrompt.trim()) return;
     event.preventDefault();
     if (coworker) {
@@ -7292,11 +7986,19 @@ function Composer({
     const outgoing = attachments;
     const outgoingSkill = selectedSkill;
     const outgoingCoworkers = selectedCoworkers;
+    const outgoingContexts = selectedTextContexts;
     setValue('');
     setAttachments([]);
     setSelectedSkill(null);
     setSelectedCoworkers([]);
-    void sendMessage(value.trim(), outgoing, outgoingSkill, outgoingCoworkers);
+    onConsumeSelectedTextContexts?.();
+    if (onSendMessage) {
+      void onSendMessage(value.trim(), outgoing, outgoingSkill, outgoingCoworkers, outgoingContexts.length ? outgoingContexts : undefined);
+    } else if (outgoingContexts.length) {
+      void sendMessage(value.trim(), outgoing, outgoingSkill, outgoingCoworkers, outgoingContexts);
+    } else {
+      void sendMessage(value.trim(), outgoing, outgoingSkill, outgoingCoworkers);
+    }
   };
   return (
     <div className={`composer-wrap ${bottom ? 'bottom' : ''} ${queuedMessages.length > 0 ? 'has-queue' : ''}`}>
@@ -7310,11 +8012,20 @@ function Composer({
         />
       )}
       <div
-        className={`composer-card ${coworkerDragOver ? 'coworker-drag-over' : ''}`}
-        onDragOver={handleCoworkerDragOver}
-        onDragLeave={() => setCoworkerDragOver(false)}
-        onDrop={handleCoworkerDrop}
+        className={`composer-card ${composerDragKind ? 'coworker-drag-over' : ''} ${composerDragKind === 'path' ? 'path-drag-over' : ''}`}
+        onDragOver={handleComposerDragOver}
+        onDragLeave={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          setComposerDragKind(null);
+        }}
+        onDrop={(event) => void handleComposerDrop(event)}
       >
+        {selectedTextContexts.length > 0 && (
+          <ComposerSelectedTextContexts
+            contexts={selectedTextContexts}
+            onRemove={onRemoveSelectedTextContext}
+          />
+        )}
         {selectedCoworkers.length > 0 && (
           <div className="composer-coworkers">
             <span className="composer-coworkers-label">
@@ -7358,7 +8069,7 @@ function Composer({
         )}
         {(isAddingAttachments || attachmentError) && (
           <div className={`composer-attachment-status ${attachmentError ? 'error' : ''}`} role="status" aria-live="polite">
-            {isAddingAttachments ? <><Loader2 size={13} className="spin" />正在添加粘贴的附件…</> : <><AlertCircle size={13} />{attachmentError}</>}
+            {isAddingAttachments ? <><Loader2 size={13} className="spin" />正在引入本地路径…</> : <><AlertCircle size={13} />{attachmentError}</>}
           </div>
         )}
         <textarea
@@ -7389,7 +8100,7 @@ function Composer({
             </button>
           )}
           {isStreaming ? (
-            <button className="send-button stop" type="button" onClick={() => void stopCurrentConversation()} aria-label="停止">
+            <button className="send-button stop" type="button" onClick={() => void (onStop ? onStop() : stopCurrentConversation())} aria-label="停止">
               <Square size={12} fill="currentColor" strokeWidth={0} />
             </button>
           ) : (
@@ -7400,6 +8111,41 @@ function Composer({
         </div>
       </div>
     </div>
+  );
+}
+
+function ComposerSelectedTextContexts({
+  contexts,
+  onRemove,
+}: {
+  contexts: SelectedTextContext[];
+  onRemove?: (id: string) => void;
+}) {
+  return (
+    <details className="composer-selected-contexts">
+      <summary>
+        <MessageSquare size={13} />
+        <span>{contexts.length} 个已选文本片段</span>
+        <ChevronDown size={12} className="composer-context-chevron" />
+      </summary>
+      <div className="composer-selected-context-list">
+        {contexts.map((context, index) => (
+          <div key={context.id} className="composer-selected-context-item">
+            <span className="composer-selected-context-index">{index + 1}</span>
+            <span className="composer-selected-context-text">{context.text}</span>
+            {onRemove && (
+              <button
+                type="button"
+                onClick={() => onRemove(context.id)}
+                aria-label={`移除选中文本片段 ${index + 1}`}
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -7738,8 +8484,11 @@ async function buildAttachmentFromPastedFile(file: File, index: number): Promise
 
 // Desktop: the dialog returns absolute paths; images get an asset URL the
 // webview can render via the Tauri asset protocol.
-async function buildAttachmentFromPath(path: string): Promise<MessageAttachment> {
+async function buildAttachmentFromPath(path: string, isDirectory = false): Promise<MessageAttachment> {
   const name = basename(path);
+  if (isDirectory) {
+    return { id: createAttachmentId(), name, kind: 'directory', ext: '', path };
+  }
   const ext = extOf(name);
   const kind: MessageAttachment['kind'] = isImageExt(ext) ? 'image' : 'file';
   let previewUrl: string | undefined;
@@ -7821,11 +8570,11 @@ function AttachmentCard({ attachment, onRemove }: { attachment: MessageAttachmen
     );
   }
   return (
-    <div className={`att-card tone-${fileTone(attachment.ext)}`} title={attachment.name}>
-      <span className="att-icon">{attachment.kind === 'image' ? <ImageIcon size={18} /> : fileGlyph(attachment.ext, 18)}</span>
+    <div className={`att-card tone-${fileTone(attachment.ext)}`} title={attachment.path || attachment.name}>
+      <span className="att-icon">{attachment.kind === 'directory' ? <Folder size={18} /> : attachment.kind === 'image' ? <ImageIcon size={18} /> : fileGlyph(attachment.ext, 18)}</span>
       <span className="att-info">
         <span className="att-name">{attachment.name}</span>
-        <span className="att-type">{attachment.kind === 'image' ? '图片' : fileTypeLabel(attachment.ext)}</span>
+        <span className="att-type">{attachment.kind === 'directory' ? '文件夹路径' : attachment.kind === 'image' ? '图片文件' : `${fileTypeLabel(attachment.ext)}路径`}</span>
       </span>
       <button type="button" className="att-remove" onClick={onRemove} aria-label={`移除 ${attachment.name}`}><X size={12} /></button>
     </div>
@@ -7840,8 +8589,8 @@ function MessageAttachments({ attachments }: { attachments: MessageAttachment[] 
         <MessageImageAttachment key={attachment.id} attachment={attachment} />
       ))}
       {attachments.filter((item) => item.kind !== 'image').map((attachment) => (
-        <span key={attachment.id} className={`att-pill tone-${fileTone(attachment.ext)}`} title={attachment.name}>
-          <span className="att-pill-icon">{fileGlyph(attachment.ext, 13)}</span>
+        <span key={attachment.id} className={`att-pill tone-${fileTone(attachment.ext)}`} title={attachment.path || attachment.name}>
+          <span className="att-pill-icon">{attachment.kind === 'directory' ? <Folder size={13} /> : fileGlyph(attachment.ext, 13)}</span>
           <span className="att-pill-name">{attachment.name}</span>
         </span>
       ))}
@@ -8014,6 +8763,30 @@ function generatedFilesFromPlainText(text: string): GeneratedFile[] {
   return files;
 }
 
+// The runtime may emit a file_result block and then mention the same path in
+// prose. Collect both sources in transcript order so each response can finish
+// with one deduplicated artifact handoff instead of repeated inline cards.
+function generatedFilesFromMessageBlocks(blocks: MessageBlock[]): GeneratedFile[] {
+  const files = new Map<string, GeneratedFile>();
+  const remember = (file: GeneratedFile) => {
+    if (isRemoteHtmlPage(file)) return;
+    const path = localFilePath(file.path) || file.path;
+    const key = path.trim();
+    if (!key || files.has(key)) return;
+    files.set(key, { ...file, path });
+  };
+
+  for (const block of blocks) {
+    if (block.type === 'text') {
+      generatedFilesFromPlainText(block.content).forEach(remember);
+    } else if (block.type === 'file_result') {
+      block.files.forEach(remember);
+    }
+  }
+
+  return [...files.values()];
+}
+
 function stripTrailingFilePunctuation(path: string): string {
   return path.trim().replace(/[),.;，。]+$/g, '');
 }
@@ -8100,7 +8873,7 @@ function GeneratedImagePreview({ image, markdown }: { image: GeneratedImage; mar
   );
 }
 
-function GeneratedFileResultView({ block }: { block: Extract<MessageBlock, { type: 'file_result' }> }) {
+function GeneratedFileResultView({ block, grouped = false }: { block: Extract<MessageBlock, { type: 'file_result' }>; grouped?: boolean }) {
   // Remote HTML pages are web links, not generated local artifacts. Older
   // persisted conversations may already contain false-positive file blocks for
   // source pages whose titles included words such as “文件”. Hide them here as
@@ -8108,7 +8881,13 @@ function GeneratedFileResultView({ block }: { block: Extract<MessageBlock, { typ
   const files = block.files.filter((file) => !isRemoteHtmlPage(file));
   if (files.length === 0) return null;
   return (
-    <section className="generated-file-result" aria-label={block.title}>
+    <section className={`generated-file-result ${grouped ? 'message-deliverables' : ''}`} aria-label={block.title}>
+      {grouped && (
+        <header className="message-deliverables-head">
+          <span className="message-deliverables-title"><Paperclip size={12} />交付文件</span>
+          <span className="message-deliverables-count">{String(files.length).padStart(2, '0')}</span>
+        </header>
+      )}
       <div className="generated-file-list">
         {files.map((file) => <GeneratedFileCard key={file.id} file={file} />)}
       </div>
@@ -8481,7 +9260,7 @@ function GeneratedFileOpenMenu({
         aria-label={`${file.name} 打开方式`}
         title="打开方式"
       >
-        <span>打开方式</span>
+        <span>打开</span>
         <ChevronDown size={13} />
       </button>
       {menu}
@@ -8512,7 +9291,7 @@ function ImageLightbox() {
   );
 }
 
-// The "+" composer menu: attach files, toggle plan/goal modes, browse plugins.
+// The "+" composer menu: attach files and browse plugins.
 function ComposerPlusMenu({
   domain,
   onAttach,
@@ -8524,10 +9303,6 @@ function ComposerPlusMenu({
   onSelectSkill: (skill: SkillCatalogItem) => void;
   disabled?: boolean;
 }) {
-  const planMode = useChatStore((state) => state.planMode);
-  const pursueGoal = useChatStore((state) => state.pursueGoal);
-  const setPlanMode = useChatStore((state) => state.setPlanMode);
-  const setPursueGoal = useChatStore((state) => state.setPursueGoal);
   const { status } = useSkillRuntime();
   const [open, setOpen] = useState(false);
   const [submenu, setSubmenu] = useState<'plugins' | null>(null);
@@ -8571,31 +9346,6 @@ function ComposerPlusMenu({
             <button type="button" className="plus-menu-item" role="menuitem" onMouseEnter={() => setSubmenu(null)} onClick={() => void pickFiles()}>
               <Paperclip size={15} />
               <span>添加照片和文件</span>
-            </button>
-            <div className="plus-menu-divider" />
-            <button
-              type="button"
-              className="plus-menu-item toggle-row"
-              role="menuitemcheckbox"
-              aria-checked={planMode}
-              onMouseEnter={() => setSubmenu(null)}
-              onClick={() => setPlanMode(!planMode)}
-            >
-              <ListChecks size={15} />
-              <span>计划模式</span>
-              <Toggle checked={planMode} />
-            </button>
-            <button
-              type="button"
-              className="plus-menu-item toggle-row"
-              role="menuitemcheckbox"
-              aria-checked={pursueGoal}
-              onMouseEnter={() => setSubmenu(null)}
-              onClick={() => setPursueGoal(!pursueGoal)}
-            >
-              <Target size={15} />
-              <span>追求目标</span>
-              <Toggle checked={pursueGoal} />
             </button>
             <div className="plus-menu-divider" />
             <div className="plus-flyout-row" onMouseEnter={() => setSubmenu('plugins')}>
@@ -8900,24 +9650,9 @@ function BranchPicker({ cwd, currentBranch, onChanged }: { cwd: string; currentB
 
 // Data-directory context shown beneath the composer.
 function ComposerMeta({ conversation }: { conversation: Conversation }) {
-  const planMode = useChatStore((state) => state.planMode);
-  const pursueGoal = useChatStore((state) => state.pursueGoal);
-
   return (
     <div className="composer-meta">
       <DirectoryPicker conversation={conversation} />
-      {planMode && (
-        <span className="composer-meta-pill mode-on" title="计划模式已开启：Alpha Studio 会先给出可执行计划">
-          <ListChecks size={12} />
-          <span>计划模式</span>
-        </span>
-      )}
-      {pursueGoal && (
-        <span className="composer-meta-pill mode-on" title="追求目标已开启：Alpha Studio 会持续推进直到目标达成">
-          <Target size={12} />
-          <span>追求目标</span>
-        </span>
-      )}
     </div>
   );
 }
@@ -9092,7 +9827,7 @@ function ModelPicker() {
   return (
     <div className="model-picker">
       <button ref={triggerRef} type="button" className={`composer-pill model-pill ${open ? 'active' : ''}`} onClick={() => setOpen((value) => !value)} title="选择模型与推理强度">
-        <Cpu size={12} className="model-pill-icon" />{speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelProfileLabel([selectedModelProfile], selectedModelProfile.id)}</span>{effortOptions.length > 0 && <span className="model-pill-effort">{effortLabel(reasoningEffort)}</span>}<ChevronDown size={12} />
+        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}<span>{shortModelProfileLabel([selectedModelProfile], selectedModelProfile.id)}</span>{effortOptions.length > 0 && <span className="model-pill-effort">{effortLabel(reasoningEffort)}</span>}<ChevronDown size={12} />
       </button>
       {menuLayer}
     </div>
@@ -9545,7 +10280,7 @@ function ReviewBody({ message, cwd }: { message: ChatMessage; cwd: string }) {
   const parsed = useMemo(() => parseReviewOutput(textContent), [textContent]);
   const lastBlockIndex = message.blocks.length - 1;
   const units = buildRenderUnits(message.blocks).filter(
-    (unit) => unit.type !== 'block' || unit.block.type !== 'text',
+    (unit) => unit.type !== 'block' || (unit.block.type !== 'text' && unit.block.type !== 'file_result'),
   );
   return (
     <div className="review-body">
@@ -10881,6 +11616,10 @@ function SettingsPage({
     <div className="settings-page" role="dialog" aria-modal="true" aria-label="设置">
       <nav className="settings-page-nav">
         <div className="settings-page-traffic" data-tauri-drag-region />
+        <div className="settings-console-label" aria-hidden="true">
+          <span>ALPHA STUDIO</span>
+          <em>SYS.CONFIG</em>
+        </div>
         <button className="settings-back" type="button" onClick={onClose}><ChevronLeft size={16} /><span>返回应用</span></button>
         <SettingsNavGroup label="基础与账户" items={domain.navigation.personal} section={section} onSectionChange={onSectionChange} />
         <SettingsNavGroup label="金融数据" items={domain.navigation.integrations} section={section} onSectionChange={onSectionChange} />
@@ -10890,7 +11629,10 @@ function SettingsPage({
         <div className="settings-page-head" data-tauri-drag-region />
         <div className="settings-page-scroll">
           <div className="settings-content">
-            <h1 className="settings-content-title">{activeLabel}</h1>
+            <header className="settings-content-header">
+              <span className="settings-content-kicker">CONTROL PANEL / {section.toUpperCase()}</span>
+              <h1 className="settings-content-title">{activeLabel}</h1>
+            </header>
             <SettingsContent domain={domain} section={section} theme={theme} onThemeChange={onThemeChange} />
           </div>
         </div>
@@ -11712,7 +12454,7 @@ function ProfileSettings() {
 
 function KeyboardSettings() {
   const rows = [
-    ['归档聊天', 'Archive the current chat', '⇧⌘A'],
+    ['归档聊天', 'Archive the current chat', ''],
     ['新对话', 'Start a new chat', '⌘N'],
     ['搜索', 'Search chats and projects', '⌘K'],
     ['置顶对话', 'Pin or unpin the current chat', '⌥⌘P'],
@@ -12319,12 +13061,19 @@ async function openInNewWindow(): Promise<void> {
   window.open(target || window.location.href, '_blank', 'noopener,noreferrer');
 }
 
-async function copyToClipboard(text: string): Promise<void> {
+async function tryCopyToClipboard(text: string): Promise<boolean> {
   try {
-    await navigator.clipboard?.writeText(text);
+    if (!navigator.clipboard?.writeText) return false;
+    await navigator.clipboard.writeText(text);
+    return true;
   } catch {
     // Clipboard access is best-effort.
+    return false;
   }
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  await tryCopyToClipboard(text);
 }
 
 async function openExternal(url: string): Promise<void> {

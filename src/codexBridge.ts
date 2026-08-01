@@ -226,11 +226,27 @@ export interface LocalTextFileResult {
   truncated: boolean;
 }
 
+export interface LocalDirectoryEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  isSymlink: boolean;
+  bytes: number;
+}
+
 export async function localTextFileRead(path: string): Promise<LocalTextFileResult> {
   if (!path || !isTauriRuntime()) {
     return { path, content: '', bytes: 0, truncated: false };
   }
   return invoke<LocalTextFileResult>('local_text_file_read', { request: { path } });
+}
+
+export async function localDirectoryList(path: string): Promise<LocalDirectoryEntry[]> {
+  if (!path) return [];
+  if (!isTauriRuntime()) {
+    throw new Error('浏览器预览模式无法读取本地目录，请在桌面应用中使用。');
+  }
+  return invoke<LocalDirectoryEntry[]>('local_directory_list', { request: { path } });
 }
 
 export interface LocalPdfFileResult {

@@ -394,6 +394,12 @@ pub struct LocalTextFileReadRequest {
 
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalDirectoryListRequest {
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalPdfFileReadRequest {
     path: String,
 }
@@ -456,6 +462,16 @@ pub struct LocalTextFileReadResult {
     content: String,
     bytes: u64,
     truncated: bool,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDirectoryEntry {
+    name: String,
+    path: String,
+    is_directory: bool,
+    is_symlink: bool,
+    bytes: u64,
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -2309,6 +2325,53 @@ async fn local_text_file_read(
         bytes: metadata.len(),
         truncated,
     })
+}
+
+fn list_local_directory_entries(path: &Path) -> Result<Vec<LocalDirectoryEntry>, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|e| format!("Failed to read directory metadata: {e}"))?;
+    if !metadata.is_dir() {
+        return Err(format!("Path is not a directory: {}", path.display()));
+    }
+
+    let mut entries = fs::read_dir(path)
+        .map_err(|e| format!("Failed to read directory: {e}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            let entry_metadata = entry.metadata().ok();
+            Some(LocalDirectoryEntry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                path: entry.path().to_string_lossy().into_owned(),
+                is_directory: file_type.is_dir(),
+                is_symlink: file_type.is_symlink(),
+                bytes: entry_metadata
+                    .filter(|value| value.is_file())
+                    .map(|value| value.len())
+                    .unwrap_or(0),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    entries.sort_by(|left, right| {
+        right
+            .is_directory
+            .cmp(&left.is_directory)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+fn local_directory_list(
+    request: LocalDirectoryListRequest,
+) -> Result<Vec<LocalDirectoryEntry>, String> {
+    let path = request.path.trim();
+    if path.is_empty() {
+        return Err("Directory path is required.".to_string());
+    }
+    list_local_directory_entries(Path::new(path))
 }
 
 #[tauri::command]
@@ -7095,6 +7158,7 @@ pub fn run() {
             open_external_target,
             local_image_data_url,
             local_text_file_read,
+            local_directory_list,
             local_pdf_file_read,
             browser_webview_create,
             browser_webview_navigate,
@@ -8104,6 +8168,37 @@ mod tests {
     }
 
     #[test]
+    fn lists_local_directories_before_files_in_name_order() {
+        let root = std::env::temp_dir().join(format!(
+            "alpha-studio-directory-list-test-{}",
+            generate_run_id()
+        ));
+        fs::create_dir_all(root.join("Beta")).unwrap();
+        fs::create_dir_all(root.join("alpha")).unwrap();
+        fs::write(root.join("zeta.md"), "research").unwrap();
+        fs::write(root.join("Notes.txt"), "notes").unwrap();
+
+        let entries = list_local_directory_entries(&root).unwrap();
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.is_directory))
+                .collect::<Vec<_>>(),
+            vec![
+                ("alpha", true),
+                ("Beta", true),
+                ("Notes.txt", false),
+                ("zeta.md", false),
+            ]
+        );
+        assert_eq!(entries[2].bytes, 5);
+        assert_eq!(entries[3].bytes, 8);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn renames_only_alpha_studio_project_folders() {
         let root = std::env::temp_dir().join(format!(
             "alpha-studio-project-folder-rename-test-{}",
@@ -9029,6 +9124,11 @@ mod tests {
                 kind: "file".to_string(),
                 path: Some("/tmp/notes.md".to_string()),
             },
+            CodexChatAttachment {
+                name: "research".to_string(),
+                kind: "directory".to_string(),
+                path: Some("/tmp/research".to_string()),
+            },
         ];
         let skill = NativeSkillInput {
             name: "imagegen".to_string(),
@@ -9058,6 +9158,11 @@ mod tests {
         assert_eq!(
             input[3].get("path").and_then(Value::as_str),
             Some("/tmp/notes.md")
+        );
+        assert_eq!(input[4].get("type").and_then(Value::as_str), Some("mention"));
+        assert_eq!(
+            input[4].get("path").and_then(Value::as_str),
+            Some("/tmp/research")
         );
     }
 

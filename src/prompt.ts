@@ -3,8 +3,6 @@ import { activeDomain, type DomainConfig } from './domain';
 import type { CoworkerSelection, ReviewRequest, SkillSelection } from './types';
 
 export interface PromptOptions {
-  planMode?: boolean;
-  pursueGoal?: boolean;
   selectedSkill?: SkillSelection | null;
   nativeSkillInput?: boolean;
   coworkers?: CoworkerSelection[] | null;
@@ -67,16 +65,6 @@ export function buildCodingInstructions(
   domain: DomainConfig = activeDomain(),
 ): string {
   const modeLines: string[] = [];
-  if (options.planMode) {
-    modeLines.push(
-      '当前处于「计划模式」：先只读地调研资料与上下文，输出分步骤的可执行计划，并在获得用户确认前不要修改文件或运行有副作用的操作。',
-    );
-  }
-  if (options.pursueGoal) {
-    modeLines.push(
-      '当前开启「追求目标」：持续自主推进，直到任务目标达成或确实被外部因素阻塞；每完成一步说明进展、验证结果与下一步。',
-    );
-  }
   if (options.selectedSkill) {
     const skill = options.selectedSkill;
     if (options.nativeSkillInput) {

@@ -16,6 +16,8 @@ export interface ResearchCatalogEntry {
   name: string;
   board: string;
   sector: string;
+  /** 标的类型；内置 ETF 使用它在离线样例中保持正确分类。 */
+  securityType?: 'stock' | 'etf';
   basePrice: number;
   /** 总股本（亿股），用于推算市值和成交额 */
   shares: number;
@@ -148,6 +150,16 @@ export const RESEARCH_CATALOG: ResearchCatalogEntry[] = [
   { code: '300502.XSHE', name: '新易盛', board: '创业板', sector: '光通信', basePrice: 122.5, shares: 7.1, tags: ['光模块', 'AI算力'], thesis: '高速光模块弹性样本，跟踪 800G/1.6T 订单。' },
   { code: '600570.XSHG', name: '恒生电子', board: '沪市主板', sector: '金融科技', basePrice: 31.2, shares: 19.0, tags: ['金融IT', 'AI应用'], thesis: '金融 IT 周期样本，观察券商和资管系统投入。' },
   { code: '002415.XSHE', name: '海康威视', board: '深市主板', sector: '安防', basePrice: 31.9, shares: 93.3, tags: ['安防', 'AI视觉'], thesis: '安防与机器视觉龙头，关注海外需求和 AI 产品化。' },
+  { code: '510300.XSHG', name: '沪深300ETF', board: '沪市ETF', sector: '宽基ETF', securityType: 'etf', basePrice: 4.12, shares: 920, tags: ['宽基', '大盘'], thesis: '大盘核心资产的场内配置工具，重点比较规模、流动性和跟踪误差。' },
+  { code: '510500.XSHG', name: '中证500ETF', board: '沪市ETF', sector: '宽基ETF', securityType: 'etf', basePrice: 6.18, shares: 185, tags: ['宽基', '中盘'], thesis: '中盘风格配置工具，观察小盘风格相对强弱与成交活跃度。' },
+  { code: '510050.XSHG', name: '上证50ETF', board: '沪市ETF', sector: '宽基ETF', securityType: 'etf', basePrice: 2.86, shares: 475, tags: ['宽基', '蓝筹'], thesis: '沪市大盘蓝筹配置工具，关注金融与消费权重影响。' },
+  { code: '159915.XSHE', name: '创业板ETF', board: '深市ETF', sector: '宽基ETF', securityType: 'etf', basePrice: 2.31, shares: 410, tags: ['宽基', '成长'], thesis: '创业板成长风格配置工具，波动通常高于大盘宽基。' },
+  { code: '588000.XSHG', name: '科创50ETF', board: '沪市ETF', sector: '宽基ETF', securityType: 'etf', basePrice: 1.06, shares: 980, tags: ['宽基', '科创'], thesis: '科创板核心公司配置工具，关注半导体和高端制造权重。' },
+  { code: '512480.XSHG', name: '半导体ETF', board: '沪市ETF', sector: '行业ETF', securityType: 'etf', basePrice: 1.12, shares: 345, tags: ['行业', '半导体'], thesis: '半导体产业链工具，适合观察行业景气与国产替代主线。' },
+  { code: '515790.XSHG', name: '光伏ETF', board: '沪市ETF', sector: '行业ETF', securityType: 'etf', basePrice: 0.72, shares: 160, tags: ['行业', '新能源'], thesis: '光伏产业链工具，重点跟踪供需、价格与产能出清。' },
+  { code: '512800.XSHG', name: '银行ETF', board: '沪市ETF', sector: '行业ETF', securityType: 'etf', basePrice: 1.28, shares: 95, tags: ['行业', '高股息'], thesis: '银行板块配置工具，关注息差、资产质量与分红稳定性。' },
+  { code: '518880.XSHG', name: '黄金ETF', board: '沪市ETF', sector: '商品ETF', securityType: 'etf', basePrice: 6.24, shares: 82, tags: ['商品', '黄金'], thesis: '黄金价格场内映射工具，关注实际利率、美元与避险需求。' },
+  { code: '511010.XSHG', name: '国债ETF', board: '沪市ETF', sector: '债券ETF', securityType: 'etf', basePrice: 142.4, shares: 8.6, tags: ['债券', '低波动'], thesis: '利率债配置工具，适合观察无风险利率与股债跷跷板。' },
 ];
 
 export interface ResearchIndexEntry {
@@ -246,16 +258,20 @@ function quoteFromEntry(entry: ResearchCatalogEntry): ResearchQuote {
     name: entry.name,
     board: entry.board,
     sector: entry.sector,
+    securityType: entry.securityType ?? 'stock',
     price,
     prevClose,
     changePct,
     changeAmt,
+    open: last.open,
     high: last.high,
     low: last.low,
     volume,
     // volume 单位是万手（1e6 股），turnover 换算成亿元。
     turnover: (volume * price) / 100,
     marketCap: price * entry.shares,
+    turnoverRate: 0.6 + rand() * 7.8,
+    volumeRatio: 0.55 + rand() * 2.25,
     tags: entry.tags,
     thesis: entry.thesis,
     source: 'sample',
@@ -871,6 +887,28 @@ export function deletePortfolio(state: ResearchState, id: string): ResearchState
   return { ...state, portfolios: state.portfolios.filter((item) => item.id !== id) };
 }
 
+export function updatePortfolio(
+  state: ResearchState,
+  id: string,
+  name: string,
+  codes: string[],
+  note = '',
+): ResearchActionResult {
+  const trimmed = name.trim();
+  const uniqueCodes = Array.from(new Set(codes.filter(Boolean)));
+  if (!state.portfolios.some((item) => item.id === id)) return { state, error: '组合不存在或已被删除。' };
+  if (!trimmed) return { state, error: '请输入组合名称。' };
+  if (uniqueCodes.length === 0) return { state, error: '请至少选择一只股票。' };
+  return {
+    state: {
+      ...state,
+      portfolios: state.portfolios.map((item) => (item.id === id
+        ? { ...item, name: trimmed, codes: uniqueCodes, note: note.trim() }
+        : item)),
+    },
+  };
+}
+
 export function updatePortfolioCodes(state: ResearchState, id: string, codes: string[]): ResearchState {
   const uniqueCodes = Array.from(new Set(codes.filter(Boolean)));
   return {
@@ -1066,14 +1104,16 @@ export function portfolioPrompt(
 }
 
 export function accountPrompt(state: ResearchState, summary: ResearchAccountSummary): string {
-  const holdingsLine =
-    summary.holdings
-      .map((row) => `${row.quote.name} ${row.quantity}股（浮盈亏 ${formatSignedMoney(row.pnl)}，占比 ${formatPercent(row.weightPct)}）`)
-      .join('；') || '暂无持仓';
+  const holdingLines = summary.holdings.map((row) => (
+    `- ${row.quote.name}（${row.code}）：${row.quantity} 股，成本 ${row.avgCost.toFixed(2)}，现价 ${row.quote.price.toFixed(2)}，` +
+    `市值 ${formatMoney(row.marketValue)}，浮盈亏 ${formatSignedMoney(row.pnl)}（${formatPercent(row.pnlPct)}），` +
+    `今日盈亏 ${formatSignedMoney(row.todayPnl)}（${formatPercent(row.todayPnlPct)}），占总资产 ${formatPercent(row.weightPct)}。`
+  ));
   return [
     '请基于我手工记录的实盘账户做一次投研和交易复盘。',
     `总资产 ${formatMoney(summary.totalAssets)}，现金 ${formatMoney(state.cash)}，持仓市值 ${formatMoney(summary.marketValue)}，浮盈亏 ${formatSignedMoney(summary.pnl)}，累计收益 ${formatSignedMoney(summary.totalReturn)}（${formatPercent(summary.totalReturnPct)}），仓位 ${formatPercent(summary.exposurePct)}。`,
-    `当前持仓：${holdingsLine}。`,
+    '当前持仓明细：',
+    ...(holdingLines.length ? holdingLines : ['- 暂无持仓。']),
     '请输出仓位建议、风险来源、可执行观察清单和需要补充的 JQData 数据字段。',
   ].join('\n');
 }

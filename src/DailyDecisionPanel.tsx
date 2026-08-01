@@ -217,8 +217,8 @@ export function DailyDecisionPanel() {
         )}
       </DecisionHeader>
       <nav className="dd-tabs" role="tablist" aria-label="日报决策页签">
-        {(Object.keys(TAB_LABELS) as DailyDecisionTab[]).map((key) => (
-          <button key={key} type="button" role="tab" aria-selected={tab === key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>
+        {(Object.keys(TAB_LABELS) as DailyDecisionTab[]).map((key, index) => (
+          <button key={key} type="button" role="tab" aria-selected={tab === key} data-index={String(index + 1).padStart(2, '0')} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>
             {TAB_LABELS[key]}
             {key === 'research' && reportRuns.length > 0 && <em>{reportRuns.length}</em>}
             {key === 'recommendations' && reportRecommendations.length > 0 && <em>{reportRecommendations.length}</em>}
@@ -286,14 +286,17 @@ export function DailyDecisionPanel() {
 function DecisionHeader({ children }: { children?: ReactNode }) {
   return (
     <header className="dd-head">
-      <div><FileChartColumn size={15} /><strong>日报决策</strong><span>本地研究闭环</span></div>
-      {children}
+      <div className="dd-head-copy">
+        <div className="dd-head-kicker"><span>DAILY DECISION</span><em>LOCAL RESEARCH LOOP</em></div>
+        <div className="dd-head-title"><FileChartColumn size={15} /><strong>日报决策</strong><span><i />研究闭环在线</span></div>
+      </div>
+      {children && <div className="dd-head-tools">{children}</div>}
     </header>
   );
 }
 
 function DecisionEmpty({ title, text, action }: { title: string; text: string; action?: ReactNode }) {
-  return <div className="dd-empty"><FileChartColumn size={28} /><strong>{title}</strong><span>{text}</span>{action}</div>;
+  return <div className="dd-empty"><em>NO ACTIVE REPORT / WAITING FOR DATA</em><FileChartColumn size={28} /><strong>{title}</strong><span>{text}</span>{action}</div>;
 }
 
 function DailySummary({ report }: { report: PremarketThemeRun }) {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   RESEARCH_CATALOG,
+  accountPrompt,
   applyCashFlow,
   buildQuoteMap,
   clearLiveAccountRecords,
@@ -26,6 +27,7 @@ import {
   toggleWatchlist,
   tradeLogPrompt,
   tradePrompt,
+  updatePortfolio,
   type ResearchState,
 } from './research';
 
@@ -173,6 +175,25 @@ describe('watchlist and portfolios', () => {
     state = deletePortfolio(state, state.portfolios[0].id);
     expect(state.portfolios).toHaveLength(0);
   });
+
+  it('updates a portfolio name, note and unique members with validation', () => {
+    const created = createPortfolio(blankState(), '旧组合', ['600519.XSHG'], '旧备注').state;
+    const id = created.portfolios[0].id;
+
+    expect(updatePortfolio(created, id, ' ', ['300750.XSHE']).error).toBe('请输入组合名称。');
+    expect(updatePortfolio(created, id, '新组合', []).error).toBe('请至少选择一只股票。');
+    expect(updatePortfolio(created, 'missing', '新组合', ['300750.XSHE']).error).toBe('组合不存在或已被删除。');
+
+    const updated = updatePortfolio(created, id, '  AI 成长  ', ['300750.XSHE', '300750.XSHE', '688981.XSHG'], '  主线更新  ');
+    expect(updated.error).toBeUndefined();
+    expect(updated.state.portfolios[0]).toMatchObject({
+      id,
+      name: 'AI 成长',
+      codes: ['300750.XSHE', '688981.XSHG'],
+      note: '主线更新',
+    });
+    expect(updated.state.portfolios[0].createdAt).toBe(created.portfolios[0].createdAt);
+  });
 });
 
 describe('quotes and market stats', () => {
@@ -273,6 +294,12 @@ describe('account summary', () => {
     expect(exposure[0].pct).toBeCloseTo(100, 6);
     expect(sectorExposurePrompt(exposure)).toContain('集中度风险');
     expect(sectorExposurePrompt(exposure)).toContain('白酒');
+
+    const prompt = accountPrompt(state, summary);
+    expect(prompt).toContain('贵州茅台（600519.XSHG）');
+    expect(prompt).toContain('成本 1000.00');
+    expect(prompt).toContain('现价 1100.00');
+    expect(prompt).toContain('今日盈亏 +1.00万');
   });
 });
 

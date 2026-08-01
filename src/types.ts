@@ -71,7 +71,7 @@ export type MessageBlock = TextBlock | ThinkingBlock | ToolBlock | ErrorBlock | 
 export interface MessageAttachment {
   id: string;
   name: string;
-  kind: 'image' | 'file';
+  kind: 'image' | 'file' | 'directory';
   ext: string;
   // Absolute path (desktop) or file name (browser preview); folded into the prompt.
   path?: string;
@@ -83,6 +83,17 @@ export interface SkillSelection {
   id: string;
   title: string;
   description?: string;
+}
+
+// A quote captured from an existing chat turn and attached to a later prompt.
+// Side-chat quotes remain in memory only because their owning Conversation is
+// ephemeral; quotes sent in the main chat become part of that visible turn.
+export interface SelectedTextContext {
+  id: string;
+  text: string;
+  sourceConversationId: string;
+  sourceMessageId?: string;
+  sourceRole?: MessageRole;
 }
 
 // An AI coworker attached to a user turn. The main agent orchestrates the
@@ -139,6 +150,7 @@ export interface ChatMessage {
   isStreaming?: boolean;
   attachments?: MessageAttachment[];
   selectedSkill?: SkillSelection;
+  selectedTextContexts?: SelectedTextContext[];
   // Coworkers summoned for this turn; the main agent spawns their sub-agents.
   coworkers?: CoworkerSelection[];
   // Marks an assistant turn that should render as a structured code review.
@@ -153,6 +165,7 @@ export interface QueuedChatMessage {
   createdAt: number;
   attachments?: MessageAttachment[];
   selectedSkill?: SkillSelection;
+  selectedTextContexts?: SelectedTextContext[];
   coworkers?: CoworkerSelection[];
   automationRun?: boolean;
 }
@@ -202,6 +215,8 @@ export interface Conversation {
   pinned?: boolean;
   archivedAt?: number;
   archiveBatchId?: string;
+  /** In-memory side chat: omitted from persistence and the primary sidebar. */
+  ephemeral?: boolean;
 }
 
 export interface Project {

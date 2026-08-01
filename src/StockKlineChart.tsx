@@ -10,10 +10,15 @@ import {
 } from 'lightweight-charts';
 import { ChartCandlestick } from 'lucide-react';
 import { fetchJqDailyBars, fetchJqHistoricalBars, type JqDailyBar, type JqHistoricalBar } from './jqdata';
-import { sampleBars, type ResearchQuote } from './research';
+import { changeTone, formatPercent, sampleBars, type ResearchQuote } from './research';
 
 type KlineInterval = '1m' | '5m' | '1d' | '1w' | '1mo';
 type ChartSource = 'loading' | 'jqdata' | 'snapshot';
+
+interface InspectedCandle {
+  candle: CandlestickData<Time>;
+  previousClose?: number;
+}
 
 const INTERVALS: Array<{ id: KlineInterval; label: string }> = [
   { id: '1m', label: '1分' },
@@ -89,16 +94,45 @@ function aggregateCandles(
   }));
 }
 
+function snapshotDailyCandles(quote: ResearchQuote, count: number): CandlestickData<Time>[] {
+  const anchor = quote.prevClose > 0 ? quote.prevClose : quote.price;
+  const generated = sampleBars(`${quote.code}:kline`, anchor, Math.max(2, count)).map((bar) => ({
+    time: bar.date,
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+  } satisfies CandlestickData<Time>));
+
+  // Keep the simulated history visually continuous with the real quote. The
+  // penultimate close is yesterday's close; the last bar is today's snapshot.
+  const previousGenerated = generated[generated.length - 2];
+  const scale = previousGenerated.close > 0 ? anchor / previousGenerated.close : 1;
+  const scaled = generated.map((candle) => ({
+    ...candle,
+    open: candle.open * scale,
+    high: candle.high * scale,
+    low: candle.low * scale,
+    close: candle.close * scale,
+  }));
+  const open = quote.open && quote.open > 0 ? quote.open : anchor;
+  const close = quote.price;
+  const high = Math.max(open, close, quote.high);
+  const low = Math.min(open, close, quote.low);
+  scaled[scaled.length - 1] = {
+    time: scaled[scaled.length - 1].time,
+    open,
+    high,
+    low,
+    close,
+  };
+  return scaled;
+}
+
 function snapshotCandles(quote: ResearchQuote, interval: KlineInterval): CandlestickData<Time>[] {
   if (interval === '1d' || interval === '1w' || interval === '1mo') {
     const count = interval === '1d' ? 72 : interval === '1w' ? 360 : 720;
-    const daily = sampleBars(`${quote.code}:${interval}`, quote.price, count).map((bar) => ({
-      time: bar.date,
-      open: bar.open,
-      high: bar.high,
-      low: bar.low,
-      close: bar.close,
-    } satisfies CandlestickData<Time>));
+    const daily = snapshotDailyCandles(quote, count);
     return interval === '1d' ? daily : aggregateCandles(daily, interval);
   }
 
@@ -139,6 +173,21 @@ function snapshotCandles(quote: ResearchQuote, interval: KlineInterval): Candles
   }));
 }
 
+function candleTimeKey(time: Time): string {
+  if (typeof time === 'number' || typeof time === 'string') return String(time);
+  return `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
+}
+
+function candleTimeLabel(time: Time, intraday: boolean): string {
+  if (typeof time === 'number') {
+    return new Date(time * 1000).toLocaleString('zh-CN', intraday
+      ? { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }
+      : { year: 'numeric', month: '2-digit', day: '2-digit' });
+  }
+  const value = typeof time === 'string' ? time : candleTimeKey(time);
+  return value.slice(0, intraday ? 16 : 10);
+}
+
 async function loadHistoricalCandles(code: string, interval: KlineInterval): Promise<CandlestickData<Time>[] | null> {
   if (interval === '1m' || interval === '5m') {
     const bars = await fetchJqHistoricalBars(code, daysAgo(7), dateStamp(new Date()), '1m', { fq: 'none' });
@@ -155,13 +204,18 @@ async function loadHistoricalCandles(code: string, interval: KlineInterval): Pro
 
 export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const interactionRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const [interval, setInterval] = useState<KlineInterval>('1d');
+  const [isInteractive, setIsInteractive] = useState(false);
   const fallback = useMemo(() => snapshotCandles(quote, interval), [interval, quote]);
   const [candles, setCandles] = useState<CandlestickData<Time>[]>(fallback);
   const [source, setSource] = useState<ChartSource>('loading');
+  const [inspected, setInspected] = useState<InspectedCandle | null>(null);
 
   useEffect(() => {
     let active = true;
+    setInspected(null);
     setCandles(fallback);
     setSource('loading');
     void loadHistoricalCandles(quote.code, interval).then((historical) => {
@@ -177,6 +231,25 @@ export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
     });
     return () => { active = false; };
   }, [fallback, interval, quote.code]);
+
+  useEffect(() => {
+    if (!isInteractive) return;
+    const leaveChart = (event: PointerEvent) => {
+      const interaction = interactionRef.current;
+      if (interaction && event.target instanceof Node && !interaction.contains(event.target)) {
+        setIsInteractive(false);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsInteractive(false);
+    };
+    document.addEventListener('pointerdown', leaveChart, true);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('pointerdown', leaveChart, true);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [isInteractive]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -206,7 +279,10 @@ export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
         barSpacing: interval === '1m' ? 5 : 7,
       },
       localization: { locale: 'zh-CN', priceFormatter: (price: number) => price.toFixed(quote.price < 10 ? 3 : 2) },
+      handleScroll: isInteractive,
+      handleScale: isInteractive,
     });
+    chartRef.current = chart;
     const series = chart.addSeries(CandlestickSeries, {
       upColor: '#f0445a',
       downColor: '#00b578',
@@ -219,23 +295,52 @@ export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
     });
     series.setData(candles);
     chart.timeScale().fitContent();
+    const candleIndexes = new Map(candles.map((candle, index) => [candleTimeKey(candle.time), index]));
+    const inspectCandle = (param: Parameters<Parameters<typeof chart.subscribeCrosshairMove>[0]>[0]) => {
+      const item = param.seriesData.get(series);
+      if (!param.point || !item || !('open' in item) || !('high' in item) || !('low' in item) || !('close' in item)) {
+        setInspected(null);
+        return;
+      }
+      const candle = item as CandlestickData<Time>;
+      const index = candleIndexes.get(candleTimeKey(candle.time));
+      setInspected({ candle, previousClose: index && index > 0 ? candles[index - 1].close : undefined });
+    };
+    chart.subscribeCrosshairMove(inspectCandle);
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width;
       if (width) chart.applyOptions({ width });
     });
     observer.observe(host);
     return () => {
+      chart.unsubscribeCrosshairMove(inspectCandle);
       observer.disconnect();
+      if (chartRef.current === chart) chartRef.current = null;
       chart.remove();
     };
   }, [candles, interval, quote.changePct, quote.price]);
 
+  useEffect(() => {
+    chartRef.current?.applyOptions({
+      handleScroll: isInteractive,
+      handleScale: isInteractive,
+    });
+  }, [isInteractive]);
+
   const latest = candles[candles.length - 1];
+  const shown = inspected?.candle ?? latest;
+  const shownIndex = shown ? candles.findIndex((candle) => candleTimeKey(candle.time) === candleTimeKey(shown.time)) : -1;
+  const previousClose = inspected?.previousClose
+    ?? (shownIndex > 0 ? candles[shownIndex - 1].close : undefined);
+  const changePct = shown && previousClose && previousClose > 0
+    ? ((shown.close - previousClose) / previousClose) * 100
+    : undefined;
+  const bodyPct = shown && shown.open > 0 ? ((shown.close - shown.open) / shown.open) * 100 : undefined;
   const sourceLabel = source === 'jqdata'
     ? '聚宽历史行情 · 前复权'
     : source === 'loading'
       ? '正在加载历史行情…'
-      : '快照模拟 · 非历史数据';
+      : '实时快照 · 模拟历史';
 
   return (
     <section className="market-card stock-kline-card" aria-label={`${quote.name} K线图`}>
@@ -250,21 +355,45 @@ export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
             type="button"
             role="tab"
             aria-selected={interval === item.id}
-            onClick={() => setInterval(item.id)}
+            onClick={() => {
+              setInterval(item.id);
+              setIsInteractive(false);
+              setInspected(null);
+            }}
           >
             {item.label}
           </button>
         ))}
       </div>
-      {latest && (
-        <div className="stock-kline-ohlc" aria-label="最新K线价格">
-          <span>开 <b>{latest.open.toFixed(2)}</b></span>
-          <span>高 <b>{latest.high.toFixed(2)}</b></span>
-          <span>低 <b>{latest.low.toFixed(2)}</b></span>
-          <span>收 <b>{latest.close.toFixed(2)}</b></span>
+      {shown && (
+        <div className="stock-kline-ohlc" aria-label={inspected ? '光标所选K线详情' : '最新K线详情'} aria-live="polite">
+          <span className="stock-kline-time">{inspected ? '所选' : '最新'} <b>{candleTimeLabel(shown.time, interval === '1m' || interval === '5m')}</b></span>
+          <span>开 <b>{shown.open.toFixed(2)}</b></span>
+          <span>高 <b>{shown.high.toFixed(2)}</b></span>
+          <span>低 <b>{shown.low.toFixed(2)}</b></span>
+          <span>收 <b>{shown.close.toFixed(2)}</b></span>
+          {changePct !== undefined && <span>较前收 <b className={changeTone(changePct)}>{formatPercent(changePct)}</b></span>}
+          {bodyPct !== undefined && <span title="收盘价相对开盘价的涨跌">K线实体 <b className={changeTone(bodyPct)}>{formatPercent(bodyPct)}</b></span>}
         </div>
       )}
-      <div ref={hostRef} className="stock-kline-canvas" data-chart-source={source} />
+      <div
+        ref={interactionRef}
+        className={`stock-kline-interaction${isInteractive ? ' is-active' : ''}`}
+        data-chart-interactive={isInteractive}
+      >
+        <div ref={hostRef} className="stock-kline-canvas" data-chart-source={source} />
+        {!isInteractive && (
+          <button
+            type="button"
+            className="stock-kline-activation"
+            aria-label="点击启用K线图交互"
+            onClick={() => setIsInteractive(true)}
+          >
+            <span>点击后操作 K 线</span>
+          </button>
+        )}
+        {isInteractive && <span className="stock-kline-active-hint">移动十字线查看详情 · 点击外部退出</span>}
+      </div>
     </section>
   );
 }

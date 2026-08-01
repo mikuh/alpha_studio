@@ -13,13 +13,16 @@ import {
   Compass,
   Database,
   Flame,
+  GripVertical,
   Landmark,
   LayoutGrid,
   List,
   ListFilter,
   Loader2,
+  Info,
   Network,
   Newspaper,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -38,6 +41,7 @@ import {
   RESEARCH_DRAG_MIME,
   RESEARCH_INDEXES,
   RESEARCH_STATE_CHANGE_EVENT,
+  accountPrompt,
   applyCashFlow,
   buildIndexQuotes,
   buildQuoteMap,
@@ -45,6 +49,8 @@ import {
   clearLiveAccountRecords,
   computeMarketOverview,
   computeSectorHeat,
+  createPortfolio,
+  deletePortfolio,
   formatMoney,
   formatPercent,
   formatSignedMoney,
@@ -58,14 +64,34 @@ import {
   securityPrompt,
   shortCode,
   toggleWatchlist,
+  updatePortfolio,
+  watchlistPrompt,
   type LivePriceOverride,
+  type ResearchPortfolio,
   type ResearchOrderSide,
   type ResearchQuote,
   type ResearchState,
 } from './research';
 import { insertIntoComposer } from './composerBridge';
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
+import {
+  RESEARCH_CALENDAR_ITEMS,
+  RESEARCH_DIVIDEND_ITEMS,
+  RESEARCH_EARNINGS_ITEMS,
+  RESEARCH_IPO_ITEMS,
+  RESEARCH_MACRO_INDICATORS,
+  RESEARCH_SAMPLE_DATA_LABEL,
+  researchSampleDate,
+  researchSampleDateLabel,
+  type ResearchCalendarCategory,
+} from './researchWorkspaceData';
 import { StockKlineChart } from './StockKlineChart';
+import {
+  fetchJqCapitalFlow,
+  type JqCapitalFlowBucket,
+  type JqCapitalFlowPoint,
+  type JqCapitalFlowSnapshot,
+} from './jqdata';
 import './researchMarketApp.css';
 
 type PrimarySection = 'watchlist' | 'market' | 'trade' | 'assets' | 'discover';
@@ -115,6 +141,9 @@ const CHAIN_PRESETS = [
 ];
 
 function startResearchDrag(event: ReactDragEvent<HTMLElement>, prompt: string) {
+  // Keep nested drag sources independent. A stock row inside a draggable list
+  // should still send just that stock, while the list chrome sends the group.
+  event.stopPropagation();
   event.dataTransfer.setData(RESEARCH_DRAG_MIME, prompt);
   event.dataTransfer.setData('text/plain', prompt);
   event.dataTransfer.effectAllowed = 'copy';
@@ -299,6 +328,7 @@ function MarketHome({ quotes, indexQuotes, state, loading, onRoute }: { quotes: 
   const hot = useMemo(() => [...quotes].sort((a, b) => quoteTurnover(b) - quoteTurnover(a)).slice(0, 5), [quotes]);
   const signals = useMemo(() => [...quotes].filter((quote) => quote.volumeRatio || quote.turnoverRate).sort((a, b) => ((b.volumeRatio ?? 0) * 4 + (b.turnoverRate ?? 0)) - ((a.volumeRatio ?? 0) * 4 + (a.turnoverRate ?? 0))).slice(0, 3), [quotes]);
   const maxBucket = Math.max(1, ...overview.buckets.map((bucket) => bucket.count));
+  const sampleMode = quotes.some((quote) => quote.source === 'sample');
 
   return (
     <div className="market-root-page" aria-label="沪深市场首页">
@@ -307,13 +337,15 @@ function MarketHome({ quotes, indexQuotes, state, loading, onRoute }: { quotes: 
         <button type="button" role="tab" aria-selected="false" onClick={() => onRoute({ kind: 'feature', feature: 'etf' })}>ETF</button>
       </div>
 
+      {sampleMode && <SampleDataNotice detail="当前展示可交互的离线行情样例；云端快照恢复后会自动切换，不用于实盘决策。" />}
+
       <section className="market-card market-index-section" aria-label="主要指数">
         <SectionHeading title="主要指数" meta="红涨绿跌" />
         {indexQuotes.length ? <div className="market-index-grid">{indexQuotes.map((index) => (
           <button key={index.code} type="button" className={changeTone(index.changePct)} draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(index.name, [`点位 ${index.price.toFixed(2)}，涨跌 ${formatPercent(index.changePct)}。`]))} onClick={() => onRoute({ kind: 'index', code: index.code })}>
             <span>{index.name}</span><strong>{index.price.toFixed(2)}</strong><em>{formatSignedMoney(index.changeAmt)} · {formatPercent(index.changePct)}</em>
           </button>
-        ))}</div> : <EmptyState title={loading ? '行情读取中' : '指数暂不可用'} detail="刷新后显示真实指数行情，不使用伪造点位。" />}
+        ))}</div> : <EmptyState title={loading ? '行情读取中' : '指数暂不可用'} detail="刷新后显示指数行情；离线时会明确标注为内置样例。" />}
         <div className="market-breadth-strip">
           <span><em>上涨</em><strong className="up">{overview.upCount}</strong></span>
           <i><b className="up" style={{ width: `${quotes.length ? (overview.upCount / quotes.length) * 100 : 0}%` }} /><b className="flat" style={{ width: `${quotes.length ? (overview.flatCount / quotes.length) * 100 : 0}%` }} /><b className="down" style={{ width: `${quotes.length ? (overview.downCount / quotes.length) * 100 : 0}%` }} /></i>
@@ -360,7 +392,7 @@ function MarketHome({ quotes, indexQuotes, state, loading, onRoute }: { quotes: 
         <SectionHeading title="产业链" meta="按投资逻辑组织标的" />
         <div className="market-chain-list">{CHAIN_PRESETS.map((chain) => {
           const members = quotes.filter((quote) => chain.sectors.includes(quote.sector)).sort((a, b) => quoteTurnover(b) - quoteTurnover(a)).slice(0, 3);
-          return <button key={chain.name} type="button" draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(`${chain.name}产业链`, members.map((quote) => `${quote.name} ${formatPercent(quote.changePct)}`)))} onClick={() => members[0] && onRoute({ kind: 'theme', sector: members[0].sector })}><i><Network size={15} /></i><span><strong>{chain.name}</strong><em>{members.map((quote) => quote.name).join(' · ') || '等待真实行情'}</em></span><ChevronRight size={14} /></button>;
+          return <button key={chain.name} type="button" draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(`${chain.name}产业链`, members.map((quote) => `${quote.name} ${formatPercent(quote.changePct)}`)))} onClick={() => members[0] && onRoute({ kind: 'theme', sector: members[0].sector })}><i><Network size={15} /></i><span><strong>{chain.name}</strong><em>{members.map((quote) => quote.name).join(' · ') || '等待行情'}</em></span><ChevronRight size={14} /></button>;
         })}</div>
       </section>
 
@@ -379,7 +411,7 @@ function MarketHome({ quotes, indexQuotes, state, loading, onRoute }: { quotes: 
       </section>
 
       <section className="market-card" aria-label="活跃股票">
-        <SectionHeading title="活跃股票" meta={`${quotes.length} 只真实行情`} onOpen={() => onRoute({ kind: 'list', list: 'all' })} />
+        <SectionHeading title="活跃股票" meta={`${quotes.length} 只${sampleMode ? '样例行情' : '云端行情'}`} onOpen={() => onRoute({ kind: 'list', list: 'all' })} />
         <div className="market-preview-list">{hot.slice(0, 5).map((quote) => <StockRow key={quote.code} quote={quote} watched={state.watchlist.includes(quote.code)} metric={formatMoney(quoteTurnover(quote))} onOpen={() => onRoute({ kind: 'stock', code: quote.code })} />)}</div>
       </section>
     </div>
@@ -398,9 +430,14 @@ function WatchlistHome({ state, quotes, onRoute }: { state: ResearchState; quote
     const source = quotes.filter((quote) => selectedCodes.has(quote.code));
     return [...source].sort((a, b) => quoteTurnover(b) - quoteTurnover(a));
   }, [holdingCodes, quotes, scope, watchedCodes]);
+  const quoteMap = useMemo(() => new Map(quotes.map((quote) => [quote.code, quote])), [quotes]);
+  const accountSummary = useMemo(() => researchAccountSummary(state, quoteMap), [quoteMap, state]);
   const visibleQuotes = useMemo(() => orderedQuotes.slice(0, visibleCount), [orderedQuotes, visibleCount]);
   const rising = orderedQuotes.filter((quote) => quote.changePct > 0).length;
   const falling = orderedQuotes.filter((quote) => quote.changePct < 0).length;
+  const groupDragPrompt = scope === 'holdings' ? accountPrompt(state, accountSummary) : watchlistPrompt(orderedQuotes);
+  const groupDragLabel = scope === 'holdings' ? '整组持仓' : '整组自选';
+  const canDragGroup = orderedQuotes.length > 0;
 
   useEffect(() => { setVisibleCount(PAGE_SIZE); }, [scope]);
   useEffect(() => {
@@ -428,7 +465,19 @@ function WatchlistHome({ state, quotes, onRoute }: { state: ResearchState; quote
         <span><em>下跌</em><strong className="down">{falling}</strong></span>
         <button type="button" onClick={() => onRoute({ kind: 'search' })}><Search size={14} />搜索 / 添加</button>
       </section>
-      <section className="market-card market-watchlist-card">
+      <section
+        className="market-card market-watchlist-card"
+        aria-label={groupDragLabel}
+        draggable={canDragGroup}
+        title={canDragGroup ? `拖动空白区域，将${groupDragLabel}交给对话` : undefined}
+        onDragStart={canDragGroup ? (event) => startResearchDrag(event, groupDragPrompt) : undefined}
+      >
+        {canDragGroup && (
+          <div className="market-watchlist-drag-hint" aria-hidden="true">
+            <GripVertical size={12} />
+            <span>拖动此处，将{groupDragLabel}交给对话</span>
+          </div>
+        )}
         <div className="market-watchlist-columns"><span>名称 / 代码</span><span>走势</span><span>价格</span><span>涨跌幅</span></div>
         {visibleQuotes.length ? (
           <div className="market-preview-list">{visibleQuotes.map((quote) => (
@@ -506,9 +555,192 @@ function SearchPage({ quotes, state, onStock, onToggle }: { quotes: ResearchQuot
   return <div className="market-secondary-page"><div className="market-search-box"><Search size={16} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="股票名称、代码或行业" /></div><div className="market-preview-list">{result.map((quote) => <StockRow key={quote.code} quote={quote} watched={state.watchlist.includes(quote.code)} onOpen={() => onStock(quote.code)} onWatch={() => onToggle(quote)} showChevron={false} />)}</div></div>;
 }
 
+type CapitalFlowPeriod = 'intraday' | 'day' | 'week' | 'month';
+
+function formatCapitalAmount(value: number | null, signed = false): string {
+  if (value === null || !Number.isFinite(value)) return '—';
+  const sign = signed && value > 0 ? '+' : '';
+  return `${sign}${formatMoney(value)}`;
+}
+
+function capitalBucketTotal(buckets: JqCapitalFlowBucket[], field: 'inflow' | 'outflow'): number | null {
+  const values = buckets.map((bucket) => bucket[field]).filter((value): value is number => value !== null);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function flowGroupKey(time: string, period: Exclude<CapitalFlowPeriod, 'intraday' | 'day'>): string {
+  const day = time.slice(0, 10);
+  const date = new Date(`${day}T12:00:00`);
+  if (!Number.isFinite(date.getTime())) return day;
+  if (period === 'month') return day.slice(0, 7);
+  const offset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function capitalFlowSeries(snapshot: JqCapitalFlowSnapshot, period: CapitalFlowPeriod): Array<{ label: string; value: number }> {
+  if (period === 'intraday') {
+    const latestDay = snapshot.intraday[snapshot.intraday.length - 1]?.time.slice(0, 10) ?? '';
+    let cumulative = 0;
+    return snapshot.intraday
+      .filter((point) => point.time.startsWith(latestDay) && point.mainNet !== null)
+      .map((point) => {
+        cumulative += point.mainNet ?? 0;
+        return { label: point.time.slice(11, 16) || point.time.slice(5, 10), value: cumulative };
+      });
+  }
+  const daily = snapshot.daily
+    .filter((point): point is JqCapitalFlowPoint & { mainNet: number } => point.mainNet !== null);
+  if (period === 'day') return daily.slice(-20).map((point) => ({ label: point.time.slice(5, 10), value: point.mainNet }));
+  const grouped = new Map<string, number>();
+  daily.forEach((point) => {
+    const key = flowGroupKey(point.time, period);
+    grouped.set(key, (grouped.get(key) ?? 0) + point.mainNet);
+  });
+  return Array.from(grouped, ([label, value]) => ({ label: period === 'month' ? label.slice(2) : label.slice(5), value })).slice(-12);
+}
+
+function CapitalFlowChart({ snapshot, period }: { snapshot: JqCapitalFlowSnapshot; period: CapitalFlowPeriod }) {
+  const gradientId = useId().replace(/:/g, '');
+  const points = capitalFlowSeries(snapshot, period);
+  if (points.length < 2) {
+    return <div className="stock-capital-chart-empty"><BarChart3 size={20} /><span>{period === 'intraday' ? '当前权限没有返回分钟资金流' : '资金流记录不足，暂时无法绘制趋势'}</span></div>;
+  }
+  const width = 320;
+  const height = 124;
+  const padX = 8;
+  const padY = 13;
+  const maxAbs = Math.max(...points.map((point) => Math.abs(point.value)), 1);
+  const zeroY = height / 2;
+  const plotted = points.map((point, index) => ({
+    x: padX + (index / (points.length - 1)) * (width - padX * 2),
+    y: zeroY - (point.value / maxAbs) * (height / 2 - padY),
+    ...point,
+  }));
+  const line = plotted.map((point, index) => `${index ? 'L' : 'M'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ');
+  const area = `${line} L ${plotted[plotted.length - 1]?.x ?? width - padX} ${zeroY} L ${plotted[0]?.x ?? padX} ${zeroY} Z`;
+  const latest = points[points.length - 1]?.value ?? 0;
+  return <div className="stock-capital-chart" aria-label={`资金流向${period}图`}>
+    <div className="stock-capital-chart-value"><span>区间末值</span><strong className={changeTone(latest)}>{formatCapitalAmount(latest, true)}</strong></div>
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img">
+      <defs><linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--market-accent)" stopOpacity="0.28" /><stop offset="100%" stopColor="var(--market-accent)" stopOpacity="0.02" /></linearGradient></defs>
+      <line x1={padX} x2={width - padX} y1={zeroY} y2={zeroY} className="stock-capital-zero" />
+      <path d={area} fill={`url(#${gradientId})`} />
+      <path d={line} className="stock-capital-line" />
+    </svg>
+    <div className="stock-capital-chart-axis"><span>{points[0]?.label}</span><span>{points[points.length - 1]?.label}</span></div>
+  </div>;
+}
+
+function capitalDistributionGradient(buckets: JqCapitalFlowBucket[]): string {
+  const entries = buckets.flatMap((bucket, index) => [
+    { value: bucket.inflow ?? 0, color: [`#9f1830`, `#e72c4d`, `#f45f78`, `#fa8da0`][index] },
+    { value: bucket.outflow ?? 0, color: [`#167655`, `#06aa6b`, `#08c98a`, `#10d5a1`][index] },
+  ]).filter((entry) => entry.value > 0);
+  if (!entries.length) {
+    buckets.forEach((bucket, index) => {
+      if (bucket.net === null || bucket.net === 0) return;
+      entries.push({
+        value: Math.abs(bucket.net),
+        color: bucket.net > 0
+          ? [`#9f1830`, `#e72c4d`, `#f45f78`, `#fa8da0`][index]
+          : [`#167655`, `#06aa6b`, `#08c98a`, `#10d5a1`][index],
+      });
+    });
+  }
+  const total = entries.reduce((sum, entry) => sum + entry.value, 0);
+  if (!total) return 'conic-gradient(var(--border) 0 100%)';
+  let cursor = 0;
+  const stops = entries.map((entry) => {
+    const start = cursor;
+    cursor += (entry.value / total) * 100;
+    return `${entry.color} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`;
+  });
+  return `conic-gradient(${stops.join(', ')})`;
+}
+
+function capitalFlowAgentPrompt(
+  quote: ResearchQuote,
+  snapshot: JqCapitalFlowSnapshot | null,
+  holding?: { quantity: number; avgCost: number; pnlPct: number },
+): string {
+  const recent = snapshot?.daily.slice(-10) ?? [];
+  const latest = recent[recent.length - 1];
+  const fiveDay = recent.slice(-5).reduce((sum, point) => sum + (point.mainNet ?? 0), 0);
+  const distribution = latest?.buckets.map((bucket) => `${bucket.label}净额 ${formatCapitalAmount(bucket.net, true)}`).join('，');
+  return [
+    `请研判 ${quote.name}（${quote.code}）的大额资金是否仍在场，并帮助我复核持有风险。`,
+    `行情快照：现价 ${quote.price.toFixed(2)}，今日涨跌 ${formatPercent(quote.changePct)}，换手率 ${quote.turnoverRate === undefined ? '未知' : formatPercent(quote.turnoverRate)}，量比 ${quote.volumeRatio?.toFixed(2) ?? '未知'}。`,
+    snapshot
+      ? `资金数据：${snapshot.sourceLabel}；最新时点 ${latest?.time || '无'}；最新主力净额 ${formatCapitalAmount(latest?.mainNet ?? null, true)}；近5日主力净额合计 ${formatCapitalAmount(fiveDay, true)}；${distribution || '分单数据不足'}。`
+      : '资金数据：当前页面未取得 JQData 资金流，请先说明数据不足，并尝试在可用工具中核验。',
+    holding ? `我的持仓：${holding.quantity} 股，成本 ${holding.avgCost.toFixed(2)}，当前持仓收益率 ${formatPercent(holding.pnlPct)}。` : '我尚未在工作台登记该股持仓。',
+    '请把“主力”严格定义为大额成交资金的统计代理，不得把大单直接等同于可识别的机构或庄家。',
+    '结论只使用：资金仍在 / 分歧中 / 疑似撤退 / 证据不足。请给出数据时点、核心证据、与价格/成交/换手是否背离、反证条件、下一次复核时点。',
+    '不要得出“主力在就可以放心持有”的结论。若评估仍在，也必须列出失效条件和仓位风险；若评估撤退，给出可观察、可执行的减仓或退出触发，而不是情绪化地建议立刻逃跑。',
+  ].join('\n');
+}
+
+function StockCapitalPanel({ quote, holding }: { quote: ResearchQuote; holding?: { quantity: number; avgCost: number; pnlPct: number } }) {
+  const [snapshot, setSnapshot] = useState<JqCapitalFlowSnapshot | null>(null);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'unavailable'>('loading');
+  const [period, setPeriod] = useState<CapitalFlowPeriod>('day');
+  const requestId = useRef(0);
+
+  const load = useCallback(async () => {
+    const id = ++requestId.current;
+    setStatus('loading');
+    setSnapshot(null);
+    const result = await fetchJqCapitalFlow(quote.code);
+    if (id !== requestId.current) return;
+    setSnapshot(result);
+    setStatus(result ? 'ready' : 'unavailable');
+    setPeriod(result?.intraday.length ? 'intraday' : 'day');
+  }, [quote.code]);
+
+  useEffect(() => { void load(); return () => { requestId.current += 1; }; }, [load]);
+
+  const latest = snapshot?.daily[snapshot.daily.length - 1] ?? snapshot?.intraday[snapshot.intraday.length - 1];
+  const totalIn = latest ? capitalBucketTotal(latest.buckets, 'inflow') : null;
+  const totalOut = latest ? capitalBucketTotal(latest.buckets, 'outflow') : null;
+  const maxBucket = Math.max(...(latest?.buckets.flatMap((bucket) => [bucket.inflow ?? 0, bucket.outflow ?? 0, Math.abs(bucket.net ?? 0)]) ?? [1]), 1);
+  const hasGrossDistribution = totalIn !== null && totalOut !== null;
+
+  return <div className="stock-capital-sections">
+    <section className="market-card stock-capital-overview">
+      <header className="market-section-heading"><span><strong>资金分布</strong><em>{snapshot?.sourceLabel ?? 'JQData'}</em></span><button type="button" onClick={() => void load()} disabled={status === 'loading'} aria-label="刷新资金流">{status === 'loading' ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />}刷新</button></header>
+      {status === 'loading' ? <div className="stock-capital-loading"><Loader2 size={18} className="spin" /><span>正在读取资金流…</span></div> : latest ? <>
+        <div className="stock-capital-summary">
+          <div className="stock-capital-donut" style={{ backgroundImage: capitalDistributionGradient(latest.buckets) }}><span><em>主力净额</em><strong className={changeTone(latest.mainNet ?? 0)}>{formatCapitalAmount(latest.mainNet, true)}</strong></span></div>
+          <dl><div><dt>{hasGrossDistribution ? '流入' : '近一日口径'}</dt><dd className="up">{hasGrossDistribution ? formatCapitalAmount(totalIn) : '净额分布'}</dd></div><div><dt>{hasGrossDistribution ? '流出' : '数据日期'}</dt><dd className={hasGrossDistribution ? 'down' : ''}>{hasGrossDistribution ? formatCapitalAmount(totalOut) : latest.time.slice(0, 10)}</dd></div></dl>
+        </div>
+        <div className={`stock-capital-buckets ${hasGrossDistribution ? '' : 'net-only'}`}>
+          {latest.buckets.map((bucket) => <div key={bucket.key}>
+            {hasGrossDistribution ? <><span className="stock-capital-bar inflow"><b style={{ width: `${((bucket.inflow ?? 0) / maxBucket) * 100}%` }} /></span><em>{formatCapitalAmount(bucket.inflow)}</em><strong>{bucket.label}</strong><em>{formatCapitalAmount(bucket.outflow)}</em><span className="stock-capital-bar outflow"><b style={{ width: `${((bucket.outflow ?? 0) / maxBucket) * 100}%` }} /></span></> : <><strong>{bucket.label}</strong><span className={`stock-capital-net ${changeTone(bucket.net ?? 0)}`}><b style={{ width: `${(Math.abs(bucket.net ?? 0) / maxBucket) * 100}%` }} /></span><em className={changeTone(bucket.net ?? 0)}>{formatCapitalAmount(bucket.net, true)}</em></>}
+          </div>)}
+        </div>
+        {!hasGrossDistribution && <p className="stock-capital-note"><Info size={12} />基础版只能获取各档净额；流入/流出双边分布需要 JQData 资金流因子 Pro。</p>}
+      </> : <div className="stock-capital-empty"><Database size={20} /><strong>资金流暂不可用</strong><span>{status === 'unavailable' ? '请在桌面版设置中启用 JQData；浏览器预览不会用样例数据冒充真实资金流。' : snapshot?.warnings[0] || '当前账号或日期没有返回资金流记录。'}</span></div>}
+    </section>
+
+    <section className="market-card stock-capital-trend">
+      <header className="market-section-heading"><span><strong>资金流向</strong><em>{snapshot?.daily.length ? `${snapshot.daily.length} 个交易日` : '等待数据'}</em></span></header>
+      <div className="stock-capital-periods" role="tablist" aria-label="资金流向周期">{([['intraday', '分时'], ['day', '日'], ['week', '周'], ['month', '月']] as const).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={period === id} onClick={() => setPeriod(id)}>{label}</button>)}</div>
+      {snapshot ? <CapitalFlowChart snapshot={snapshot} period={period} /> : <div className="stock-capital-chart-empty"><BarChart3 size={20} /><span>连接 JQData 后展示资金流向</span></div>}
+      {snapshot?.warnings.length ? <p className="stock-capital-note"><Info size={12} />{snapshot.warnings[0]}</p> : null}
+    </section>
+
+    <section className="market-card stock-capital-ai">
+      <span><Sparkles size={16} /><span><strong>AI 主力去留研判</strong><em>结合大额资金、价格、换手与持仓成本，输出证据和失效条件</em></span></span>
+      <button type="button" className="market-agent-action" onClick={() => insertIntoComposer(capitalFlowAgentPrompt(quote, snapshot, holding))}><Sparkles size={15} />进入对话分析“主力是否还在”</button>
+      <p>大额成交只能作为资金行为代理，不能识别真实席位；“资金仍在”也不等于可以无条件持有。</p>
+    </section>
+  </div>;
+}
+
 function StockPage({ quote, quotes, state, summary, onToggle, onTrade, onStock }: { quote: ResearchQuote | null; quotes: ResearchQuote[]; state: ResearchState; summary: ReturnType<typeof researchAccountSummary>; onToggle: (quote: ResearchQuote) => void; onTrade: (side: ResearchOrderSide, quote: ResearchQuote) => void; onStock: (code: string) => void }) {
   const [tab, setTab] = useState<'quote' | 'position' | 'capital' | 'research'>('quote');
-  if (!quote) return <EmptyState title="股票行情不可用" detail="当前真实行情池未返回该标的，请稍后刷新。" />;
+  if (!quote) return <EmptyState title="股票行情不可用" detail="当前行情池未返回该标的，请稍后刷新。" />;
   const peers = quotes.filter((item) => item.sector === quote.sector && item.code !== quote.code).sort((a, b) => quoteTurnover(b) - quoteTurnover(a)).slice(0, 5);
   const range = quote.high > quote.low ? ((quote.price - quote.low) / (quote.high - quote.low)) * 100 : 50;
   const holding = summary.holdings.find((item) => item.code === quote.code);
@@ -525,7 +757,7 @@ function StockPage({ quote, quotes, state, summary, onToggle, onTrade, onStock }
       <button type="button" role="tab" aria-selected={tab === 'capital'} onClick={() => setTab('capital')}>资金</button>
       <button type="button" role="tab" aria-selected={tab === 'research'} onClick={() => setTab('research')}>研究</button>
     </div>
-    {tab === 'quote' && <><StockKlineChart quote={quote} /><section className="market-card"><SectionHeading title="日内行情" meta="真实快照" /><div className="stock-range"><span>最低 {quote.low.toFixed(2)}</span><i><b style={{ left: `${Math.max(0, Math.min(100, range))}%` }} /></i><span>最高 {quote.high.toFixed(2)}</span></div><div className="stock-metric-grid"><span><em>今开</em><strong>{quote.open?.toFixed(2) ?? '—'}</strong></span><span><em>昨收</em><strong>{quote.prevClose.toFixed(2)}</strong></span><span><em>成交额</em><strong>{formatMoney(quoteTurnover(quote))}</strong></span><span><em>换手率</em><strong>{quote.turnoverRate === undefined ? '—' : formatPercent(quote.turnoverRate)}</strong></span><span><em>量比</em><strong>{quote.volumeRatio?.toFixed(2) ?? '—'}</strong></span><span><em>总市值</em><strong>{formatMoney(quote.marketCap * 100_000_000)}</strong></span></div></section><section className="market-card"><SectionHeading title="同行业" meta={quote.sector} /><div className="market-preview-list">{peers.map((peer) => <StockRow key={peer.code} quote={peer} watched={state.watchlist.includes(peer.code)} onOpen={() => onStock(peer.code)} />)}</div></section></>}
+    {tab === 'quote' && <><StockKlineChart quote={quote} /><section className="market-card"><SectionHeading title="日内行情" meta={quote.source === 'sample' ? '内置样例' : '云端快照'} /><div className="stock-range"><span>最低 {quote.low.toFixed(2)}</span><i><b style={{ left: `${Math.max(0, Math.min(100, range))}%` }} /></i><span>最高 {quote.high.toFixed(2)}</span></div><div className="stock-metric-grid"><span><em>今开</em><strong>{quote.open?.toFixed(2) ?? '—'}</strong></span><span><em>昨收</em><strong>{quote.prevClose.toFixed(2)}</strong></span><span><em>成交额</em><strong>{formatMoney(quoteTurnover(quote))}</strong></span><span><em>换手率</em><strong>{quote.turnoverRate === undefined ? '—' : formatPercent(quote.turnoverRate)}</strong></span><span><em>量比</em><strong>{quote.volumeRatio?.toFixed(2) ?? '—'}</strong></span><span><em>总市值</em><strong>{formatMoney(quote.marketCap * 100_000_000)}</strong></span></div></section><section className="market-card"><SectionHeading title="同行业" meta={quote.sector} /><div className="market-preview-list">{peers.map((peer) => <StockRow key={peer.code} quote={peer} watched={state.watchlist.includes(peer.code)} onOpen={() => onStock(peer.code)} />)}</div></section></>}
     {tab === 'position' && (holding ? <section className="market-card stock-position-card" aria-label={`${quote.name}持仓信息`}>
       <header className="stock-position-heading"><span><i><BriefcaseBusiness size={15} /></i><span><strong>我的持仓</strong><em>本地实盘记录 · 建仓于 {openedLabel}</em></span></span><b>{holding.quantity.toLocaleString('zh-CN')} 股</b></header>
       <div className="stock-position-pnl">
@@ -543,14 +775,14 @@ function StockPage({ quote, quotes, state, summary, onToggle, onTrade, onStock }
       <p className="stock-position-note">盈亏按最新行情与摊薄成本估算，暂未计入佣金、税费和滑点。</p>
       <button type="button" className="market-agent-action" onClick={() => insertIntoComposer(holdingPrompt(holding))}><Sparkles size={15} />交给 Agent 分析持仓</button>
     </section> : <section className="market-card stock-position-card" aria-label={`${quote.name}持仓信息`}><EmptyState title="暂无该股票持仓" detail="录入实盘买入记录后，这里会自动计算市值、持仓盈亏、今日盈亏和仓位占比。" action="记录买入" onAction={() => onTrade('buy', quote)} /></section>)}
-    {tab === 'capital' && <section className="market-card"><SectionHeading title="资金与活跃度" meta="基于当前行情字段" /><div className="stock-metric-grid"><span><em>成交额</em><strong>{formatMoney(quoteTurnover(quote))}</strong></span><span><em>成交量</em><strong>{quote.volumeShares ? formatMoney(quote.volumeShares) : formatMoney(quote.volume * 1_000_000)}</strong></span><span><em>换手率</em><strong>{quote.turnoverRate === undefined ? '—' : formatPercent(quote.turnoverRate)}</strong></span><span><em>量比</em><strong>{quote.volumeRatio?.toFixed(2) ?? '—'}</strong></span></div><button type="button" className="market-agent-action" onClick={() => insertIntoComposer(securityPrompt(quote))}><Sparkles size={15} />交给 Agent 分析资金与量价</button></section>}
+    {tab === 'capital' && <><section className="market-card"><SectionHeading title="资金与活跃度" meta="实时行情快照" /><div className="stock-metric-grid stock-capital-metrics"><span><em>成交额</em><strong>{formatMoney(quoteTurnover(quote))}</strong></span><span><em>成交量</em><strong>{quote.volumeShares ? formatMoney(quote.volumeShares) : formatMoney(quote.volume * 1_000_000)}</strong></span><span><em>换手率</em><strong>{quote.turnoverRate === undefined ? '—' : formatPercent(quote.turnoverRate)}</strong></span><span><em>量比</em><strong>{quote.volumeRatio?.toFixed(2) ?? '—'}</strong></span></div></section><StockCapitalPanel quote={quote} holding={holding ? { quantity: holding.quantity, avgCost: holding.avgCost, pnlPct: holding.pnlPct } : undefined} /></>}
     {tab === 'research' && <section className="market-card"><SectionHeading title="公司研究" meta="事实与观点分开" /><div className="stock-thesis"><strong>研究起点</strong><p>{quote.thesis || '从财务、行业、估值、催化和风险五个维度建立研究。'}</p></div><div className="market-feature-list">{(['earnings', 'dividend', 'calendar'] as FeatureKind[]).map((kind) => <button key={kind} type="button" onClick={() => insertIntoComposer(`${FEATURE_META[kind].prompt}\n重点研究：${quote.name}（${quote.code}）。`)}><span><strong>{FEATURE_META[kind].title}</strong><em>围绕 {quote.name} 深入核验</em></span><ChevronRight size={14} /></button>)}</div></section>}
     <div className="stock-trade-bar"><button type="button" className="sell" onClick={() => onTrade('sell', quote)}>记录卖出</button><button type="button" className="buy" onClick={() => onTrade('buy', quote)}>记录买入</button></div>
   </div>;
 }
 
 function IndexPage({ index }: { index: ReturnType<typeof buildIndexQuotes>[number] | undefined }) {
-  if (!index) return <EmptyState title="指数行情不可用" detail="刷新真实行情后再查看指数详情。" />;
+  if (!index) return <EmptyState title="指数行情不可用" detail="刷新行情后再查看指数详情。" />;
   return <div className="market-secondary-page"><section className={`stock-quote-hero ${changeTone(index.changePct)}`} draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(index.name, [`点位 ${index.price.toFixed(2)}，涨跌幅 ${formatPercent(index.changePct)}。`]))}><header><span><strong>{index.name}</strong><em>{index.code}</em></span></header><div className={changeTone(index.changePct)}><strong>{index.price.toFixed(2)}</strong><span>{formatSignedMoney(index.changeAmt)}<br />{formatPercent(index.changePct)}</span></div><p>指数快照 · 点击返回不会改变市场首页滚动状态</p></section><section className="market-card"><SectionHeading title="指数研究" /><button type="button" className="market-agent-action" onClick={() => insertIntoComposer(marketPrompt(index.name, [`当前点位 ${index.price.toFixed(2)}，涨跌 ${formatPercent(index.changePct)}。`, '请结合市场宽度、成交额和领涨板块解释指数表现。']))}><Sparkles size={15} />交给 Agent 解读</button></section></div>;
 }
 
@@ -639,7 +871,8 @@ function EtfPage({ quotes, state, onStock }: { quotes: ResearchQuote[]; state: R
   }, [etfs, sort]);
   const meta = FEATURE_META.etf;
   return <div className="market-secondary-page">
-    <section className="market-feature-hero" draggable onDragStart={(event) => startResearchDrag(event, meta.prompt)}><i><BarChart3 size={20} /></i><span><em>{meta.eyebrow}</em><strong>{meta.title}</strong><p>A 股场内 ETF 实时行情，覆盖沪深交易所上市品种</p></span></section>
+    <section className="market-feature-hero" draggable onDragStart={(event) => startResearchDrag(event, meta.prompt)}><i><BarChart3 size={20} /></i><span><em>{meta.eyebrow}</em><strong>{meta.title}</strong><p>A 股场内 ETF 行情快照，覆盖宽基、行业、商品与债券品种</p></span></section>
+    {etfs.some((quote) => quote.source === 'sample') && <SampleDataNotice detail="云端 ETF 行情不可用时，以内置样例补全宽基、行业、商品与债券分类；价格仅用于界面演示。" />}
     <div className="market-list-filter" role="tablist" aria-label="ETF 排序">
       <button type="button" role="tab" aria-selected={sort === 'turnover'} className={sort === 'turnover' ? 'active' : ''} onClick={() => setSort('turnover')}>成交额</button>
       <button type="button" role="tab" aria-selected={sort === 'gainers'} className={sort === 'gainers' ? 'active' : ''} onClick={() => setSort('gainers')}>涨幅</button>
@@ -651,11 +884,300 @@ function EtfPage({ quotes, state, onStock }: { quotes: ResearchQuote[]; state: R
   </div>;
 }
 
-function FeaturePage({ kind, quotes, state, onStock }: { kind: FeatureKind; quotes: ResearchQuote[]; state: ResearchState; onStock: (code: string) => void }) {
-  const meta = FEATURE_META[kind]; const Icon = meta.icon;
-  const candidates = useMemo(() => { if (kind === 'dividend') return quotes.filter((quote) => quote.tags.includes('高股息')).slice(0, 12); if (kind === 'screener') return [...quotes].filter((quote) => quote.changePct > 0).sort((a, b) => quoteTurnover(b) - quoteTurnover(a)).slice(0, 12); return []; }, [kind, quotes]);
+function FeatureHero({ kind }: { kind: FeatureKind }) {
+  const meta = FEATURE_META[kind];
+  const Icon = meta.icon;
+  return (
+    <section className="market-feature-hero" draggable onDragStart={(event) => startResearchDrag(event, meta.prompt)}>
+      <i><Icon size={20} /></i>
+      <span><em>{meta.eyebrow}</em><strong>{meta.title}</strong><p>{meta.detail}</p></span>
+    </section>
+  );
+}
+
+function SampleDataNotice({ detail }: { detail: string }) {
+  return (
+    <p className="market-sample-notice" role="note">
+      <Info size={13} />
+      <span><strong>{RESEARCH_SAMPLE_DATA_LABEL}</strong>{detail}</span>
+    </p>
+  );
+}
+
+type ScreenerPreset = 'momentum' | 'liquidity' | 'defensive' | 'watchlist';
+
+const SCREENER_PRESETS: Array<{ id: ScreenerPreset; label: string }> = [
+  { id: 'momentum', label: '强势' },
+  { id: 'liquidity', label: '活跃' },
+  { id: 'defensive', label: '防御' },
+  { id: 'watchlist', label: '自选' },
+];
+
+function ScreenerPage({ quotes, state, onStock }: { quotes: ResearchQuote[]; state: ResearchState; onStock: (code: string) => void }) {
+  const [preset, setPreset] = useState<ScreenerPreset>('momentum');
+  const rows = useMemo(() => {
+    const list = [...quotes];
+    if (preset === 'watchlist') return list.filter((quote) => state.watchlist.includes(quote.code)).sort((a, b) => quoteTurnover(b) - quoteTurnover(a));
+    if (preset === 'defensive') return list.filter((quote) => quote.tags.some((tag) => ['高股息', '防御', '国有大行', '水电'].includes(tag))).sort((a, b) => b.marketCap - a.marketCap);
+    if (preset === 'liquidity') return list.sort((a, b) => quoteTurnover(b) - quoteTurnover(a));
+    return list.filter((quote) => quote.changePct > 0).sort((a, b) => b.changePct - a.changePct);
+  }, [preset, quotes, state.watchlist]);
+  const topSector = computeSectorHeat(rows)[0]?.sector ?? '—';
+  const avgChange = rows.length ? rows.reduce((sum, quote) => sum + quote.changePct, 0) / rows.length : 0;
+
+  return <div className="market-secondary-page">
+    <FeatureHero kind="screener" />
+    {quotes.some((quote) => quote.source === 'sample') && <SampleDataNotice detail="筛选逻辑可直接体验；样例行情会在云端快照可用后自动被真实行情覆盖。" />}
+    <div className="market-feature-tabs" role="tablist" aria-label="选股条件">
+      {SCREENER_PRESETS.map((item) => <button key={item.id} type="button" role="tab" aria-selected={preset === item.id} onClick={() => setPreset(item.id)}>{item.label}</button>)}
+    </div>
+    <section className="market-feature-metrics" aria-label="筛选概览">
+      <span><em>入选</em><strong>{rows.length}</strong></span>
+      <span><em>平均涨跌</em><strong className={changeTone(avgChange)}>{formatPercent(avgChange)}</strong></span>
+      <span><em>领先行业</em><strong>{topSector}</strong></span>
+    </section>
+    <section className="market-card">
+      <SectionHeading title="筛选结果" meta={`${rows.length} 只 · 可下钻`} />
+      {rows.length ? <div className="market-preview-list">{rows.slice(0, 40).map((quote) => <StockRow key={quote.code} quote={quote} watched={state.watchlist.includes(quote.code)} metric={preset === 'liquidity' ? formatMoney(quoteTurnover(quote)) : preset === 'defensive' ? quote.tags.find((tag) => ['高股息', '防御', '国有大行', '水电'].includes(tag)) : quote.sector} onOpen={() => onStock(quote.code)} />)}</div> : <EmptyState title="当前条件没有结果" detail="切换筛选条件，或先在搜索页添加自选股票。" />}
+    </section>
+    <button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(`${FEATURE_META.screener.prompt}\n当前条件：${SCREENER_PRESETS.find((item) => item.id === preset)?.label}，入选 ${rows.length} 只。`)}><Sparkles size={15} />交给 Agent 继续研究</button>
+  </div>;
+}
+
+function IpoPage() {
+  const [stage, setStage] = useState<'all' | '询价' | '申购' | '上市'>('all');
+  const rows = RESEARCH_IPO_ITEMS.filter((item) => stage === 'all' || item.stage === stage);
+  return <div className="market-secondary-page">
+    <FeatureHero kind="ipo" />
+    <SampleDataNotice detail="下列公司、日期与估值仅用于展示发行研究结构，不代表真实发行公告。" />
+    <section className="market-feature-metrics" aria-label="发行概览">
+      <span><em>近期项目</em><strong>{RESEARCH_IPO_ITEMS.length}</strong></span>
+      <span><em>待申购</em><strong>{RESEARCH_IPO_ITEMS.filter((item) => item.stage === '申购').length}</strong></span>
+      <span><em>即将上市</em><strong>{RESEARCH_IPO_ITEMS.filter((item) => item.stage === '上市').length}</strong></span>
+    </section>
+    <div className="market-feature-tabs" role="tablist" aria-label="新股阶段">
+      {([['all', '全部'], ['询价', '询价'], ['申购', '申购'], ['上市', '上市']] as const).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={stage === id} onClick={() => setStage(id)}>{label}</button>)}
+    </div>
+    <section className="market-card">
+      <SectionHeading title="发行进度" meta={`${rows.length} 项`} />
+      <div className="market-event-list">{rows.map((item) => <article key={item.id} draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(`${item.name}新股研究`, [`${item.board} ${item.industry}，阶段 ${item.stage}。`, `发行价 ${item.issuePrice}，发行市盈率 ${item.issuePe}，行业可比 ${item.comparablePe}。`, item.note]))}>
+        <time><strong>{researchSampleDateLabel(item.dateOffset)}</strong><em>{researchSampleDate(item.dateOffset).slice(5)}</em></time>
+        <span><header><strong>{item.name}</strong><b>{item.stage}</b></header><em>{item.code} · {item.board} · {item.industry}</em><p>{item.note}</p><dl><div><dt>发行价</dt><dd>{item.issuePrice}</dd></div><div><dt>发行 PE</dt><dd>{item.issuePe}</dd></div><div><dt>可比 PE</dt><dd>{item.comparablePe}</dd></div></dl></span>
+      </article>)}</div>
+    </section>
+    <button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(FEATURE_META.ipo.prompt)}><Sparkles size={15} />核验真实发行数据</button>
+  </div>;
+}
+
+function EarningsPage({ quotes, state, onStock }: { quotes: ResearchQuote[]; state: ResearchState; onStock: (code: string) => void }) {
+  const [scope, setScope] = useState<'all' | 'watchlist'>('all');
+  const rows = RESEARCH_EARNINGS_ITEMS.filter((item) => scope === 'all' || state.watchlist.includes(item.code));
+  const quoteMap = useMemo(() => new Map(quotes.map((quote) => [quote.code, quote])), [quotes]);
+  return <div className="market-secondary-page">
+    <FeatureHero kind="earnings" />
+    <SampleDataNotice detail="披露窗口和一致预期为演示字段；正式研究前请让 Agent 核验交易所公告与最新预期。" />
+    <div className="market-feature-tabs" role="tablist" aria-label="财报范围">
+      <button type="button" role="tab" aria-selected={scope === 'all'} onClick={() => setScope('all')}>全部重点</button>
+      <button type="button" role="tab" aria-selected={scope === 'watchlist'} onClick={() => setScope('watchlist')}>我的自选</button>
+    </div>
+    <section className="market-card">
+      <SectionHeading title="未来披露窗口" meta={`${rows.length} 家`} />
+      <div className="market-earnings-list">{rows.map((item) => {
+        const quote = quoteMap.get(item.code);
+        return <button key={item.code} type="button" disabled={!quote} onClick={() => quote && onStock(item.code)} draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(`${quote?.name ?? item.code}${item.report}`, [`预计收入增速 ${item.revenueGrowth}，利润增速 ${item.profitGrowth}。`, `关注：${item.focus}。`]))}>
+          <time><strong>{researchSampleDateLabel(item.dateOffset)}</strong><em>{item.window}</em></time>
+          <span><strong>{quote?.name ?? item.code}</strong><em>{item.report} · 一致预期 {item.consensus}</em><p>{item.focus}</p></span>
+          <dl><div><dt>收入</dt><dd>{item.revenueGrowth}</dd></div><div><dt>利润</dt><dd>{item.profitGrowth}</dd></div></dl>
+          <ChevronRight size={13} />
+        </button>;
+      })}</div>
+      {!rows.length && <EmptyState title="自选中暂无近期财报样例" detail="切换到全部重点，或把财报窗口内标的加入自选。" />}
+    </section>
+    <button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(FEATURE_META.earnings.prompt)}><Sparkles size={15} />核验最新财报日历</button>
+  </div>;
+}
+
+function MacroPage() {
+  return <div className="market-secondary-page">
+    <FeatureHero kind="macro" />
+    <SampleDataNotice detail="数值用于展示宏观仪表盘的信息结构，不是当期统计数据。" />
+    <section className="market-macro-grid" aria-label="宏观指标看板">{RESEARCH_MACRO_INDICATORS.map((item) => <article key={item.id} className={item.tone} draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(item.name, [`${item.period}数值 ${item.value}，前值 ${item.previous}，预期 ${item.consensus}。`, item.interpretation]))}>
+      <header><span>{item.name}</span><em>{item.period}</em></header>
+      <strong>{item.value}</strong>
+      <dl><div><dt>前值</dt><dd>{item.previous}</dd></div><div><dt>预期</dt><dd>{item.consensus}</dd></div></dl>
+      <p>{item.interpretation}</p>
+    </article>)}</section>
+    <section className="market-card">
+      <SectionHeading title="传导线索" meta="从数据到行业" />
+      <div className="market-feature-list">
+        <button type="button" onClick={() => insertIntoComposer('请分析制造业 PMI、新订单与价格分项对设备、原材料和出口链的传导。')}><i><TrendingUp size={15} /></i><span><strong>制造与价格</strong><em>设备更新 · 原材料 · 出口链</em></span><ChevronRight size={14} /></button>
+        <button type="button" onClick={() => insertIntoComposer('请拆解社融、企业中长贷和居民融资，判断银行、地产及顺周期行业的潜在影响。')}><i><Landmark size={15} /></i><span><strong>信用与流动性</strong><em>银行 · 地产 · 顺周期</em></span><ChevronRight size={14} /></button>
+      </div>
+    </section>
+    <button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(FEATURE_META.macro.prompt)}><Sparkles size={15} />核验最新宏观数据</button>
+  </div>;
+}
+
+function DividendPage({ quotes, onStock }: { quotes: ResearchQuote[]; onStock: (code: string) => void }) {
+  const quoteMap = useMemo(() => new Map(quotes.map((quote) => [quote.code, quote])), [quotes]);
+  const rows = RESEARCH_DIVIDEND_ITEMS.map((item) => ({ ...item, quote: quoteMap.get(item.code) })).filter((item) => item.quote);
+  const medianYield = rows.length ? [...rows].sort((a, b) => a.indicatedYield - b.indicatedYield)[Math.floor(rows.length / 2)].indicatedYield : 0;
+  return <div className="market-secondary-page">
+    <FeatureHero kind="dividend" />
+    <SampleDataNotice detail="股息率、分红比例和除息日为结构化样例，不构成收益承诺；正式使用前需核验最新方案。" />
+    <section className="market-feature-metrics" aria-label="股息池概览">
+      <span><em>观察池</em><strong>{rows.length}</strong></span>
+      <span><em>样例中位股息率</em><strong>{rows.length ? `${medianYield.toFixed(1)}%` : '—'}</strong></span>
+      <span><em>高稳定性</em><strong>{rows.filter((item) => item.stability === '高').length}</strong></span>
+    </section>
+    <section className="market-card">
+      <SectionHeading title="高股息观察池" meta="收益与稳定性并看" />
+      <div className="market-dividend-list">{rows.map((item) => <button key={item.code} type="button" onClick={() => onStock(item.code)} draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(`${item.quote!.name}分红研究`, [`指示股息率 ${item.indicatedYield.toFixed(1)}%，分红比例 ${item.payoutRatio}%，连续分红 ${item.consecutiveYears} 年。`, item.note]))}>
+        <span><strong>{item.quote!.name}</strong><em>{shortCode(item.code)} · {item.quote!.sector}</em><p>{item.note}</p></span>
+        <dl><div><dt>股息率</dt><dd>{item.indicatedYield.toFixed(1)}%</dd></div><div><dt>分红率</dt><dd>{item.payoutRatio}%</dd></div><div><dt>连续</dt><dd>{item.consecutiveYears}年</dd></div></dl>
+        <b className={`stability-${item.stability === '高' ? 'high' : item.stability === '中' ? 'mid' : 'watch'}`}>{item.stability}</b><ChevronRight size={13} />
+      </button>)}</div>
+    </section>
+    <button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(FEATURE_META.dividend.prompt)}><Sparkles size={15} />核验最新分红方案</button>
+  </div>;
+}
+
+function CalendarPage({ quotes, onStock }: { quotes: ResearchQuote[]; onStock: (code: string) => void }) {
+  const [category, setCategory] = useState<'all' | ResearchCalendarCategory>('all');
+  const rows = RESEARCH_CALENDAR_ITEMS.filter((item) => category === 'all' || item.category === category);
+  const quoteMap = useMemo(() => new Map(quotes.map((quote) => [quote.code, quote])), [quotes]);
+  return <div className="market-secondary-page">
+    <FeatureHero kind="calendar" />
+    <SampleDataNotice detail="事件为未来两周日历样例，用于展示分类、重要度、关联标的和研究入口。" />
+    <div className="market-feature-tabs" role="tablist" aria-label="财经日历分类">
+      {(['all', '宏观', '政策', '行业', '公司'] as const).map((item) => <button key={item} type="button" role="tab" aria-selected={category === item} onClick={() => setCategory(item)}>{item === 'all' ? '全部' : item}</button>)}
+    </div>
+    <section className="market-card">
+      <SectionHeading title="未来两周" meta={`${rows.length} 个事件`} />
+      <div className="market-calendar-list">{rows.map((item) => <article key={item.id} draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(item.title, [`${researchSampleDate(item.dateOffset)} ${item.time}，分类 ${item.category}。`, item.detail]))}>
+        <time><strong>{researchSampleDateLabel(item.dateOffset)}</strong><em>{item.time}</em></time>
+        <span><header><b>{item.category}</b><i aria-label={`${item.importance} 星重要度`}>{Array.from({ length: 3 }, (_, index) => <span key={index} className={index < item.importance ? 'active' : ''} />)}</i></header><strong>{item.title}</strong><p>{item.detail}</p>{item.relatedCodes.length > 0 && <div>{item.relatedCodes.map((code) => { const quote = quoteMap.get(code); return quote ? <button key={code} type="button" onClick={() => onStock(code)}>{quote.name}</button> : null; })}</div>}</span>
+      </article>)}</div>
+    </section>
+    <button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(FEATURE_META.calendar.prompt)}><Sparkles size={15} />核验真实财经日历</button>
+  </div>;
+}
+
+interface PortfolioDraft {
+  id: string | null;
+  name: string;
+  note: string;
+  codes: string[];
+}
+
+const EMPTY_PORTFOLIO_DRAFT: PortfolioDraft = { id: null, name: '', note: '', codes: [] };
+
+function PortfolioPage({ quotes, state, onStock, onCommit }: { quotes: ResearchQuote[]; state: ResearchState; onStock: (code: string) => void; onCommit: (state: ResearchState) => void }) {
+  const [draft, setDraft] = useState<PortfolioDraft | null>(null);
+  const [query, setQuery] = useState('');
+  const [error, setError] = useState('');
+  const quoteMap = useMemo(() => new Map(quotes.map((quote) => [quote.code, quote])), [quotes]);
+  const priorityCodes = useMemo(() => new Set([
+    ...(draft?.codes ?? []),
+    ...state.watchlist,
+    ...state.holdings.map((holding) => holding.code),
+  ]), [draft?.codes, state.holdings, state.watchlist]);
+  const candidates = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase('zh-CN');
+    return quotes
+      .filter((quote) => !needle
+        || quote.name.toLocaleLowerCase('zh-CN').includes(needle)
+        || quote.code.toLocaleLowerCase('zh-CN').includes(needle)
+        || shortCode(quote.code).includes(needle))
+      .sort((left, right) => Number(priorityCodes.has(right.code)) - Number(priorityCodes.has(left.code)) || right.changePct - left.changePct)
+      .slice(0, 16);
+  }, [priorityCodes, query, quotes]);
+
+  const beginCreate = () => {
+    setDraft({ ...EMPTY_PORTFOLIO_DRAFT });
+    setQuery('');
+    setError('');
+  };
+  const beginEdit = (portfolio: ResearchPortfolio) => {
+    setDraft({ id: portfolio.id, name: portfolio.name, note: portfolio.note, codes: [...portfolio.codes] });
+    setQuery('');
+    setError('');
+  };
+  const closeEditor = () => {
+    setDraft(null);
+    setQuery('');
+    setError('');
+  };
+  const toggleDraftCode = (code: string) => {
+    setDraft((current) => current ? {
+      ...current,
+      codes: current.codes.includes(code) ? current.codes.filter((item) => item !== code) : [...current.codes, code],
+    } : current);
+    setError('');
+  };
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!draft) return;
+    const result = draft.id
+      ? updatePortfolio(state, draft.id, draft.name, draft.codes, draft.note)
+      : createPortfolio(state, draft.name, draft.codes, draft.note);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    onCommit(result.state);
+    closeEditor();
+  };
+  const remove = (portfolio: ResearchPortfolio) => {
+    if (!window.confirm(`删除股票组合「${portfolio.name}」？\n\n仅删除该观察组，不会影响自选、持仓和交易记录。`)) return;
+    onCommit(deletePortfolio(state, portfolio.id));
+    if (draft?.id === portfolio.id) closeEditor();
+  };
+
+  return <div className="market-secondary-page">
+    <section className="market-feature-hero" draggable onDragStart={(event) => startResearchDrag(event, FEATURE_META.portfolio.prompt)}><i><BriefcaseBusiness size={20} /></i><span><em>{FEATURE_META.portfolio.eyebrow}</em><strong>{FEATURE_META.portfolio.title}</strong><p>维护观察组成分，为组合复盘、暴露与风险分析提供上下文</p></span></section>
+    {draft && <section className="market-card market-portfolio-editor" aria-label={draft.id ? '编辑股票组合' : '新建股票组合'}>
+      <SectionHeading title={draft.id ? '编辑组合' : '新建组合'} meta="名称、备注和成分均可修改" />
+      <form onSubmit={submit}>
+        <label>组合名称<input value={draft.name} onChange={(event) => { setDraft({ ...draft, name: event.target.value }); setError(''); }} placeholder="例如：AI 算力观察" autoFocus /></label>
+        <label>组合备注<textarea value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} placeholder="记录主线逻辑、观察条件或风险" rows={2} /></label>
+        <div className="market-portfolio-selected">
+          <span>已选成分 <em>{draft.codes.length} 只</em></span>
+          {draft.codes.length ? <div>{draft.codes.map((code) => <button key={code} type="button" onClick={() => toggleDraftCode(code)} aria-label={`移出${quoteMap.get(code)?.name ?? code}`}><span>{quoteMap.get(code)?.name ?? shortCode(code)}</span><Trash2 size={11} /></button>)}</div> : <p>请从下方搜索并选择至少一只股票。</p>}
+        </div>
+        <label className="market-portfolio-search">搜索成分<span><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="股票名称或代码" /></span></label>
+        <div className="market-portfolio-candidates" aria-label="可选股票">
+          {candidates.map((quote) => {
+            const selected = draft.codes.includes(quote.code);
+            return <button key={quote.code} type="button" className={selected ? 'selected' : ''} aria-pressed={selected} aria-label={selected ? `移出${quote.name}` : `添加${quote.name}`} onClick={() => toggleDraftCode(quote.code)}><span><strong>{quote.name}</strong><em>{shortCode(quote.code)} · {quote.sector}</em></span><b>{selected ? '已选' : '添加'}</b></button>;
+          })}
+          {!candidates.length && <p>没有找到匹配的股票。</p>}
+        </div>
+        {error && <p className="market-portfolio-error" role="alert">{error}</p>}
+        <footer><button type="button" onClick={closeEditor}>取消</button><button type="submit" className="primary">{draft.id ? '保存修改' : '创建组合'}</button></footer>
+      </form>
+    </section>}
+    <section className="market-card">
+      <header className="market-section-heading"><span><strong>观察组合</strong><em>{state.portfolios.length} 个 · 本地保存</em></span><button type="button" onClick={beginCreate} disabled={draft !== null}><Plus size={13} />新建组合</button></header>
+      {state.portfolios.length ? <div className="market-portfolio-list">{state.portfolios.map((portfolio) => <article key={portfolio.id} draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(portfolio.name, [`成分：${portfolio.codes.join('、')}。`, portfolio.note]))}>
+        <header><span><strong>{portfolio.name}</strong><em>{portfolio.codes.length} 只成分</em></span><div className="market-portfolio-card-actions"><button type="button" onClick={() => beginEdit(portfolio)} disabled={draft !== null} aria-label={`编辑组合${portfolio.name}`}><Pencil size={12} />编辑</button><button type="button" className="danger" onClick={() => remove(portfolio)} aria-label={`删除组合${portfolio.name}`}><Trash2 size={12} />删除</button></div></header>
+        <p>{portfolio.note || '暂无备注'}</p>
+        <div className="market-portfolio-members">{portfolio.codes.map((code) => { const quote = quoteMap.get(code); return <button key={code} type="button" onClick={() => onStock(code)} disabled={!quote} title={quote ? '查看股票详情' : '当前行情池暂无该标的'}>{quote?.name ?? shortCode(code)}</button>; })}</div>
+      </article>)}</div> : <EmptyState title="暂无股票组合" detail="新建观察组合后，可按主题维护成分并交给 Agent 做组合复盘。" action="新建组合" onAction={beginCreate} />}
+    </section>
+    <button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(FEATURE_META.portfolio.prompt)}><Sparkles size={15} />交给 Agent 继续研究</button>
+  </div>;
+}
+
+function FeaturePage({ kind, quotes, state, onStock, onCommit }: { kind: FeatureKind; quotes: ResearchQuote[]; state: ResearchState; onStock: (code: string) => void; onCommit: (state: ResearchState) => void }) {
   if (kind === 'etf') return <EtfPage quotes={quotes} state={state} onStock={onStock} />;
-  return <div className="market-secondary-page"><section className="market-feature-hero" draggable onDragStart={(event) => startResearchDrag(event, meta.prompt)}><i><Icon size={20} /></i><span><em>{meta.eyebrow}</em><strong>{meta.title}</strong><p>{meta.detail}</p></span></section>{kind === 'portfolio' ? <section className="market-card"><SectionHeading title="观察组合" meta={`${state.portfolios.length} 个`} /><div className="market-portfolio-list">{state.portfolios.map((portfolio) => <article key={portfolio.id} draggable onDragStart={(event) => startResearchDrag(event, marketPrompt(portfolio.name, [`成分：${portfolio.codes.join('、')}。`, portfolio.note]))}><header><strong>{portfolio.name}</strong><em>{portfolio.codes.length} 只</em></header><p>{portfolio.note || '暂无备注'}</p><div>{portfolio.codes.map((code) => { const quote = quotes.find((item) => item.code === code); return quote ? <button key={code} type="button" onClick={() => onStock(code)}>{quote.name}</button> : null; })}</div></article>)}</div></section> : candidates.length ? <section className="market-card"><SectionHeading title={kind === 'dividend' ? '高股息观察池' : '筛选结果'} meta="需继续核验" /><div className="market-preview-list">{candidates.map((quote) => <StockRow key={quote.code} quote={quote} watched={state.watchlist.includes(quote.code)} onOpen={() => onStock(quote.code)} />)}</div></section> : <section className="market-card"><div className="market-feature-guidance"><Database size={20} /><strong>进入数据核验流程</strong><p>该页面不展示伪造日历或预测值。点击下方按钮，把当前研究目标交给 Agent，通过已授权数据源或公开资料核验。</p></div></section>}<button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(meta.prompt)}><Sparkles size={15} />交给 Agent 继续研究</button></div>;
+  if (kind === 'portfolio') return <PortfolioPage quotes={quotes} state={state} onStock={onStock} onCommit={onCommit} />;
+  if (kind === 'screener') return <ScreenerPage quotes={quotes} state={state} onStock={onStock} />;
+  if (kind === 'ipo') return <IpoPage />;
+  if (kind === 'earnings') return <EarningsPage quotes={quotes} state={state} onStock={onStock} />;
+  if (kind === 'macro') return <MacroPage />;
+  if (kind === 'dividend') return <DividendPage quotes={quotes} onStock={onStock} />;
+  return <CalendarPage quotes={quotes} onStock={onStock} />;
 }
 
 export function ResearchWorkbenchPanel() {
@@ -665,7 +1187,7 @@ export function ResearchWorkbenchPanel() {
   const [quotes, setQuotes] = useState<ResearchQuote[]>([]);
   const [overrides, setOverrides] = useState<Map<string, LivePriceOverride>>(new Map());
   const [refreshing, setRefreshing] = useState(false);
-  const [status, setStatus] = useState('等待行情');
+  const [status, setStatus] = useState('内置样例 · 连接云端中');
   const [tradePrefill, setTradePrefill] = useState<TradePrefill | null>(null);
   const stateRef = useRef(state); stateRef.current = state;
   const refreshingRef = useRef(false);
@@ -674,7 +1196,7 @@ export function ResearchWorkbenchPanel() {
 
   const commit = useCallback((next: ResearchState) => {
     setState(next); saveResearchState(next);
-    scheduleLocalStoreCommit('research', { research: next, audit: { domain: 'research', action: 'state.persist', payload: { holdings: next.holdings.length, watchlist: next.watchlist.length, trades: next.trades.length } } });
+    scheduleLocalStoreCommit('research', { research: next, audit: { domain: 'research', action: 'state.persist', payload: { holdings: next.holdings.length, watchlist: next.watchlist.length, portfolios: next.portfolios.length, trades: next.trades.length } } });
   }, []);
 
   useEffect(() => {
@@ -708,9 +1230,11 @@ export function ResearchWorkbenchPanel() {
       market.quotes.forEach((quote) => nextOverrides.set(quote.code, quoteOverride(quote)));
       setQuotes(market.quotes); setOverrides(nextOverrides);
       const label = market.asOfLabel ?? realtime.asOfLabel ?? new Date().toLocaleTimeString('zh-CN', { hour12: false });
-      setStatus(market.quotes.length || realtime.prices.size ? `${market.cached || realtime.cached ? '云端缓存' : '云端实时'} ${label}` : '行情不可用');
+      setStatus(market.quotes.length || realtime.prices.size ? `${market.cached || realtime.cached ? '云端缓存' : '云端实时'} ${label}` : '内置样例 · 云端暂不可用');
     } catch {
-      setStatus('行情不可用');
+      setQuotes([]);
+      setOverrides(new Map());
+      setStatus('内置样例 · 云端暂不可用');
     } finally {
       refreshingRef.current = false; setRefreshing(false);
     }
@@ -722,13 +1246,23 @@ export function ResearchWorkbenchPanel() {
     setQuotes(update.quotes);
     setOverrides(update.prices);
     setStatus(`${update.cached ? '云端缓存' : '云端推送'} ${update.asOfLabel ?? ''}`.trim());
-  }, () => setStatus('云端广播重连中')), []);
+  }, () => setStatus((current) => current.includes('内置样例') ? current : '云端广播重连中')), []);
 
   const catalogMap = useMemo(() => buildQuoteMap(state, overrides), [state, overrides]);
-  const quoteMap = useMemo(() => { const map = new Map<string, ResearchQuote>(); quotes.forEach((quote) => map.set(quote.code, quote)); catalogMap.forEach((quote, code) => { if (quote.source !== 'sample' && !map.has(code)) map.set(code, quote); }); return map; }, [catalogMap, quotes]);
+  const quoteMap = useMemo(() => {
+    const map = new Map<string, ResearchQuote>();
+    const hasLiveFeed = quotes.length > 0 || Array.from(catalogMap.values()).some((quote) => quote.source !== 'sample');
+    if (!hasLiveFeed) catalogMap.forEach((quote, code) => map.set(code, quote));
+    quotes.forEach((quote) => map.set(quote.code, quote));
+    catalogMap.forEach((quote, code) => { if (quote.source !== 'sample' && !map.has(code)) map.set(code, quote); });
+    return map;
+  }, [catalogMap, quotes]);
   const universe = useMemo(() => Array.from(quoteMap.values()), [quoteMap]);
   const stockUniverse = useMemo(() => universe.filter((quote) => !isEtfQuote(quote)), [universe]);
-  const indexQuotes = useMemo(() => buildIndexQuotes(overrides).filter((index) => index.source !== 'sample'), [overrides]);
+  const indexQuotes = useMemo(() => {
+    const rows = buildIndexQuotes(overrides);
+    return rows.some((index) => index.source !== 'sample') ? rows.filter((index) => index.source !== 'sample') : rows;
+  }, [overrides]);
   const summary = useMemo(() => researchAccountSummary(state, quoteMap), [quoteMap, state]);
 
   useEffect(() => {
@@ -761,7 +1295,7 @@ export function ResearchWorkbenchPanel() {
     if (route.kind === 'heat') return <HeatMapPage quotes={stockUniverse} onTheme={(sector) => push({ kind: 'theme', sector })} />;
     if (route.kind === 'themes') return <ThemesPage quotes={stockUniverse} onTheme={(sector) => push({ kind: 'theme', sector })} />;
     if (route.kind === 'theme') return <ThemePage sector={route.sector} quotes={stockUniverse} state={state} onStock={openStock} onToggle={toggleQuote} />;
-    if (route.kind === 'feature') return <FeaturePage kind={route.feature} quotes={route.feature === 'etf' ? universe : stockUniverse} state={state} onStock={openStock} />;
+    if (route.kind === 'feature') return <FeaturePage kind={route.feature} quotes={route.feature === 'etf' ? universe : stockUniverse} state={state} onStock={openStock} onCommit={commit} />;
     if (primary === 'watchlist') return <WatchlistHome state={state} quotes={universe} onRoute={push} />;
     if (primary === 'trade') return <TradeHome quotes={universe} state={state} initial={tradePrefill} onCommit={commit} onRoute={push} />;
     if (primary === 'assets') return <AssetsHome state={state} summary={summary} quoteMap={quoteMap} onRoute={push} />;

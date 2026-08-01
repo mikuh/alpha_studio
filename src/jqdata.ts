@@ -772,6 +772,146 @@ export interface JqMoneyFlowSummary {
   fiveDayMainNetAmount: number | null;
 }
 
+export type JqCapitalFlowBucketKey = 'xl' | 'l' | 'm' | 's';
+
+export interface JqCapitalFlowBucket {
+  key: JqCapitalFlowBucketKey;
+  label: '超大单' | '大单' | '中单' | '小单';
+  /** Amounts are normalized to yuan. Basic get_money_flow amounts arrive in ten-thousand yuan. */
+  inflow: number | null;
+  outflow: number | null;
+  net: number | null;
+  netPct: number | null;
+}
+
+export interface JqCapitalFlowPoint {
+  time: string;
+  mainNet: number | null;
+  mainNetPct: number | null;
+  changePct: number | null;
+  buckets: JqCapitalFlowBucket[];
+}
+
+export interface JqCapitalFlowSnapshot {
+  code: string;
+  daily: JqCapitalFlowPoint[];
+  intraday: JqCapitalFlowPoint[];
+  source: 'pro' | 'basic' | 'none';
+  sourceLabel: string;
+  warnings: string[];
+}
+
+const CAPITAL_FLOW_BUCKETS: ReadonlyArray<Pick<JqCapitalFlowBucket, 'key' | 'label'>> = [
+  { key: 'xl', label: '超大单' },
+  { key: 'l', label: '大单' },
+  { key: 'm', label: '中单' },
+  { key: 's', label: '小单' },
+];
+
+function nullableRowNumber(row: Record<string, unknown>, ...keys: string[]): number | null {
+  return finiteOrNull(rowNumber(row, ...keys));
+}
+
+/**
+ * Normalize the two JQData money-flow schemas into one yuan-denominated model.
+ * get_money_flow reports net_amount_* in ten-thousand yuan, while
+ * get_money_flow_pro reports inflow/outflow/netflow_* in yuan.
+ */
+export function parseJqCapitalFlowRows(
+  rows: Record<string, unknown>[],
+  schema: 'basic' | 'pro',
+): JqCapitalFlowPoint[] {
+  const multiplier = schema === 'basic' ? 10_000 : 1;
+  return rows.map((row) => {
+    const buckets = CAPITAL_FLOW_BUCKETS.map(({ key, label }) => {
+      const inflowRaw = nullableRowNumber(row, `inflow_${key}`, `inflow ${key}`);
+      const outflowRaw = nullableRowNumber(row, `outflow_${key}`, `outflow ${key}`);
+      const netRaw = schema === 'basic'
+        ? nullableRowNumber(row, `net_amount_${key}`, `net amount ${key}`)
+        : nullableRowNumber(row, `netflow_${key}`, `netflow ${key}`, `net_amount_${key}`);
+      const derivedNet = netRaw ?? (
+        inflowRaw !== null && outflowRaw !== null ? inflowRaw - outflowRaw : null
+      );
+      return {
+        key,
+        label,
+        inflow: inflowRaw === null ? null : inflowRaw * multiplier,
+        outflow: outflowRaw === null ? null : outflowRaw * multiplier,
+        net: derivedNet === null ? null : derivedNet * multiplier,
+        netPct: nullableRowNumber(row, `net_pct_${key}`, `net pct ${key}`),
+      } satisfies JqCapitalFlowBucket;
+    });
+    const explicitMain = nullableRowNumber(row, 'net_amount_main', 'net amount main', 'netAmountMain');
+    const derivedMain = [buckets[0]?.net, buckets[1]?.net]
+      .filter((value): value is number => value !== null && value !== undefined)
+      .reduce((sum, value) => sum + value, 0);
+    const hasDerivedMain = buckets.slice(0, 2).some((bucket) => bucket.net !== null);
+    return {
+      time: rowString(row, 'time', 'date', 'day'),
+      mainNet: explicitMain === null
+        ? (hasDerivedMain ? derivedMain : null)
+        : explicitMain * multiplier,
+      mainNetPct: nullableRowNumber(row, 'net_pct_main', 'net pct main', 'netPctMain'),
+      changePct: nullableRowNumber(row, 'change_pct', 'change pct', 'changePct'),
+      buckets,
+    } satisfies JqCapitalFlowPoint;
+  }).filter((point) => point.time && (
+    point.mainNet !== null || point.buckets.some((bucket) => bucket.net !== null || bucket.inflow !== null || bucket.outflow !== null)
+  )).sort((a, b) => a.time.localeCompare(b.time));
+}
+
+const CAPITAL_FLOW_PRO_FIELDS = [
+  'inflow_xl', 'inflow_l', 'inflow_m', 'inflow_s',
+  'outflow_xl', 'outflow_l', 'outflow_m', 'outflow_s',
+  'netflow_xl', 'netflow_l', 'netflow_m', 'netflow_s',
+] as const;
+
+export async function fetchJqCapitalFlow(code: string): Promise<JqCapitalFlowSnapshot | null> {
+  if (!isTauriRuntime()) return null;
+  const end = todayStamp();
+  const [basicResult, proDailyResult, proMinuteResult] = await Promise.all([
+    jqDataQuery('get_money_flow', { code, date: offsetDateStamp(-120), end_date: end }),
+    jqDataQuery('get_money_flow_pro', {
+      code,
+      end_date: end,
+      count: 40,
+      frequency: 'daily',
+      fields: CAPITAL_FLOW_PRO_FIELDS,
+      data_type: 'money',
+    }),
+    jqDataQuery('get_money_flow_pro', {
+      code,
+      end_date: `${end} 15:00:00`,
+      count: 240,
+      frequency: '1m',
+      fields: CAPITAL_FLOW_PRO_FIELDS,
+      data_type: 'money',
+    }),
+  ]);
+
+  const basicDaily = basicResult.ok ? parseJqCapitalFlowRows(basicResult.rows ?? [], 'basic') : [];
+  const proDaily = proDailyResult.ok ? parseJqCapitalFlowRows(proDailyResult.rows ?? [], 'pro') : [];
+  const intraday = proMinuteResult.ok ? parseJqCapitalFlowRows(proMinuteResult.rows ?? [], 'pro') : [];
+  const daily = proDaily.length ? proDaily : basicDaily;
+  const source = proDaily.length || intraday.length ? 'pro' : basicDaily.length ? 'basic' : 'none';
+  const warnings: string[] = [];
+  if (!daily.length) warnings.push(basicResult.message || proDailyResult.message || '近段时间暂无日级资金流记录。');
+  if (!intraday.length) warnings.push('分钟资金流需要 JQData 资金流因子 Pro 权限；当前仅展示可用的盘后日级数据。');
+
+  return {
+    code,
+    daily,
+    intraday,
+    source,
+    sourceLabel: source === 'pro'
+      ? 'JQData 资金流因子 Pro'
+      : source === 'basic'
+        ? 'JQData 交易统计 · 盘后约 20:00'
+        : 'JQData 暂无可用资金流',
+    warnings: Array.from(new Set(warnings.filter(Boolean))),
+  };
+}
+
 export interface JqMtssSummary {
   rows: number;
   latestDate: string;
