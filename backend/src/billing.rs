@@ -26,16 +26,53 @@ pub struct UsageCharge {
     pub billable_yuan: f64,
 }
 
+impl GatewayUsage {
+    pub fn is_empty(&self) -> bool {
+        self.input_tokens == 0
+            && self.output_tokens == 0
+            && self.reasoning_tokens == 0
+            && self.cached_tokens == 0
+    }
+}
+
+impl Pricing {
+    pub fn is_valid(&self) -> bool {
+        [
+            self.input_yuan_per_million,
+            self.output_yuan_per_million,
+            self.reasoning_yuan_per_million,
+            self.cached_input_yuan_per_million,
+        ]
+        .into_iter()
+        .all(|price| price.is_finite() && price >= 0.0)
+            && self.input_yuan_per_million > 0.0
+            && self.output_yuan_per_million > 0.0
+            && self.markup_bps <= 100_000
+    }
+}
+
 pub fn settle_usage_yuan(usage: &GatewayUsage, pricing: &Pricing) -> UsageCharge {
     let cost_yuan = yuan_for_tokens(usage.input_tokens, pricing.input_yuan_per_million)
         + yuan_for_tokens(usage.output_tokens, pricing.output_yuan_per_million)
         + yuan_for_tokens(usage.reasoning_tokens, pricing.reasoning_yuan_per_million)
         + yuan_for_tokens(usage.cached_tokens, pricing.cached_input_yuan_per_million);
-    let billable_yuan = cost_yuan * ((10_000 + pricing.markup_bps) as f64) / 10_000.0;
+    // Always round charges upward to one micro-yuan. Rounding to nearest at this
+    // boundary leaks a small amount on every low-token request.
+    let cost_yuan = round_up_micro_yuan(cost_yuan);
+    let multiplier_bps = 10_000_u64.saturating_add(pricing.markup_bps);
+    let billable_yuan =
+        round_up_micro_yuan(cost_yuan * (multiplier_bps as f64) / 10_000.0).max(cost_yuan);
     UsageCharge {
         cost_yuan,
         billable_yuan,
     }
+}
+
+fn round_up_micro_yuan(value: f64) -> f64 {
+    if !value.is_finite() || value <= 0.0 {
+        return 0.0;
+    }
+    (value * 1_000_000.0).ceil() / 1_000_000.0
 }
 
 fn yuan_for_tokens(tokens: u64, yuan_per_million: f64) -> f64 {

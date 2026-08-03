@@ -43,3 +43,38 @@ fn settles_fractional_gateway_prices() {
     assert_eq!(charge.cost_yuan, 1.54);
     assert_eq!(charge.billable_yuan, 1.54);
 }
+
+#[test]
+fn rounds_tiny_charges_up_instead_of_leaking_fractional_cost() {
+    let usage = GatewayUsage {
+        input_tokens: 1,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        cached_tokens: 0,
+    };
+    let pricing = Pricing {
+        input_yuan_per_million: 0.01,
+        output_yuan_per_million: 1.0,
+        reasoning_yuan_per_million: 0.0,
+        cached_input_yuan_per_million: 0.0,
+        markup_bps: 0,
+    };
+
+    let charge = settle_usage_yuan(&usage, &pricing);
+
+    assert_eq!(charge.cost_yuan, 0.000001);
+    assert_eq!(charge.billable_yuan, 0.000001);
+}
+
+#[test]
+fn rejects_incomplete_or_loss_making_pricing() {
+    let pricing = Pricing {
+        input_yuan_per_million: 1.0,
+        output_yuan_per_million: 0.0,
+        reasoning_yuan_per_million: 0.0,
+        cached_input_yuan_per_million: 0.0,
+        markup_bps: 0,
+    };
+
+    assert!(!pricing.is_valid());
+}

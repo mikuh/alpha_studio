@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 
 pub const CLIENT_DEVICE_LEASE_DAYS: i32 = 5;
 
@@ -12,6 +13,12 @@ pub fn normalize_company_name(value: &str) -> String {
 
 pub fn normalize_authorization_code(value: &str) -> String {
     value.trim().replace(' ', "").to_uppercase()
+}
+
+pub fn hash_authorization_code(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(normalize_authorization_code(value).as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 pub fn can_activate_device(

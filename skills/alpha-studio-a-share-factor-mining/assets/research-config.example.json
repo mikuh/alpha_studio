@@ -1,0 +1,158 @@
+{
+  "schema_version": "alpha.quant_factor_research.v1",
+  "research": {
+    "research_id": "cn-a-bounded-factor-mining-v1",
+    "hypothesis": "A股价格趋势、短期反转、低波动、估值、质量、规模与换手特征中，可能存在经过行业和市值控制后仍能预测未来5个交易日横截面收益的互补信号",
+    "falsifiable_prediction": "预先限定的候选空间中至少一个去冗余单因子或组合，在验证集通过覆盖、方向稳定性、RankIC和成本后组合门槛，并在冻结后的最终样本外区间保持同向证据",
+    "invalidation_rules": [
+      "使用下一可交易时点成交后预测方向反转",
+      "行业和市值中性化后信号完全消失",
+      "最终样本外RankIC方向与预期相反",
+      "成本上调压力测试后组合净收益为负"
+    ]
+  },
+  "data": {
+    "input_csv": "data/a_share_daily_panel.csv",
+    "dataset_id": "replace-with-immutable-point-in-time-snapshot-id",
+    "point_in_time": true,
+    "columns": {
+      "date": "date",
+      "instrument": "instrument",
+      "signal_price": "close",
+      "fill_price": "close",
+      "tradable": "tradable",
+      "industry": "industry",
+      "market_cap": "float_market_cap"
+    }
+  },
+  "universe": {
+    "market": "CN_A",
+    "universe_id": "replace-with-historical-universe-snapshot-id",
+    "historical_membership": true,
+    "include_delisted": true,
+    "filters": [
+      "exclude ST at decision time",
+      "exclude suspension or non-executable price limit at fill time",
+      "apply board and security trading rules by trade date"
+    ]
+  },
+  "timing": {
+    "signal_time": "after_close_t",
+    "fill_time": "close_t_plus_1",
+    "entry_lag": 1,
+    "holding_period": 5,
+    "rebalance_every": 1
+  },
+  "splits": {
+    "discovery": {"start": "2015-01-01", "end": "2020-12-31"},
+    "validation": {"start": "2021-01-01", "end": "2023-12-31"},
+    "final_holdout": {"start": "2024-01-01", "end": "2025-12-31"}
+  },
+  "preprocessing": {
+    "winsorize": "mad",
+    "mad_multiplier": 5.0,
+    "standardize": "zscore",
+    "neutralize": ["industry", "log_market_cap"]
+  },
+  "factors": [
+    {
+      "name": "earnings_yield",
+      "kind": "earnings_yield",
+      "source_column": "pe_ttm",
+      "sign": 1,
+      "description": "正盈利公司的市盈率倒数"
+    },
+    {
+      "name": "quality_roe",
+      "kind": "roe",
+      "source_column": "roe_ttm",
+      "sign": 1,
+      "description": "按公告可得时间拼接的滚动ROE"
+    },
+    {
+      "name": "small_size",
+      "kind": "small_size",
+      "source_column": "float_market_cap",
+      "sign": 1,
+      "description": "负对数流通市值"
+    }
+  ],
+  "mining": {
+    "enabled": true,
+    "candidate_templates": [
+      {
+        "kind": "momentum",
+        "name_prefix": "momentum",
+        "lookbacks": [5, 10, 20, 60, 120],
+        "signs": [1],
+        "description": "预先限定窗口的价格动量网格"
+      },
+      {
+        "kind": "reversal",
+        "name_prefix": "reversal",
+        "lookbacks": [3, 5, 10],
+        "signs": [1],
+        "description": "预先限定窗口的短期反转网格"
+      },
+      {
+        "kind": "low_volatility",
+        "name_prefix": "low_volatility",
+        "lookbacks": [10, 20, 60],
+        "signs": [1]
+      },
+      {
+        "kind": "turnover_mean",
+        "name_prefix": "turnover_mean",
+        "source_column": "turnover_rate",
+        "lookbacks": [5, 20, 60],
+        "signs": [-1, 1]
+      },
+      {
+        "kind": "turnover_change",
+        "name_prefix": "turnover_change",
+        "source_column": "turnover_rate",
+        "window_pairs": [
+          {"short_window": 5, "long_window": 20},
+          {"short_window": 10, "long_window": 60}
+        ],
+        "signs": [-1, 1]
+      }
+    ],
+    "max_factor_candidates": 40,
+    "top_single_factors": 8,
+    "top_combinations": 5,
+    "combination_pool_size": 8,
+    "combination_sizes": [2, 3],
+    "weight_schemes": ["equal", "validation_ic"],
+    "require_combination_increment": true,
+    "max_combination_candidates": 100,
+    "max_pair_correlation": 0.75,
+    "selection": {
+      "min_validation_rank_ic_days": 60,
+      "min_validation_coverage": 0.7,
+      "min_validation_rank_ic": 0.0,
+      "min_validation_net_sharpe": null,
+      "require_discovery_validation_same_sign": true,
+      "metric_weights": {
+        "rank_ic": 0.25,
+        "rank_ic_ir": 0.15,
+        "rank_ic_positive_ratio": 0.1,
+        "net_sharpe": 0.2,
+        "max_drawdown": 0.1,
+        "turnover": 0.1,
+        "stability": 0.1
+      }
+    }
+  },
+  "evaluation": {
+    "quantiles": 5,
+    "min_cross_section": 20,
+    "cost_bps": 12.0,
+    "annualization": 252
+  },
+  "guardrails": {
+    "record_all_trials": true,
+    "final_holdout_single_use": true,
+    "allow_same_close_fill": false
+  }
+}

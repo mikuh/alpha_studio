@@ -102,8 +102,8 @@ const authorizationCodes = [
     id: 'auth_alpha',
     tenantId: 'tenant_alpha',
     tenantName: 'Alpha Fund',
-    authorizationCode: 'ALPHA-CODE-1234',
     codeHint: 'ALP****1234',
+    revealable: true,
     maxDevices: 3,
     status: 'active',
     expiresAt: null,
@@ -128,6 +128,25 @@ const codexAccounts = [
     status: 'active',
     seatLimit: 1,
     expiresAt: null,
+  },
+];
+
+const skillReleases = [
+  {
+    id: 'skillrel_alpha',
+    version: '1.2.3',
+    channel: 'stable',
+    status: 'archived',
+    minClientVersion: '0.1.0',
+    releaseNotes: 'fixture',
+    codecVersion: 1,
+    skillCount: 2,
+    encodedFileCount: 4,
+    manifestSummary: { skills: [{ skillName: 'alpha-studio-one' }, { skillName: 'alpha-studio-two' }] },
+    artifactSha256: 'a'.repeat(64),
+    artifactSize: 1024,
+    createdAt: '2026-07-01T00:00:00Z',
+    publishedAt: '2026-07-02T00:00:00Z',
   },
 ];
 
@@ -240,6 +259,21 @@ describe('admin model gateway', () => {
     ));
   });
 
+  it('can republish an archived protected Skill release as a rollback', async () => {
+    await import('./main');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Skills 发行' }));
+    await screen.findByText('1.2.3');
+    fireEvent.click(screen.getByRole('button', { name: '回滚到此版本' }));
+    const dialog = await screen.findByRole('dialog', { name: '回滚 Skill 版本' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认回滚' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/admin/skill-releases/skillrel_alpha/publish',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+  });
+
   it('assigns one GPT account to multiple customers', async () => {
     currentTenants = [tenants[0], betaTenant];
     await import('./main');
@@ -264,7 +298,7 @@ describe('admin model gateway', () => {
     await import('./main');
 
     fireEvent.click(await screen.findByRole('button', { name: '客户' }));
-    await screen.findByText('ALPHA-CODE-1234');
+    await screen.findByText('ALP****1234');
 
     fireEvent.click(screen.getByRole('button', { name: '撤销授权码' }));
     let dialog = await screen.findByRole('dialog', { name: '撤销授权码' });
@@ -284,6 +318,35 @@ describe('admin model gateway', () => {
       '/api/admin/authorization-codes/auth_alpha',
       expect.objectContaining({ method: 'DELETE' }),
     ));
+  });
+
+  it('reveals, copies, and hides an authorization code on demand', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    await import('./main');
+
+    fireEvent.click(await screen.findByRole('button', { name: '客户' }));
+    await screen.findByText('ALP****1234');
+    expect(screen.queryByText('ALPHA-CODE-1234')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '显示' }));
+    expect(await screen.findByText('ALPHA-CODE-1234')).toBeTruthy();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/admin/authorization-codes/auth_alpha/reveal',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ authorization: 'Bearer test-token' }),
+      }),
+    ));
+
+    fireEvent.click(screen.getByRole('button', { name: '复制' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('ALPHA-CODE-1234'));
+    fireEvent.click(screen.getByRole('button', { name: '隐藏' }));
+    await waitFor(() => expect(screen.queryByText('ALPHA-CODE-1234')).toBeNull());
+    expect(screen.getByText('ALP****1234')).toBeTruthy();
   });
 
   it('resets a stale authorization-code tenant before generating a code', async () => {
@@ -420,6 +483,9 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   }
   if (path === '/api/admin/authorization-codes' && method === 'POST') return jsonResponse({ authorizationCode: 'NEW-CODE-1234' });
   if (path === '/api/admin/authorization-codes') return jsonResponse({ authorizationCodes });
+  if (path === '/api/admin/authorization-codes/auth_alpha/reveal' && method === 'POST') {
+    return jsonResponse({ authorizationCode: 'ALPHA-CODE-1234' });
+  }
   if (path === '/api/admin/provider-configs') return jsonResponse({ providers });
   if (path === '/api/admin/provider-configs/discover-models') return jsonResponse({
     models: [
@@ -429,11 +495,13 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   });
   if (path === '/api/admin/model-routes') return jsonResponse({ models });
   if (path === '/api/admin/codex-accounts') return jsonResponse({ accounts: codexAccounts });
+  if (path === '/api/admin/skill-releases' && method === 'GET') return jsonResponse({ releases: skillReleases });
   if (path === '/api/admin/audit-logs') return jsonResponse({ logs: [] });
   if (
     path.startsWith('/api/admin/codex-accounts/') ||
     path.startsWith('/api/admin/authorization-codes/') ||
-    path.startsWith('/api/admin/tenants/')
+    path.startsWith('/api/admin/tenants/') ||
+    path.startsWith('/api/admin/skill-releases/')
   ) return jsonResponse({ ok: true });
   return new Response('not found', { status: 404 });
 }

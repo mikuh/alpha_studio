@@ -6,7 +6,8 @@ use sqlx::PgPool;
 use crate::{
     config::AppConfig,
     market::{MarketCapitalFlowHub, MarketDataHub},
-    tokens::RunTokenService,
+    secrets::AuthorizationCodeCipher,
+    tokens::{AdminTokenService, DeviceTokenService, RunTokenService},
 };
 
 #[derive(Clone)]
@@ -16,6 +17,9 @@ pub struct AppState {
     pub redis: Option<redis::Client>,
     pub http: Client,
     pub run_tokens: RunTokenService,
+    pub admin_tokens: AdminTokenService,
+    pub device_tokens: DeviceTokenService,
+    pub authorization_code_cipher: AuthorizationCodeCipher,
     pub market: MarketDataHub,
     pub capital_flow: MarketCapitalFlowHub,
 }
@@ -23,6 +27,10 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: AppConfig, db: PgPool, redis: Option<redis::Client>) -> Self {
         let run_tokens = RunTokenService::new(config.run_token_secret.clone());
+        let admin_tokens = AdminTokenService::new(config.jwt_secret.clone());
+        let device_tokens = DeviceTokenService::new(config.jwt_secret.clone());
+        let authorization_code_cipher =
+            AuthorizationCodeCipher::new(&config.authorization_code_encryption_key);
         let market =
             MarketDataHub::new(config.market_refresh_seconds, config.market_snapshot_limit);
         let capital_flow = MarketCapitalFlowHub::new(config.market_refresh_seconds);
@@ -32,6 +40,9 @@ impl AppState {
             redis,
             http: Client::new(),
             run_tokens,
+            admin_tokens,
+            device_tokens,
+            authorization_code_cipher,
             market,
             capital_flow,
         }

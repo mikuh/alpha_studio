@@ -254,7 +254,7 @@ function detectIntradayMonitorIntent(source: string): AutomationFormState | null
   if (!source.includes('盘中监控') || !/(创建|定时任务|每(?:隔)?\d+分钟)/.test(source)) return null;
   return {
     title: '盘中触发监控',
-    prompt: '使用 alpha-studio-intraday-monitor，基于今日最新研究报告和上一次监控结果，检查已到观察时点的触发条件、升级条件、降级条件和失效条件；仅报告状态变化、当前证据、研究动作与下一观察点。',
+    prompt: `使用 $${ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID}，基于今日最新研究报告和上一次监控结果，检查已到观察时点的触发条件、升级条件、降级条件和失效条件；仅报告状态变化、当前证据、研究动作与下一观察点。`,
     environment: '当前对话',
     project: '选择项目',
     schedule: extractSchedule(source) ?? '每 10 分钟',

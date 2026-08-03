@@ -27,6 +27,7 @@ export interface ClientUser {
 
 export interface ClientDevice {
   id: string;
+  accessToken: string;
   leaseExpiresAt: string;
 }
 
@@ -162,14 +163,7 @@ export function loadClientLicenseSession(): ClientLicenseSession | null {
   const raw = window.localStorage.getItem(SESSION_KEY);
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as ClientLicenseSession;
-    if (!parsed?.tenant?.id || !parsed?.device?.id || !parsed?.apiBaseUrl) return null;
-    return {
-      ...parsed,
-      apiBaseUrl: normalizeApiBaseUrl(parsed.apiBaseUrl),
-      models: Array.isArray(parsed.models) ? parsed.models : [],
-      codexAccounts: Array.isArray(parsed.codexAccounts) ? parsed.codexAccounts : [],
-    };
+    return normalizeClientLicenseSession(JSON.parse(raw));
   } catch {
     return null;
   }
@@ -214,24 +208,29 @@ export async function activateClient(input: ClientActivateInput): Promise<Client
       body: JSON.stringify(body),
     },
   );
-  const session: ClientLicenseSession = {
+  const session = normalizeClientLicenseSession({
     ...data,
     apiBaseUrl,
     activatedAt: Date.now(),
     lastValidatedAt: Date.now(),
-  };
+  });
+  if (!session) {
+    throw new Error('Alpha Studio 激活响应不完整，缺少有效的客户、用户或设备访问令牌。请确认客户端与后台版本一致。');
+  }
   saveClientLicenseSession(session);
   return session;
 }
 
 export async function renewClientLease(session: ClientLicenseSession): Promise<ClientLicenseSession> {
   const data = await alphaFetch<{
+    accessToken?: string;
     leaseExpiresAt: string;
     tenant?: ClientTenant;
     models?: ClientModel[];
     codexAccounts?: ClientCodexAccount[];
   }>(session.apiBaseUrl, '/api/devices/lease', {
     method: 'POST',
+    headers: deviceAuthorizationHeaders(session),
     body: JSON.stringify({
       tenantId: session.tenant.id,
       deviceId: session.device.id,
@@ -242,6 +241,7 @@ export async function renewClientLease(session: ClientLicenseSession): Promise<C
     lastValidatedAt: Date.now(),
     device: {
       ...session.device,
+      accessToken: data.accessToken || session.device.accessToken,
       leaseExpiresAt: data.leaseExpiresAt,
     },
     tenant: data.tenant ? { ...session.tenant, ...data.tenant } : session.tenant,
@@ -258,6 +258,7 @@ export async function validateCodexAuthorization(
 ): Promise<{ authorized: true; accountId: string; email: string }> {
   return alphaFetch(session.apiBaseUrl, '/api/client/codex-authorization', {
     method: 'POST',
+    headers: deviceAuthorizationHeaders(session),
     body: JSON.stringify({
       tenantId: session.tenant.id,
       deviceId: session.device.id,
@@ -299,6 +300,7 @@ export function enterpriseAuthorizationValidUntil(session: ClientLicenseSession)
 export async function fetchClientDevices(session: ClientLicenseSession): Promise<ClientDeviceSummary> {
   return alphaFetch<ClientDeviceSummary>(session.apiBaseUrl, '/api/client/devices', {
     method: 'POST',
+    headers: deviceAuthorizationHeaders(session),
     body: JSON.stringify({
       tenantId: session.tenant.id,
       deviceId: session.device.id,
@@ -313,6 +315,7 @@ export async function revokeClientDevice(
 ): Promise<ClientDeviceSummary> {
   return alphaFetch<ClientDeviceSummary>(session.apiBaseUrl, '/api/client/devices/revoke', {
     method: 'POST',
+    headers: deviceAuthorizationHeaders(session),
     body: JSON.stringify({
       tenantId: session.tenant.id,
       deviceId: session.device.id,
@@ -327,6 +330,7 @@ export async function createGatewayRun(modelId: string, budgetYuan = 5): Promise
   if (!session) throw new Error('Alpha Studio 客户端尚未激活。');
   const data = await alphaFetch<{ runId: string; runToken: string }>(session.apiBaseUrl, '/api/runs/create', {
     method: 'POST',
+    headers: deviceAuthorizationHeaders(session),
     body: JSON.stringify({
       tenantId: session.tenant.id,
       userId: session.user.id,
@@ -350,6 +354,7 @@ export async function fetchClientBillingSummary(
 ): Promise<ClientBillingSummary> {
   return alphaFetch<ClientBillingSummary>(session.apiBaseUrl, '/api/client/billing-summary', {
     method: 'POST',
+    headers: deviceAuthorizationHeaders(session),
     body: JSON.stringify({
       tenantId: session.tenant.id,
       deviceId: session.device.id,
@@ -357,6 +362,10 @@ export async function fetchClientBillingSummary(
       ledgerPageSize: ledger.pageSize ?? 8,
     }),
   }, { retryLoopback: true });
+}
+
+function deviceAuthorizationHeaders(session: ClientLicenseSession): HeadersInit {
+  return { authorization: `Bearer ${session.device.accessToken}` };
 }
 
 export function modelProfilesFromClientLicense(
@@ -450,6 +459,41 @@ export class AlphaApiError extends Error {
 
 export function isClientAuthorizationError(error: unknown): boolean {
   return error instanceof AlphaApiError && (error.status === 401 || error.status === 403);
+}
+
+function normalizeClientLicenseSession(value: unknown): ClientLicenseSession | null {
+  if (!value || typeof value !== 'object') return null;
+  const parsed = value as Partial<ClientLicenseSession>;
+  if (
+    typeof parsed.apiBaseUrl !== 'string'
+    || !parsed.apiBaseUrl.trim()
+    || typeof parsed.activatedAt !== 'number'
+    || !Number.isFinite(parsed.activatedAt)
+    || !parsed.tenant
+    || typeof parsed.tenant.id !== 'string'
+    || !parsed.tenant.id.trim()
+    || !parsed.user
+    || typeof parsed.user.id !== 'string'
+    || !parsed.user.id.trim()
+    || !parsed.device
+    || typeof parsed.device.id !== 'string'
+    || !parsed.device.id.trim()
+    || typeof parsed.device.accessToken !== 'string'
+    || !parsed.device.accessToken.trim()
+    || typeof parsed.device.leaseExpiresAt !== 'string'
+    || !Number.isFinite(Date.parse(parsed.device.leaseExpiresAt))
+  ) {
+    return null;
+  }
+  return {
+    ...parsed,
+    apiBaseUrl: normalizeApiBaseUrl(parsed.apiBaseUrl),
+    tenant: parsed.tenant,
+    user: parsed.user,
+    device: parsed.device,
+    models: Array.isArray(parsed.models) ? parsed.models : [],
+    codexAccounts: Array.isArray(parsed.codexAccounts) ? parsed.codexAccounts : [],
+  } as ClientLicenseSession;
 }
 
 function apiBaseUrlCandidates(value: string): string[] {

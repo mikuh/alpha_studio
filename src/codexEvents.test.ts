@@ -158,6 +158,24 @@ describe('applyCodexEventToConversation', () => {
     expect(stopped.messages[0].blocks).toEqual([{ type: 'text', content: '处理中' }]);
   });
 
+  it('ignores a buffered text delta that arrives after the turn stopped', () => {
+    const stopped = applyCodexEventToConversation(baseConversation(), {
+      type: 'stopped',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+    });
+
+    const afterLateDelta = applyCodexEventToConversation(stopped, {
+      type: 'text_delta',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      text: '不应追加',
+    });
+
+    expect(afterLateDelta).toBe(stopped);
+    expect(afterLateDelta.messages[0].blocks).toEqual([]);
+  });
+
   it('tracks tool lifecycle', () => {
     const started = applyCodexEventToConversation(baseConversation(), {
       type: 'tool_started',
@@ -410,6 +428,41 @@ describe('applyCodexEventToConversation', () => {
         },
       ],
     });
+  });
+
+  it('does not surface temporary PDF inputs that a tool only read', () => {
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'pdf-read-1',
+      title: 'command_execution',
+      text: [
+        'Script completed',
+        'Output:',
+        'FILE /var/folders/demo/T/tmp.1gyXXKvaSo/abnormal.pdf',
+        'FILE /var/folders/demo/T/tmp.1gyXXKvaSo/reduction.pdf',
+      ].join('\n'),
+      raw: {
+        type: 'exec_command',
+        command: 'python read_pdfs.py /var/folders/demo/T/tmp.1gyXXKvaSo/abnormal.pdf /var/folders/demo/T/tmp.1gyXXKvaSo/reduction.pdf',
+      },
+    });
+
+    expect(completed.messages[0].blocks).toEqual([
+      {
+        type: 'tool',
+        id: 'pdf-read-1',
+        title: 'command_execution',
+        status: 'completed',
+        output: [
+          'Script completed',
+          'Output:',
+          'FILE /var/folders/demo/T/tmp.1gyXXKvaSo/abnormal.pdf',
+          'FILE /var/folders/demo/T/tmp.1gyXXKvaSo/reduction.pdf',
+        ].join('\n'),
+      },
+    ]);
   });
 
   it('does not mistake source web pages containing the word 文件 for generated files', () => {

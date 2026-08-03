@@ -44,6 +44,8 @@ pub struct LocalStoreLoadResult {
     research_recommendations: Vec<Value>,
     ai_risk_assessments: Vec<Value>,
     recommendation_events: Vec<Value>,
+    evidence_records: Vec<Value>,
+    company_theses: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +62,8 @@ pub struct LocalStoreCommitRequest {
     research_recommendations: Option<Vec<Value>>,
     ai_risk_assessments: Option<Vec<Value>>,
     recommendation_events: Option<Vec<Value>>,
+    evidence_records: Option<Vec<Value>>,
+    company_theses: Option<Vec<Value>>,
     audit: Option<LocalAuditInput>,
 }
 
@@ -112,6 +116,8 @@ pub struct LocalStoreExportResult {
     research_recommendations: Vec<Value>,
     ai_risk_assessments: Vec<Value>,
     recommendation_events: Vec<Value>,
+    evidence_records: Vec<Value>,
+    company_theses: Vec<Value>,
     audit_events: Vec<Value>,
 }
 
@@ -214,6 +220,8 @@ pub fn local_store_export(app: AppHandle) -> Result<LocalStoreExportResult, Stri
         research_recommendations: loaded.research_recommendations,
         ai_risk_assessments: loaded.ai_risk_assessments,
         recommendation_events: loaded.recommendation_events,
+        evidence_records: loaded.evidence_records,
+        company_theses: loaded.company_theses,
         audit_events: load_recent_audit_events(&conn, 500)?,
     })
 }
@@ -653,6 +661,12 @@ fn load_snapshot(paths: &StorePaths, conn: &Connection) -> Result<LocalStoreLoad
             conn,
             "select payload from recommendation_events order by created_at desc",
         )?,
+        evidence_records: load_meta_json(conn, "evidence_records")?
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default(),
+        company_theses: load_meta_json(conn, "company_theses")?
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default(),
     })
 }
 
@@ -692,6 +706,12 @@ fn commit_snapshot(conn: &mut Connection, request: LocalStoreCommitRequest) -> R
     }
     if let Some(events) = request.recommendation_events {
         save_recommendation_events(&tx, &events)?;
+    }
+    if let Some(records) = request.evidence_records {
+        save_meta_json(&tx, "evidence_records", &Value::Array(records))?;
+    }
+    if let Some(theses) = request.company_theses {
+        save_meta_json(&tx, "company_theses", &Value::Array(theses))?;
     }
     if let Some(audit) = request.audit {
         write_audit(
@@ -2058,6 +2078,12 @@ mod tests {
                     "id": "event-1", "recommendationId": "rec-1", "type": "created",
                     "createdAt": "2026-07-18T01:02:00Z"
                 })]),
+                evidence_records: Some(vec![json!({
+                    "id": "evidence-1", "schema": "alpha.evidence.v1"
+                })]),
+                company_theses: Some(vec![json!({
+                    "id": "thesis-1", "company": { "code": "600519.XSHG", "name": "贵州茅台" }
+                })]),
                 audit: None,
             },
         )
@@ -2069,6 +2095,8 @@ mod tests {
         assert_eq!(loaded.research_recommendations[0]["id"], "rec-1");
         assert_eq!(loaded.ai_risk_assessments[0]["id"], "risk-1");
         assert_eq!(loaded.recommendation_events[0]["id"], "event-1");
+        assert_eq!(loaded.evidence_records[0]["id"], "evidence-1");
+        assert_eq!(loaded.company_theses[0]["id"], "thesis-1");
     }
 
     #[test]
@@ -2100,6 +2128,8 @@ mod tests {
                     research_recommendations: None,
                     ai_risk_assessments: None,
                     recommendation_events: None,
+                    evidence_records: None,
+                    company_theses: None,
                     audit: None,
                 },
             )

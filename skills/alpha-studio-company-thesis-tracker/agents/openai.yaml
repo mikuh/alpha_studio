@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alpha Studio 公司 Thesis"
+  short_description: "持续维护公司投资逻辑、证据、催化、风险、估值与明确失效条件"
+  default_prompt: "使用 $alpha-studio-company-thesis-tracker 为指定 A 股公司建立或更新可版本化的投资 Thesis。"

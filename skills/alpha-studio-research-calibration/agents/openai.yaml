@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alpha Studio 研究校准"
+  short_description: "用历史复盘结果校准研究概率并识别系统性的高估、低估与样本偏差"
+  default_prompt: "使用 $alpha-studio-research-calibration 审计 Alpha Studio 的历史概率、结果与校准偏差。"

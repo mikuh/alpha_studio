@@ -11,6 +11,7 @@ import {
   mergeTrackingEvaluations,
   runThemeBacktest,
   selectBacktestCandidate,
+  summarizeStockConditions,
   type BacktestPriceBar,
   type ThemeTrackingEvent,
 } from './themeValidation';
@@ -91,6 +92,31 @@ describe('theme validation and backtest', () => {
     });
     expect(result.status).toBe('triggered');
     expect(result.marketPrice).toBe(10.3);
+  });
+
+  it('summarizes per-stock buy and invalidation conditions from immutable trigger events', () => {
+    const item = report();
+    const theme = {
+      ...item.themes[0],
+      invalidation: '中军跌破关键位',
+      stocks: [{
+        ...item.themes[0].stocks[1],
+        triggerIds: ['trigger-1'],
+        entryConditions: ['涨幅确认后等待二次承接'],
+        invalidationConditions: ['放量转负'],
+      }],
+    };
+    const triggered = new Map([['trigger-1', {
+      id: 'event-ready', reportId: item.id, tradeDate: item.tradeDate, themeId: theme.id, triggerId: 'trigger-1',
+      status: 'triggered' as const, observedAt: '2026-07-13T02:00:00.000Z', evidence: '涨幅3%', source: 'eastmoney', actor: 'rule' as const,
+    }]]);
+    const ready = summarizeStockConditions(theme, theme.stocks[0], triggered);
+    expect(ready).toMatchObject({ state: 'ready', confirmed: 1, total: 1 });
+    expect(ready.entryConditions).toContain('涨幅确认后等待二次承接');
+    expect(ready.invalidationConditions).toContain('中军跌破关键位');
+
+    const invalidated = new Map([['trigger-1', { ...triggered.get('trigger-1')!, id: 'event-blocked', status: 'invalidated' as const }]]);
+    expect(summarizeStockConditions(theme, theme.stocks[0], invalidated).state).toBe('blocked');
   });
 
   it('does not append a duplicate when the newest trigger state and evidence are unchanged', () => {

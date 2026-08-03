@@ -1,12 +1,42 @@
 use axum::{
+    http::{header, HeaderName, HeaderValue, Method},
     routing::{delete, get, patch, post},
     Router,
 };
-use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 
-use crate::{routes, state::AppState};
+use crate::{routes, skill_registry, state::AppState};
 
 pub fn build_router(state: AppState) -> Router {
+    let allowed_origins = state
+        .config
+        .cors_allowed_origins
+        .iter()
+        .map(|origin| {
+            HeaderValue::from_str(origin).expect("CORS origins are validated during configuration")
+        })
+        .collect::<Vec<_>>();
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::list(allowed_origins))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            HeaderName::from_static("x-alpha-tenant-id"),
+            HeaderName::from_static("x-alpha-device-id"),
+            HeaderName::from_static("x-alpha-device-fingerprint"),
+        ]);
     Router::new()
         .route("/healthz", get(routes::healthz))
         .route("/readyz", get(routes::readyz))
@@ -32,7 +62,6 @@ pub fn build_router(state: AppState) -> Router {
             "/api/client/devices/revoke",
             post(routes::client_revoke_device),
         )
-        .route("/api/devices/activate", post(routes::device_activate))
         .route("/api/devices/lease", post(routes::device_lease))
         .route("/api/runs/create", post(routes::run_create))
         .route("/api/admin/summary", get(routes::admin_summary))
@@ -58,6 +87,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/admin/authorization-codes/:id",
             patch(routes::admin_update_authorization_code)
                 .delete(routes::admin_delete_authorization_code),
+        )
+        .route(
+            "/api/admin/authorization-codes/:id/reveal",
+            post(routes::admin_reveal_authorization_code),
         )
         .route(
             "/api/admin/provider-configs",
@@ -87,10 +120,32 @@ pub fn build_router(state: AppState) -> Router {
             "/api/admin/codex-accounts/:id",
             delete(routes::admin_delete_codex_account),
         )
+        .route(
+            "/api/admin/skill-releases",
+            get(skill_registry::admin_list_skill_releases)
+                .post(skill_registry::admin_create_skill_release)
+                .layer(skill_registry::upload_body_limit()),
+        )
+        .route(
+            "/api/admin/skill-releases/:id/publish",
+            post(skill_registry::admin_publish_skill_release),
+        )
+        .route(
+            "/api/admin/skill-releases/:id",
+            delete(skill_registry::admin_delete_skill_release),
+        )
+        .route(
+            "/api/client/skills/catalog",
+            get(skill_registry::client_skill_catalog),
+        )
+        .route(
+            "/api/client/skills/releases/:id/download",
+            get(skill_registry::client_download_skill_release),
+        )
         .route("/v1/responses", post(routes::gateway_responses))
         .route("/v1/models", get(routes::gateway_models))
         .with_state(state)
         .layer(CompressionLayer::new())
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
 }

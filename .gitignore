@@ -152,3 +152,6 @@ src-tauri/target/
 
 # Generated, encoded built-in Skill bundle
 .alpha-encoded/
+
+# Generated upload artifacts for the managed Skill registry
+.alpha-releases/

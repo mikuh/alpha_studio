@@ -41,6 +41,20 @@ export const TRIGGER_STATUS_LABELS: Record<TriggerEvaluationStatus, string> = {
   awaiting_manual: '待人工确认',
 };
 
+export type StockConditionState = 'ready' | 'partial' | 'waiting' | 'blocked' | 'data_missing';
+
+export interface StockConditionSummary {
+  state: StockConditionState;
+  triggers: PremarketThemeTrigger[];
+  confirmed: number;
+  blocked: number;
+  observed: number;
+  total: number;
+  entryConditions: string[];
+  invalidationConditions: string[];
+  action: string;
+}
+
 export interface ThemeTrackingEvent {
   id: string;
   reportId: string;
@@ -409,6 +423,23 @@ function quoteMetric(quote: ResearchQuote, field: string): number | undefined {
   return undefined;
 }
 
+function breadthMetric(quotes: ResearchQuote[], field: string | undefined): { value?: number; evidence: string } {
+  const positiveCount = quotes.filter((quote) => quote.changePct > 0).length;
+  const negativeCount = quotes.filter((quote) => quote.changePct < 0).length;
+  const limitUpCount = quotes.filter((quote) => (
+    quote.highLimit && quote.price >= quote.highLimit
+  ) || quote.changePct >= 9.5).length;
+  const breadthPct = quotes.length ? positiveCount / quotes.length * 100 : 0;
+  if (field === 'positiveCount') return { value: positiveCount, evidence: `上涨 ${positiveCount}/${quotes.length}` };
+  if (field === 'negativeCount') return { value: negativeCount, evidence: `下跌 ${negativeCount}/${quotes.length}` };
+  if (field === 'limitUpCount') return { value: limitUpCount, evidence: `角色矩阵涨停 ${limitUpCount}/${quotes.length}` };
+  if (field === 'averageChangePct') {
+    const average = quotes.reduce((sum, quote) => sum + quote.changePct, 0) / quotes.length;
+    return { value: average, evidence: `角色矩阵平均涨跌 ${average.toFixed(2)}%` };
+  }
+  return { value: breadthPct, evidence: `上涨 ${positiveCount}/${quotes.length}，宽度 ${breadthPct.toFixed(1)}%` };
+}
+
 export function evaluateThemeTrigger(
   report: PremarketThemeRun,
   trigger: PremarketThemeTrigger,
@@ -434,9 +465,21 @@ export function evaluateThemeTrigger(
     const codes = context.theme.stocks.map((stock) => stock.code).filter((code): code is string => Boolean(code));
     const quotes = codes.map((code) => context.quotes.get(code)).filter((quote): quote is ResearchQuote => Boolean(quote));
     if (!quotes.length) return baseEvaluation(report, context.theme, trigger, 'data_missing', observedAt, '题材成分行情不可用', trigger.dataSource);
-    const breadthPct = quotes.filter((quote) => quote.changePct > 0).length / quotes.length * 100;
-    const matched = compareValue(breadthPct, trigger.operator, trigger.threshold);
-    return baseEvaluation(report, context.theme, trigger, matched ? 'triggered' : 'not_triggered', observedAt, `上涨 ${quotes.filter((quote) => quote.changePct > 0).length}/${quotes.length}，宽度 ${breadthPct.toFixed(1)}%`, trigger.dataSource);
+    const metric = breadthMetric(quotes, trigger.field);
+    const numericThreshold = Number(trigger.threshold);
+    if (trigger.field === 'limitUpCount' && Number.isFinite(numericThreshold) && numericThreshold > quotes.length) {
+      return baseEvaluation(
+        report,
+        context.theme,
+        trigger,
+        'data_missing',
+        observedAt,
+        `报告角色矩阵仅 ${quotes.length} 只，无法验证全题材涨停阈值 ${numericThreshold}`,
+        trigger.dataSource,
+      );
+    }
+    const matched = metric.value !== undefined && compareValue(metric.value, trigger.operator, trigger.threshold);
+    return baseEvaluation(report, context.theme, trigger, matched ? 'triggered' : 'not_triggered', observedAt, metric.evidence, trigger.dataSource);
   }
   const quote = trigger.subjectCode ? context.quotes.get(trigger.subjectCode) : undefined;
   const metric = quote && trigger.field ? quoteMetric(quote, trigger.field) : undefined;
@@ -446,6 +489,52 @@ export function evaluateThemeTrigger(
     ...baseEvaluation(report, context.theme, trigger, matched ? 'triggered' : 'not_triggered', observedAt, `${quote.name} ${trigger.field}=${metric.toFixed(2)}`, quote.source),
     marketPrice: quote.price,
   };
+}
+
+function uniqueText(items: Array<string | undefined>): string[] {
+  return Array.from(new Set(items.map((item) => item?.trim()).filter((item): item is string => Boolean(item))));
+}
+
+export function summarizeStockConditions(
+  theme: PremarketTheme,
+  stock: PremarketThemeStock,
+  latest: Map<string, ThemeTrackingEvent>,
+): StockConditionSummary {
+  const requested = new Set(stock.triggerIds || []);
+  const triggers = requested.size
+    ? theme.triggerSpecs.filter((trigger) => requested.has(trigger.id))
+    : theme.triggerSpecs;
+  const statuses = triggers.map((trigger) => latest.get(trigger.id)?.status).filter((status): status is TriggerEvaluationStatus => Boolean(status));
+  const confirmed = statuses.filter((status) => status === 'triggered' || status === 'upgraded').length;
+  const blocked = statuses.filter((status) => status === 'invalidated' || status === 'downgraded').length;
+  const missing = statuses.filter((status) => status === 'data_missing' || status === 'awaiting_manual').length;
+  const total = triggers.length;
+  const state: StockConditionState = blocked > 0
+    ? 'blocked'
+    : total > 0 && confirmed === total
+      ? 'ready'
+      : confirmed > 0 || statuses.includes('partial')
+        ? 'partial'
+        : statuses.length > 0 && missing === statuses.length
+          ? 'data_missing'
+          : 'waiting';
+  const entryConditions = uniqueText([
+    ...(stock.entryConditions || []),
+    ...triggers.map((trigger) => trigger.label),
+  ]);
+  const invalidationConditions = uniqueText([
+    ...(stock.invalidationConditions || []),
+    theme.invalidation,
+    ...(theme.holdingWindow?.exitConditions || []),
+  ]);
+  const action = state === 'blocked'
+    ? triggers.map((trigger) => latest.get(trigger.id)?.status === 'invalidated' || latest.get(trigger.id)?.status === 'downgraded'
+      ? trigger.actionOnFailure
+      : '').find(Boolean) || '执行报告失效动作，禁止新开。'
+    : state === 'ready'
+      ? triggers.map((trigger) => trigger.actionOnTrigger).find(Boolean) || '进入报告定义的二次确认区。'
+      : '继续等待所有必要条件确认。';
+  return { state, triggers, confirmed, blocked, observed: statuses.length, total, entryConditions, invalidationConditions, action };
 }
 
 function baseEvaluation(

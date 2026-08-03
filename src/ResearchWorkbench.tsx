@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, FormEvent } from 'react';
 import {
   Activity,
+  AlertTriangle,
   ArrowLeft,
   BarChart3,
   BellRing,
@@ -26,6 +27,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Star,
@@ -64,6 +66,7 @@ import {
   formatSignedMoney,
   holdingPrompt,
   loadResearchState,
+  normalizeSecurityCode,
   normalizeResearchState,
   placeOrder,
   registerCustomSecurity,
@@ -82,6 +85,18 @@ import {
 } from './research';
 import { insertIntoComposer } from './composerBridge';
 import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
+import { OPEN_DAILY_DECISION_EVENT } from './dailyDecision';
+import {
+  COMPANY_THESES_CHANGED_EVENT,
+  EVIDENCE_CHANGED_EVENT,
+  hydrateResearchIntelligenceFromLocalStore,
+  loadCompanyTheses,
+  loadEvidenceRecords,
+  thesisItemText,
+  type CompanyThesisRecord,
+  type EvidenceRecord,
+  type ThesisStatus,
+} from './researchIntelligence';
 import {
   RESEARCH_CALENDAR_ITEMS,
   RESEARCH_DIVIDEND_ITEMS,
@@ -98,7 +113,7 @@ import './researchMarketApp.css';
 
 type PrimarySection = 'watchlist' | 'market' | 'trade' | 'assets' | 'discover';
 type MarketListKind = 'gainers' | 'turnover' | 'connect' | 'signals' | 'all';
-type FeatureKind = 'screener' | 'ipo' | 'etf' | 'earnings' | 'macro' | 'dividend' | 'calendar' | 'portfolio';
+type FeatureKind = 'screener' | 'ipo' | 'etf' | 'earnings' | 'macro' | 'dividend' | 'calendar' | 'portfolio' | 'evidence' | 'thesis' | 'calibration';
 
 type MarketRoute =
   | { kind: 'root' }
@@ -134,6 +149,9 @@ const FEATURE_META: Record<FeatureKind, { title: string; eyebrow: string; detail
   dividend: { title: '股息排行', eyebrow: '现金回报', detail: '股息率、分红持续性与除权除息安排', prompt: '请核验当前 A 股高股息标的的最新分红方案、股息率和可持续性，区分一次性高分红与稳定现金回报。', icon: CircleDollarSign },
   calendar: { title: '财经日历', eyebrow: '事件驱动', detail: '政策、宏观、行业和公司事件统一查看', prompt: '请整理未来两周影响 A 股的财经日历，按宏观、政策、行业和公司事件分类并标注影响方向。', icon: CalendarDays },
   portfolio: { title: '股票组合', eyebrow: '组合研究', detail: '按主题维护观察组并跟踪组合暴露', prompt: '请复盘我的股票组合，分析行业暴露、相关性、集中度和需要调整的观察优先级。', icon: BriefcaseBusiness },
+  evidence: { title: '证据中心', eyebrow: '研究底座', detail: '核验来源、公开时点、事实与推断并沉淀可复用证据', prompt: '使用 $alpha-studio-evidence-intelligence 核验以下 A 股研究命题，优先使用一手来源，输出 alpha.evidence.v1 结构化记录并进入证据中心。', icon: Database },
+  thesis: { title: '公司 Thesis', eyebrow: '版本化逻辑', detail: '持续维护核心逻辑、指标、估值、催化、风险和失效条件', prompt: '使用 $alpha-studio-company-thesis-tracker 为指定 A 股公司建立或更新 Thesis，引用证据 ID，输出 alpha.company_thesis.v1 结构化版本。', icon: Network },
+  calibration: { title: '研究校准', eyebrow: '概率治理', detail: '用不可变日报和复盘结果检查概率高估、低估与样本偏差', prompt: '使用 $alpha-studio-research-calibration 审计 Alpha Studio 已有日报概率与复盘结果，说明 Brier 分数、可靠性分桶、样本限制和一个可检验的规则调整。', icon: Activity },
 };
 
 const CHAIN_PRESETS = [
@@ -818,7 +836,7 @@ function StockPage({ quote, quotes, state, summary, onToggle, onTrade, onStock }
       <div className="stock-position-grid"><span><em>持股市值</em><strong>—</strong></span><span><em>持有数量</em><strong>{recordedHolding.quantity.toLocaleString('zh-CN')} 股</strong></span><span><em>摊薄成本</em><strong>{recordedHolding.avgCost.toFixed(2)}</strong></span><span><em>可卖数量</em><strong>{recordedHolding.quantity.toLocaleString('zh-CN')} 股</strong></span><span><em>当前价格</em><strong>—</strong></span><span><em>持仓占比</em><strong>—</strong></span></div>
     </section> : <section className="market-card stock-position-card" aria-label={`${quote.name}持仓信息`}><EmptyState title="暂无该股票持仓" detail="录入实盘买入记录后，这里会自动计算市值、持仓盈亏、今日盈亏和仓位占比。" action="记录买入" onAction={() => onTrade('buy', quote)} /></section>)}
     {tab === 'capital' && <><section className="market-card"><SectionHeading title="资金与活跃度" meta="行情快照" /><div className="stock-metric-grid stock-capital-metrics"><span><em>成交额</em><strong>{formatMoney(quoteTurnover(quote))}</strong></span><span><em>成交量</em><strong>{quote.volumeShares ? formatMoney(quote.volumeShares) : formatMoney(quote.volume * 1_000_000)}</strong></span><span><em>换手率</em><strong>{quote.turnoverRate === undefined ? '—' : formatPercent(quote.turnoverRate)}</strong></span><span><em>量比</em><strong>{quote.volumeRatio?.toFixed(2) ?? '—'}</strong></span></div></section><StockCapitalPanel quote={quote} holding={holding ? { quantity: holding.quantity, avgCost: holding.avgCost, pnlPct: holding.pnlPct } : undefined} /></>}
-    {tab === 'research' && <section className="market-card"><SectionHeading title="公司研究" meta="事实与观点分开" /><div className="stock-thesis"><strong>研究起点</strong><p>{quote.thesis || '从财务、行业、估值、催化和风险五个维度建立研究。'}</p></div><div className="market-feature-list">{(['earnings', 'dividend', 'calendar'] as FeatureKind[]).map((kind) => <button key={kind} type="button" onClick={() => insertIntoComposer(`${FEATURE_META[kind].prompt}\n重点研究：${quote.name}（${quote.code}）。`)}><span><strong>{FEATURE_META[kind].title}</strong><em>围绕 {quote.name} 深入核验</em></span><ChevronRight size={14} /></button>)}</div></section>}
+    {tab === 'research' && <section className="market-card"><SectionHeading title="公司研究" meta="事实与观点分开" /><div className="stock-thesis"><strong>研究起点</strong><p>{quote.thesis || '从财务、行业、估值、催化和风险五个维度建立研究。'}</p></div><div className="market-feature-list">{(['evidence', 'thesis', 'earnings', 'dividend', 'calendar'] as FeatureKind[]).map((kind) => <button key={kind} type="button" onClick={() => insertIntoComposer(`${FEATURE_META[kind].prompt}\n重点研究：${quote.name}（${quote.code}）。`)}><span><strong>{FEATURE_META[kind].title}</strong><em>围绕 {quote.name} 深入核验</em></span><ChevronRight size={14} /></button>)}</div></section>}
     <div className="stock-trade-bar"><button type="button" className="sell" onClick={() => onTrade('sell', quote)}>记录卖出</button><button type="button" className="buy" onClick={() => onTrade('buy', quote)}>记录买入</button></div>
   </div>;
 }
@@ -1211,7 +1229,108 @@ function PortfolioPage({ quotes, state, onStock, onCommit }: { quotes: ResearchQ
   </div>;
 }
 
+function formatMemoryDate(value: string): string {
+  if (!value) return '—';
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString('zh-CN', { hour12: false }) : value;
+}
+
+const THESIS_STATUS_LABELS: Record<ThesisStatus, string> = {
+  building: '建立中',
+  strengthened: '增强',
+  unchanged: '不变',
+  weakened: '弱化',
+  invalidated: '已失效',
+  archived: '已归档',
+};
+
+function EvidenceCenterPage() {
+  const [records, setRecords] = useState<EvidenceRecord[]>(() => loadEvidenceRecords());
+  useEffect(() => {
+    let disposed = false;
+    void hydrateResearchIntelligenceFromLocalStore().then(() => {
+      if (!disposed) setRecords(loadEvidenceRecords());
+    }).catch(() => undefined);
+    const refresh = () => setRecords(loadEvidenceRecords());
+    window.addEventListener(EVIDENCE_CHANGED_EVENT, refresh);
+    return () => { disposed = true; window.removeEventListener(EVIDENCE_CHANGED_EVENT, refresh); };
+  }, []);
+  const conflicted = records.filter((record) => record.contradictions.length > 0 || record.qualityFlags.includes('conflicting_sources')).length;
+  const primary = records.filter((record) => record.qualityFlags.includes('primary_source')).length;
+  return <div className="market-secondary-page">
+    <FeatureHero kind="evidence" />
+    <div className="market-memory-kpis">
+      <div><span>证据记录</span><strong>{records.length}</strong></div>
+      <div><span>一手来源</span><strong>{primary}</strong></div>
+      <div><span>待消解冲突</span><strong>{conflicted}</strong></div>
+    </div>
+    <section className="market-card">
+      <SectionHeading title="最近证据" meta="结构化输出自动入库" />
+      {records.length ? <div className="market-memory-list">{records.slice(0, 50).map((record) => <article key={record.id}>
+        <header><span><strong>{record.source.title}</strong><em>{record.eventType} · 可信度 {Math.round(record.confidence * 100)}%</em></span><time>{formatMemoryDate(record.publishedAt)}</time></header>
+        <p>{record.facts[0]}</p>
+        <footer><span>{record.subjectCodes.join(' · ') || '宏观/行业'}</span><span>最早可交易 {formatMemoryDate(record.earliestTradableAt)}</span><a href={record.source.url} target="_blank" rel="noreferrer">查看来源</a></footer>
+        {record.contradictions.length ? <aside><AlertTriangle size={12} />{record.contradictions[0]}</aside> : null}
+      </article>)}</div> : <EmptyState title="证据中心还是空的" detail="从股票详情或下方按钮发起核验；符合 alpha.evidence.v1 的结果会自动进入这里。" />}
+    </section>
+    <button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(FEATURE_META.evidence.prompt)}><Sparkles size={15} />核验新命题</button>
+  </div>;
+}
+
+function latestTheses(theses: CompanyThesisRecord[]): CompanyThesisRecord[] {
+  const latest = new Map<string, CompanyThesisRecord>();
+  for (const thesis of theses) {
+    const current = latest.get(thesis.company.code);
+    if (!current || thesis.version > current.version) latest.set(thesis.company.code, thesis);
+  }
+  return [...latest.values()].sort((left, right) => right.asOf.localeCompare(left.asOf));
+}
+
+function CompanyThesisPage() {
+  const [theses, setTheses] = useState<CompanyThesisRecord[]>(() => loadCompanyTheses());
+  useEffect(() => {
+    let disposed = false;
+    void hydrateResearchIntelligenceFromLocalStore().then(() => {
+      if (!disposed) setTheses(loadCompanyTheses());
+    }).catch(() => undefined);
+    const refresh = () => setTheses(loadCompanyTheses());
+    window.addEventListener(COMPANY_THESES_CHANGED_EVENT, refresh);
+    return () => { disposed = true; window.removeEventListener(COMPANY_THESES_CHANGED_EVENT, refresh); };
+  }, []);
+  const latest = useMemo(() => latestTheses(theses), [theses]);
+  const weakened = latest.filter((thesis) => thesis.status === 'weakened' || thesis.status === 'invalidated').length;
+  return <div className="market-secondary-page">
+    <FeatureHero kind="thesis" />
+    <div className="market-memory-kpis">
+      <div><span>覆盖公司</span><strong>{latest.length}</strong></div>
+      <div><span>历史版本</span><strong>{theses.length}</strong></div>
+      <div><span>弱化/失效</span><strong>{weakened}</strong></div>
+    </div>
+    <section className="market-card">
+      <SectionHeading title="最新 Thesis" meta="历史版本只追加不覆盖" />
+      {latest.length ? <div className="market-memory-list">{latest.map((thesis) => <article key={thesis.id}>
+        <header><span><strong>{thesis.company.name} · {thesis.company.code}</strong><em>v{thesis.version} · {THESIS_STATUS_LABELS[thesis.status]}</em></span><time>{formatMemoryDate(thesis.asOf)}</time></header>
+        <p>{thesis.coreThesis.slice(0, 2).map(thesisItemText).join('；')}</p>
+        <footer><span>{thesis.evidenceIds.length} 条证据</span><span>下次复核 {formatMemoryDate(thesis.nextReviewAt)}</span><button type="button" onClick={() => insertIntoComposer(`${FEATURE_META.thesis.prompt}\n以下是必须保留的最新版本，请生成 v${thesis.version + 1} 并让 previousVersionId 指向 ${thesis.id}：\n\`\`\`json\n${JSON.stringify(thesis, null, 2)}\n\`\`\``)}>更新版本</button></footer>
+        {thesis.invalidationConditions[0] ? <aside><ShieldCheck size={12} />失效条件：{thesisItemText(thesis.invalidationConditions[0])}</aside> : null}
+      </article>)}</div> : <EmptyState title="还没有公司 Thesis" detail="先为一家公司建立 v1；之后每次变化都会形成新版本并关联证据。" />}
+    </section>
+    <button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(FEATURE_META.thesis.prompt)}><Sparkles size={15} />建立公司 Thesis</button>
+  </div>;
+}
+
+function CalibrationEntryPage() {
+  return <div className="market-secondary-page">
+    <FeatureHero kind="calibration" />
+    <section className="market-card"><EmptyState title="校准结果位于日报决策 · 跟踪验证" detail="那里直接读取不可变盘前报告与收盘复盘，确定性计算 Brier 分数、概率偏差和可靠性分桶。" action="打开日报决策" onAction={() => window.dispatchEvent(new CustomEvent(OPEN_DAILY_DECISION_EVENT))} /></section>
+    <button type="button" className="market-agent-action market-agent-sticky" onClick={() => insertIntoComposer(FEATURE_META.calibration.prompt)}><Sparkles size={15} />交给 Agent 深度审计</button>
+  </div>;
+}
+
 function FeaturePage({ kind, quotes, state, onStock, onCommit }: { kind: FeatureKind; quotes: ResearchQuote[]; state: ResearchState; onStock: (code: string) => void; onCommit: (state: ResearchState) => void }) {
+  if (kind === 'evidence') return <EvidenceCenterPage />;
+  if (kind === 'thesis') return <CompanyThesisPage />;
+  if (kind === 'calibration') return <CalibrationEntryPage />;
   if (kind === 'etf') return <EtfPage quotes={quotes} state={state} onStock={onStock} />;
   if (kind === 'portfolio') return <PortfolioPage quotes={quotes} state={state} onStock={onStock} onCommit={onCommit} />;
   if (kind === 'screener') return <ScreenerPage quotes={quotes} state={state} onStock={onStock} />;
@@ -1222,7 +1341,7 @@ function FeaturePage({ kind, quotes, state, onStock, onCommit }: { kind: Feature
   return <CalendarPage quotes={quotes} onStock={onStock} />;
 }
 
-export function ResearchWorkbenchPanel() {
+export function ResearchWorkbenchPanel({ requestedStockCode, requestKey }: { requestedStockCode?: string; requestKey?: number } = {}) {
   const [state, setState] = useState<ResearchState>(() => loadResearchState());
   const [primary, setPrimary] = useState<PrimarySection>('market');
   const [routes, setRoutes] = useState<MarketRoute[]>([{ kind: 'root' }]);
@@ -1313,6 +1432,14 @@ export function ResearchWorkbenchPanel() {
     return rows.some((index) => index.source !== 'sample') ? rows.filter((index) => index.source !== 'sample') : rows;
   }, [overrides]);
   const summary = useMemo(() => researchAccountSummary(state, quoteMap), [quoteMap, state]);
+
+  useEffect(() => {
+    if (!requestedStockCode) return;
+    const code = normalizeSecurityCode(requestedStockCode);
+    if (!code) return;
+    setPrimary('market');
+    setRoutes([{ kind: 'root' }, { kind: 'stock', code }]);
+  }, [requestKey, requestedStockCode]);
 
   useEffect(() => {
     const body = bodyRef.current;

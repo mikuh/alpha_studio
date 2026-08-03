@@ -12,6 +12,10 @@ pub enum ApiError {
     #[error("{0}")]
     NotFound(String),
     #[error("{0}")]
+    Conflict(String),
+    #[error("{0}")]
+    Internal(String),
+    #[error("{0}")]
     Upstream(String),
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
@@ -28,10 +32,11 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::Conflict(_) => StatusCode::CONFLICT,
+            ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Upstream(_) => StatusCode::BAD_GATEWAY,
-            ApiError::Sqlx(_) | ApiError::Reqwest(_) | ApiError::Jwt(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            ApiError::Jwt(_) => StatusCode::UNAUTHORIZED,
+            ApiError::Sqlx(_) | ApiError::Reqwest(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let message = self.to_string();
         (status, Json(json!({ "error": { "message": message } }))).into_response()

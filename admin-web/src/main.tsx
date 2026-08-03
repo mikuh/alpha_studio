@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-type Tab = 'overview' | 'tenants' | 'usage' | 'gateway' | 'codex' | 'audit';
+type Tab = 'overview' | 'tenants' | 'usage' | 'gateway' | 'codex' | 'skills' | 'audit';
 
 interface Summary {
   tenants: number;
@@ -32,8 +32,8 @@ interface AuthorizationCode {
   id: string;
   tenantId: string;
   tenantName: string;
-  authorizationCode?: string | null;
   codeHint: string;
+  revealable: boolean;
   maxDevices: number;
   status: string;
   expiresAt?: string | null;
@@ -104,6 +104,25 @@ interface AuditLog {
   action: string;
   payload: Record<string, unknown>;
   createdAt: string;
+}
+
+interface SkillRelease {
+  id: string;
+  version: string;
+  channel: 'dev' | 'beta' | 'stable' | string;
+  status: 'draft' | 'published' | 'archived' | string;
+  minClientVersion: string;
+  releaseNotes: string;
+  codecVersion: number;
+  skillCount: number;
+  encodedFileCount: number;
+  manifestSummary: {
+    skills?: Array<{ skillName: string }>;
+  };
+  artifactSha256: string;
+  artifactSize: number;
+  createdAt: string;
+  publishedAt?: string | null;
 }
 
 interface BillingUsageTotals {
@@ -264,6 +283,7 @@ const navItems: Array<[Tab, string]> = [
   ['usage', 'LLM 用量'],
   ['gateway', '模型网关'],
   ['codex', 'GPT 账号'],
+  ['skills', 'Skills 发行'],
   ['audit', '审计'],
 ];
 
@@ -298,6 +318,11 @@ const navIcons: Record<Tab, React.JSX.Element> = {
       <path d="m9 8 2 2.5L9 13" /><path d="M13 13h3" />
     </svg>
   ),
+  skills: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m12 2 8 4.5v9L12 20l-8-4.5v-9z" /><path d="m4 6.5 8 4.5 8-4.5" /><path d="M12 11v9" />
+    </svg>
+  ),
   audit: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -314,10 +339,14 @@ function App() {
   const [summary, setSummary] = useState<Summary>(defaultSummary);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [authorizationCodes, setAuthorizationCodes] = useState<AuthorizationCode[]>([]);
+  const [revealedAuthorizationCodes, setRevealedAuthorizationCodes] = useState<Record<string, string>>({});
+  const [revealingAuthorizationCodeId, setRevealingAuthorizationCodeId] = useState('');
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [models, setModels] = useState<ModelRoute[]>([]);
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
+  const [skillReleases, setSkillReleases] = useState<SkillRelease[]>([]);
+  const [skillBundleFile, setSkillBundleFile] = useState<File | null>(null);
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [selectedUsageTenantId, setSelectedUsageTenantId] = useState('');
   const [tenantBilling, setTenantBilling] = useState<TenantBillingSummary | null>(null);
@@ -429,6 +458,7 @@ function App() {
         providerData,
         modelData,
         codexData,
+        skillReleaseData,
         auditData,
       ] = await Promise.all([
         api<Summary>('/api/admin/summary', token),
@@ -437,6 +467,7 @@ function App() {
         api<{ providers: ProviderConfig[] }>('/api/admin/provider-configs', token),
         api<{ models: ModelRoute[] }>('/api/admin/model-routes', token),
         api<{ accounts: CodexAccount[] }>('/api/admin/codex-accounts', token),
+        api<{ releases: SkillRelease[] }>('/api/admin/skill-releases', token),
         api<{ logs: AuditLog[] }>('/api/admin/audit-logs', token),
       ]);
       setSummary(summaryData);
@@ -444,9 +475,11 @@ function App() {
       setTenants(loadedTenants);
       setSelectedUsageTenantId((tenantId) => selectExistingTenantId(loadedTenants, tenantId));
       setAuthorizationCodes(codeData.authorizationCodes || []);
+      setRevealedAuthorizationCodes({});
       setProviders(providerData.providers || []);
       setModels(modelData.models || []);
       setCodexAccounts(codexData.accounts || []);
+      setSkillReleases(skillReleaseData.releases || []);
       setLogs(auditData.logs || []);
       setCodeForm((form) => ({ ...form, tenantId: selectExistingTenantId(loadedTenants, form.tenantId) }));
       setCodexForm((form) => ({
@@ -720,6 +753,38 @@ function App() {
     });
   };
 
+  const toggleAuthorizationCodeVisibility = async (code: AuthorizationCode) => {
+    if (revealedAuthorizationCodes[code.id]) {
+      setRevealedAuthorizationCodes((current) => {
+        const next = { ...current };
+        delete next[code.id];
+        return next;
+      });
+      return;
+    }
+    if (!code.revealable) {
+      setError('该旧授权码没有可恢复的加密副本，请生成新授权码后撤销旧码。');
+      return;
+    }
+    setError('');
+    setRevealingAuthorizationCodeId(code.id);
+    try {
+      const data = await api<{ authorizationCode: string }>(
+        `/api/admin/authorization-codes/${encodeURIComponent(code.id)}/reveal`,
+        token,
+        { method: 'POST' },
+      );
+      setRevealedAuthorizationCodes((current) => ({
+        ...current,
+        [code.id]: data.authorizationCode,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '授权码读取失败');
+    } finally {
+      setRevealingAuthorizationCodeId('');
+    }
+  };
+
   const saveCodexAccount = async (event: FormEvent) => {
     event.preventDefault();
     await mutate(async () => {
@@ -766,6 +831,54 @@ function App() {
         });
         if (codexForm.id === account.id) setCodexForm(emptyCodexForm);
         setNotice('GPT 账号已删除');
+        await load();
+      }),
+    });
+  };
+
+  const uploadSkillRelease = async (event: FormEvent) => {
+    event.preventDefault();
+    await mutate(async () => {
+      if (!skillBundleFile) throw new Error('请选择由 npm run skills:release 生成的 .asb.json 文件');
+      const artifactBase64 = await fileToBase64(skillBundleFile);
+      await api('/api/admin/skill-releases', token, {
+        method: 'POST',
+        body: JSON.stringify({ artifactBase64 }),
+      });
+      setSkillBundleFile(null);
+      setNotice('受保护的 Skill 发行包已上传为草稿');
+      await load();
+    });
+  };
+
+  const publishSkillRelease = (release: SkillRelease) => {
+    const isRollback = release.status === 'archived';
+    setConfirmDialog({
+      title: isRollback ? '回滚 Skill 版本' : '发布 Skill 版本',
+      message: `${isRollback ? '回滚到' : '发布'} ${release.version}（${release.channel}）？`,
+      detail: '客户端将在下次同步时下载此版本；下载、校验或解码失败时仍保留上一个可用版本。',
+      confirmLabel: isRollback ? '确认回滚' : '确认发布',
+      onConfirm: () => mutate(async () => {
+        await api(`/api/admin/skill-releases/${encodeURIComponent(release.id)}/publish`, token, {
+          method: 'POST',
+        });
+        setNotice(isRollback ? `已回滚到 ${release.version}` : `已发布 ${release.version}`);
+        await load();
+      }),
+    });
+  };
+
+  const deleteSkillRelease = (release: SkillRelease) => {
+    setConfirmDialog({
+      title: '删除 Skill 发行草稿',
+      message: `确定删除 ${release.version}（${release.channel}）？`,
+      detail: '当前已发布版本不能删除；历史版本删除后将无法再用于回滚。',
+      confirmLabel: '删除版本',
+      onConfirm: () => mutate(async () => {
+        await api(`/api/admin/skill-releases/${encodeURIComponent(release.id)}`, token, {
+          method: 'DELETE',
+        });
+        setNotice('Skill 发行版本已删除');
         await load();
       }),
     });
@@ -978,6 +1091,9 @@ function App() {
               onTestActivation={testSelectedTenantActivation}
               onRevoke={(code) => updateAuthorizationCodeStatus(code, 'revoked')}
               onDelete={deleteAuthorizationCode}
+              revealedCodes={revealedAuthorizationCodes}
+              revealingCodeId={revealingAuthorizationCodeId}
+              onToggleReveal={(code) => void toggleAuthorizationCodeVisibility(code)}
             />
           </div>
         )}
@@ -1012,6 +1128,17 @@ function App() {
             onEdit={editCodexAccount}
             onDelete={deleteCodexAccount}
             onSetStatus={updateCodexAccountStatus}
+          />
+        )}
+        {activeTab === 'skills' && (
+          <SkillReleaseWorkspace
+            releases={skillReleases}
+            bundleFile={skillBundleFile}
+            loading={loading}
+            onBundleFileChange={setSkillBundleFile}
+            onUpload={uploadSkillRelease}
+            onPublish={publishSkillRelease}
+            onDelete={deleteSkillRelease}
           />
         )}
         {activeTab === 'audit' && (
@@ -1182,6 +1309,9 @@ function TenantAuthorizationPanel({
   onTestActivation,
   onRevoke,
   onDelete,
+  revealedCodes,
+  revealingCodeId,
+  onToggleReveal,
 }: {
   tenant: Tenant | null;
   codes: AuthorizationCode[];
@@ -1189,6 +1319,9 @@ function TenantAuthorizationPanel({
   onTestActivation: () => void;
   onRevoke: (code: AuthorizationCode) => void;
   onDelete: (code: AuthorizationCode) => void;
+  revealedCodes: Record<string, string>;
+  revealingCodeId: string;
+  onToggleReveal: (code: AuthorizationCode) => void;
 }) {
   const activeCodes = codes.filter((code) => code.status === 'active').length;
 
@@ -1227,6 +1360,9 @@ function TenantAuthorizationPanel({
             showTenant={false}
             onRevoke={onRevoke}
             onDelete={onDelete}
+            revealedCodes={revealedCodes}
+            revealingCodeId={revealingCodeId}
+            onToggleReveal={onToggleReveal}
           />
         </>
       )}
@@ -1580,6 +1716,103 @@ function CodexWorkspace({
           onDelete={onDelete}
           onSetStatus={onSetStatus}
         />
+      </section>
+    </div>
+  );
+}
+
+function SkillReleaseWorkspace({
+  releases,
+  bundleFile,
+  loading,
+  onBundleFileChange,
+  onUpload,
+  onPublish,
+  onDelete,
+}: {
+  releases: SkillRelease[];
+  bundleFile: File | null;
+  loading: boolean;
+  onBundleFileChange: (file: File | null) => void;
+  onUpload: (event: FormEvent) => void;
+  onPublish: (release: SkillRelease) => void;
+  onDelete: (release: SkillRelease) => void;
+}) {
+  const published = releases.filter((release) => release.status === 'published');
+  return (
+    <div className="page-stack skill-release-workspace">
+      <section className="panel skill-upload-panel">
+        <div className="panel-head">
+          <div>
+            <h2>上传受保护发行包</h2>
+            <span>源码留在 Git；后台只保存构建生成、仍处于 AES-GCM 编码状态的 .asb.json 产物</span>
+          </div>
+        </div>
+        <form className="skill-upload-form" onSubmit={onUpload}>
+          <label>
+            Skill 发行包
+            <input
+              key={bundleFile?.name || 'empty-skill-bundle'}
+              type="file"
+              accept=".json,.asb.json,application/json"
+              onChange={(event) => onBundleFileChange(event.target.files?.[0] || null)}
+            />
+          </label>
+          <div className="skill-upload-copy">
+            <strong>{bundleFile?.name || '尚未选择发行包'}</strong>
+            <span>{bundleFile ? formatBytes(bundleFile.size) : '先运行 npm run skills:release -- --version=x.y.z'}</span>
+          </div>
+          <button type="submit" disabled={loading || !bundleFile}>上传为草稿</button>
+        </form>
+        <div className="skill-security-note">
+          <strong>保护链路保持不变</strong>
+          <span>后台拒绝明文或伪装文件；客户端只有在 SHA-256、.asx 认证、路径与受保护清单全部通过后才切换版本。</span>
+        </div>
+      </section>
+      <section className="panel management-list">
+        <div className="panel-head">
+          <div>
+            <h2>发行历史</h2>
+            <span>{releases.length} 个不可变版本 · {published.length} 个渠道当前已发布</span>
+          </div>
+        </div>
+        {releases.length === 0 ? (
+          <div className="empty">
+            <strong>暂无 Skill 发行版本</strong>
+            <span>上传发行包后先作为草稿保存，确认后再发布到对应渠道。</span>
+          </div>
+        ) : (
+          <div className="table-wrap">
+            <table className="skill-release-table">
+              <thead><tr><th>版本</th><th>渠道 / 状态</th><th>内容</th><th>兼容性</th><th>产物校验</th><th>时间</th><th className="col-actions">操作</th></tr></thead>
+              <tbody>
+                {releases.map((release) => {
+                  const names = release.manifestSummary?.skills?.map((skill) => skill.skillName) || [];
+                  return (
+                    <tr key={release.id}>
+                      <td><strong>{release.version}</strong><span>{release.id}</span></td>
+                      <td><strong>{release.channel}</strong><Status value={release.status} /></td>
+                      <td><strong>{release.skillCount} Skills · {release.encodedFileCount} 文件</strong><span>{names.join('、') || release.releaseNotes || '-'}</span></td>
+                      <td><strong>客户端 ≥ {release.minClientVersion}</strong><span>codec v{release.codecVersion}</span></td>
+                      <td><code>{release.artifactSha256.slice(0, 16)}…</code><span>{formatBytes(release.artifactSize)}</span></td>
+                      <td><strong>{new Date(release.publishedAt || release.createdAt).toLocaleString()}</strong><span>{release.publishedAt ? '发布时间' : '创建时间'}</span></td>
+                      <td className="col-actions">
+                        <div className="table-actions">
+                          {release.status !== 'published' && (
+                            <button type="button" onClick={() => onPublish(release)}>{release.status === 'archived' ? '回滚到此版本' : '发布'}</button>
+                          )}
+                          {release.status !== 'published' && (
+                            <button className="danger" type="button" onClick={() => onDelete(release)}>删除</button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
     </div>
   );
@@ -1968,10 +2201,21 @@ function UsageMetric({ label, value, meta }: { label: string; value: string; met
   return <div className="usage-metric"><span>{label}</span><strong>{value}</strong><small>{meta}</small></div>;
 }
 
-function AuthorizationCodeTable({ codes, onRevoke, onDelete, showTenant = true }: {
+function AuthorizationCodeTable({
+  codes,
+  onRevoke,
+  onDelete,
+  revealedCodes,
+  revealingCodeId,
+  onToggleReveal,
+  showTenant = true,
+}: {
   codes: AuthorizationCode[];
   onRevoke?: (code: AuthorizationCode) => void;
   onDelete?: (code: AuthorizationCode) => void;
+  revealedCodes: Record<string, string>;
+  revealingCodeId: string;
+  onToggleReveal: (code: AuthorizationCode) => void;
   showTenant?: boolean;
 }) {
   if (codes.length === 0) return <div className="empty">暂无授权码。</div>;
@@ -1990,10 +2234,28 @@ function AuthorizationCodeTable({ codes, onRevoke, onDelete, showTenant = true }
           </tr>
         </thead>
         <tbody>
-          {codes.map((code) => (
+          {codes.map((code) => {
+            const revealedCode = revealedCodes[code.id];
+            const revealing = revealingCodeId === code.id;
+            return (
             <tr key={code.id}>
               {showTenant && <td><strong>{code.tenantName}</strong><span>{code.note || code.tenantId}</span></td>}
-              <td><code className="secret-code">{code.authorizationCode || code.codeHint}</code></td>
+              <td>
+                <div className="authorization-code-cell">
+                  <code className="secret-code">{revealedCode || code.codeHint}</code>
+                  <button
+                    className="secondary secret-toggle"
+                    type="button"
+                    disabled={revealing || !code.revealable}
+                    title={code.revealable ? undefined : '旧授权码没有加密副本，请生成新码'}
+                    onClick={() => onToggleReveal(code)}
+                  >
+                    {revealing ? '读取中…' : revealedCode ? '隐藏' : code.revealable ? '显示' : '不可显示'}
+                  </button>
+                  {revealedCode && <CopyButton text={revealedCode} />}
+                </div>
+                {!code.revealable && <span className="legacy-secret-note">旧码需重新生成</span>}
+              </td>
               <td className="nowrap">{code.maxDevices}</td>
               <td className="nowrap">{formatDate(code.expiresAt)}</td>
               <td className="nowrap">{formatDate(code.lastUsedAt)}</td>
@@ -2009,7 +2271,7 @@ function AuthorizationCodeTable({ codes, onRevoke, onDelete, showTenant = true }
                 </div>
               </td>
             </tr>
-          ))}
+          );})}
         </tbody>
       </table>
     </div>
@@ -2308,7 +2570,7 @@ function Select({ label, value, onChange, options, optionLabels = {} }: {
 }
 
 function Status({ value }: { value: string }) {
-  const tone = value.includes('ready') || value === 'active'
+  const tone = value.includes('ready') || value === 'active' || value === 'published'
     ? 'ok'
     : ['suspended', 'revoked', 'disabled', 'expired'].includes(value)
       ? 'bad'
@@ -2323,6 +2585,9 @@ function statusLabel(value: string) {
     revoked: '已撤销',
     disabled: '已停用',
     ready: '就绪',
+    draft: '草稿',
+    published: '已发布',
+    archived: '历史版本',
     'provider missing': '缺少供应商',
   } as Record<string, string>)[value] || value;
 }
@@ -2367,6 +2632,20 @@ async function request<T>(path: string, options: RequestInit): Promise<T> {
   return response.json();
 }
 
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取 Skill 发行包失败'));
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const separator = result.indexOf(',');
+      if (separator < 0) reject(new Error('Skill 发行包无法转换为上传格式'));
+      else resolve(result.slice(separator + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function tabTitle(tab: Tab) {
   return {
     overview: '运营总览',
@@ -2374,6 +2653,7 @@ function tabTitle(tab: Tab) {
     usage: 'LLM 用量与账单',
     gateway: '模型网关',
     codex: 'GPT 订阅账号',
+    skills: 'Skills 发行管理',
     audit: '审计日志',
   }[tab];
 }
@@ -2385,6 +2665,7 @@ function tabSubtitle(tab: Tab) {
     usage: '按客户查看月度模型调用、Tokens、费用和完整账单流水。',
     gateway: '在后台配置上游 key、模型别名、价格和加价规则。',
     codex: '管理我们提供给客户使用的 GPT 订阅账号。',
+    skills: '上传、发布、灰度和回滚受保护的 Alpha Studio Skill 版本。',
     audit: '查看资金、授权、模型和账号配置变更。',
   }[tab];
 }
@@ -2416,6 +2697,13 @@ function formatYuan(yuan: number) {
     minimumFractionDigits: 2,
     maximumFractionDigits: absolute > 0 && absolute < 1 ? 4 : 2,
   }).format(safe);
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatSignedYuan(yuan: number) {

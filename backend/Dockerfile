@@ -1,10 +1,16 @@
 FROM rust:1.90-bookworm AS builder
 
+ENV CARGO_HTTP_TIMEOUT=600 \
+    CARGO_HTTP_LOW_SPEED_LIMIT=1 \
+    CARGO_NET_RETRY=10
+
 WORKDIR /app
 COPY backend/Cargo.toml backend/Cargo.lock ./
 COPY backend/src ./src
 COPY migrations /migrations
-RUN cargo build --release
+RUN --mount=type=cache,id=alpha-studio-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=alpha-studio-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    cargo build --release
 
 FROM debian:bookworm-slim AS runtime
 

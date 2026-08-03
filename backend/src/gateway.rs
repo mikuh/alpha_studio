@@ -6,6 +6,7 @@ use serde_json::{json, Map, Value};
 
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_MAX_RETRIES: u32 = 2;
+const VOLCENGINE_RESPONSES_MAX_OUTPUT_TOKENS: u64 = 393_216;
 
 fn default_request_timeout_ms() -> u64 {
     DEFAULT_REQUEST_TIMEOUT_MS
@@ -132,6 +133,9 @@ pub struct UpstreamRequest {
     pub query_params: Vec<(String, String)>,
     pub response_format: UpstreamResponseFormat,
     pub stream_response: bool,
+    /// Whether Codex namespace tools were flattened for a strict native
+    /// Responses provider and therefore need to be restored in streamed output.
+    pub namespace_tool_compat: bool,
     pub request_timeout_ms: u64,
     pub max_retries: u32,
 }
@@ -176,6 +180,7 @@ pub fn build_model_discovery_request(provider: &ProviderConfig) -> Result<Upstre
         query_params,
         response_format: UpstreamResponseFormat::Responses,
         stream_response: false,
+        namespace_tool_compat: false,
         request_timeout_ms: provider.request_timeout_ms.clamp(1_000, 900_000),
         max_retries: provider.max_retries.min(5),
     })
@@ -221,6 +226,11 @@ pub fn build_upstream_request(
 ) -> Result<UpstreamRequest, String> {
     let stream_response = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let api_format = resolve_api_format(provider);
+    let namespace_tool_compat = matches!(
+        api_format,
+        ProviderApiFormat::Auto | ProviderApiFormat::Responses
+    ) && is_volcengine_ark(provider)
+        && request_has_namespace_tools(body);
     let response_format = match api_format {
         ProviderApiFormat::ChatCompletions => {
             *body = build_chat_completion_request(provider, body, upstream_model)?;
@@ -241,10 +251,18 @@ pub fn build_upstream_request(
             if let Some(object) = body.as_object_mut() {
                 object.remove("client_metadata");
             }
-            body["model"] = Value::String(upstream_model.to_string());
-            if stream_response {
-                body["stream"] = Value::Bool(false);
+            // Ark supports `reasoning.effort`, but its Responses schema does not
+            // support OpenAI's `reasoning.summary` request option. Keep this
+            // provider-scoped so native OpenAI requests can still ask for a
+            // reasoning summary.
+            if is_volcengine_ark(provider) {
+                if let Some(reasoning) = body.get_mut("reasoning").and_then(Value::as_object_mut) {
+                    reasoning.remove("summary");
+                }
+                normalize_volcengine_responses_request(body);
             }
+            body["model"] = Value::String(upstream_model.to_string());
+            body["stream"] = Value::Bool(stream_response);
             UpstreamResponseFormat::Responses
         }
     };
@@ -267,15 +285,255 @@ pub fn build_upstream_request(
         ));
     }
 
+    let mut url = build_endpoint_url(provider, api_format, upstream_model);
+    if stream_response && api_format == ProviderApiFormat::GeminiGenerateContent {
+        url = url.replace(":generateContent", ":streamGenerateContent");
+        if !query_params
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("alt"))
+        {
+            query_params.push(("alt".to_string(), "sse".to_string()));
+        }
+    }
+
     Ok(UpstreamRequest {
-        url: build_endpoint_url(provider, api_format, upstream_model),
+        url,
         headers,
         query_params,
         response_format,
         stream_response,
+        namespace_tool_compat,
         request_timeout_ms: provider.request_timeout_ms.clamp(1_000, 900_000),
         max_retries: provider.max_retries.min(5),
     })
+}
+
+fn is_volcengine_ark(provider: &ProviderConfig) -> bool {
+    let provider_id = provider.provider.trim().to_ascii_lowercase();
+    provider_id == "volcengine-ark" || provider_id.starts_with("volcengine-ark-")
+}
+
+#[derive(Clone, Debug)]
+struct NamespaceToolTarget {
+    namespace: String,
+    name: String,
+}
+
+fn request_has_namespace_tools(request: &Value) -> bool {
+    request
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool.get("type").and_then(Value::as_str) == Some("namespace"))
+        })
+}
+
+/// Ark's Responses API supports function tools but not Codex's namespace tool
+/// extension. Flatten every namespace child to a unique function name, strip
+/// OpenAI-only tool fields, and flatten namespaced calls carried in history.
+fn normalize_volcengine_responses_request(body: &mut Value) {
+    if body
+        .get("max_output_tokens")
+        .and_then(Value::as_u64)
+        .is_some_and(|value| value > VOLCENGINE_RESPONSES_MAX_OUTPUT_TOKENS)
+    {
+        body["max_output_tokens"] = json!(VOLCENGINE_RESPONSES_MAX_OUTPUT_TOKENS);
+    }
+    let (by_upstream, by_original) = namespace_tool_mappings(body);
+    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+        let original_tools = std::mem::take(tools);
+        let mut normalized = Vec::new();
+        for mut tool in original_tools {
+            match tool.get("type").and_then(Value::as_str) {
+                Some("namespace") => {
+                    let Some(namespace) =
+                        tool.get("name").and_then(Value::as_str).map(str::to_string)
+                    else {
+                        continue;
+                    };
+                    let children = tool
+                        .get_mut("tools")
+                        .and_then(Value::as_array_mut)
+                        .map(std::mem::take)
+                        .unwrap_or_default();
+                    for mut child in children {
+                        let Some(name) = child
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                        else {
+                            continue;
+                        };
+                        let Some(upstream_name) =
+                            by_original.get(&(namespace.clone(), name)).cloned()
+                        else {
+                            continue;
+                        };
+                        if let Some(object) = child.as_object_mut() {
+                            object.insert("type".to_string(), json!("function"));
+                            object.insert("name".to_string(), json!(upstream_name));
+                            object.remove("defer_loading");
+                        }
+                        normalized.push(child);
+                    }
+                }
+                Some("function") => {
+                    if let Some(object) = tool.as_object_mut() {
+                        object.remove("defer_loading");
+                    }
+                    normalized.push(tool);
+                }
+                Some("web_search") => {
+                    // Ark's web-search schema does not define OpenAI's client
+                    // access toggle. Search itself remains enabled.
+                    if let Some(object) = tool.as_object_mut() {
+                        object.remove("external_web_access");
+                    }
+                    normalized.push(tool);
+                }
+                _ => normalized.push(tool),
+            }
+        }
+        *tools = normalized;
+    }
+
+    if by_upstream.is_empty() {
+        return;
+    }
+    if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input {
+            flatten_namespaced_call(item, &by_original);
+        }
+    }
+    if let Some(tool_choice) = body.get_mut("tool_choice") {
+        flatten_namespaced_call(tool_choice, &by_original);
+    }
+}
+
+fn flatten_namespaced_call(value: &mut Value, by_original: &BTreeMap<(String, String), String>) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let Some(namespace) = object
+        .get("namespace")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let Some(name) = object
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let Some(upstream_name) = by_original.get(&(namespace, name)).cloned() else {
+        return;
+    };
+    object.insert("name".to_string(), json!(upstream_name));
+    object.remove("namespace");
+}
+
+fn namespace_tool_mappings(
+    request: &Value,
+) -> (
+    BTreeMap<String, NamespaceToolTarget>,
+    BTreeMap<(String, String), String>,
+) {
+    let Some(tools) = request.get("tools").and_then(Value::as_array) else {
+        return (BTreeMap::new(), BTreeMap::new());
+    };
+    let mut used_names = tools
+        .iter()
+        .filter(|tool| tool.get("type").and_then(Value::as_str) != Some("namespace"))
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    let mut by_upstream = BTreeMap::new();
+    let mut by_original = BTreeMap::new();
+
+    for tool in tools {
+        if tool.get("type").and_then(Value::as_str) != Some("namespace") {
+            continue;
+        }
+        let Some(namespace) = tool.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        for child in tool
+            .get("tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(name) = child.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let identity = format!("alpha_ns__{namespace}__{name}");
+            let mut salt = 0_u32;
+            let upstream_name = loop {
+                let candidate = if salt == 0 {
+                    upstream_tool_name(&identity)
+                } else {
+                    upstream_tool_name(&format!("{identity}__{salt}"))
+                };
+                if used_names.insert(candidate.clone()) {
+                    break candidate;
+                }
+                salt += 1;
+            };
+            let target = NamespaceToolTarget {
+                namespace: namespace.to_string(),
+                name: name.to_string(),
+            };
+            by_upstream.insert(upstream_name.clone(), target);
+            by_original.insert((namespace.to_string(), name.to_string()), upstream_name);
+        }
+    }
+    (by_upstream, by_original)
+}
+
+/// Restore Codex's separate namespace/name representation in a native
+/// Responses body or event after Ark returns a flattened function call.
+pub(crate) fn restore_namespace_tool_calls_in_value(
+    value: &mut Value,
+    original_request: &Value,
+) -> bool {
+    let (by_upstream, _) = namespace_tool_mappings(original_request);
+    if by_upstream.is_empty() {
+        return false;
+    }
+
+    fn visit(value: &mut Value, mappings: &BTreeMap<String, NamespaceToolTarget>) -> bool {
+        match value {
+            Value::Array(values) => values
+                .iter_mut()
+                .fold(false, |changed, value| visit(value, mappings) || changed),
+            Value::Object(object) => {
+                let mut changed = false;
+                if object.get("type").and_then(Value::as_str) == Some("function_call") {
+                    if let Some(target) = object
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .and_then(|name| mappings.get(name))
+                        .cloned()
+                    {
+                        object.insert("name".to_string(), json!(target.name));
+                        object.insert("namespace".to_string(), json!(target.namespace));
+                        changed = true;
+                    }
+                }
+                object
+                    .values_mut()
+                    .fold(changed, |changed, value| visit(value, mappings) || changed)
+            }
+            _ => false,
+        }
+    }
+
+    visit(value, &by_upstream)
 }
 
 pub fn normalize_upstream_success_body(
@@ -296,7 +554,9 @@ pub fn normalize_upstream_success_body_for_request(
     original_request: &Value,
 ) -> Result<Value, String> {
     let response = normalize_upstream_success_body(format, body)?;
-    Ok(restore_custom_tool_calls(response, original_request))
+    let mut response = restore_custom_tool_calls(response, original_request);
+    restore_namespace_tool_calls_in_value(&mut response, original_request);
+    Ok(response)
 }
 
 pub fn normalize_upstream_error_body(provider: &str, status: u16, body: Value) -> Value {
@@ -379,7 +639,7 @@ fn restore_custom_tool_calls(mut response: Value, original_request: &Value) -> V
     response
 }
 
-fn upstream_tool_name(name: &str) -> String {
+pub(crate) fn upstream_tool_name(name: &str) -> String {
     let mut normalized = name
         .chars()
         .map(|character| {
@@ -701,7 +961,17 @@ fn build_chat_completion_request(
     let mut body = Map::new();
     body.insert("model".to_string(), json!(upstream_model));
     body.insert("messages".to_string(), Value::Array(messages));
-    body.insert("stream".to_string(), Value::Bool(false));
+    let stream = request
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    body.insert("stream".to_string(), Value::Bool(stream));
+    if stream {
+        body.insert(
+            "stream_options".to_string(),
+            json!({ "include_usage": true }),
+        );
+    }
 
     if let Some(tools) = request.get("tools").and_then(Value::as_array) {
         let chat_tools = tools
@@ -1037,7 +1307,15 @@ fn build_anthropic_request(request: &Value, upstream_model: &str) -> Result<Valu
     let mut body = Map::new();
     body.insert("model".to_string(), json!(upstream_model));
     body.insert("messages".to_string(), Value::Array(messages));
-    body.insert("stream".to_string(), Value::Bool(false));
+    body.insert(
+        "stream".to_string(),
+        Value::Bool(
+            request
+                .get("stream")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
+    );
     body.insert(
         "max_tokens".to_string(),
         request

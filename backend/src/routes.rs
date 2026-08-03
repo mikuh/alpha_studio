@@ -1,15 +1,18 @@
 use std::{collections::BTreeMap, convert::Infallible, time::Duration};
 
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
     Json,
 };
+use bytes::Bytes;
 use chrono::{Datelike, TimeZone, Utc};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -24,13 +27,17 @@ use crate::{
         mask_secret, normalize_upstream_error_body, normalize_upstream_success_body_for_request,
         ProviderApiFormat, ProviderAuthType, ProviderConfig, UpstreamRequest,
     },
+    gateway_stream::{
+        inspect_responses_stream_data, restore_namespace_tools_in_sse_frame, NativeStreamEvent,
+        ResponsesStreamAdapter, SseDecoder,
+    },
     license::{
-        can_activate_device, codex_subscription_available, normalize_authorization_code,
-        normalize_company_name, CLIENT_DEVICE_LEASE_DAYS,
+        can_activate_device, codex_subscription_available, hash_authorization_code,
+        normalize_authorization_code, normalize_company_name, CLIENT_DEVICE_LEASE_DAYS,
     },
     market::{CapitalFlowSnapshot, MarketSnapshot},
     state::AppState,
-    tokens::RunTokenClaims,
+    tokens::{AdminTokenClaims, DeviceTokenClaims, RunTokenClaims},
 };
 
 pub async fn healthz() -> Json<Value> {
@@ -50,7 +57,6 @@ pub struct MarketSnapshotQuery {
 pub struct MarketStreamQuery {
     tenant_id: String,
     device_id: String,
-    fingerprint: String,
 }
 
 pub async fn market_snapshot(
@@ -100,15 +106,10 @@ pub async fn market_capital_flow(
 
 pub async fn market_stream(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<MarketStreamQuery>,
 ) -> ApiResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
-    ensure_device_identity(
-        &state.db,
-        &query.tenant_id,
-        &query.device_id,
-        &query.fingerprint,
-    )
-    .await?;
+    require_device(&state, &headers, &query.tenant_id, &query.device_id).await?;
     if !state.config.market_data_enabled {
         return Err(ApiError::Upstream(
             "cloud market feed is disabled".to_string(),
@@ -151,13 +152,14 @@ async fn ensure_market_header_identity(state: &AppState, headers: &HeaderMap) ->
             .filter(|text| !text.trim().is_empty())
             .ok_or_else(|| ApiError::Unauthorized(format!("missing {name}")))
     };
-    ensure_device_identity(
-        &state.db,
+    require_device(
+        state,
+        headers,
         value("x-alpha-tenant-id")?,
         value("x-alpha-device-id")?,
-        value("x-alpha-device-fingerprint")?,
     )
     .await
+    .map(|_| ())
 }
 
 fn filter_market_snapshot(
@@ -230,14 +232,22 @@ pub async fn auth_login(
     State(state): State<AppState>,
     Json(request): Json<LoginRequest>,
 ) -> ApiResult<Json<LoginResponse>> {
-    if request.email != state.config.admin_email || request.password != state.config.admin_password
-    {
+    if !constant_time_eq(
+        request.email.as_bytes(),
+        state.config.admin_email.as_bytes(),
+    ) || !constant_time_eq(
+        request.password.as_bytes(),
+        state.config.admin_password.as_bytes(),
+    ) {
         return Err(ApiError::Unauthorized(
             "invalid admin credentials".to_string(),
         ));
     }
+    let token = state
+        .admin_tokens
+        .issue(AdminTokenClaims::new(request.email.clone(), 8 * 60 * 60))?;
     Ok(Json(LoginResponse {
-        token: format!("admin-{}", Uuid::new_v4()),
+        token,
         user: AdminUser {
             email: request.email,
             role: "owner".to_string(),
@@ -256,52 +266,6 @@ pub async fn client_bootstrap(State(state): State<AppState>) -> ApiResult<Json<V
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeviceActivateRequest {
-    tenant_id: String,
-    user_id: String,
-    fingerprint: String,
-    name: String,
-}
-
-pub async fn device_activate(
-    State(state): State<AppState>,
-    Json(request): Json<DeviceActivateRequest>,
-) -> ApiResult<Json<Value>> {
-    ensure_tenant_capacity(&state.db, &request.tenant_id, &request.fingerprint).await?;
-    let id = format!("dev_{}", Uuid::new_v4().simple());
-    let row = sqlx::query(
-        r#"
-        insert into devices (id, tenant_id, user_id, fingerprint, name, status, lease_expires_at, last_seen_at)
-        values ($1, $2, $3, $4, $5, 'active', now() + make_interval(days => $6), now())
-        on conflict (tenant_id, fingerprint)
-        do update set name = excluded.name, user_id = excluded.user_id, status = 'active',
-            lease_expires_at = now() + make_interval(days => $6), last_seen_at = now()
-        returning id, lease_expires_at
-        "#,
-    )
-    .bind(id)
-    .bind(&request.tenant_id)
-    .bind(&request.user_id)
-    .bind(&request.fingerprint)
-    .bind(&request.name)
-    .bind(CLIENT_DEVICE_LEASE_DAYS)
-    .fetch_one(&state.db)
-    .await?;
-    write_audit(
-        &state.db,
-        &request.tenant_id,
-        "device.activate",
-        json!({ "fingerprint": request.fingerprint, "name": request.name }),
-    )
-    .await?;
-    Ok(Json(json!({
-        "deviceId": row.get::<String, _>("id"),
-        "leaseExpiresAt": row.get::<chrono::DateTime<Utc>, _>("lease_expires_at")
-    })))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct DeviceLeaseRequest {
     tenant_id: String,
     device_id: String,
@@ -309,8 +273,10 @@ pub struct DeviceLeaseRequest {
 
 pub async fn device_lease(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<DeviceLeaseRequest>,
 ) -> ApiResult<Json<Value>> {
+    require_device(&state, &headers, &request.tenant_id, &request.device_id).await?;
     let row = sqlx::query(
         r#"
         update devices d
@@ -318,7 +284,7 @@ pub async fn device_lease(
         from tenants t
         where d.tenant_id = $1 and d.id = $2 and d.status = 'active'
           and t.id = d.tenant_id and t.status = 'active'
-        returning d.lease_expires_at
+        returning d.user_id, d.fingerprint, d.lease_expires_at
         "#,
     )
     .bind(&request.tenant_id)
@@ -352,7 +318,15 @@ pub async fn device_lease(
     } else {
         Vec::new()
     };
+    let access_token = issue_device_access_token(
+        &state,
+        &request.tenant_id,
+        &row.get::<String, _>("user_id"),
+        &request.device_id,
+        &row.get::<String, _>("fingerprint"),
+    )?;
     Ok(Json(json!({
+        "accessToken": access_token,
         "leaseExpiresAt": row.get::<chrono::DateTime<Utc>, _>("lease_expires_at"),
         "tenant": {
             "id": tenant_row.get::<String, _>("id"),
@@ -372,20 +346,14 @@ pub async fn device_lease(
 pub struct ClientDevicesRequest {
     tenant_id: String,
     device_id: String,
-    fingerprint: String,
 }
 
 pub async fn client_devices(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<ClientDevicesRequest>,
 ) -> ApiResult<Json<Value>> {
-    ensure_device_identity(
-        &state.db,
-        &request.tenant_id,
-        &request.device_id,
-        &request.fingerprint,
-    )
-    .await?;
+    require_device(&state, &headers, &request.tenant_id, &request.device_id).await?;
     Ok(Json(
         client_device_summary(&state.db, &request.tenant_id, &request.device_id).await?,
     ))
@@ -396,21 +364,15 @@ pub async fn client_devices(
 pub struct ClientCodexAuthorizationRequest {
     tenant_id: String,
     device_id: String,
-    fingerprint: String,
     email: String,
 }
 
 pub async fn client_codex_authorization(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<ClientCodexAuthorizationRequest>,
 ) -> ApiResult<Json<Value>> {
-    ensure_device_identity(
-        &state.db,
-        &request.tenant_id,
-        &request.device_id,
-        &request.fingerprint,
-    )
-    .await?;
+    require_device(&state, &headers, &request.tenant_id, &request.device_id).await?;
     let row = sqlx::query(
         r#"
         select a.id, a.email, t.codex_subscription_enabled,
@@ -470,21 +432,15 @@ pub async fn client_codex_authorization(
 pub struct ClientRevokeDeviceRequest {
     tenant_id: String,
     device_id: String,
-    fingerprint: String,
     target_device_id: String,
 }
 
 pub async fn client_revoke_device(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<ClientRevokeDeviceRequest>,
 ) -> ApiResult<Json<Value>> {
-    ensure_device_identity(
-        &state.db,
-        &request.tenant_id,
-        &request.device_id,
-        &request.fingerprint,
-    )
-    .await?;
+    require_device(&state, &headers, &request.tenant_id, &request.device_id).await?;
     let administrator_id = first_tenant_device_id(&state.db, &request.tenant_id).await?;
     if administrator_id != request.device_id {
         return Err(ApiError::Forbidden(
@@ -536,9 +492,11 @@ pub struct ClientBillingSummaryRequest {
 
 pub async fn client_billing_summary(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<ClientBillingSummaryRequest>,
 ) -> ApiResult<Json<Value>> {
-    ensure_device_lease(&state.db, &request.tenant_id, &request.device_id).await?;
+    require_device(&state, &headers, &request.tenant_id, &request.device_id).await?;
+    release_expired_run_reservations(&state.db, &request.tenant_id).await?;
     let now = Utc::now();
     let (current_month_start, next_month_start) = current_billing_period(now);
     let (ledger_page, ledger_page_size) =
@@ -618,26 +576,26 @@ pub struct RunCreateRequest {
 
 pub async fn run_create(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<RunCreateRequest>,
 ) -> ApiResult<Json<Value>> {
-    ensure_device_lease(&state.db, &request.tenant_id, &request.device_id).await?;
-    ensure_model_enabled(&state.db, &request.model_id).await?;
-    ensure_balance(&state.db, &request.tenant_id, request.budget_yuan).await?;
-    let run_id = format!("run_{}", Uuid::new_v4().simple());
-    sqlx::query(
-        r#"
-        insert into model_runs (id, tenant_id, user_id, device_id, model_id, mode, status, budget_yuan)
-        values ($1, $2, $3, $4, $5, 'gateway_api', 'created', $6)
-        "#,
+    let device_claims =
+        require_device(&state, &headers, &request.tenant_id, &request.device_id).await?;
+    if device_claims.user_id != request.user_id {
+        return Err(ApiError::Forbidden(
+            "device token does not belong to the requested user".to_string(),
+        ));
+    }
+    validate_run_budget(request.budget_yuan)?;
+    let route = load_model_route(
+        &state.db,
+        &request.model_id,
+        state.config.min_gateway_markup_bps,
     )
-    .bind(&run_id)
-    .bind(&request.tenant_id)
-    .bind(&request.user_id)
-    .bind(&request.device_id)
-    .bind(&request.model_id)
-    .bind(request.budget_yuan)
-    .execute(&state.db)
     .await?;
+    load_provider_config(&state.db, &route).await?;
+    let run_id = format!("run_{}", Uuid::new_v4().simple());
+    reserve_run_budget(&state.db, &run_id, &request).await?;
     let token = state.run_tokens.issue(RunTokenClaims::new(
         request.tenant_id,
         request.user_id,
@@ -658,7 +616,7 @@ pub async fn admin_summary(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let tenants = scalar_count(&state.db, "select count(*) from tenants").await?;
     let devices = scalar_count(
         &state.db,
@@ -689,7 +647,7 @@ pub async fn admin_audit_logs(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let rows = sqlx::query(
         r#"
         select tenant_id, action, payload, created_at
@@ -718,7 +676,7 @@ pub async fn admin_list_tenants(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let rows = sqlx::query(
         r#"
         select
@@ -752,7 +710,7 @@ pub async fn admin_tenant_billing(
     Path(id): Path<String>,
     Query(query): Query<AdminTenantBillingQuery>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let tenant_id = id.trim();
     if tenant_id.is_empty() {
         return Err(ApiError::BadRequest("tenant id is required".to_string()));
@@ -836,7 +794,8 @@ pub async fn admin_save_tenant(
     headers: HeaderMap,
     Json(request): Json<TenantSaveRequest>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
+    validate_tenant_fields(&request)?;
     let tenant_id = request
         .id
         .filter(|id| !id.trim().is_empty())
@@ -897,7 +856,7 @@ pub async fn admin_delete_tenant(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let id = id.trim();
     if id.is_empty() {
         return Err(ApiError::BadRequest("tenant id is required".to_string()));
@@ -922,10 +881,11 @@ pub async fn admin_list_authorization_codes(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let rows = sqlx::query(
         r#"
-        select a.id, a.tenant_id, t.name as tenant_name, a.code_hint, a.code_plaintext,
+        select a.id, a.tenant_id, t.name as tenant_name, a.code_hint,
+          (a.code_ciphertext is not null) as revealable,
           a.max_devices, a.status, a.expires_at, a.last_used_at, a.note, a.created_at
         from authorization_codes a
         join tenants t on t.id = a.tenant_id
@@ -940,7 +900,7 @@ pub async fn admin_list_authorization_codes(
             "tenantId": row.get::<String, _>("tenant_id"),
             "tenantName": row.get::<String, _>("tenant_name"),
             "codeHint": row.get::<String, _>("code_hint"),
-            "authorizationCode": row.try_get::<Option<String>, _>("code_plaintext").unwrap_or(None),
+            "revealable": row.get::<bool, _>("revealable"),
             "maxDevices": row.get::<i32, _>("max_devices"),
             "status": row.get::<String, _>("status"),
             "expiresAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("expires_at").unwrap_or(None),
@@ -963,7 +923,7 @@ pub async fn admin_update_authorization_code(
     Path(id): Path<String>,
     Json(request): Json<AuthorizationCodeUpdateRequest>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let id = id.trim();
     let status = request.status.trim();
     if id.is_empty() || !matches!(status, "active" | "revoked" | "expired") {
@@ -991,12 +951,58 @@ pub async fn admin_update_authorization_code(
     Ok(Json(json!({ "id": id, "status": status })))
 }
 
+pub async fn admin_reveal_authorization_code(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&state, &headers)?;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(ApiError::BadRequest(
+            "authorization code id is required".to_string(),
+        ));
+    }
+    let row = sqlx::query(
+        "select tenant_id, code_hint, code_ciphertext from authorization_codes where id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("authorization code not found".to_string()))?;
+    let tenant_id = row.get::<String, _>("tenant_id");
+    let code_hint = row.get::<String, _>("code_hint");
+    let ciphertext = row
+        .try_get::<Option<String>, _>("code_ciphertext")?
+        .ok_or_else(|| {
+            ApiError::Conflict(
+                "this legacy authorization code cannot be revealed; generate a replacement code"
+                    .to_string(),
+            )
+        })?;
+    let authorization_code = state
+        .authorization_code_cipher
+        .decrypt(&ciphertext)
+        .map_err(|error| {
+            tracing::error!(authorization_code_id = %id, %error, "authorization code decryption failed");
+            ApiError::Internal("authorization code could not be decrypted".to_string())
+        })?;
+    write_audit(
+        &state.db,
+        &tenant_id,
+        "authorization_code.reveal",
+        json!({ "id": id, "codeHint": code_hint }),
+    )
+    .await?;
+    Ok(Json(json!({ "authorizationCode": authorization_code })))
+}
+
 pub async fn admin_delete_authorization_code(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let id = id.trim();
     if id.is_empty() {
         return Err(ApiError::BadRequest(
@@ -1037,7 +1043,17 @@ pub async fn admin_create_authorization_code(
     headers: HeaderMap,
     Json(request): Json<AuthorizationCodeCreateRequest>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
+    if !(1..=10_000).contains(&request.max_devices)
+        || request
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= Utc::now())
+    {
+        return Err(ApiError::BadRequest(
+            "maxDevices must be between 1 and 10000 and expiresAt must be in the future"
+                .to_string(),
+        ));
+    }
     let tenant_exists = sqlx::query("select 1 from tenants where id = $1")
         .bind(&request.tenant_id)
         .fetch_optional(&state.db)
@@ -1050,19 +1066,26 @@ pub async fn admin_create_authorization_code(
     let normalized = normalize_authorization_code(&code);
     let code_hash = hash_authorization_code(&normalized);
     let code_hint = code_hint(&normalized);
+    let code_ciphertext = state
+        .authorization_code_cipher
+        .encrypt(&normalized)
+        .map_err(|error| {
+            tracing::error!(%error, "authorization code encryption failed");
+            ApiError::Internal("authorization code could not be protected".to_string())
+        })?;
     let id = format!("auth_{}", Uuid::new_v4().simple());
     sqlx::query(
         r#"
         insert into authorization_codes
-          (id, tenant_id, code_hash, code_hint, code_plaintext, max_devices, expires_at, note)
-        values ($1, $2, $3, $4, $5, $6, $7, $8)
+          (id, tenant_id, code_hash, code_hint, code_plaintext, code_ciphertext, max_devices, expires_at, note)
+        values ($1, $2, $3, $4, null, $5, $6, $7, $8)
         "#,
     )
     .bind(&id)
     .bind(&request.tenant_id)
     .bind(code_hash)
     .bind(&code_hint)
-    .bind(&normalized)
+    .bind(code_ciphertext)
     .bind(request.max_devices)
     .bind(request.expires_at)
     .bind(&request.note)
@@ -1091,7 +1114,7 @@ pub async fn admin_list_provider_configs(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let rows = sqlx::query(
         r#"
         select provider, label, base_url, endpoint_path, api_key, api_format, auth_type,
@@ -1182,7 +1205,7 @@ pub async fn admin_save_provider_config(
     headers: HeaderMap,
     Json(request): Json<ProviderConfigSaveRequest>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let provider = request.provider.trim().to_lowercase();
     if provider.is_empty() || request.base_url.trim().is_empty() {
         return Err(ApiError::BadRequest(
@@ -1250,7 +1273,7 @@ pub async fn admin_discover_provider_models(
     headers: HeaderMap,
     Json(request): Json<ProviderConfigSaveRequest>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let provider_id = request.provider.trim().to_lowercase();
     if provider_id.is_empty() || request.base_url.trim().is_empty() {
         return Err(ApiError::BadRequest(
@@ -1320,7 +1343,7 @@ pub async fn admin_delete_provider_config(
     headers: HeaderMap,
     Path(provider): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let provider = provider.trim().to_lowercase();
     if provider.is_empty() {
         return Err(ApiError::BadRequest("provider is required".to_string()));
@@ -1358,7 +1381,7 @@ pub async fn admin_list_model_routes(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let rows = sqlx::query(
         r#"
         select m.id, m.model_id, m.label, m.provider, m.mode, m.base_url, m.endpoint_path,
@@ -1413,7 +1436,8 @@ pub async fn admin_save_model_route(
     headers: HeaderMap,
     Json(request): Json<ModelRouteSaveRequest>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
+    validate_model_route_fields(&request, state.config.min_gateway_markup_bps)?;
     if request.model_id.trim().is_empty() || request.upstream_model.trim().is_empty() {
         return Err(ApiError::BadRequest(
             "modelId and upstreamModel are required".to_string(),
@@ -1426,7 +1450,7 @@ pub async fn admin_save_model_route(
     let provider_base_url = provider_row
         .as_ref()
         .map(|row| row.get::<String, _>("base_url"))
-        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        .ok_or_else(|| ApiError::BadRequest("provider must be configured first".to_string()))?;
     let id = request
         .id
         .filter(|id| !id.trim().is_empty())
@@ -1492,7 +1516,7 @@ pub async fn admin_delete_model_route(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let id = id.trim();
     if id.is_empty() {
         return Err(ApiError::BadRequest(
@@ -1520,7 +1544,7 @@ pub async fn admin_list_codex_accounts(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let rows = sqlx::query(
         r#"
         select c.id, c.tenant_id, t.name as tenant_name, c.email, c.login_secret,
@@ -1573,7 +1597,7 @@ pub async fn admin_save_codex_account(
     headers: HeaderMap,
     Json(request): Json<CodexAccountSaveRequest>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     if request.email.trim().is_empty() {
         return Err(ApiError::BadRequest("email is required".to_string()));
     }
@@ -1643,7 +1667,7 @@ pub async fn admin_delete_codex_account(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    require_admin(&headers)?;
+    require_admin(&state, &headers)?;
     let id = id.trim();
     if id.is_empty() {
         return Err(ApiError::BadRequest(
@@ -1762,6 +1786,13 @@ pub async fn client_activate(
             .unwrap_or(None),
         Utc::now(),
     );
+    let access_token = issue_device_access_token(
+        &state,
+        &tenant_id,
+        &user_id,
+        &device_id,
+        &request.fingerprint,
+    )?;
     Ok(Json(json!({
         "tenant": {
             "id": tenant_id,
@@ -1778,6 +1809,7 @@ pub async fn client_activate(
         },
         "device": {
             "id": device_id,
+            "accessToken": access_token,
             "leaseExpiresAt": lease_expires_at
         },
         "models": models,
@@ -1791,6 +1823,7 @@ pub async fn gateway_models(
 ) -> ApiResult<Json<Value>> {
     let token = bearer_token(&headers)?;
     let claims = state.run_tokens.verify(token)?;
+    ensure_gateway_run_available(&state.db, &claims).await?;
     let row = sqlx::query(
         "select model_id, label from model_routes where model_id = $1 and enabled = true",
     )
@@ -1816,22 +1849,55 @@ pub async fn gateway_responses(
 ) -> ApiResult<Response> {
     let token = bearer_token(&headers)?;
     let claims = state.run_tokens.verify(token)?;
-    let route = load_model_route(&state.db, &claims.model_id).await?;
+    ensure_gateway_run_available(&state.db, &claims).await?;
+    let route = load_model_route(
+        &state.db,
+        &claims.model_id,
+        state.config.min_gateway_markup_bps,
+    )
+    .await?;
     let provider = load_provider_config(&state.db, &route).await?;
+    enforce_request_budget(&mut body, claims.budget_yuan, &route.pricing)?;
     let original_body = body.clone();
     let upstream_request = build_upstream_request(&provider, &route.upstream_model, &mut body)
         .map_err(ApiError::BadRequest)?;
 
     let started = Utc::now();
-    sqlx::query("update model_runs set status = 'running', started_at = coalesce(started_at, now()) where id = $1")
-        .bind(&claims.run_id)
-        .execute(&state.db)
-        .await?;
+    start_gateway_run(&state.db, &claims).await?;
 
-    let upstream = send_upstream_post(&state.http, &upstream_request, &body, &claims.run_id)
-        .await
-        .map_err(ApiError::Upstream)?;
+    let upstream =
+        match send_upstream_post(&state.http, &upstream_request, &body, &claims.run_id).await {
+            Ok(response) => response,
+            Err(error) => {
+                if error.may_have_incurred_cost {
+                    settle_and_record_usage(
+                        &state.db,
+                        &claims,
+                        &route.pricing,
+                        &GatewayUsage::default(),
+                        0,
+                        started,
+                        MeteringStatus::BudgetFallback("ambiguous upstream transport failure"),
+                    )
+                    .await?;
+                } else {
+                    fail_run_and_release_reservation(&state.db, &claims, None).await?;
+                }
+                return Err(ApiError::Upstream(error.message));
+            }
+        };
     let status = upstream.status();
+    if status.is_success() && upstream_request.stream_response {
+        return Ok(stream_upstream_response(
+            upstream,
+            upstream_request,
+            original_body,
+            state.db.clone(),
+            claims,
+            route.pricing,
+            started,
+        ));
+    }
     let text = upstream.text().await?;
     let upstream_body =
         serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({ "raw": text }));
@@ -1844,12 +1910,17 @@ pub async fn gateway_responses(
         ) {
             Ok(body) => body,
             Err(error) => {
-                sqlx::query(
-                    "update model_runs set status = 'failed', completed_at = now(), upstream_status = $2 where id = $1",
+                settle_and_record_usage(
+                    &state.db,
+                    &claims,
+                    &route.pricing,
+                    &GatewayUsage::default(),
+                    status.as_u16(),
+                    started,
+                    MeteringStatus::BudgetFallback(
+                        "successful upstream response could not be normalized",
+                    ),
                 )
-                .bind(&claims.run_id)
-                .bind(status.as_u16() as i32)
-                .execute(&state.db)
                 .await?;
                 return Err(ApiError::Upstream(error));
             }
@@ -1862,28 +1933,28 @@ pub async fn gateway_responses(
             &usage,
             status.as_u16(),
             started,
+            MeteringStatus::from_usage(&usage, "upstream response omitted usage"),
         )
         .await?;
         let response_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
-        if upstream_request.stream_response {
-            let sse = crate::gateway::responses_body_to_sse(&response_body);
-            Ok((
-                response_status,
-                [("content-type", "text/event-stream; charset=utf-8")],
-                sse,
-            )
-                .into_response())
-        } else {
-            Ok((response_status, Json(response_body)).into_response())
-        }
+        Ok((response_status, Json(response_body)).into_response())
     } else {
-        sqlx::query(
-            "update model_runs set status = 'failed', completed_at = now(), upstream_status = $2 where id = $1",
-        )
-        .bind(&claims.run_id)
-        .bind(status.as_u16() as i32)
-        .execute(&state.db)
-        .await?;
+        if status.is_server_error() || status.as_u16() == 408 {
+            settle_and_record_usage(
+                &state.db,
+                &claims,
+                &route.pricing,
+                &GatewayUsage::default(),
+                status.as_u16(),
+                started,
+                MeteringStatus::BudgetFallback(
+                    "upstream may have incurred inference cost before returning an error",
+                ),
+            )
+            .await?;
+        } else {
+            fail_run_and_release_reservation(&state.db, &claims, Some(status.as_u16())).await?;
+        }
         Ok((
             StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
             Json(normalize_upstream_error_body(
@@ -1896,13 +1967,206 @@ pub async fn gateway_responses(
     }
 }
 
+fn stream_upstream_response(
+    upstream: reqwest::Response,
+    request: UpstreamRequest,
+    original_body: Value,
+    pool: PgPool,
+    claims: RunTokenClaims,
+    pricing: Pricing,
+    started: chrono::DateTime<Utc>,
+) -> Response {
+    let upstream_status = upstream.status().as_u16();
+    let format = request.response_format;
+    let namespace_tool_compat = request.namespace_tool_compat;
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(32);
+
+    tokio::spawn(async move {
+        let mut source = upstream.bytes_stream();
+        let mut decoder = SseDecoder::default();
+        let mut adapter = (format != crate::gateway::UpstreamResponseFormat::Responses)
+            .then(|| ResponsesStreamAdapter::new(format, &original_body));
+        let mut usage = GatewayUsage::default();
+        let mut failed = false;
+        let mut failure_message = None;
+
+        while let Some(chunk) = source.next().await {
+            match chunk {
+                Ok(chunk) => {
+                    let frames = decoder.push(&chunk);
+                    if let Some(adapter) = adapter.as_mut() {
+                        for frame in frames {
+                            let Some(data) = frame.data else {
+                                continue;
+                            };
+                            match adapter.ingest(&data) {
+                                Ok(output) => send_stream_bytes(&sender, output).await,
+                                Err(error) => {
+                                    failed = true;
+                                    failure_message = Some(error.clone());
+                                    send_stream_bytes(&sender, adapter.fail(&error)).await;
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        for frame in frames {
+                            if let Some(data) = frame.data.as_deref() {
+                                match inspect_responses_stream_data(&data) {
+                                    Some(NativeStreamEvent::Completed(value)) => usage = value,
+                                    Some(NativeStreamEvent::Failed) => failed = true,
+                                    None => {}
+                                }
+                            }
+                            if namespace_tool_compat {
+                                let output =
+                                    restore_namespace_tools_in_sse_frame(frame, &original_body);
+                                let _ = sender.send(Ok(Bytes::from(output))).await;
+                            }
+                        }
+                        if !namespace_tool_compat {
+                            // Native Responses SSE needs no protocol conversion. Forward each
+                            // network chunk immediately instead of waiting for a complete event.
+                            let _ = sender.send(Ok(chunk)).await;
+                        }
+                    }
+                    if failed {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    failed = true;
+                    failure_message = Some(error.to_string());
+                    if let Some(adapter) = adapter.as_mut() {
+                        send_stream_bytes(&sender, adapter.fail(&error.to_string())).await;
+                    } else {
+                        send_stream_bytes(&sender, native_stream_failure(&error.to_string())).await;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if !failed {
+            if let Some(frame) = decoder.finish() {
+                if let Some(adapter) = adapter.as_mut() {
+                    if let Some(data) = frame.data.as_deref() {
+                        match adapter.ingest(&data) {
+                            Ok(output) => send_stream_bytes(&sender, output).await,
+                            Err(error) => {
+                                failed = true;
+                                failure_message = Some(error.clone());
+                                send_stream_bytes(&sender, adapter.fail(&error)).await;
+                            }
+                        }
+                    }
+                } else {
+                    if let Some(data) = frame.data.as_deref() {
+                        if let Some(event) = inspect_responses_stream_data(data) {
+                            match event {
+                                NativeStreamEvent::Completed(value) => usage = value,
+                                NativeStreamEvent::Failed => failed = true,
+                            }
+                        }
+                    }
+                    if namespace_tool_compat {
+                        let output = restore_namespace_tools_in_sse_frame(frame, &original_body);
+                        let _ = sender.send(Ok(Bytes::from(output))).await;
+                    }
+                }
+            }
+        }
+
+        if !failed {
+            if let Some(adapter) = adapter.as_mut() {
+                send_stream_bytes(&sender, adapter.finish()).await;
+                usage = adapter.usage();
+            }
+        }
+        // Close the client response before the database update below. Billing and
+        // failure recording continue in this task without extending the SSE lifetime.
+        drop(sender);
+
+        if !failed {
+            if let Err(error) = settle_and_record_usage(
+                &pool,
+                &claims,
+                &pricing,
+                &usage,
+                upstream_status,
+                started,
+                MeteringStatus::from_usage(&usage, "upstream stream omitted final usage"),
+            )
+            .await
+            {
+                tracing::error!(run_id = %claims.run_id, %error, "failed to settle streamed model usage");
+            }
+        } else {
+            if let Err(error) = settle_and_record_usage(
+                &pool,
+                &claims,
+                &pricing,
+                &usage,
+                upstream_status,
+                started,
+                MeteringStatus::BudgetFallback("upstream stream failed after dispatch"),
+            )
+            .await
+            {
+                tracing::error!(run_id = %claims.run_id, %error, "failed to settle failed streamed model usage");
+            }
+            if let Some(message) = failure_message {
+                tracing::warn!(run_id = %claims.run_id, %message, "upstream model stream failed");
+            }
+        }
+    });
+
+    Response::builder()
+        .status(StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::OK))
+        .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache, no-transform")
+        .header("x-accel-buffering", "no")
+        .body(Body::from_stream(
+            tokio_stream::wrappers::ReceiverStream::new(receiver),
+        ))
+        .expect("streaming response headers are valid")
+}
+
+async fn send_stream_bytes(
+    sender: &tokio::sync::mpsc::Sender<Result<Bytes, Infallible>>,
+    output: String,
+) {
+    if !output.is_empty() {
+        let _ = sender.send(Ok(Bytes::from(output))).await;
+    }
+}
+
+fn native_stream_failure(message: &str) -> String {
+    let escaped = json!({
+        "type": "response.failed",
+        "response": {
+            "id": "resp_alpha_studio_gateway",
+            "status": "failed",
+            "error": { "code": "upstream_stream_error", "message": message }
+        }
+    });
+    format!("event: response.failed\ndata: {escaped}\n\ndata: [DONE]\n\n")
+}
+
+#[derive(Debug)]
+struct UpstreamPostError {
+    message: String,
+    may_have_incurred_cost: bool,
+}
+
 async fn send_upstream_post(
     client: &reqwest::Client,
     request: &UpstreamRequest,
     body: &Value,
     idempotency_key: &str,
-) -> Result<reqwest::Response, String> {
+) -> Result<reqwest::Response, UpstreamPostError> {
     let mut last_error = None;
+    let mut may_have_incurred_cost = false;
     for attempt in 0..=request.max_retries {
         let mut builder = client
             .post(&request.url)
@@ -1916,7 +2180,9 @@ async fn send_upstream_post(
         }
         match builder.send().await {
             Ok(response) => {
-                if attempt < request.max_retries && is_retryable_status(response.status()) {
+                // A POST retry can buy the same inference twice when a provider does not
+                // honor idempotency keys. Only 429 is unambiguously safe to retry.
+                if attempt < request.max_retries && response.status().as_u16() == 429 {
                     let delay = retry_delay(response.headers(), attempt);
                     tokio::time::sleep(delay).await;
                     continue;
@@ -1924,7 +2190,8 @@ async fn send_upstream_post(
                 return Ok(response);
             }
             Err(error) => {
-                let retryable = error.is_timeout() || error.is_connect() || error.is_request();
+                let retryable = error.is_connect();
+                may_have_incurred_cost |= error.is_timeout();
                 last_error = Some(error.to_string());
                 if attempt >= request.max_retries || !retryable {
                     break;
@@ -1933,7 +2200,10 @@ async fn send_upstream_post(
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| "upstream request failed".to_string()))
+    Err(UpstreamPostError {
+        message: last_error.unwrap_or_else(|| "upstream request failed".to_string()),
+        may_have_incurred_cost,
+    })
 }
 
 async fn send_upstream_get(
@@ -2018,7 +2288,11 @@ async fn load_models(pool: &PgPool) -> Result<Vec<Value>, sqlx::Error> {
         .collect())
 }
 
-async fn load_model_route(pool: &PgPool, model_id: &str) -> ApiResult<ModelRoute> {
+async fn load_model_route(
+    pool: &PgPool,
+    model_id: &str,
+    minimum_markup_bps: u64,
+) -> ApiResult<ModelRoute> {
     let row = sqlx::query(
         r#"
         select provider, base_url, endpoint_path, upstream_model, input_yuan_per_million,
@@ -2034,18 +2308,27 @@ async fn load_model_route(pool: &PgPool, model_id: &str) -> ApiResult<ModelRoute
     .ok_or_else(|| {
         ApiError::NotFound(format!("model {model_id} is not available for gateway API"))
     })?;
+    let markup_bps = u64::try_from(row.get::<i64, _>("markup_bps")).map_err(|_| {
+        ApiError::BadRequest(format!("model {model_id} has invalid negative markup"))
+    })?;
+    let pricing = Pricing {
+        input_yuan_per_million: row.get("input_yuan_per_million"),
+        output_yuan_per_million: row.get("output_yuan_per_million"),
+        reasoning_yuan_per_million: row.get("reasoning_yuan_per_million"),
+        cached_input_yuan_per_million: row.get("cached_input_yuan_per_million"),
+        markup_bps,
+    };
+    if !pricing.is_valid() || pricing.markup_bps < minimum_markup_bps {
+        return Err(ApiError::BadRequest(format!(
+            "model {model_id} has unsafe or incomplete pricing and has been blocked"
+        )));
+    }
     Ok(ModelRoute {
         provider: row.get("provider"),
         base_url: row.get("base_url"),
         endpoint_path: row.get("endpoint_path"),
         upstream_model: row.get("upstream_model"),
-        pricing: Pricing {
-            input_yuan_per_million: row.get("input_yuan_per_million"),
-            output_yuan_per_million: row.get("output_yuan_per_million"),
-            reasoning_yuan_per_million: row.get("reasoning_yuan_per_million"),
-            cached_input_yuan_per_million: row.get("cached_input_yuan_per_million"),
-            markup_bps: row.get::<i64, _>("markup_bps") as u64,
-        },
+        pricing,
     })
 }
 
@@ -2099,25 +2382,6 @@ fn json_value_to_string_map(value: Value) -> BTreeMap<String, String> {
         .collect()
 }
 
-async fn ensure_tenant_capacity(
-    pool: &PgPool,
-    tenant_id: &str,
-    fingerprint: &str,
-) -> ApiResult<()> {
-    let row = sqlx::query("select max_devices from tenants where id = $1 and status = 'active'")
-        .bind(tenant_id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| ApiError::Forbidden("tenant is not active".to_string()))?;
-    ensure_device_capacity_for_fingerprint(
-        pool,
-        tenant_id,
-        fingerprint,
-        row.get::<i32, _>("max_devices"),
-    )
-    .await
-}
-
 async fn ensure_device_capacity_for_fingerprint(
     pool: &PgPool,
     tenant_id: &str,
@@ -2152,32 +2416,65 @@ async fn ensure_device_capacity_for_fingerprint(
     Ok(())
 }
 
-async fn ensure_device_identity(
-    pool: &PgPool,
+pub(crate) async fn require_device(
+    state: &AppState,
+    headers: &HeaderMap,
     tenant_id: &str,
     device_id: &str,
-    fingerprint: &str,
-) -> ApiResult<()> {
-    let exists = sqlx::query(
+) -> ApiResult<DeviceTokenClaims> {
+    let token = bearer_token(headers)?;
+    let claims = state
+        .device_tokens
+        .verify(token)
+        .map_err(|_| ApiError::Unauthorized("invalid or expired device token".to_string()))?;
+    if claims.tenant_id != tenant_id || claims.device_id != device_id {
+        return Err(ApiError::Forbidden(
+            "device token does not match the requested tenant/device".to_string(),
+        ));
+    }
+    let row = sqlx::query(
         r#"
-        select 1 from devices
-        where tenant_id = $1 and id = $2 and fingerprint = $3
+        select user_id, fingerprint from devices
+        where tenant_id = $1 and id = $2
           and status = 'active' and lease_expires_at > now()
         "#,
     )
     .bind(tenant_id)
     .bind(device_id)
-    .bind(fingerprint)
-    .fetch_optional(pool)
+    .fetch_optional(&state.db)
     .await?
-    .is_some();
-    if exists {
-        Ok(())
-    } else {
-        Err(ApiError::Forbidden(
-            "device identity is invalid or inactive".to_string(),
-        ))
+    .ok_or_else(|| ApiError::Forbidden("device identity is invalid or inactive".to_string()))?;
+    let user_id = row.get::<String, _>("user_id");
+    let fingerprint = row.get::<String, _>("fingerprint");
+    if claims.user_id != user_id || claims.fingerprint_hash != hash_device_fingerprint(&fingerprint)
+    {
+        return Err(ApiError::Forbidden(
+            "device token no longer matches the activated device".to_string(),
+        ));
     }
+    Ok(claims)
+}
+
+fn issue_device_access_token(
+    state: &AppState,
+    tenant_id: &str,
+    user_id: &str,
+    device_id: &str,
+    fingerprint: &str,
+) -> ApiResult<String> {
+    Ok(state.device_tokens.issue(DeviceTokenClaims::new(
+        tenant_id.to_string(),
+        user_id.to_string(),
+        device_id.to_string(),
+        hash_device_fingerprint(fingerprint),
+        i64::from(CLIENT_DEVICE_LEASE_DAYS) * 24 * 60 * 60,
+    ))?)
+}
+
+fn hash_device_fingerprint(fingerprint: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(fingerprint.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 async fn first_tenant_device_id(pool: &PgPool, tenant_id: &str) -> ApiResult<String> {
@@ -2238,55 +2535,346 @@ async fn client_device_summary(
     }))
 }
 
-async fn ensure_device_lease(pool: &PgPool, tenant_id: &str, device_id: &str) -> ApiResult<()> {
-    let exists = sqlx::query(
+async fn ensure_gateway_run_available(pool: &PgPool, claims: &RunTokenClaims) -> ApiResult<()> {
+    let row = sqlx::query(
         r#"
-        select 1 from devices
-        where tenant_id = $1 and id = $2 and status = 'active' and lease_expires_at > now()
+        select r.tenant_id, r.user_id, r.device_id, r.model_id, r.status, r.budget_yuan
+        from model_runs r
+        join tenants t on t.id = r.tenant_id and t.status = 'active'
+        join devices d on d.id = r.device_id and d.tenant_id = r.tenant_id
+          and d.status = 'active' and d.lease_expires_at > now()
+        where r.id = $1
+          and (r.status = 'running' or (r.status = 'created' and r.created_at > now() - interval '20 minutes'))
         "#,
     )
-    .bind(tenant_id)
-    .bind(device_id)
+    .bind(&claims.run_id)
     .fetch_optional(pool)
     .await?
-    .is_some();
-    if exists {
+    .ok_or_else(|| ApiError::Unauthorized("run token is invalid, expired, or already used".to_string()))?;
+    validate_run_claim_bindings(&row, claims)
+}
+
+async fn start_gateway_run(pool: &PgPool, claims: &RunTokenClaims) -> ApiResult<()> {
+    let row = sqlx::query(
+        r#"
+        update model_runs r
+        set status = 'running', started_at = now()
+        from tenants t, devices d
+        where r.id = $1 and r.tenant_id = $2 and r.user_id = $3
+          and r.device_id = $4 and r.model_id = $5
+          and abs(r.budget_yuan - $6) < 0.0000001
+          and r.status = 'created' and r.created_at > now() - interval '20 minutes'
+          and t.id = r.tenant_id and t.status = 'active'
+          and d.id = r.device_id and d.tenant_id = r.tenant_id
+          and d.status = 'active' and d.lease_expires_at > now()
+        returning r.id
+        "#,
+    )
+    .bind(&claims.run_id)
+    .bind(&claims.tenant_id)
+    .bind(&claims.user_id)
+    .bind(&claims.device_id)
+    .bind(&claims.model_id)
+    .bind(claims.budget_yuan)
+    .fetch_optional(pool)
+    .await?;
+    if row.is_some() {
         Ok(())
     } else {
         Err(ApiError::Forbidden(
-            "device lease is expired or inactive".to_string(),
+            "run token has expired or has already been consumed".to_string(),
         ))
     }
 }
 
-async fn ensure_model_enabled(pool: &PgPool, model_id: &str) -> ApiResult<()> {
-    let exists = sqlx::query("select 1 from model_routes where model_id = $1 and enabled = true")
-        .bind(model_id)
-        .fetch_optional(pool)
-        .await?
-        .is_some();
-    if exists {
+fn validate_run_claim_bindings(
+    row: &sqlx::postgres::PgRow,
+    claims: &RunTokenClaims,
+) -> ApiResult<()> {
+    let matches = row.get::<String, _>("tenant_id") == claims.tenant_id
+        && row.get::<String, _>("user_id") == claims.user_id
+        && row.get::<String, _>("device_id") == claims.device_id
+        && row.get::<String, _>("model_id") == claims.model_id
+        && (row.get::<f64, _>("budget_yuan") - claims.budget_yuan).abs() < 0.0000001;
+    if matches {
         Ok(())
     } else {
-        Err(ApiError::NotFound(format!(
-            "model {model_id} is not enabled"
-        )))
+        Err(ApiError::Unauthorized(
+            "run token claims do not match the persisted run".to_string(),
+        ))
     }
 }
 
-async fn ensure_balance(pool: &PgPool, tenant_id: &str, budget_yuan: f64) -> ApiResult<()> {
-    let row = sqlx::query("select balance_yuan from tenants where id = $1 and status = 'active'")
-        .bind(tenant_id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| ApiError::Forbidden("tenant is not active".to_string()))?;
-    let balance = row.get::<f64, _>("balance_yuan");
-    if balance < budget_yuan {
+fn enforce_request_budget(body: &mut Value, budget_yuan: f64, pricing: &Pricing) -> ApiResult<()> {
+    validate_run_budget(budget_yuan)?;
+    if !pricing.is_valid() {
+        return Err(ApiError::BadRequest(
+            "model pricing is unsafe or incomplete".to_string(),
+        ));
+    }
+    let requested_max = match body.get("max_output_tokens") {
+        Some(value) => value.as_u64().filter(|value| *value > 0).ok_or_else(|| {
+            ApiError::BadRequest("max_output_tokens must be a positive integer".to_string())
+        })?,
+        None => 1_000_000,
+    };
+    let request_bytes = serde_json::to_vec(body)
+        .map_err(|_| ApiError::BadRequest("request body cannot be metered".to_string()))?
+        .len()
+        .saturating_add(1_024) as u64;
+    let charge_for = |output_tokens| {
+        settle_usage_yuan(
+            &GatewayUsage {
+                input_tokens: request_bytes,
+                output_tokens,
+                reasoning_tokens: output_tokens,
+                cached_tokens: request_bytes,
+            },
+            pricing,
+        )
+        .billable_yuan
+    };
+    if charge_for(0) > budget_yuan {
         return Err(ApiError::Forbidden(
-            "prepaid balance is insufficient".to_string(),
+            "run budget is too small for the request input".to_string(),
+        ));
+    }
+    let mut low = 0_u64;
+    let mut high = 1_000_000_u64;
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        if charge_for(middle) <= budget_yuan {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    if low == 0 {
+        return Err(ApiError::Forbidden(
+            "run budget cannot fund even one output token".to_string(),
+        ));
+    }
+    let safe_max = requested_max.min(low);
+    body.as_object_mut()
+        .ok_or_else(|| ApiError::BadRequest("request body must be a JSON object".to_string()))?
+        .insert("max_output_tokens".to_string(), json!(safe_max));
+    Ok(())
+}
+
+async fn fail_run_and_release_reservation(
+    pool: &PgPool,
+    claims: &RunTokenClaims,
+    upstream_status: Option<u16>,
+) -> ApiResult<()> {
+    let mut tx = pool.begin().await?;
+    let run = sqlx::query(
+        r#"
+        select tenant_id, user_id, device_id, model_id, status, budget_yuan
+        from model_runs where id = $1 for update
+        "#,
+    )
+    .bind(&claims.run_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        ApiError::Unauthorized("run token does not reference a valid run".to_string())
+    })?;
+    validate_run_claim_bindings(&run, claims)?;
+    let status = run.get::<String, _>("status");
+    if matches!(status.as_str(), "completed" | "failed" | "expired") {
+        tx.rollback().await?;
+        return Ok(());
+    }
+    let release = sqlx::query(
+        r#"
+        insert into billing_ledger
+          (id, tenant_id, run_id, entry_type, amount_yuan, description, operation_key)
+        select $1, $2, $3, 'reservation_release', $4, $5, $6
+        where exists (select 1 from billing_ledger where operation_key = $7)
+        on conflict (operation_key) where operation_key is not null do nothing
+        "#,
+    )
+    .bind(format!("ledger_{}", Uuid::new_v4().simple()))
+    .bind(&claims.tenant_id)
+    .bind(&claims.run_id)
+    .bind(claims.budget_yuan)
+    .bind(format!(
+        "{} run failed before billable completion",
+        claims.model_id
+    ))
+    .bind(format!("release:{}", claims.run_id))
+    .bind(format!("reservation:{}", claims.run_id))
+    .execute(&mut *tx)
+    .await?;
+    if release.rows_affected() == 1 {
+        sqlx::query(
+            "update tenants set balance_yuan = round((balance_yuan + $2)::numeric, 6)::double precision, updated_at = now() where id = $1",
+        )
+        .bind(&claims.tenant_id)
+        .bind(claims.budget_yuan)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query(
+        "update model_runs set status = 'failed', completed_at = now(), upstream_status = $2 where id = $1",
+    )
+    .bind(&claims.run_id)
+    .bind(upstream_status.map(i32::from))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+fn validate_run_budget(budget_yuan: f64) -> ApiResult<()> {
+    if !budget_yuan.is_finite() || !(0.01..=10_000.0).contains(&budget_yuan) {
+        return Err(ApiError::BadRequest(
+            "budgetYuan must be a finite amount between 0.01 and 10000".to_string(),
         ));
     }
     Ok(())
+}
+
+async fn reserve_run_budget(
+    pool: &PgPool,
+    run_id: &str,
+    request: &RunCreateRequest,
+) -> ApiResult<()> {
+    release_expired_run_reservations(pool, &request.tenant_id).await?;
+    let mut tx = pool.begin().await?;
+    let reserved = sqlx::query(
+        r#"
+        update tenants
+        set balance_yuan = round((balance_yuan - $2)::numeric, 6)::double precision, updated_at = now()
+        where id = $1 and status = 'active' and balance_yuan >= $2
+        returning balance_yuan
+        "#,
+    )
+    .bind(&request.tenant_id)
+    .bind(request.budget_yuan)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if reserved.is_none() {
+        return Err(ApiError::Forbidden(
+            "prepaid balance is insufficient for this run budget".to_string(),
+        ));
+    }
+    sqlx::query(
+        r#"
+        insert into model_runs (id, tenant_id, user_id, device_id, model_id, mode, status, budget_yuan)
+        values ($1, $2, $3, $4, $5, 'gateway_api', 'created', $6)
+        "#,
+    )
+    .bind(run_id)
+    .bind(&request.tenant_id)
+    .bind(&request.user_id)
+    .bind(&request.device_id)
+    .bind(&request.model_id)
+    .bind(request.budget_yuan)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        insert into billing_ledger
+          (id, tenant_id, run_id, entry_type, amount_yuan, description, operation_key)
+        values ($1, $2, $3, 'usage_reservation', $4, $5, $6)
+        "#,
+    )
+    .bind(format!("ledger_{}", Uuid::new_v4().simple()))
+    .bind(&request.tenant_id)
+    .bind(run_id)
+    .bind(-request.budget_yuan)
+    .bind(format!("{} run budget reservation", request.model_id))
+    .bind(format!("reservation:{run_id}"))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn release_expired_run_reservations(pool: &PgPool, tenant_id: &str) -> ApiResult<()> {
+    let mut tx = pool.begin().await?;
+    let tenant_exists = sqlx::query("select 1 from tenants where id = $1 for update")
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some();
+    if !tenant_exists {
+        return Err(ApiError::Forbidden("tenant is not active".to_string()));
+    }
+    let expired = sqlx::query(
+        r#"
+        select r.id, r.model_id, r.budget_yuan
+        from model_runs r
+        where r.tenant_id = $1 and r.status = 'created'
+          and r.created_at <= now() - interval '20 minutes'
+        for update
+        "#,
+    )
+    .bind(tenant_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    for row in expired {
+        let run_id = row.get::<String, _>("id");
+        let budget_yuan = row.get::<f64, _>("budget_yuan");
+        let had_reservation = sqlx::query("select 1 from billing_ledger where operation_key = $1")
+            .bind(format!("reservation:{run_id}"))
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+        sqlx::query(
+            "update model_runs set status = 'expired', completed_at = now() where id = $1 and status = 'created'",
+        )
+        .bind(&run_id)
+        .execute(&mut *tx)
+        .await?;
+        if had_reservation {
+            sqlx::query(
+                "update tenants set balance_yuan = round((balance_yuan + $2)::numeric, 6)::double precision, updated_at = now() where id = $1",
+            )
+            .bind(tenant_id)
+            .bind(budget_yuan)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"
+                insert into billing_ledger
+                  (id, tenant_id, run_id, entry_type, amount_yuan, description, operation_key)
+                values ($1, $2, $3, 'reservation_release', $4, $5, $6)
+                on conflict (operation_key) where operation_key is not null do nothing
+                "#,
+            )
+            .bind(format!("ledger_{}", Uuid::new_v4().simple()))
+            .bind(tenant_id)
+            .bind(&run_id)
+            .bind(budget_yuan)
+            .bind(format!(
+                "{} unused run budget released after token expiry",
+                row.get::<String, _>("model_id")
+            ))
+            .bind(format!("release:{run_id}"))
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum MeteringStatus<'a> {
+    Reported,
+    BudgetFallback(&'a str),
+}
+
+impl<'a> MeteringStatus<'a> {
+    fn from_usage(usage: &GatewayUsage, fallback_reason: &'a str) -> Self {
+        if usage.is_empty() {
+            Self::BudgetFallback(fallback_reason)
+        } else {
+            Self::Reported
+        }
+    }
 }
 
 async fn settle_and_record_usage(
@@ -2296,62 +2884,165 @@ async fn settle_and_record_usage(
     usage: &GatewayUsage,
     upstream_status: u16,
     started: chrono::DateTime<Utc>,
+    metering_status: MeteringStatus<'_>,
 ) -> ApiResult<()> {
-    let charge = settle_usage_yuan(usage, pricing);
+    let measured_charge = settle_usage_yuan(usage, pricing);
+    let (cost_yuan, billable_yuan, metering_label, billing_note) = match metering_status {
+        MeteringStatus::Reported => (
+            measured_charge.cost_yuan,
+            measured_charge.billable_yuan,
+            "reported",
+            "",
+        ),
+        MeteringStatus::BudgetFallback(reason) => {
+            let multiplier = (10_000_u64.saturating_add(pricing.markup_bps)) as f64 / 10_000.0;
+            let estimated_cost = if multiplier.is_finite() && multiplier > 0.0 {
+                claims.budget_yuan / multiplier
+            } else {
+                claims.budget_yuan
+            };
+            (
+                measured_charge.cost_yuan.max(estimated_cost),
+                claims.budget_yuan,
+                "budget_fallback",
+                reason,
+            )
+        }
+    };
     let latency_ms = (Utc::now() - started).num_milliseconds().max(0);
+    let input_tokens = i64::try_from(usage.input_tokens)
+        .map_err(|_| ApiError::BadRequest("input token count is too large".to_string()))?;
+    let output_tokens = i64::try_from(usage.output_tokens)
+        .map_err(|_| ApiError::BadRequest("output token count is too large".to_string()))?;
+    let reasoning_tokens = i64::try_from(usage.reasoning_tokens)
+        .map_err(|_| ApiError::BadRequest("reasoning token count is too large".to_string()))?;
+    let cached_tokens = i64::try_from(usage.cached_tokens)
+        .map_err(|_| ApiError::BadRequest("cached token count is too large".to_string()))?;
+    let mut tx = pool.begin().await?;
+    let run = sqlx::query(
+        r#"
+        select tenant_id, user_id, device_id, model_id, status, budget_yuan
+        from model_runs where id = $1 for update
+        "#,
+    )
+    .bind(&claims.run_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        ApiError::Unauthorized("run token does not reference a valid run".to_string())
+    })?;
+    validate_run_claim_bindings(&run, claims)?;
+    if run.get::<String, _>("status") == "completed" {
+        tx.rollback().await?;
+        return Ok(());
+    }
+    if run.get::<String, _>("status") != "running" {
+        return Err(ApiError::Forbidden(
+            "run is not in a billable state".to_string(),
+        ));
+    }
     sqlx::query(
         r#"
         insert into usage_events (
             id, tenant_id, run_id, model_id, input_tokens, output_tokens,
             reasoning_tokens, cached_tokens, cost_yuan, billable_yuan,
-            upstream_status, latency_ms
+            upstream_status, latency_ms, settlement_key, metering_status, billing_note
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         "#,
     )
     .bind(format!("usage_{}", Uuid::new_v4().simple()))
     .bind(&claims.tenant_id)
     .bind(&claims.run_id)
     .bind(&claims.model_id)
-    .bind(usage.input_tokens as i64)
-    .bind(usage.output_tokens as i64)
-    .bind(usage.reasoning_tokens as i64)
-    .bind(usage.cached_tokens as i64)
-    .bind(charge.cost_yuan)
-    .bind(charge.billable_yuan)
+    .bind(input_tokens)
+    .bind(output_tokens)
+    .bind(reasoning_tokens)
+    .bind(cached_tokens)
+    .bind(cost_yuan)
+    .bind(billable_yuan)
     .bind(upstream_status as i32)
     .bind(latency_ms)
-    .execute(pool)
+    .bind(format!("settlement:{}", claims.run_id))
+    .bind(metering_label)
+    .bind(billing_note)
+    .execute(&mut *tx)
     .await?;
-    sqlx::query("update tenants set balance_yuan = balance_yuan - $2 where id = $1")
+    let had_reservation = sqlx::query("select 1 from billing_ledger where operation_key = $1")
+        .bind(format!("reservation:{}", claims.run_id))
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some();
+    if had_reservation {
+        let balance_adjustment = claims.budget_yuan - billable_yuan;
+        if balance_adjustment != 0.0 {
+            sqlx::query(
+                "update tenants set balance_yuan = round((balance_yuan + $2)::numeric, 6)::double precision, status = case when round((balance_yuan + $2)::numeric, 6) < 0 then 'suspended' else status end, updated_at = now() where id = $1",
+            )
+            .bind(&claims.tenant_id)
+            .bind(balance_adjustment)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"
+                insert into billing_ledger
+                  (id, tenant_id, run_id, entry_type, amount_yuan, description, operation_key)
+                values ($1, $2, $3, $4, $5, $6, $7)
+                "#,
+            )
+            .bind(format!("ledger_{}", Uuid::new_v4().simple()))
+            .bind(&claims.tenant_id)
+            .bind(&claims.run_id)
+            .bind(if balance_adjustment > 0.0 {
+                "usage_refund"
+            } else {
+                "usage_overage"
+            })
+            .bind(balance_adjustment)
+            .bind(format!(
+                "{} run budget settlement adjustment",
+                claims.model_id
+            ))
+            .bind(format!("adjustment:{}", claims.run_id))
+            .execute(&mut *tx)
+            .await?;
+        }
+    } else {
+        sqlx::query(
+            "update tenants set balance_yuan = round((balance_yuan - $2)::numeric, 6)::double precision, updated_at = now() where id = $1",
+        )
         .bind(&claims.tenant_id)
-        .bind(charge.billable_yuan)
-        .execute(pool)
+        .bind(billable_yuan)
+        .execute(&mut *tx)
         .await?;
-    sqlx::query(
-        r#"
-        insert into billing_ledger (id, tenant_id, run_id, entry_type, amount_yuan, description)
-        values ($1, $2, $3, 'usage_charge', $4, $5)
-        "#,
-    )
-    .bind(format!("ledger_{}", Uuid::new_v4().simple()))
-    .bind(&claims.tenant_id)
-    .bind(&claims.run_id)
-    .bind(-charge.billable_yuan)
-    .bind(format!("{} usage charge", claims.model_id))
-    .execute(pool)
-    .await?;
+        sqlx::query(
+            r#"
+            insert into billing_ledger
+              (id, tenant_id, run_id, entry_type, amount_yuan, description, operation_key)
+            values ($1, $2, $3, 'usage_charge', $4, $5, $6)
+            "#,
+        )
+        .bind(format!("ledger_{}", Uuid::new_v4().simple()))
+        .bind(&claims.tenant_id)
+        .bind(&claims.run_id)
+        .bind(-billable_yuan)
+        .bind(format!("{} usage charge", claims.model_id))
+        .bind(format!("charge:{}", claims.run_id))
+        .execute(&mut *tx)
+        .await?;
+    }
     sqlx::query(
         "update model_runs set status = 'completed', completed_at = now(), upstream_status = $2 where id = $1",
     )
     .bind(&claims.run_id)
     .bind(upstream_status as i32)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
-async fn write_audit(
+pub(crate) async fn write_audit(
     pool: &PgPool,
     tenant_id: &str,
     action: &str,
@@ -2750,24 +3441,36 @@ fn usage_totals_json(row: &sqlx::postgres::PgRow) -> Value {
     })
 }
 
-fn require_admin(headers: &HeaderMap) -> ApiResult<()> {
+pub(crate) fn require_admin(state: &AppState, headers: &HeaderMap) -> ApiResult<()> {
     let token = bearer_token(headers)?;
-    if token.starts_with("admin-") {
-        Ok(())
-    } else {
-        Err(ApiError::Unauthorized("invalid admin token".to_string()))
+    state
+        .admin_tokens
+        .verify(token)
+        .map(|_| ())
+        .map_err(|_| ApiError::Unauthorized("invalid or expired admin token".to_string()))
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let max_len = left.len().max(right.len());
+    let mut difference = left.len() ^ right.len();
+    for index in 0..max_len {
+        difference |= usize::from(
+            left.get(index).copied().unwrap_or_default()
+                ^ right.get(index).copied().unwrap_or_default(),
+        );
     }
+    difference == 0
 }
 
 fn generate_authorization_code() -> String {
     let raw = Uuid::new_v4().simple().to_string().to_uppercase();
-    format!("AS-{}-{}-{}", &raw[0..4], &raw[4..8], &raw[8..12])
-}
-
-fn hash_authorization_code(value: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(normalize_authorization_code(value).as_bytes());
-    hex::encode(hasher.finalize())
+    format!(
+        "AS-{}-{}-{}-{}",
+        &raw[0..8],
+        &raw[8..16],
+        &raw[16..24],
+        &raw[24..32]
+    )
 }
 
 fn code_hint(value: &str) -> String {
@@ -2835,6 +3538,77 @@ fn default_provider_request_timeout_ms() -> u64 {
 
 fn default_provider_max_retries() -> u32 {
     2
+}
+
+fn validate_tenant_fields(request: &TenantSaveRequest) -> ApiResult<()> {
+    if !request.balance_yuan.is_finite() || request.balance_yuan < 0.0 {
+        return Err(ApiError::BadRequest(
+            "balanceYuan must be a finite non-negative amount".to_string(),
+        ));
+    }
+    if !(1..=10_000).contains(&request.max_devices) {
+        return Err(ApiError::BadRequest(
+            "maxDevices must be between 1 and 10000".to_string(),
+        ));
+    }
+    if !matches!(request.status.trim(), "active" | "suspended" | "disabled") {
+        return Err(ApiError::BadRequest("invalid tenant status".to_string()));
+    }
+    if !matches!(
+        request.billing_mode.trim(),
+        "hybrid" | "gateway_api" | "subscription"
+    ) {
+        return Err(ApiError::BadRequest("invalid billing mode".to_string()));
+    }
+    Ok(())
+}
+
+fn validate_model_route_fields(
+    request: &ModelRouteSaveRequest,
+    minimum_markup_bps: u64,
+) -> ApiResult<()> {
+    if request.label.trim().is_empty() || request.provider.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "label and provider are required".to_string(),
+        ));
+    }
+    let prices = [
+        request.input_yuan_per_million,
+        request.output_yuan_per_million,
+        request.reasoning_yuan_per_million,
+        request.cached_input_yuan_per_million,
+    ];
+    if prices
+        .into_iter()
+        .any(|price| !price.is_finite() || price < 0.0)
+    {
+        return Err(ApiError::BadRequest(
+            "model prices must be finite non-negative amounts".to_string(),
+        ));
+    }
+    if !(0..=100_000).contains(&request.markup_bps) {
+        return Err(ApiError::BadRequest(
+            "markupBps must be between 0 and 100000".to_string(),
+        ));
+    }
+    if request.enabled
+        && request.mode.trim() == "gateway_api"
+        && request.markup_bps < minimum_markup_bps as i64
+    {
+        return Err(ApiError::BadRequest(format!(
+            "enabled pay-as-you-go models require at least {minimum_markup_bps} markup basis points"
+        )));
+    }
+    if request.enabled
+        && request.mode.trim() == "gateway_api"
+        && (request.input_yuan_per_million <= 0.0 || request.output_yuan_per_million <= 0.0)
+    {
+        return Err(ApiError::BadRequest(
+            "enabled pay-as-you-go models require positive input and output cost prices"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_provider_fields(request: &ProviderConfigSaveRequest) -> ApiResult<()> {
@@ -2918,7 +3692,28 @@ fn normalized_codex_tenant_ids(
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_pagination, normalized_codex_tenant_ids};
+    use std::{convert::Infallible, time::Duration};
+
+    use axum::{
+        body::{Body, Bytes},
+        response::Response,
+        routing::get,
+        Router,
+    };
+    use chrono::Utc;
+    use futures_util::StreamExt;
+    use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::{
+        bounded_pagination, enforce_request_budget, normalized_codex_tenant_ids,
+        stream_upstream_response,
+    };
+    use crate::{
+        billing::Pricing,
+        gateway::{UpstreamRequest, UpstreamResponseFormat},
+        tokens::RunTokenClaims,
+    };
 
     #[test]
     fn bounds_billing_ledger_pagination() {
@@ -2949,5 +3744,134 @@ mod tests {
             normalized_codex_tenant_ids(None, Some("tenant_alpha".to_string())),
             vec!["tenant_alpha"]
         );
+    }
+
+    #[test]
+    fn caps_output_tokens_to_the_preauthorized_budget() {
+        let mut body = json!({
+            "input": "hello",
+            "max_output_tokens": 1_000_000
+        });
+        let pricing = Pricing {
+            input_yuan_per_million: 10.0,
+            output_yuan_per_million: 100.0,
+            reasoning_yuan_per_million: 100.0,
+            cached_input_yuan_per_million: 2.0,
+            markup_bps: 2_500,
+        };
+
+        enforce_request_budget(&mut body, 1.0, &pricing).unwrap();
+
+        let capped = body["max_output_tokens"].as_u64().unwrap();
+        assert!(capped > 0);
+        assert!(capped < 1_000_000);
+    }
+
+    #[test]
+    fn rejects_a_budget_that_cannot_cover_the_request_input() {
+        let mut body = json!({ "input": "x".repeat(50_000) });
+        let pricing = Pricing {
+            input_yuan_per_million: 100.0,
+            output_yuan_per_million: 100.0,
+            reasoning_yuan_per_million: 100.0,
+            cached_input_yuan_per_million: 100.0,
+            markup_bps: 0,
+        };
+
+        assert!(enforce_request_budget(&mut body, 0.01, &pricing).is_err());
+    }
+
+    #[tokio::test]
+    async fn forwards_the_first_upstream_delta_before_the_stream_finishes() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let stream = async_stream::stream! {
+                    yield Ok::<Bytes, Infallible>(Bytes::from_static(
+                        b"data: {\"id\":\"chat_test\",\"model\":\"test\",\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n",
+                    ));
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    yield Ok::<Bytes, Infallible>(Bytes::from_static(
+                        b"data: {\"id\":\"chat_test\",\"choices\":[{\"delta\":{\"content\":\"second\"}}]}\n\ndata: [DONE]\n\n",
+                    ));
+                };
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from_stream(stream))
+                    .unwrap()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let upstream = reqwest::Client::new()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
+        let request = UpstreamRequest {
+            url: format!("http://{address}/"),
+            headers: Vec::new(),
+            query_params: Vec::new(),
+            response_format: UpstreamResponseFormat::ChatCompletions,
+            stream_response: true,
+            namespace_tool_compat: false,
+            request_timeout_ms: 1_000,
+            max_retries: 0,
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(25))
+            .connect_lazy("postgresql://postgres:postgres@127.0.0.1:1/unused")
+            .unwrap();
+        let response = stream_upstream_response(
+            upstream,
+            request,
+            json!({ "stream": true }),
+            pool,
+            RunTokenClaims::new(
+                "tenant_test".to_string(),
+                "user_test".to_string(),
+                "device_test".to_string(),
+                "run_test".to_string(),
+                "model_test".to_string(),
+                1.0,
+                60,
+            ),
+            Pricing {
+                input_yuan_per_million: 0.0,
+                output_yuan_per_million: 0.0,
+                reasoning_yuan_per_million: 0.0,
+                cached_input_yuan_per_million: 0.0,
+                markup_bps: 0,
+            },
+            Utc::now(),
+        );
+        let started = tokio::time::Instant::now();
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(Duration::from_millis(150), body.next())
+            .await
+            .expect("first gateway chunk was buffered until completion")
+            .expect("gateway stream ended before the first chunk")
+            .unwrap();
+        let first = String::from_utf8(first.to_vec()).unwrap();
+        assert!(first.contains("response.output_text.delta"));
+        assert!(first.contains("first"));
+        assert!(!first.contains("response.completed"));
+
+        let mut rest = String::new();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while let Some(chunk) = body.next().await {
+                let chunk = chunk.unwrap();
+                rest.push_str(std::str::from_utf8(&chunk).unwrap());
+            }
+        })
+        .await
+        .expect("gateway stream did not close after the upstream completion");
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        assert!(rest.contains("second"));
+        assert!(rest.contains("response.completed"));
+        assert!(rest.contains("data: [DONE]"));
+
+        server.abort();
     }
 }

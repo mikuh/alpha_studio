@@ -8,6 +8,7 @@ export type ResearchOrderSide = 'buy' | 'sell';
 export type ResearchCashFlowSide = 'deposit' | 'withdraw';
 
 export const RESEARCH_DRAG_MIME = 'application/x-alpha-research-context';
+export const OPEN_RESEARCH_SECURITY_EVENT = 'alpha-studio:open-research-security';
 
 // ---- 证券目录与行情 ---------------------------------------------------------
 
@@ -69,6 +70,21 @@ export interface ResearchQuote {
   tags: string[];
   thesis: string;
   source: ResearchQuoteSource;
+}
+
+/** Lightweight security metadata used when a stock is mentioned in chat. */
+export interface ResearchSecurityMention {
+  code: string;
+  name: string;
+  board: string;
+  sector: string;
+  tags: string[];
+}
+
+export interface ResearchSecurityMentionRange {
+  start: number;
+  end: number;
+  mention: ResearchSecurityMention;
 }
 
 export type ResearchQuoteSource = 'sample' | 'jqdata' | 'eastmoney' | 'tencent';
@@ -423,6 +439,170 @@ export function normalizeSecurityCode(input: string): string | null {
   const code = bare[0];
   if (code.startsWith('6')) return `${code}.XSHG`;
   return `${code}.XSHE`;
+}
+
+function stripMarkdownCodeForMentionSearch(input: string): string {
+  return input
+    .replace(/```[\s\S]*?```/g, (value) => ' '.repeat(value.length))
+    .replace(/`[^`\n]*`/g, (value) => ' '.repeat(value.length))
+    .replace(/\]\((?:https?:\/\/|file:\/\/)[^)]+\)/gi, (value) => ' '.repeat(value.length));
+}
+
+function buildResearchMentionCatalog(customSecurities: Record<string, CustomSecurity>): Map<string, ResearchSecurityMention> {
+  const catalog = new Map<string, ResearchSecurityMention>();
+  for (const entry of RESEARCH_CATALOG) {
+    catalog.set(entry.code, {
+      code: entry.code,
+      name: entry.name,
+      board: entry.board,
+      sector: entry.sector,
+      tags: entry.tags,
+    });
+  }
+  for (const [rawCode, custom] of Object.entries(customSecurities)) {
+    const code = normalizeSecurityCode(rawCode) ?? rawCode.toUpperCase();
+    if (catalog.has(code)) continue;
+    catalog.set(code, {
+      code,
+      name: custom.name || shortCode(code),
+      board: boardFromCode(code),
+      sector: custom.sector || '自定义标的',
+      tags: [],
+    });
+  }
+  return catalog;
+}
+
+function explicitMentionName(raw: string): string {
+  const prefixes = [
+    '我们建议', '我建议', '重点关注', '继续关注', '建议关注', '可以关注',
+    '正在关注', '同时关注', '先关注', '再关注', '请关注', '关注',
+    '重点分析', '继续分析', '建议分析', '请分析', '分析',
+    '同时对比', '再对比', '先对比', '请对比', '再看看', '先看看',
+    '再看', '先看', '看看', '关于',
+    '研究', '观察', '对比', '看好', '持有', '买入', '卖出',
+    '我们', '我', '建议', '同时', '以及',
+  ];
+  let name = raw;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const prefix of prefixes) {
+      if (!name.startsWith(prefix) || name.length - prefix.length < 2) continue;
+      name = name.slice(prefix.length);
+      changed = true;
+      break;
+    }
+  }
+  return name;
+}
+
+/** Returns every non-overlapping mention span for inline chat rendering. */
+export function findResearchSecurityMentionRanges(
+  input: string,
+  customSecurities: Record<string, CustomSecurity> = {},
+): ResearchSecurityMentionRange[] {
+  const text = stripMarkdownCodeForMentionSearch(input);
+  const catalog = buildResearchMentionCatalog(customSecurities);
+  const lowerText = text.toLocaleLowerCase('zh-CN');
+  const candidates: Array<ResearchSecurityMentionRange & { priority: number }> = [];
+
+  // A name paired with an exchange-qualified code is self-describing even
+  // when the security has not yet appeared in the local catalog.
+  const explicitPairPattern = /([*A-Za-z\u4e00-\u9fff][*A-Za-z0-9\u4e00-\u9fff]{1,15})\s*[（(]\s*((?:(?:sh|sz)\s*)?[036]\d{5}(?:\.(?:XSHG|XSHE))?)\s*[）)]/gi;
+  for (const match of text.matchAll(explicitPairPattern)) {
+    const rawName = match[1];
+    const name = explicitMentionName(rawName);
+    const code = normalizeSecurityCode(match[2].replace(/\s+/g, ''));
+    if (!code || name.length < 2) continue;
+    const known = catalog.get(code);
+    const matchStart = match.index ?? 0;
+    candidates.push({
+      start: matchStart + rawName.length - name.length,
+      end: matchStart + match[0].length,
+      mention: known ?? {
+        code,
+        name,
+        board: boardFromCode(code),
+        sector: 'A股证券',
+        tags: [],
+      },
+      priority: 4,
+    });
+  }
+
+  for (const mention of catalog.values()) {
+    const lowerName = mention.name.toLocaleLowerCase('zh-CN');
+    let cursor = 0;
+    while (cursor < lowerText.length) {
+      const start = lowerText.indexOf(lowerName, cursor);
+      if (start < 0) break;
+      const nameEnd = start + mention.name.length;
+      const suffix = text.slice(nameEnd).match(/^\s*[（(]\s*((?:(?:sh|sz)\s*)?[036]\d{5}(?:\.(?:XSHG|XSHE))?)\s*[）)]/i);
+      const suffixCode = suffix ? normalizeSecurityCode(suffix[1].replace(/\s+/g, '')) : null;
+      candidates.push({
+        start,
+        end: suffix && suffixCode === mention.code ? nameEnd + suffix[0].length : nameEnd,
+        mention,
+        priority: suffix && suffixCode === mention.code ? 3 : 2,
+      });
+      cursor = nameEnd;
+    }
+  }
+
+  // Bare dates and ordinary six-digit quantities should not become links: A
+  // share codes supported by this workspace start with 0, 3, or 6.
+  const codePattern = /(?<![A-Za-z0-9])(?:(?:sh|sz)\s*)?[036]\d{5}(?:\.(?:XSHG|XSHE))?(?![A-Za-z0-9])/gi;
+  for (const match of text.matchAll(codePattern)) {
+    const code = normalizeSecurityCode(match[0].replace(/\s+/g, ''));
+    if (!code) continue;
+    candidates.push({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+      mention: catalog.get(code) ?? {
+        code,
+        name: shortCode(code),
+        board: boardFromCode(code),
+        sector: 'A股证券',
+        tags: [],
+      },
+      priority: 1,
+    });
+  }
+
+  candidates.sort((left, right) => left.start - right.start || right.priority - left.priority || right.end - left.end);
+  const ranges: ResearchSecurityMentionRange[] = [];
+  for (const { start, end, mention } of candidates) {
+    if (ranges.some((range) => start < range.end && end > range.start)) continue;
+    ranges.push({ start, end, mention });
+  }
+  return ranges.sort((left, right) => left.start - right.start);
+}
+
+/**
+ * Finds securities explicitly named in conversational prose. Results follow
+ * first-mention order and are de-duplicated when both name and code appear.
+ */
+export function findResearchSecurityMentions(
+  input: string,
+  customSecurities: Record<string, CustomSecurity> = {},
+): ResearchSecurityMention[] {
+  const seen = new Set<string>();
+  return findResearchSecurityMentionRanges(input, customSecurities).flatMap(({ mention }) => {
+    if (seen.has(mention.code)) return [];
+    seen.add(mention.code);
+    return [mention];
+  });
+}
+
+/** Opens a security directly in the research workbench from any chat surface. */
+export function openResearchSecurity(code: string): void {
+  if (typeof window === 'undefined') return;
+  const normalized = normalizeSecurityCode(code);
+  if (!normalized) return;
+  window.dispatchEvent(new CustomEvent(OPEN_RESEARCH_SECURITY_EVENT, {
+    detail: { code: normalized },
+  }));
 }
 
 // ---- 市场统计（热力图 / 涨跌分布） ------------------------------------------

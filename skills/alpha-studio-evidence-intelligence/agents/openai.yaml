@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alpha Studio 证据智能"
+  short_description: "建立可追溯且时点正确、事实与推断分离的 A 股研究证据库"
+  default_prompt: "使用 $alpha-studio-evidence-intelligence 核验一个 A 股研究命题并输出可入库的证据记录。"

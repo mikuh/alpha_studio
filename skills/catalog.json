@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "skills": [
+    {
+      "id": "alpha-studio-a-share-factor-mining",
+      "category": "official",
+      "title": "Alpha Studio A股因子挖掘",
+      "description": "自动生成、筛选、去冗余并组合 A 股量化因子，输出 Top 交易研究候选。",
+      "icon": "chart",
+      "overview": "在明确预算内从价值、动量、质量、规模、波动、流动性和情绪等因子族主动生成候选，经过真实计算和严格样本外筛选，直接输出可复现的 Top 单因子、Top 多因子组合及交易研究配置。",
+      "workflow": "先冻结数据时点、股票池、预测期限、候选空间和门槛，再批量计算与横截面处理，仅用 discovery/validation 按 RankIC、稳定性、成本后表现、回撤和换手筛选，去冗余后搜索组合，冻结名单后打开 final holdout，并给出公式、权重、调仓/持有规则和失效条件。"
+    },
+    {
+      "id": "alpha-studio-daily-theme-research",
+      "category": "official",
+      "title": "Alpha Studio 盘前主题",
+      "description": "按 Neostream 同级规范生成 A 股盘前主题、资金进攻路径和连续跟踪研究。",
+      "icon": "chart",
+      "overview": "生成 Alpha Studio Research 风格的 A 股盘前主题跟踪、盘中更新和收盘复盘报告，规则与 neostream-daily-theme-research 保持一致。",
+      "workflow": "默认正式日报必须包含今日执行闸门、今日资金进攻路径、隔夜全球线索、连续跟踪、持有复核、角色矩阵、来源与风险提示；可从 Composer 的技能菜单发起结构化 JSON 和完整 Markdown/HTML 报告生成。"
+    },
+    {
+      "id": "alpha-studio-intraday-monitor",
+      "category": "official",
+      "title": "Alpha Studio 盘中监控",
+      "description": "基于今日研究报告持续检查盘中触发、升级、降级与失效条件。",
+      "icon": "monitor",
+      "overview": "将今日已生成的报告作为不可改写的基线，对照实时行情检查触发、升级、降级和失效条件。",
+      "workflow": "搭配 Alpha Studio 自动化任务可在 A 股交易时段每隔数分钟运行，输出只聚焦相对上一次监控的状态变化。"
+    },
+    {
+      "id": "alpha-studio-mainline-trend-research",
+      "category": "official",
+      "title": "Alpha Studio 产业主线",
+      "description": "用政策、定向信贷、长线机构资金与海外景气边际共振识别可持续产业主线。",
+      "icon": "chart",
+      "overview": "作为每日报告的趋势层升级版，先用定向信贷和产业投入过滤口头利好，再用长线机构资金确认持续性，并仅对全球定价赛道启用海外景气约束；单一要素驱动统一降级为短期脉冲。",
+      "workflow": "建立产业候选池并标记本土/全球定价范围，逐项核验政策、定向信贷、长线资金与海外景气的证据强度和边际变化，输出主升共振状态、伪题材过滤、最大证据缺口、连续跟踪和主线重仓权限。"
+    },
+    {
+      "id": "alpha-studio-report-review",
+      "category": "official",
+      "title": "Alpha Studio 日报复盘",
+      "description": "将今日研究报告与实际行情、盘中监控结果对照，完成偏差归因与次日调整。",
+      "icon": "review",
+      "overview": "复盘当日报告的主路径、备选路径、题材概率、触发条件和标的角色判断，严格区分事前假设与事后信息。",
+      "workflow": "输出命中/误判审计、偏差归因、应保留或修改的规则，以及次一交易日交接条件。"
+    },
+    {
+      "id": "alpha-studio-evidence-intelligence",
+      "category": "official",
+      "title": "Alpha Studio 证据智能",
+      "description": "把公告、政策、财务与新闻线索整理成时点正确、来源可追溯的研究证据。",
+      "icon": "database",
+      "overview": "作为 Alpha Studio 的共享证据底座，严格分离事实与推断，记录事件发生、公开、入库和最早可交易时间，并显式保留冲突来源与质量标记。",
+      "workflow": "先定义待核验命题和决策时点，再按一手来源优先级收集证据，完成时点检查、冲突审计和可信度标记，最后输出 alpha.evidence.v1 结构化记录自动进入证据中心。"
+    },
+    {
+      "id": "alpha-studio-company-thesis-tracker",
+      "category": "official",
+      "title": "Alpha Studio 公司 Thesis",
+      "description": "用版本链持续维护公司的核心逻辑、关键指标、估值、催化、风险与失效条件。",
+      "icon": "chart",
+      "overview": "复用现有基本面、估值和合规同事，把单次公司研究沉淀为可证伪、可回看、不会覆盖历史的 Thesis 版本链。",
+      "workflow": "加载公司最新版本与关联证据，核验新增信息后判断增强、不变、弱化或失效，说明每项变化并输出 alpha.company_thesis.v1 记录自动进入公司 Thesis 工作台。"
+    },
+    {
+      "id": "alpha-studio-research-calibration",
+      "category": "official",
+      "title": "Alpha Studio 研究校准",
+      "description": "用不可变日报与复盘结果计算 Brier 分数、概率偏差和可靠性分桶。",
+      "icon": "review",
+      "overview": "将研究概率与事后触发审计做确定性匹配，识别系统性高估、低估和样本不足；它评估概率质量，不把收益率和命中率混为一谈。",
+      "workflow": "冻结评估样本和结果定义，排除数据缺失，计算 Brier、MAE、平均预测、实际兑现与概率分桶，再把可检验的规则调整交回日报研究流程。"
+    }
+  ]
+}

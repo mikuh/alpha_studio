@@ -11,6 +11,8 @@ import {
   defaultResearchState,
   deletePortfolio,
   distributionPrompt,
+  findResearchSecurityMentionRanges,
+  findResearchSecurityMentions,
   loadResearchState,
   marketSnapshotPrompt,
   normalizeResearchState,
@@ -54,6 +56,56 @@ describe('normalizeSecurityCode', () => {
     expect(normalizeSecurityCode('688981.XSHG')).toBe('688981.XSHG');
     expect(normalizeSecurityCode('茅台')).toBeNull();
     expect(normalizeSecurityCode('12345')).toBeNull();
+  });
+});
+
+describe('findResearchSecurityMentions', () => {
+  it('finds names and code variants in reading order without duplicates', () => {
+    expect(findResearchSecurityMentions('先看宁德时代，再对比贵州茅台（600519.XSHG）和 sz002594。'))
+      .toMatchObject([
+        { code: '300750.XSHE', name: '宁德时代', sector: '电池' },
+        { code: '600519.XSHG', name: '贵州茅台', sector: '白酒' },
+        { code: '002594.XSHE', name: '比亚迪', sector: '汽车' },
+      ]);
+  });
+
+  it('ignores codes inside markdown code spans and fenced code blocks', () => {
+    const result = findResearchSecurityMentions('正文没有标的，示例为 `600519`。\n```txt\n300750\n```');
+    expect(result).toEqual([]);
+  });
+
+  it('creates a navigable fallback for an uncatalogued A-share code', () => {
+    expect(findResearchSecurityMentions('关注 603986 的催化。')).toMatchObject([
+      { code: '603986.XSHG', name: '603986', sector: 'A股证券' },
+    ]);
+  });
+
+  it('combines an adjacent name and code into one inline mention range', () => {
+    const input = '关注贵州茅台（600519.XSHG），再看 300750。';
+    const ranges = findResearchSecurityMentionRanges(input);
+    expect(ranges.map((range) => ({ text: input.slice(range.start, range.end), code: range.mention.code })))
+      .toEqual([
+        { text: '贵州茅台（600519.XSHG）', code: '600519.XSHG' },
+        { text: '300750', code: '300750.XSHE' },
+      ]);
+  });
+
+  it('uses an explicit uncatalogued name and qualified code as one mention', () => {
+    const input = '建议关注中文在线（300364.XSHE）的内容产业催化。';
+    const ranges = findResearchSecurityMentionRanges(input);
+    expect(ranges.map((range) => ({ text: input.slice(range.start, range.end), ...range.mention })))
+      .toMatchObject([
+        {
+          text: '中文在线（300364.XSHE）',
+          code: '300364.XSHE',
+          name: '中文在线',
+          board: '创业板',
+          sector: 'A股证券',
+        },
+      ]);
+    expect(findResearchSecurityMentions('中文在线（300364.XSHE）')).toMatchObject([
+      { code: '300364.XSHE', name: '中文在线' },
+    ]);
   });
 });
 

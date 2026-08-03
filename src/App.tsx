@@ -1,4 +1,4 @@
-import { Fragment, createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Children, Fragment, createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   AnchorHTMLAttributes,
   ChangeEvent,
@@ -6,18 +6,20 @@ import type {
   CSSProperties,
   DragEvent as ReactDragEvent,
   FormEvent,
+  HTMLAttributes,
   ImgHTMLAttributes,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   ReactNode,
   RefObject,
 } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import { createPortal } from 'react-dom';
 import remarkGfm from 'remark-gfm';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import officialSkillCatalog from '../skills/catalog.json';
 import {
   Activity,
   AlertCircle,
@@ -153,6 +155,7 @@ import {
   isTauriRuntime,
   listOpenApps,
   localDirectoryList,
+  localFileExists,
   localImageDataUrl,
   localTextFileRead,
   loginCodex,
@@ -164,6 +167,7 @@ import {
   fetchCodexSubscriptionUsage,
   subscribeTerminalEvents,
   syncCoworkerAgents,
+  syncManagedSkills,
   terminalResize,
   terminalStart,
   terminalStop,
@@ -261,7 +265,15 @@ import {
   useImageViewer,
   visibleConversations,
 } from './store';
-import { RESEARCH_DRAG_MIME } from './research';
+import {
+  OPEN_RESEARCH_SECURITY_EVENT,
+  RESEARCH_DRAG_MIME,
+  findResearchSecurityMentionRanges,
+  findResearchSecurityMentions,
+  openResearchSecurity,
+  shortCode,
+  type ResearchSecurityMention,
+} from './research';
 import { registerComposerInsertHandler } from './composerBridge';
 import { ResearchWorkbenchPanel } from './ResearchWorkbench';
 import { DailyDecisionPanel } from './DailyDecisionPanel';
@@ -272,15 +284,12 @@ import {
 } from './dailyDecision';
 import {
   ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
-  ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE,
   PREMARKET_THEME_RUNS_CHANGED_EVENT,
   loadPremarketThemeRuns,
 } from './themeResearch';
 import {
   ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
-  ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_TITLE,
   ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID,
-  ALPHA_STUDIO_REPORT_REVIEW_SKILL_TITLE,
 } from './themeAbilities';
 import type {
   ChatMessage,
@@ -319,6 +328,7 @@ interface RightDockTab {
   requestKey?: number;
   sourceConversationId?: string;
   selectedTextContexts?: SelectedTextContext[];
+  stockCode?: string;
 }
 type Theme = 'light' | 'dark';
 type SettingsSection =
@@ -339,6 +349,7 @@ const CODEX_LOGIN_POLL_TIMEOUT_MS = 60_000;
 const SIDEBAR_MIN_WIDTH = 244;
 const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_DEFAULT_WIDTH = 300;
+const SIDEBAR_CONVERSATION_PREVIEW_LIMIT = 8;
 const RIGHT_SIDEBAR_MIN_WIDTH = 320;
 // The dock may take over most of a wide window (for example when reading a
 // browser page). RightPanelResizer still preserves RIGHT_PANEL_MIN_MAIN_WIDTH
@@ -371,7 +382,25 @@ function conversationHasDailyThemeTurn(conversation: Conversation | null | undef
   )));
 }
 
-type SkillCategory = 'personal' | 'system' | 'recommended';
+function sidebarConversationRevision(conversations: Conversation[]): string {
+  return conversations.map((conversation) => [
+    conversation.id,
+    conversation.title,
+    conversation.cwd,
+    conversation.projectId ?? '',
+    conversation.pinned ? '1' : '0',
+    conversation.archivedAt ?? '',
+    conversation.ephemeral ? '1' : '0',
+    conversation.status,
+    // Streaming deltas update updatedAt continuously, but the sidebar only
+    // needs to refresh when the turn starts or finishes.
+    conversation.status === 'streaming' ? 'active' : conversation.updatedAt,
+    conversation.unread ? '1' : '0',
+    conversation.messages.length,
+  ].join('\u0000')).join('\u0001');
+}
+
+type SkillCategory = 'official' | 'personal' | 'system' | 'recommended';
 type SkillCategoryFilter = SkillCategory | 'all';
 type SkillIcon =
   | 'browser'
@@ -406,18 +435,68 @@ interface SkillCatalogItem extends SkillSelection {
   detail: SkillDetailSection[];
 }
 
+interface OfficialSkillDefinition {
+  id: string;
+  category: 'official' | 'system';
+  title: string;
+  description: string;
+  icon: SkillIcon;
+  overview: string;
+  workflow?: string;
+}
+
+interface OfficialSkillCatalogFile {
+  schemaVersion: number;
+  skills: OfficialSkillDefinition[];
+}
+
 const detail = (overview: string, workflow?: string): SkillDetailSection[] => [
   { paragraphs: [overview] },
   ...(workflow ? [{ title: 'Workflow Configuration', paragraphs: [workflow] }] : []),
 ];
 
-const SKILL_CATALOG: readonly SkillCatalogItem[] = [
+const OFFICIAL_SKILL_PREFIX = 'alpha-studio-';
+const OFFICIAL_SKILL_SOURCE = 'Alpha Studio 官方';
+const OFFICIAL_SKILL_IDS_KEY = 'alpha:official-skill-ids-v1';
+const OFFICIAL_SKILLS_CHANGED_EVENT = 'alpha-studio:official-skills-changed';
+const OFFICIAL_SKILL_DEFINITIONS = (officialSkillCatalog as OfficialSkillCatalogFile).skills
+  .filter((skill) => skill.category === 'official');
+const DEFAULT_OFFICIAL_SKILL_IDS = OFFICIAL_SKILL_DEFINITIONS.map((skill) => skill.id);
+
+function officialSkillItem(skill: OfficialSkillDefinition): SkillCatalogItem {
+  return {
+    id: skill.id,
+    title: skill.title,
+    description: skill.description,
+    category: 'official',
+    source: OFFICIAL_SKILL_SOURCE,
+    installed: true,
+    icon: skill.icon,
+    detail: detail(skill.overview, skill.workflow),
+  };
+}
+
+function fallbackOfficialSkillItem(id: string): SkillCatalogItem {
+  const name = id.slice(OFFICIAL_SKILL_PREFIX.length).replace(/-/g, ' ');
+  return {
+    id,
+    title: `Alpha Studio ${name}`,
+    description: '由 Alpha Studio 官方发布并通过受保护的 Skill 清单安装。',
+    category: 'official',
+    source: OFFICIAL_SKILL_SOURCE,
+    installed: true,
+    icon: 'skill',
+    detail: detail('该 Skill 来自当前已认证的 Alpha Studio 官方发布清单。'),
+  };
+}
+
+const NON_OFFICIAL_SKILL_CATALOG: readonly SkillCatalogItem[] = [
   {
     id: 'browser',
     title: 'Browser',
     description: 'Browser lets GPT open and control the in-app browser, mainly for local development pages and web QA.',
-    category: 'personal',
-    source: '个人',
+    category: 'system',
+    source: '系统',
     installed: true,
     icon: 'browser',
     detail: detail(
@@ -429,8 +508,8 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     id: 'chrome',
     title: 'Chrome',
     description: 'Control the user Chrome browser when a task needs an existing signed-in browser session.',
-    category: 'personal',
-    source: '个人',
+    category: 'system',
+    source: '系统',
     installed: true,
     icon: 'chrome',
     detail: detail(
@@ -442,8 +521,8 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     id: 'computer-use',
     title: '电脑',
     description: 'Operate local macOS GUI apps through the installed computer-use runtime.',
-    category: 'personal',
-    source: '个人',
+    category: 'system',
+    source: '系统',
     installed: true,
     icon: 'computer',
     detail: detail('Operate local macOS GUI apps through the installed computer-use runtime. Use it for native app workflows that cannot be reached through code or browser automation.'),
@@ -452,50 +531,11 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
     id: 'pdf',
     title: 'PDF',
     description: 'Read, create, inspect, render, and verify PDF files.',
-    category: 'personal',
-    source: '个人',
+    category: 'system',
+    source: '系统',
     installed: true,
     icon: 'pdf',
     detail: detail('Read, create, inspect, render, and verify PDF files. This skill is useful for document conversion, page inspection, and PDF output QA.'),
-  },
-  {
-    id: ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
-    title: ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE,
-    description: '按 Neostream 同级规范生成 A 股盘前主题、资金进攻路径和连续跟踪研究。',
-    category: 'personal',
-    source: '个人',
-    installed: true,
-    icon: 'chart',
-    detail: detail(
-      '生成 Alpha Studio Research 风格的 A 股盘前主题跟踪、盘中更新和收盘复盘报告，规则与 neostream-daily-theme-research 保持一致。',
-      '默认正式日报必须包含今日执行闸门、今日资金进攻路径、隔夜全球线索、连续跟踪、持有复核、角色矩阵、来源与风险提示；可从 Composer 的技能菜单发起结构化 JSON 和完整 Markdown/HTML 报告生成。',
-    ),
-  },
-  {
-    id: ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
-    title: ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_TITLE,
-    description: '基于今日研究报告持续检查盘中触发、升级、降级与失效条件。',
-    category: 'personal',
-    source: '个人',
-    installed: true,
-    icon: 'monitor',
-    detail: detail(
-      '将今日已生成的报告作为不可改写的基线，对照实时行情检查触发、升级、降级和失效条件。',
-      '搭配 Alpha Studio 自动化任务可在 A 股交易时段每隔数分钟运行，输出只聚焦相对上一次监控的状态变化。',
-    ),
-  },
-  {
-    id: ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID,
-    title: ALPHA_STUDIO_REPORT_REVIEW_SKILL_TITLE,
-    description: '将今日研究报告与实际行情、盘中监控结果对照，完成偏差归因与次日调整。',
-    category: 'personal',
-    source: '个人',
-    installed: true,
-    icon: 'review',
-    detail: detail(
-      '复盘当日报告的主路径、备选路径、题材概率、触发条件和标的角色判断，严格区分事前假设与事后信息。',
-      '输出命中/误判审计、偏差归因、应保留或修改的规则，以及次一交易日交接条件。',
-    ),
   },
   {
     id: 'imagegen',
@@ -664,8 +704,46 @@ const SKILL_CATALOG: readonly SkillCatalogItem[] = [
   },
 ] as const;
 
+function normalizeOfficialSkillIds(skillIds: readonly string[]): string[] {
+  return [...new Set(skillIds.filter((id) => id.startsWith(OFFICIAL_SKILL_PREFIX)))].sort();
+}
+
+function createSkillCatalog(skillIds: readonly string[] = DEFAULT_OFFICIAL_SKILL_IDS): readonly SkillCatalogItem[] {
+  const definitions = new Map(OFFICIAL_SKILL_DEFINITIONS.map((skill) => [skill.id, skill]));
+  const official = normalizeOfficialSkillIds(skillIds).map((id) => {
+    const definition = definitions.get(id);
+    return definition ? officialSkillItem(definition) : fallbackOfficialSkillItem(id);
+  });
+  return [...official, ...NON_OFFICIAL_SKILL_CATALOG];
+}
+
+function readOfficialSkillIds(): string[] {
+  if (typeof window === 'undefined') return DEFAULT_OFFICIAL_SKILL_IDS;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(OFFICIAL_SKILL_IDS_KEY) || '[]');
+    if (Array.isArray(parsed)) {
+      const ids = normalizeOfficialSkillIds(parsed.filter((id): id is string => typeof id === 'string'));
+      if (ids.length) return ids;
+    }
+  } catch {
+    // A corrupt cached release summary must not hide the protected built-in catalog.
+  }
+  return DEFAULT_OFFICIAL_SKILL_IDS;
+}
+
+function publishOfficialSkillIds(skillIds: readonly string[]): void {
+  if (typeof window === 'undefined') return;
+  const ids = normalizeOfficialSkillIds(skillIds);
+  const next = ids.length ? ids : DEFAULT_OFFICIAL_SKILL_IDS;
+  window.localStorage.setItem(OFFICIAL_SKILL_IDS_KEY, JSON.stringify(next));
+  window.dispatchEvent(new CustomEvent<string[]>(OFFICIAL_SKILLS_CHANGED_EVENT, { detail: next }));
+}
+
+const DEFAULT_SKILL_CATALOG = createSkillCatalog();
+
 const SKILL_CATEGORY_OPTIONS: Array<{ id: SkillCategoryFilter; label: string }> = [
   { id: 'all', label: '全部' },
+  { id: 'official', label: '官方' },
   { id: 'personal', label: '个人' },
   { id: 'system', label: '系统' },
   { id: 'recommended', label: '推荐' },
@@ -823,6 +901,7 @@ interface QueuedCoworkerTask {
 }
 
 interface SkillRuntimeContextValue {
+  catalog: readonly SkillCatalogItem[];
   status: SkillStatusMap;
   queuedSkill: SkillCatalogItem | null;
   queuedSkillPrompt: string | null;
@@ -840,26 +919,30 @@ const SkillRuntimeContext = createContext<SkillRuntimeContextValue | null>(null)
 const BrowserDockContext = createContext<((url: string) => void) | null>(null);
 const FileDockContext = createContext<((path: string) => void) | null>(null);
 
-function defaultSkillStatus(): SkillStatusMap {
+function defaultSkillStatus(catalog: readonly SkillCatalogItem[] = DEFAULT_SKILL_CATALOG): SkillStatusMap {
   return Object.fromEntries(
-    SKILL_CATALOG.map((skill) => [skill.id, { installed: skill.installed, enabled: skill.installed }]),
+    catalog.map((skill) => [skill.id, { installed: skill.installed, enabled: skill.installed }]),
   );
 }
 
-function readSkillStatus(): SkillStatusMap {
-  const defaults = defaultSkillStatus();
+function readSkillStatus(catalog: readonly SkillCatalogItem[] = DEFAULT_SKILL_CATALOG): SkillStatusMap {
+  const defaults = defaultSkillStatus(catalog);
   if (typeof window === 'undefined') return defaults;
   try {
     const parsed = JSON.parse(window.localStorage.getItem(SKILL_STATUS_KEY) || '{}') as Partial<SkillStatusMap>;
     return Object.fromEntries(
-      SKILL_CATALOG.map((skill) => {
+      catalog.map((skill) => {
         const saved = parsed[skill.id];
         const fallback = defaults[skill.id];
+        const protectedSkill = skill.category === 'official' || skill.category === 'system';
+        const installed = protectedSkill
+          ? true
+          : typeof saved?.installed === 'boolean' ? saved.installed : fallback.installed;
         return [
           skill.id,
           {
-            installed: typeof saved?.installed === 'boolean' ? saved.installed : fallback.installed,
-            enabled: typeof saved?.enabled === 'boolean' ? saved.enabled : fallback.enabled,
+            installed,
+            enabled: installed && (typeof saved?.enabled === 'boolean' ? saved.enabled : fallback.enabled),
           },
         ];
       }),
@@ -928,9 +1011,8 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
   const session = useChatStore((state) => state.clientLicenseSession);
   const setClientLicenseSession = useChatStore((state) => state.setClientLicenseSession);
   const refreshClientLicenseSession = useChatStore((state) => state.refreshClientLicenseSession);
-  const initialSessionRef = useRef<ClientLicenseSession | null>(loadClientLicenseSession());
   const [status, setStatus] = useState<'checking' | 'inactive' | 'active'>(() => {
-    const stored = initialSessionRef.current;
+    const stored = loadClientLicenseSession();
     if (!stored) return 'inactive';
     return isEnterpriseAuthorizationFresh(stored) ? 'active' : 'checking';
   });
@@ -957,7 +1039,10 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let disposed = false;
-    const stored = initialSessionRef.current;
+    // Read the durable session for every lifecycle reconciliation. React Fast
+    // Refresh deliberately re-runs effects while preserving refs and state, so
+    // an initial snapshot would become stale after an in-app activation.
+    const stored = loadClientLicenseSession();
     if (!stored) {
       setStatus('inactive');
       setClientLicenseSession(null);
@@ -997,6 +1082,15 @@ function ClientLicenseBoundary({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (status !== 'active' || !session) return;
+    void syncManagedSkills(session)
+      .then((result) => {
+        if (result) publishOfficialSkillIds(result.skillNames);
+      })
+      .catch((syncError) => {
+        // Skill sync is fail-safe: the native layer keeps the last authenticated
+        // managed release, then falls back to the protected bundle shipped with the app.
+        console.warn('[Alpha Studio] Managed Skill sync failed:', syncError);
+      });
     const refresh = () => {
       void refreshClientLicenseSession()
         .catch((leaseError) => {
@@ -1135,10 +1229,20 @@ export function App() {
 function AppWorkspace() {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
   const loadModelConfig = useChatStore((state) => state.loadModelConfig);
-  const conversations = useChatStore((state) => state.conversations);
   const currentConversationId = useChatStore((state) => state.currentConversationId);
   const setCurrentConversation = useChatStore((state) => state.setCurrentConversation);
   const workModeId = useChatStore((state) => state.workModeId);
+  const currentConversationExists = useChatStore((state) => Boolean(
+    state.currentConversationId
+    && state.conversations.some((conversation) => conversation.id === state.currentConversationId && !conversation.archivedAt && !conversation.ephemeral),
+  ));
+  const firstActiveConversationId = useChatStore((state) => (
+    state.conversations.find((conversation) => !conversation.archivedAt && !conversation.ephemeral)?.id ?? null
+  ));
+  const dailyThemeTurnAvailable = useChatStore((state) => {
+    const current = state.conversations.find((conversation) => conversation.id === state.currentConversationId);
+    return conversationHasDailyThemeTurn(current);
+  });
   const domain = activeDomain(workModeId);
   useAutomationScheduler();
   useThemeTrackingEngine();
@@ -1200,7 +1304,8 @@ function AppWorkspace() {
   const [windowFocused, setWindowFocused] = useState(true);
   const [windowFullscreen, setWindowFullscreen] = useState(() => isDocumentFullscreen());
   const wasWindowFocusedRef = useRef(true);
-  const [skillStatus, setSkillStatus] = useState<SkillStatusMap>(() => readSkillStatus());
+  const [skillCatalog, setSkillCatalog] = useState<readonly SkillCatalogItem[]>(() => createSkillCatalog(readOfficialSkillIds()));
+  const [skillStatus, setSkillStatus] = useState<SkillStatusMap>(() => readSkillStatus(createSkillCatalog(readOfficialSkillIds())));
   const [queuedSkill, setQueuedSkill] = useState<SkillCatalogItem | null>(null);
   const [queuedSkillPrompt, setQueuedSkillPrompt] = useState<string | null>(null);
   const [queuedCoworkerTask, setQueuedCoworkerTask] = useState<QueuedCoworkerTask | null>(null);
@@ -1211,8 +1316,34 @@ function AppWorkspace() {
     return () => window.removeEventListener(PREMARKET_THEME_RUNS_CHANGED_EVENT, syncReports);
   }, []);
 
-  const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId) ?? null;
-  const dailyDecisionAvailable = conversationHasDailyThemeTurn(currentConversation)
+  useEffect(() => {
+    const syncOfficialSkills = (event: Event) => {
+      const announced = event instanceof CustomEvent && Array.isArray(event.detail)
+        ? event.detail.filter((id): id is string => typeof id === 'string')
+        : readOfficialSkillIds();
+      setSkillCatalog(createSkillCatalog(announced));
+    };
+    window.addEventListener(OFFICIAL_SKILLS_CHANGED_EVENT, syncOfficialSkills);
+    return () => window.removeEventListener(OFFICIAL_SKILLS_CHANGED_EVENT, syncOfficialSkills);
+  }, []);
+
+  useEffect(() => {
+    setSkillStatus((current) => {
+      const defaults = defaultSkillStatus(skillCatalog);
+      return Object.fromEntries(skillCatalog.map((skill) => {
+        const saved = current[skill.id];
+        if (skill.category === 'official' || skill.category === 'system') {
+          return [skill.id, {
+            installed: true,
+            enabled: saved?.enabled ?? defaults[skill.id].enabled,
+          }];
+        }
+        return [skill.id, saved ?? defaults[skill.id]];
+      }));
+    });
+  }, [skillCatalog]);
+
+  const dailyDecisionAvailable = dailyThemeTurnAvailable
     || dailyReportsForShell.some((report) => report.sourceConversationId === currentConversationId);
 
   useEffect(() => {
@@ -1297,11 +1428,10 @@ function AppWorkspace() {
   }, []);
 
   useEffect(() => {
-    const active = activeConversations(conversations);
-    if ((!currentConversationId || !active.some((item) => item.id === currentConversationId)) && active[0]) {
-      setCurrentConversation(active[0].id);
+    if ((!currentConversationId || !currentConversationExists) && firstActiveConversationId) {
+      setCurrentConversation(firstActiveConversationId);
     }
-  }, [conversations, currentConversationId, setCurrentConversation]);
+  }, [currentConversationExists, currentConversationId, firstActiveConversationId, setCurrentConversation]);
 
   useEffect(() => {
     void refreshCodexStatus();
@@ -1355,15 +1485,18 @@ function AppWorkspace() {
   };
 
   const setSkillInstalled = useCallback((id: string, installed: boolean) => {
+    const skill = skillCatalog.find((candidate) => candidate.id === id);
+    const protectedSkill = skill?.category === 'official' || skill?.category === 'system';
+    const nextInstalled = protectedSkill ? true : installed;
     setSkillStatus((prev) => ({
       ...prev,
-      [id]: { installed, enabled: installed },
+      [id]: { installed: nextInstalled, enabled: nextInstalled },
     }));
-  }, []);
+  }, [skillCatalog]);
 
   const setSkillEnabled = useCallback((id: string, enabled: boolean) => {
     setSkillStatus((prev) => {
-      const fallback = defaultSkillStatus()[id] ?? { installed: false, enabled: false };
+      const fallback = defaultSkillStatus(skillCatalog)[id] ?? { installed: false, enabled: false };
       const current = prev[id] ?? fallback;
       return {
         ...prev,
@@ -1373,13 +1506,13 @@ function AppWorkspace() {
         },
       };
     });
-  }, []);
+  }, [skillCatalog]);
 
   const resetSkillStatus = useCallback((id: string) => {
-    const fallback = defaultSkillStatus()[id];
+    const fallback = defaultSkillStatus(skillCatalog)[id];
     if (!fallback) return;
     setSkillStatus((prev) => ({ ...prev, [id]: fallback }));
-  }, []);
+  }, [skillCatalog]);
 
   const queueSkillForComposer = useCallback((skill: SkillCatalogItem, prompt?: string) => {
     setSkillStatus((prev) => ({
@@ -1427,7 +1560,7 @@ function AppWorkspace() {
     setRightPanelVisible(true);
   }, []);
 
-  const addRightDockTab = useCallback((kind: RightDockKind, url?: string, selectedTextContexts?: SelectedTextContext[]) => {
+  const addRightDockTab = useCallback((kind: RightDockKind, url?: string, selectedTextContexts?: SelectedTextContext[], stockCode?: string) => {
     if (kind === 'daily-decision') {
       const existing = rightDockTabs.find((tab) => tab.kind === kind);
       if (existing) {
@@ -1440,9 +1573,10 @@ function AppWorkspace() {
       id: `${kind}-${Date.now()}-${nextRightDockTabRef.current}`,
       kind,
       url,
-      requestKey: url ? 1 : undefined,
+      requestKey: url || stockCode ? 1 : undefined,
       sourceConversationId: currentConversationId ?? undefined,
       selectedTextContexts,
+      stockCode,
     };
     setRightDockTabs((prev) => [...prev, tab]);
     setActiveRightDockTabId(tab.id);
@@ -1537,14 +1671,16 @@ function AppWorkspace() {
     activateRightDockTab(tab);
   }, [activateRightDockTab, rightDockTabs]);
 
-  const toggleRightDockKind = useCallback((kind: 'browser' | 'research-workbench' | 'daily-decision') => {
+  const toggleRightDockKind = useCallback((kind: 'browser' | 'files' | 'research-workbench' | 'daily-decision') => {
     if (rightPanelVisible && currentRightPanel === kind) {
       setRightDockExpanded(false);
       setRightPanelVisible(false);
       return;
     }
 
-    const existingTab = [...rightDockTabs].reverse().find((tab) => tab.kind === kind);
+    const existingTab = [...rightDockTabs].reverse().find((tab) => (
+      tab.kind === kind && (kind !== 'files' || !tab.url)
+    ));
     if (existingTab) {
       selectRightDockTab(existingTab.id);
       setRightDockExpanded(false);
@@ -1555,9 +1691,29 @@ function AppWorkspace() {
   }, [addRightDockTab, currentRightPanel, rightPanelVisible, rightDockTabs, selectRightDockTab]);
 
   useEffect(() => {
+    const openResearchStock = (event: Event) => {
+      const code = (event as CustomEvent<{ code?: string }>).detail?.code;
+      if (!code) return;
+      setMainView('chat');
+      setSettingsOpen(false);
+      const existingTab = [...rightDockTabs].reverse().find((tab) => tab.kind === 'research-workbench');
+      if (existingTab) {
+        setRightDockTabs((tabs) => tabs.map((tab) => tab.id === existingTab.id
+          ? { ...tab, stockCode: code, requestKey: (tab.requestKey ?? 0) + 1 }
+          : tab));
+        activateRightDockTab(existingTab);
+        return;
+      }
+      addRightDockTab('research-workbench', undefined, undefined, code);
+    };
+    window.addEventListener(OPEN_RESEARCH_SECURITY_EVENT, openResearchStock);
+    return () => window.removeEventListener(OPEN_RESEARCH_SECURITY_EVENT, openResearchStock);
+  }, [activateRightDockTab, addRightDockTab, rightDockTabs]);
+
+  useEffect(() => {
     const openDailyDecision = (event: Event) => {
       const conversationId = (event as CustomEvent<{ conversationId?: string }>).detail?.conversationId;
-      if (conversationId && conversations.some((conversation) => conversation.id === conversationId)) {
+      if (conversationId && useChatStore.getState().conversations.some((conversation) => conversation.id === conversationId)) {
         setCurrentConversation(conversationId);
       }
       setMainView('chat');
@@ -1567,7 +1723,7 @@ function AppWorkspace() {
     };
     window.addEventListener(OPEN_DAILY_DECISION_EVENT, openDailyDecision);
     return () => window.removeEventListener(OPEN_DAILY_DECISION_EVENT, openDailyDecision);
-  }, [activateRightDockTab, addRightDockTab, conversations, rightDockTabs, setCurrentConversation]);
+  }, [activateRightDockTab, addRightDockTab, rightDockTabs, setCurrentConversation]);
 
   const closeRightDockTab = useCallback((id: string) => {
     const index = rightDockTabs.findIndex((tab) => tab.id === id);
@@ -1611,6 +1767,9 @@ function AppWorkspace() {
   const coworkersPanelOpen = rightPanelVisible && currentRightPanel === 'coworkers';
   const researchWorkbenchOpen = rightPanelVisible && currentRightPanel === 'research-workbench';
   const dailyDecisionOpen = rightPanelVisible && currentRightPanel === 'daily-decision';
+  const filesPanelOpen = rightPanelVisible
+    && currentRightPanel === 'files'
+    && !activeRightDockTab?.url;
   const browserOpen = rightPanelVisible && currentRightPanel === 'browser';
 
   const toggleCoworkersPanel = useCallback(() => {
@@ -1678,6 +1837,7 @@ function AppWorkspace() {
             }
           : null;
   const skillRuntime = useMemo<SkillRuntimeContextValue>(() => ({
+    catalog: skillCatalog,
     status: skillStatus,
     queuedSkill,
     queuedSkillPrompt,
@@ -1690,6 +1850,7 @@ function AppWorkspace() {
     queueCoworkerTask,
     consumeQueuedCoworkerTask,
   }), [
+    skillCatalog,
     skillStatus,
     queuedSkill,
     queuedSkillPrompt,
@@ -1730,6 +1891,7 @@ function AppWorkspace() {
           onOpenAutomations={openAutomations}
           onOpenSettings={openSettings}
         />
+        {sidebarCollapsed && <CollapsedSidebarIdentity />}
         {!sidebarCollapsed && (
           <SidebarResizer
             min={SIDEBAR_MIN_WIDTH}
@@ -1748,15 +1910,16 @@ function AppWorkspace() {
                   coworkersPanelOpen={coworkersPanelOpen}
                   researchWorkbenchOpen={researchWorkbenchOpen}
                   dailyDecisionOpen={dailyDecisionOpen}
+                  filesPanelOpen={filesPanelOpen}
                   browserOpen={browserOpen}
                   hidePanelActions={settingsOpen}
                   onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
                   onToggleCoworkersPanel={toggleCoworkersPanel}
                   onToggleResearchWorkbench={() => toggleRightDockKind('research-workbench')}
                   onToggleDailyDecision={() => toggleRightDockKind('daily-decision')}
+                  onToggleFilesPanel={() => toggleRightDockKind('files')}
                   onToggleBrowser={() => toggleRightDockKind('browser')}
                   onOpenSideChat={() => addRightDockTab('side-chat')}
-                  onOpenSettings={() => openSettings('general')}
                 />
               )}
               {mainView === 'skills' ? (
@@ -1857,6 +2020,34 @@ function CollapsedSidebarToggle({
   );
 }
 
+function CollapsedSidebarIdentity() {
+  const clientLicenseSession = useChatStore((state) => state.clientLicenseSession);
+  const activatedTenantName = activatedTenantDisplayName(clientLicenseSession);
+  const activatedUserTitle = clientLicenseSession
+    ? [clientLicenseSession.tenant.name, clientLicenseSession.user.name, clientLicenseSession.user.email]
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join(' · ')
+    : 'Alpha Studio';
+
+  return (
+    <div
+      className="collapsed-sidebar-identity"
+      title={activatedUserTitle}
+      aria-label={`Alpha Studio · ${activatedTenantName}`}
+      data-tauri-drag-region
+    >
+      <span className="collapsed-sidebar-brand" data-tauri-drag-region>
+        <strong>ALPHA</strong><em>STUDIO</em>
+      </span>
+      <span className="collapsed-sidebar-account" data-tauri-drag-region>
+        <i className="sidebar-account-status" aria-hidden="true" />
+        <span>{activatedTenantName}</span>
+      </span>
+    </div>
+  );
+}
+
 function CoworkersToggleButton({
   open,
   onToggle,
@@ -1883,7 +2074,7 @@ function RightDockToggleButton({
   open,
   onToggle,
 }: {
-  kind: 'browser' | 'research-workbench';
+  kind: 'browser' | 'files' | 'research-workbench';
   open: boolean;
   onToggle: () => void;
 }) {
@@ -2085,7 +2276,11 @@ function Sidebar({
   onOpenAutomations: () => void;
   onOpenSettings: (section?: SettingsSection) => void;
 }) {
-  const conversations = useChatStore((state) => state.conversations);
+  const conversationsRevision = useChatStore((state) => sidebarConversationRevision(state.conversations));
+  const conversations = useMemo(
+    () => useChatStore.getState().conversations,
+    [conversationsRevision],
+  );
   const projects = useChatStore((state) => state.projects);
   const currentConversationId = useChatStore((state) => state.currentConversationId);
   const createConversation = useChatStore((state) => state.createConversation);
@@ -2424,10 +2619,13 @@ function Sidebar({
             )}
           </div>
 
-          <SidebarHead label={sidebarCopy.conversationSectionLabel} meta={String(sortedStandalone.length).padStart(2, '0')} menuOpen={menu?.owner === 'conversation-section'}>
-            <button className="group-action" type="button" onClick={() => setConversationsCollapsed((value) => !value)} aria-label="展开或收起对话">
-              {conversationsCollapsed ? <ChevronsUpDown size={15} /> : <ChevronsDownUp size={15} />}
-            </button>
+          <SidebarHead
+            label={sidebarCopy.conversationSectionLabel}
+            meta={String(sortedStandalone.length).padStart(2, '0')}
+            menuOpen={menu?.owner === 'conversation-section'}
+            expanded={!conversationsCollapsed}
+            onToggle={() => setConversationsCollapsed((value) => !value)}
+          >
             <button className="group-action" type="button" onClick={openConversationSectionMenu} aria-label="对话排序与整理">
               <MoreHorizontal size={15} />
             </button>
@@ -2440,22 +2638,19 @@ function Sidebar({
               {sortedStandalone.length === 0 ? (
                 <div className="sidebar-hint">{sidebarCopy.conversationEmpty}</div>
               ) : (
-                sortedStandalone.map((conversation) => (
-                  <ConversationRow
-                    key={conversation.id}
-                    conversation={conversation}
-                    active={conversation.id === currentConversationId}
-                    editing={editingConversationId === conversation.id}
-                    menuOpen={menu?.owner === conversation.id}
-                    onSelect={() => { setCurrentConversation(conversation.id); onOpenChat(); }}
-                    onOpenMenu={(anchor) => openConversationMenu(conversation, anchor)}
-                    onCommitRename={(name) => {
-                      renameConversation(conversation.id, name);
-                      setEditingConversationId(null);
-                    }}
-                    onCancelRename={() => setEditingConversationId(null)}
-                  />
-                ))
+                <ConversationList
+                  conversations={sortedStandalone}
+                  currentConversationId={currentConversationId}
+                  activeMenuId={menu?.owner ?? null}
+                  editingConversationId={editingConversationId}
+                  onSelectConversation={(id) => { setCurrentConversation(id); onOpenChat(); }}
+                  onOpenConversationMenu={openConversationMenu}
+                  onCommitConversationRename={(id, name) => {
+                    renameConversation(id, name);
+                    setEditingConversationId(null);
+                  }}
+                  onCancelConversationRename={() => setEditingConversationId(null)}
+                />
               )}
             </div>
           )}
@@ -2499,11 +2694,41 @@ function Sidebar({
   );
 }
 
-function SidebarHead({ label, meta, menuOpen, children }: { label: string; meta?: string; menuOpen?: boolean; children: ReactNode }) {
+function SidebarHead({
+  label,
+  meta,
+  menuOpen,
+  expanded,
+  onToggle,
+  children,
+}: {
+  label: string;
+  meta?: string;
+  menuOpen?: boolean;
+  expanded?: boolean;
+  onToggle?: () => void;
+  children: ReactNode;
+}) {
+  const collapsible = Boolean(onToggle);
   return (
-    <div className={`sidebar-group-head ${menuOpen ? 'menu-open' : ''}`}>
-      <span className="sidebar-group-label">{label}</span>
-      {meta && <span className="sidebar-group-meta" aria-hidden="true">{meta}</span>}
+    <div className={`sidebar-group-head ${menuOpen ? 'menu-open' : ''} ${collapsible ? 'collapsible' : ''}`}>
+      {collapsible ? (
+        <button
+          className="sidebar-group-toggle"
+          type="button"
+          aria-expanded={expanded}
+          aria-label={`${label}，${expanded ? '收起列表' : '展开列表'}`}
+          onClick={onToggle}
+        >
+          <span className="sidebar-group-label">{label}</span>
+          {meta && <span className="sidebar-group-meta" aria-hidden="true">{meta}</span>}
+        </button>
+      ) : (
+        <>
+          <span className="sidebar-group-label">{label}</span>
+          {meta && <span className="sidebar-group-meta" aria-hidden="true">{meta}</span>}
+        </>
+      )}
       <span className="sidebar-group-actions">{children}</span>
     </div>
   );
@@ -2579,6 +2804,67 @@ function ConversationRow({
         </span>
       )}
     </div>
+  );
+}
+
+function ConversationList({
+  conversations,
+  currentConversationId,
+  activeMenuId,
+  editingConversationId,
+  nested = false,
+  onSelectConversation,
+  onOpenConversationMenu,
+  onCommitConversationRename,
+  onCancelConversationRename,
+}: {
+  conversations: Conversation[];
+  currentConversationId: string | null;
+  activeMenuId: string | null;
+  editingConversationId: string | null;
+  nested?: boolean;
+  onSelectConversation: (id: string) => void;
+  onOpenConversationMenu: (conversation: Conversation, anchor: MenuAnchor) => void;
+  onCommitConversationRename: (id: string, name: string) => void;
+  onCancelConversationRename: () => void;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const hasMore = conversations.length > SIDEBAR_CONVERSATION_PREVIEW_LIMIT;
+  const hiddenCount = Math.max(0, conversations.length - SIDEBAR_CONVERSATION_PREVIEW_LIMIT);
+  const displayedConversations = showAll
+    ? conversations
+    : conversations.slice(0, SIDEBAR_CONVERSATION_PREVIEW_LIMIT);
+
+  return (
+    <>
+      {displayedConversations.map((conversation) => (
+        <ConversationRow
+          key={conversation.id}
+          conversation={conversation}
+          active={conversation.id === currentConversationId}
+          nested={nested}
+          menuOpen={activeMenuId === conversation.id}
+          editing={editingConversationId === conversation.id}
+          onSelect={() => onSelectConversation(conversation.id)}
+          onOpenMenu={(anchor) => onOpenConversationMenu(conversation, anchor)}
+          onCommitRename={(name) => onCommitConversationRename(conversation.id, name)}
+          onCancelRename={onCancelConversationRename}
+        />
+      ))}
+      {hasMore && (
+        <button
+          className={`conversation-list-toggle ${nested ? 'nested' : ''} ${showAll ? 'expanded' : ''}`}
+          type="button"
+          aria-expanded={showAll}
+          aria-label={showAll ? '收起显示' : `展开显示，另有 ${hiddenCount} 个对话`}
+          onClick={() => setShowAll((value) => !value)}
+        >
+          <span>{showAll ? '收起显示' : '展开显示'}</span>
+          <em>{showAll ? `${conversations.length} 条` : `+${hiddenCount}`}</em>
+          {showAll ? <ChevronsDownUp size={13} /> : <ChevronsUpDown size={13} />}
+        </button>
+      )}
+    </>
   );
 }
 
@@ -2662,20 +2948,17 @@ function ProjectItem({
           {conversations.length === 0 ? (
             <div className="project-empty">{emptyLabel}</div>
           ) : (
-            conversations.map((conversation) => (
-              <ConversationRow
-                key={conversation.id}
-                conversation={conversation}
-                active={conversation.id === currentConversationId}
-                nested
-                menuOpen={activeMenuId === conversation.id}
-                editing={editingConversationId === conversation.id}
-                onSelect={() => onSelectConversation(conversation.id)}
-                onOpenMenu={(anchor) => onOpenConversationMenu(conversation, anchor)}
-                onCommitRename={(name) => onCommitConversationRename(conversation.id, name)}
-                onCancelRename={onCancelConversationRename}
-              />
-            ))
+            <ConversationList
+              conversations={conversations}
+              currentConversationId={currentConversationId}
+              activeMenuId={activeMenuId}
+              editingConversationId={editingConversationId}
+              nested
+              onSelectConversation={onSelectConversation}
+              onOpenConversationMenu={onOpenConversationMenu}
+              onCommitConversationRename={onCommitConversationRename}
+              onCancelConversationRename={onCancelConversationRename}
+            />
           )}
         </div>
       )}
@@ -2919,37 +3202,37 @@ function TopBar({
   coworkersPanelOpen,
   researchWorkbenchOpen,
   dailyDecisionOpen,
+  filesPanelOpen,
   browserOpen,
   hidePanelActions = false,
   onToggleSidebar,
   onToggleCoworkersPanel,
   onToggleResearchWorkbench,
   onToggleDailyDecision,
+  onToggleFilesPanel,
   onToggleBrowser,
   onOpenSideChat,
-  onOpenSettings,
 }: {
   domain: DomainConfig;
   sidebarCollapsed: boolean;
   coworkersPanelOpen: boolean;
   researchWorkbenchOpen: boolean;
   dailyDecisionOpen: boolean;
+  filesPanelOpen: boolean;
   browserOpen: boolean;
   hidePanelActions?: boolean;
   onToggleSidebar: () => void;
   onToggleCoworkersPanel: () => void;
   onToggleResearchWorkbench: () => void;
   onToggleDailyDecision: () => void;
+  onToggleFilesPanel: () => void;
   onToggleBrowser: () => void;
   onOpenSideChat: () => void;
-  onOpenSettings: () => void;
 }) {
   const conversation = useCurrentConversation();
   const renameConversation = useChatStore((state) => state.renameConversation);
   const toggleConversationPin = useChatStore((state) => state.toggleConversationPin);
   const archiveConversation = useChatStore((state) => state.archiveConversation);
-  const duplicateConversation = useChatStore((state) => state.duplicateConversation);
-  const createConversation = useChatStore((state) => state.createConversation);
   const [editing, setEditing] = useState(false);
   const [menu, setMenu] = useState<SidebarMenu | null>(null);
   const [dailyReports, setDailyReports] = useState(() => loadPremarketThemeRuns());
@@ -3038,18 +3321,6 @@ function TopBar({
             { kind: 'item', icon: <FileText size={15} />, label: '复制对话内容', disabled: !hasMessages, onSelect: () => void copyToClipboard(conversationToPlainText(conversation)) },
           ],
         },
-        {
-          kind: 'submenu',
-          icon: <GitBranch size={15} />,
-          label: '分支',
-          children: [
-            { kind: 'item', icon: <GitBranch size={15} />, label: '从此对话创建分支', disabled: !hasMessages, onSelect: () => { duplicateConversation(conversation.id); } },
-            { kind: 'item', icon: <SquarePen size={15} />, label: '新建空白分支', onSelect: () => { createConversation(conversation.projectId); } },
-          ],
-        },
-        { kind: 'item', icon: <Workflow size={15} />, label: '添加自动化…', onSelect: onOpenSettings },
-        { kind: 'separator' },
-        { kind: 'item', icon: <AppWindow size={15} />, label: '在新窗口中打开', onSelect: () => void openInNewWindow() },
       ],
     });
   };
@@ -3088,6 +3359,7 @@ function TopBar({
                 onToggle={onToggleDailyDecision}
               />
             )}
+            <RightDockToggleButton kind="files" open={filesPanelOpen} onToggle={onToggleFilesPanel} />
             <RightDockToggleButton
               kind="research-workbench"
               open={researchWorkbenchOpen}
@@ -4103,7 +4375,9 @@ function RightDockWorkspace({
                     onConsumeSelectedTextContexts={() => onConsumeTextContexts(tab.id)}
                   />
                 )}
-                {tab.kind === 'research-workbench' && <ResearchWorkbenchPanel />}
+                {tab.kind === 'research-workbench' && (
+                  <ResearchWorkbenchPanel requestedStockCode={tab.stockCode} requestKey={tab.requestKey} />
+                )}
                 {tab.kind === 'daily-decision' && <DailyDecisionPanel />}
               </div>
             ))}
@@ -6391,22 +6665,23 @@ function SkillsPage({
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const filterRef = useRef<HTMLDivElement>(null);
   const closeFilter = useCallback(() => setFilterOpen(false), []);
-  const { status, setSkillInstalled, setSkillEnabled, resetSkillStatus, queueSkillForComposer } = useSkillRuntime();
+  const { catalog, status, setSkillInstalled, setSkillEnabled, resetSkillStatus, queueSkillForComposer } = useSkillRuntime();
   useCloseOnOutsidePointer(filterOpen, filterRef, closeFilter);
 
   const normalizedQuery = query.trim().toLowerCase();
-  const visibleSkills = SKILL_CATALOG.filter((skill) => {
+  const visibleSkills = catalog.filter((skill) => {
     if (categoryFilter !== 'all' && skill.category !== categoryFilter) return false;
     if (!normalizedQuery) return true;
     return `${skill.title} ${skill.description} ${skill.source}`.toLowerCase().includes(normalizedQuery);
   });
   const grouped: Record<SkillCategory, SkillCatalogItem[]> = {
+    official: visibleSkills.filter((skill) => skill.category === 'official'),
     personal: visibleSkills.filter((skill) => skill.category === 'personal'),
     system: visibleSkills.filter((skill) => skill.category === 'system'),
     recommended: visibleSkills.filter((skill) => skill.category === 'recommended'),
   };
-  const selectedSkill = SKILL_CATALOG.find((skill) => skill.id === selectedSkillId) ?? null;
-  const sectionOrder: SkillCategory[] = categoryFilter === 'all' ? ['personal', 'system', 'recommended'] : [categoryFilter];
+  const selectedSkill = catalog.find((skill) => skill.id === selectedSkillId) ?? null;
+  const sectionOrder: SkillCategory[] = categoryFilter === 'all' ? ['official', 'personal', 'system', 'recommended'] : [categoryFilter];
 
   return (
     <section className="skills-page" aria-label="技能">
@@ -6690,7 +6965,11 @@ function SkillDetailDialog({
         </div>
         <div className="skill-detail-footer">
           <div className="skill-detail-footer-left">
-            {installed ? (
+            {installed && skill.category === 'official' ? (
+              <span className="skill-detail-notice">官方 · 随客户端自动安装</span>
+            ) : installed && skill.category === 'system' ? (
+              <span className="skill-detail-notice">系统 · 由 Codex 运行时提供</span>
+            ) : installed ? (
               <button type="button" className="skill-danger-btn" onClick={() => onInstall(false)}>卸载</button>
             ) : (
               <button type="button" className="skill-add-btn" onClick={() => onInstall(true)}>添加技能</button>
@@ -6718,6 +6997,8 @@ function renderInlineCode(text: string): ReactNode[] {
 
 function skillCategoryLabel(category: SkillCategory): string {
   switch (category) {
+    case 'official':
+      return '官方';
     case 'personal':
       return '个人';
     case 'system':
@@ -6950,6 +7231,9 @@ function MessageList({
   const answerLength = streaming ? streamingAnswerLength(conversation) : 0;
   const typing = useActiveTyping(answerLength, streaming);
   const latestMessage = conversation.messages[conversation.messages.length - 1];
+  const streamingAssistant = streaming
+    ? [...conversation.messages].reverse().find((message) => message.role === 'assistant' && message.isStreaming)
+    : undefined;
   const [selectionMenu, setSelectionMenu] = useState<{
     context: SelectedTextContext;
     left: number;
@@ -7017,8 +7301,23 @@ function MessageList({
       }}
     >
       <div className="message-list">
-        {conversation.messages.map((message, index) => <MessageBubble key={message.id} message={message} conversation={conversation} index={index} />)}
-        {streaming && !typing && <ThinkingIndicator />}
+        {conversation.messages.map((message, index) => (
+          <MessageBubble
+            key={message.id}
+            message={message}
+            conversationId={conversation.id}
+            conversationCwd={conversation.cwd}
+            conversationStatus={conversation.status}
+            index={index}
+          />
+        ))}
+        {streaming && !typing && (
+          <ThinkingIndicator
+            startedAt={streamingAssistant?.timestamp ?? conversation.updatedAt}
+            lastActivityAt={conversation.updatedAt}
+            onStop={() => useChatStore.getState().stopConversation(conversation.id)}
+          />
+        )}
       </div>
       {selectionMenu && createPortal(
         <div
@@ -7078,36 +7377,110 @@ function useActiveTyping(answerLength: number, streaming: boolean): boolean {
   return typing;
 }
 
-function ThinkingIndicator() {
-  const [elapsed, setElapsed] = useState(0);
+const LONG_WAIT_SECONDS = 60;
+const POSSIBLY_STALLED_SECONDS = 180;
+
+function formatThinkingDuration(seconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  if (safeSeconds < 60) return `${safeSeconds}秒`;
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainingSeconds = safeSeconds % 60;
+  if (minutes < 60) return `${minutes}分${remainingSeconds > 0 ? `${remainingSeconds}秒` : ''}`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}小时${remainingMinutes > 0 ? `${remainingMinutes}分` : ''}`;
+}
+
+function ThinkingIndicator({
+  startedAt,
+  lastActivityAt,
+  onStop,
+}: {
+  startedAt: number;
+  lastActivityAt: number;
+  onStop: () => void | Promise<void>;
+}) {
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const start = Date.now();
     const timer = window.setInterval(() => {
-      setElapsed(Math.floor((Date.now() - start) / 1000));
+      setNow(Date.now());
     }, 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const inactiveSeconds = Math.max(0, Math.floor((now - lastActivityAt) / 1000));
+  const state = inactiveSeconds >= POSSIBLY_STALLED_SECONDS
+    ? 'stalled'
+    : inactiveSeconds >= LONG_WAIT_SECONDS
+      ? 'waiting'
+      : 'active';
+  const label = state === 'stalled'
+    ? '等待模型响应较久'
+    : state === 'waiting'
+      ? '任务仍在运行'
+      : '正在处理';
+  const detail = state === 'stalled'
+    ? `${formatThinkingDuration(inactiveSeconds)}没有新进展，可能正在长推理或等待连接。`
+    : state === 'waiting'
+      ? `${formatThinkingDuration(inactiveSeconds)}没有新进展，复杂任务可能仍在处理。`
+      : null;
+
   return (
-    <div className="thinking-indicator" role="status" aria-live="polite">
-      <span className="thinking-shimmer">正在思考</span>
-      {elapsed > 0 && <span className="thinking-elapsed">{elapsed}s</span>}
+    <div
+      className={`thinking-indicator ${state}`}
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      data-state={state}
+    >
+      <div className="thinking-copy" aria-hidden="true">
+        <div className="thinking-primary">
+          <span className="thinking-shimmer">{label}</span>
+          <span className="thinking-elapsed">总计 {formatThinkingDuration(totalSeconds)}</span>
+        </div>
+        {detail && <span className="thinking-detail">{detail}</span>}
+      </div>
+      {state === 'stalled' && (
+        <button type="button" className="thinking-stop" onClick={() => void onStop()} aria-label="停止当前任务">
+          停止任务
+        </button>
+      )}
     </div>
   );
 }
 
-function MessageBubble({ message, conversation, index }: { message: ChatMessage; conversation: Conversation; index: number }) {
+const MessageBubble = memo(function MessageBubble({
+  message,
+  conversationId,
+  conversationCwd,
+  conversationStatus,
+  index,
+}: {
+  message: ChatMessage;
+  conversationId: string;
+  conversationCwd: string;
+  conversationStatus: Conversation['status'];
+  index: number;
+}) {
   const editUserMessageAndResend = useChatStore((state) => state.editUserMessageAndResend);
   const [editing, setEditing] = useState(false);
   const [copied, setCopied] = useState(false);
   const copyResetTimer = useRef<number | null>(null);
   const isReviewRequest = message.role === 'user' && Boolean(message.reviewRequest);
-  const plainText = messageToPlainText(message);
+  const plainText = useMemo(
+    () => message.isStreaming ? '' : messageToPlainText(message),
+    [message],
+  );
   const generatedFiles = useMemo(
     () => message.role === 'assistant' ? generatedFilesFromMessageBlocks(message.blocks) : [],
     [message.blocks, message.role],
   );
+  const securityMentions = useMemo(() => message.role === 'assistant' && !message.isStreaming
+    ? findResearchSecurityMentions(message.blocks.flatMap((block) => block.type === 'text' ? [block.content] : []).join('\n'))
+    : [], [message.blocks, message.isStreaming, message.role]);
   const canCopy = plainText.length > 0 && !isReviewRequest;
-  const canEdit = message.role === 'user' && !isReviewRequest && conversation.status !== 'streaming';
+  const canEdit = message.role === 'user' && !isReviewRequest && conversationStatus !== 'streaming';
   const lastBlockIndex = message.blocks.length - 1;
   useEffect(() => () => {
     if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current);
@@ -7125,7 +7498,7 @@ function MessageBubble({ message, conversation, index }: { message: ChatMessage;
     const trimmed = next.trim();
     if (!trimmed && attachments.length === 0) return;
     setEditing(false);
-    void editUserMessageAndResend(conversation.id, message.id, trimmed, attachments);
+    void editUserMessageAndResend(conversationId, message.id, trimmed, attachments);
   };
   if (message.role === 'assistant' && message.blocks.length === 0 && message.isStreaming) {
     return null;
@@ -7164,7 +7537,7 @@ function MessageBubble({ message, conversation, index }: { message: ChatMessage;
                     </>
                   )
                 : message.review
-                  ? <ReviewBody message={message} cwd={conversation.cwd} />
+                  ? <ReviewBody message={message} cwd={conversationCwd} />
 	                  : buildRenderUnits(message.blocks).map((unit) =>
 	                      unit.type === 'command-group'
 	                        ? (unit.blocks.length === 1
@@ -7188,6 +7561,9 @@ function MessageBubble({ message, conversation, index }: { message: ChatMessage;
                     files: generatedFiles,
                   }}
                 />
+              )}
+              {message.role === 'assistant' && !message.isStreaming && securityMentions.length > 0 && (
+                <StockMentionCards mentions={securityMentions} />
               )}
             </div>
           )}
@@ -7213,6 +7589,77 @@ function MessageBubble({ message, conversation, index }: { message: ChatMessage;
       )}
     </article>
   );
+});
+
+const MAX_VISIBLE_STOCK_MENTIONS = 8;
+
+function StockMentionCards({ mentions }: { mentions: ResearchSecurityMention[] }) {
+  const visible = mentions.slice(0, MAX_VISIBLE_STOCK_MENTIONS);
+  const remaining = Math.max(0, mentions.length - visible.length);
+  return (
+    <section className="stock-mention-strip" aria-label="对话相关股票">
+      <header className="stock-mention-head">
+        <span><ChartCandlestick size={14} /><strong>相关股票</strong></span>
+        <em>{mentions.length} 只 · 点击进入投研详情</em>
+      </header>
+      <div className="stock-mention-grid">
+        {visible.map((mention) => (
+          <button
+            key={mention.code}
+            type="button"
+            className="stock-mention-card"
+            onClick={() => openResearchSecurity(mention.code)}
+            aria-label={`查看${mention.name}投研详情`}
+            title={`在投研工作台查看 ${mention.name}（${shortCode(mention.code)}）`}
+          >
+            <span className="stock-mention-avatar" aria-hidden="true">{mention.name.slice(0, 1)}</span>
+            <span className="stock-mention-identity">
+              <strong>{mention.name}</strong>
+              <em>{shortCode(mention.code)}</em>
+            </span>
+            <span className="stock-mention-meta">
+              <em>{mention.sector}</em>
+              <span>{mention.tags[0] || mention.board}</span>
+            </span>
+            <span className="stock-mention-open" aria-hidden="true"><ChevronRight size={14} /></span>
+          </button>
+        ))}
+      </div>
+      {remaining > 0 && <p className="stock-mention-more">另有 {remaining} 只股票已在正文中提及</p>}
+    </section>
+  );
+}
+
+function renderInlineStockMentions(text: string): ReactNode {
+  const ranges = findResearchSecurityMentionRanges(text);
+  if (ranges.length === 0) return text;
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  ranges.forEach((range, index) => {
+    if (range.start > cursor) nodes.push(text.slice(cursor, range.start));
+    const code = shortCode(range.mention.code);
+    nodes.push(
+      <button
+        key={`${range.mention.code}-${range.start}-${index}`}
+        type="button"
+        className="stock-inline-mention"
+        onClick={() => openResearchSecurity(range.mention.code)}
+        aria-label={`打开${range.mention.name}投研详情`}
+        title={`${range.mention.sector} · 在投研工作台查看 ${range.mention.name}`}
+      >
+        <ChartCandlestick size={11} aria-hidden="true" />
+        <strong>{range.mention.name}</strong>
+        {range.mention.name !== code && <em>{code}</em>}
+      </button>,
+    );
+    cursor = range.end;
+  });
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
+}
+
+function inlineStockChildren(children: ReactNode): ReactNode {
+  return Children.map(children, (child) => typeof child === 'string' ? renderInlineStockMentions(child) : child);
 }
 
 function formatMessageRecordTime(timestamp: number): string {
@@ -7227,12 +7674,17 @@ function formatMessageRecordTime(timestamp: number): string {
 }
 
 function MessageSkillLabel({ skill }: { skill: SkillSelection }) {
-  const name = skill.title.trim() || skill.id;
+  const invocation = skillInvocationLabel(skill);
+  const title = skill.title.trim() || skill.id;
   return (
-    <span className="message-skill-label" title={`指定 Skill：${name}`}>
-      {`$${name}`}
+    <span className="message-skill-label" title={`指定 Skill：${invocation}（${title}）`}>
+      {invocation}
     </span>
   );
+}
+
+function skillInvocationLabel(skill: Pick<SkillSelection, 'id'>): string {
+  return `$${skill.id}`;
 }
 
 function MessageSelectedTextContexts({ contexts }: { contexts: SelectedTextContext[] }) {
@@ -8048,7 +8500,7 @@ function Composer({
           <div className="composer-skill-selection">
             <span className={`composer-skill-icon skill-icon-${selectedSkill.icon}`}>{skillIcon(selectedSkill, 16)}</span>
             <span className="composer-skill-copy">
-              <strong>{selectedSkill.title}</strong>
+              <strong>{skillInvocationLabel(selectedSkill)}</strong>
               <span>将优先使用这个 Skill</span>
             </span>
             <button type="button" className="composer-skill-remove" onClick={() => setSelectedSkill(null)} aria-label={`移除 ${selectedSkill.title} Skill`}>
@@ -8341,7 +8793,7 @@ function queuedMessagePreview(message: QueuedChatMessage): string {
 function queuedMessageMeta(message: QueuedChatMessage): string {
   const parts: string[] = [];
   if (message.attachments?.length) parts.push(`${message.attachments.length} 附件`);
-  if (message.selectedSkill) parts.push(`$${message.selectedSkill.title}`);
+  if (message.selectedSkill) parts.push(skillInvocationLabel(message.selectedSkill));
   if (message.coworkers?.length) parts.push(`${message.coworkers.length} 同事`);
   return parts.join(' · ');
 }
@@ -8787,9 +9239,94 @@ function stripTrailingFilePunctuation(path: string): string {
   return path.trim().replace(/[),.;，。]+$/g, '');
 }
 
-const MARKDOWN_COMPONENTS = {
+const MARKDOWN_CODE_COLLAPSE_LINES = 12;
+const MARKDOWN_CODE_COLLAPSE_CHARACTERS = 1_200;
+
+function markdownCodeText(children: ReactNode): string {
+  return Children.toArray(children).map((child) => {
+    if (typeof child === 'string' || typeof child === 'number') return String(child);
+    if (isValidElement<{ children?: ReactNode }>(child)) return markdownCodeText(child.props.children);
+    return '';
+  }).join('').replace(/\n$/, '');
+}
+
+function markdownCodeLanguage(children: ReactNode): string {
+  for (const child of Children.toArray(children)) {
+    if (!isValidElement<{ className?: string }>(child)) continue;
+    const language = child.props.className?.match(/(?:^|\s)language-([^\s]+)/)?.[1];
+    if (language) return language;
+  }
+  return '';
+}
+
+function MarkdownCodeBlock({ node: _node, children, ...props }: HTMLAttributes<HTMLPreElement> & { node?: unknown }) {
+  const code = markdownCodeText(children);
+  const language = markdownCodeLanguage(children);
+  const lineCount = code ? code.split('\n').length : 0;
+  const collapsible = lineCount > MARKDOWN_CODE_COLLAPSE_LINES || code.length > MARKDOWN_CODE_COLLAPSE_CHARACTERS;
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copyResetTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current);
+  }, []);
+  const handleCopy = async () => {
+    if (!await tryCopyToClipboard(code)) return;
+    setCopied(true);
+    if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current);
+    copyResetTimer.current = window.setTimeout(() => {
+      setCopied(false);
+      copyResetTimer.current = null;
+    }, 1_800);
+  };
+  const stateClass = collapsible ? (expanded ? 'is-expanded' : 'is-collapsed') : 'is-static';
+
+  return (
+    <div className={`markdown-code-block ${stateClass}`} role="group" aria-label={`代码块，共 ${lineCount} 行`}>
+      <div className="markdown-code-head">
+        <span className="markdown-code-kind"><Code2 size={12} />{language ? language.toUpperCase() : 'CODE / DATA'}</span>
+        <span className="markdown-code-lines">{lineCount} 行</span>
+        <span className="markdown-code-actions">
+          <button
+            type="button"
+            className={`markdown-code-action${copied ? ' copied' : ''}`}
+            onClick={() => void handleCopy()}
+            aria-label={copied ? '代码已复制' : '复制代码'}
+            title={copied ? '已复制' : '复制代码'}
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+          {collapsible && (
+            <button
+              type="button"
+              className="markdown-code-toggle"
+              onClick={() => setExpanded((current) => !current)}
+              aria-expanded={expanded}
+              aria-label={expanded ? '收起代码' : '展开代码'}
+            >
+              {expanded ? <ChevronsDownUp size={12} /> : <ChevronsUpDown size={12} />}
+              {expanded ? '收起' : '展开'}
+            </button>
+          )}
+        </span>
+      </div>
+      <div className="markdown-code-body">
+        <pre {...props}>{children}</pre>
+      </div>
+    </div>
+  );
+}
+
+const MARKDOWN_COMPONENTS: Components = {
   img: MarkdownImage,
   a: MarkdownLink,
+  pre: MarkdownCodeBlock,
+  p: ({ node: _node, children, ...props }) => <p {...props}>{inlineStockChildren(children)}</p>,
+  li: ({ node: _node, children, ...props }) => <li {...props}>{inlineStockChildren(children)}</li>,
+  td: ({ node: _node, children, ...props }) => <td {...props}>{inlineStockChildren(children)}</td>,
+  th: ({ node: _node, children, ...props }) => <th {...props}>{inlineStockChildren(children)}</th>,
+  strong: ({ node: _node, children, ...props }) => <strong {...props}>{inlineStockChildren(children)}</strong>,
+  em: ({ node: _node, children, ...props }) => <em {...props}>{inlineStockChildren(children)}</em>,
 };
 
 const GENERATED_IMAGE_PREVIEW_RETRIES = 3;
@@ -8874,7 +9411,26 @@ function GeneratedFileResultView({ block, grouped = false }: { block: Extract<Me
   // persisted conversations may already contain false-positive file blocks for
   // source pages whose titles included words such as “文件”. Hide them here as
   // well as preventing new ones in codexEvents.ts.
-  const files = block.files.filter((file) => !isRemoteHtmlPage(file));
+  const candidates = useMemo(
+    () => block.files.filter((file) => !isRemoteHtmlPage(file)),
+    [block.files],
+  );
+  const [files, setFiles] = useState(candidates);
+  useEffect(() => {
+    setFiles(candidates);
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    void Promise.all(candidates.map(async (file) => {
+      if (/^https?:\/\//i.test(file.path)) return file;
+      const path = localFilePath(file.path) || file.path;
+      return await localFileExists(path) ? file : null;
+    })).then((checked) => {
+      if (!cancelled) setFiles(checked.filter((file): file is GeneratedFile => Boolean(file)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [candidates]);
   if (files.length === 0) return null;
   return (
     <section className={`generated-file-result ${grouped ? 'message-deliverables' : ''}`} aria-label={block.title}>
@@ -9299,7 +9855,7 @@ function ComposerPlusMenu({
   onSelectSkill: (skill: SkillCatalogItem) => void;
   disabled?: boolean;
 }) {
-  const { status } = useSkillRuntime();
+  const { catalog, status } = useSkillRuntime();
   const [open, setOpen] = useState(false);
   const [submenu, setSubmenu] = useState<'plugins' | null>(null);
   const close = () => {
@@ -9316,7 +9872,7 @@ function ComposerPlusMenu({
     onSelectSkill(skill);
     close();
   };
-  const installedSkills = SKILL_CATALOG.filter((skill) => {
+  const installedSkills = catalog.filter((skill) => {
     const current = status[skill.id] ?? { installed: skill.installed, enabled: skill.installed };
     return current.installed && current.enabled;
   });
@@ -9363,7 +9919,7 @@ function ComposerPlusMenu({
                     {installedSkills.map((skill) => (
                       <button key={skill.id} type="button" className="plus-plugin-row selectable" role="menuitem" onClick={() => chooseSkill(skill)}>
                         <span className={`plus-plugin-icon skill-icon-${skill.icon}`}>{skillIcon(skill, 14)}</span>
-                        <span>{skill.title}</span>
+                        <span>{`$${skill.id}`}</span>
                       </button>
                     ))}
                     <div className="plus-menu-hint">金融版会在这里扩展投研数据、资料处理和自动化技能。</div>
@@ -13076,8 +13632,13 @@ function settingsIcon(section: SettingsSection): ReactNode {
 function domainSuggestionIcon(suggestion: DomainSuggestion): ReactNode {
   const icons: Record<DomainSuggestion['icon'], ReactNode> = {
     report: <FileChartColumn size={16} className="icon" />,
+    mainline: <Network size={16} className="icon" />,
     monitor: <Activity size={16} className="icon" />,
     review: <MoonStar size={16} className="icon" />,
+    evidence: <Database size={16} className="icon" />,
+    thesis: <Target size={16} className="icon" />,
+    calibration: <SlidersHorizontal size={16} className="icon" />,
+    factor: <ChartCandlestick size={16} className="icon" />,
   };
   return icons[suggestion.icon];
 }
@@ -13162,26 +13723,6 @@ function conversationToPlainText(conversation: Conversation): string {
     })
     .filter(Boolean)
     .join('\n\n');
-}
-
-async function openInNewWindow(): Promise<void> {
-  const target = `${window.location.pathname}${window.location.search}`;
-  if (isTauriRuntime()) {
-    try {
-      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-      const label = `chat-${Date.now().toString(36)}`;
-      new WebviewWindow(label, {
-        url: target || '/',
-        title: 'Alpha Studio',
-        width: 1100,
-        height: 760,
-      });
-      return;
-    } catch {
-      // Fall back to a browser window if the webview cannot be spawned.
-    }
-  }
-  window.open(target || window.location.href, '_blank', 'noopener,noreferrer');
 }
 
 async function tryCopyToClipboard(text: string): Promise<boolean> {

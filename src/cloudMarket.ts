@@ -126,6 +126,7 @@ function asSource(value: string): Exclude<ResearchQuoteSource, 'sample' | 'jqdat
 function cloudHeaders(session: ClientLicenseSession): HeadersInit {
   return {
     Accept: 'application/json',
+    Authorization: `Bearer ${session.device.accessToken}`,
     'x-alpha-tenant-id': session.tenant.id,
     'x-alpha-device-id': session.device.id,
     'x-alpha-device-fingerprint': getOrCreateDeviceFingerprint(),
@@ -324,31 +325,70 @@ export function subscribeCloudMarket(
     onError?.(error instanceof Error ? error.message : String(error));
     return () => undefined;
   }
-  if (typeof EventSource === 'undefined') {
-    const timer = window.setInterval(() => {
-      void fetchCloudSnapshot().then((snapshot) => {
-        onUpdate(updateFromSnapshot(snapshot, snapshot.quotes.length));
-      }).catch((error) => onError?.(error instanceof Error ? error.message : String(error)));
-    }, 45_000);
-    return () => window.clearInterval(timer);
-  }
   const url = marketUrl(session, '/api/market/stream');
   url.searchParams.set('tenantId', session.tenant.id);
   url.searchParams.set('deviceId', session.device.id);
-  url.searchParams.set('fingerprint', getOrCreateDeviceFingerprint());
-  const stream = new EventSource(url.toString());
-  const handleSnapshot = (event: MessageEvent<string>) => {
-    try {
-      const snapshot = JSON.parse(event.data) as CloudMarketSnapshot;
-      onUpdate(updateFromSnapshot(snapshot, snapshot.quotes.length));
-    } catch {
-      onError?.('云端行情广播格式无效。');
-    }
-  };
-  stream.addEventListener('snapshot', handleSnapshot as EventListener);
-  stream.onerror = () => onError?.('云端行情广播暂时中断，正在自动重连。');
+  const controller = new AbortController();
+  let stopped = false;
+  void consumeAuthenticatedMarketStream(url, session, controller.signal, (snapshot) => {
+    onUpdate(updateFromSnapshot(snapshot, snapshot.quotes.length));
+  }, (message) => {
+    if (!stopped) onError?.(message);
+  });
   return () => {
-    stream.removeEventListener('snapshot', handleSnapshot as EventListener);
-    stream.close();
+    stopped = true;
+    controller.abort();
   };
+}
+
+async function consumeAuthenticatedMarketStream(
+  url: URL,
+  session: ClientLicenseSession,
+  signal: AbortSignal,
+  onSnapshot: (snapshot: CloudMarketSnapshot) => void,
+  onError: (message: string) => void,
+): Promise<void> {
+  while (!signal.aborted) {
+    try {
+      const response = await fetch(url, {
+        headers: cloudHeaders(session),
+        signal,
+      });
+      if (!response.ok) throw new Error(await parseCloudError(response));
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('当前环境不支持云端行情流。');
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (!signal.aborted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary >= 0) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const event = frame.split(/\r?\n/).find((line) => line.startsWith('event:'))?.slice(6).trim();
+          const data = frame.split(/\r?\n/)
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trimStart())
+            .join('\n');
+          if (event === 'snapshot' && data) {
+            const snapshot = JSON.parse(data) as CloudMarketSnapshot;
+            if (Array.isArray(snapshot.quotes)) onSnapshot(snapshot);
+          }
+          boundary = buffer.indexOf('\n\n');
+        }
+      }
+    } catch (error) {
+      if (signal.aborted) return;
+      onError(error instanceof Error ? error.message : '云端行情广播暂时中断，正在自动重连。');
+    }
+    await new Promise<void>((resolve) => {
+      const timer = window.setTimeout(resolve, 3_000);
+      signal.addEventListener('abort', () => {
+        window.clearTimeout(timer);
+        resolve();
+      }, { once: true });
+    });
+  }
 }

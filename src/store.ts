@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
+import { persist, type PersistStorage } from 'zustand/middleware';
 import { addScheduledAutomationTask, automationCreatedReply, detectAutomationIntent } from './automation';
 import {
   addBackgroundContextToPrompt,
@@ -14,7 +14,7 @@ import { buildCodingInstructions, buildReviewPrompt } from './prompt';
 import { coworkerSelectionsByIds } from './coworkers';
 import { checkCodex, isTauriRuntime, listCodexModels, localTextFileRead, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
-import { loadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
+import { reloadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
 import { executeResearchChatCommand } from './researchChat';
 import { addThemeAbilityContext, inferThemeAbilitySkill } from './themeAbilities';
 import {
@@ -46,6 +46,12 @@ import {
   ingestThemeMonitorResult,
   ingestThemeReviewResult,
 } from './themeValidation';
+import {
+  COMPANY_THESIS_SCHEMA,
+  EVIDENCE_SCHEMA,
+  ingestCompanyThesisResult,
+  ingestEvidenceResult,
+} from './researchIntelligence';
 import {
   ALPHA_GATEWAY_PROVIDER_ID,
   createGatewayRun,
@@ -198,12 +204,6 @@ export interface PersistedChatState {
   conversationSort: ProjectSort;
 }
 
-const tauriNoopStorage = {
-  getItem: () => null,
-  setItem: () => undefined,
-  removeItem: () => undefined,
-};
-
 function persistedChatState(state: ChatState): PersistedChatState {
   const conversations = state.conversations.filter((conversation) => !conversation.ephemeral);
   const currentConversationId = conversations.some((conversation) => conversation.id === state.currentConversationId)
@@ -223,6 +223,32 @@ function persistedChatState(state: ChatState): PersistedChatState {
     conversationSort: state.conversationSort,
   };
 }
+
+// Desktop persistence is handled by the debounced SQLite-backed local store
+// below. Supplying a native PersistStorage here keeps Zustand's middleware API
+// intact without createJSONStorage serializing the complete conversation
+// history on every streamed token.
+const tauriNoopStorage: PersistStorage<PersistedChatState> = {
+  getItem: () => null,
+  setItem: () => undefined,
+  removeItem: () => undefined,
+};
+
+const tauriNoopPersistedState: PersistedChatState = {
+  conversations: [],
+  projects: [],
+  currentConversationId: null,
+  selectedModelProfileId: '',
+  modelProfiles: [],
+  reasoningEffort: DEFAULT_EFFORT,
+  speed: DEFAULT_SPEED,
+  workModeId: DEFAULT_WORK_MODE_ID,
+  approvalMode: DEFAULT_APPROVAL,
+  projectSort: 'updated',
+  conversationSort: 'updated',
+};
+
+const hotChatState = import.meta.hot?.data?.alphaStudioChatState as PersistedChatState | undefined;
 
 export const useChatStore = create<ChatState>()(
   persist(
@@ -1514,6 +1540,12 @@ export const useChatStore = create<ChatState>()(
           if (text.includes(THEME_REVIEW_SCHEMA)) {
             ingestThemeReviewResult(text, loadPremarketThemeRuns());
           }
+          if (visibleAssistantText.includes(EVIDENCE_SCHEMA)) {
+            ingestEvidenceResult(visibleAssistantText, conversation.id, assistant?.id);
+          }
+          if (visibleAssistantText.includes(COMPANY_THESIS_SCHEMA)) {
+            ingestCompanyThesisResult(visibleAssistantText, conversation.id, assistant?.id);
+          }
           const runningJointResearch = loadDailyDecisionState().jointResearchRuns.find((run) => run.conversationId === conversation.id && (run.status === 'pending' || run.status === 'running'));
           if (assistant && runningJointResearch) {
             if (runningJointResearch.phase === 'analyst_research') {
@@ -1573,8 +1605,10 @@ export const useChatStore = create<ChatState>()(
     {
       name: 'alpha-studio.chat.v2',
       version: 7,
-      partialize: persistedChatState,
-      storage: isTauriRuntime() ? createJSONStorage(() => tauriNoopStorage) : undefined,
+      // The native local-store subscriber below owns desktop persistence. Keep
+      // the middleware's hot-path projection constant-time on streamed tokens.
+      partialize: isTauriRuntime() ? () => tauriNoopPersistedState : persistedChatState,
+      storage: isTauriRuntime() ? tauriNoopStorage : undefined,
       migrate: (persistedState) => migratePersistedState(persistedState),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
@@ -1592,27 +1626,44 @@ export const useChatStore = create<ChatState>()(
   ),
 );
 
-let localStoreChatHydrated = !isTauriRuntime();
+// During Vite HMR, carry the latest in-memory snapshot into the newly evaluated
+// store module. Reading the module-level bootstrap cache here used to restore
+// the database state from app startup and overwrite conversations created
+// later in the same dev session.
+if (hotChatState) {
+  useChatStore.setState({
+    ...migratePersistedState(hotChatState),
+    error: null,
+  });
+}
+
+let localStoreChatHydrated = !isTauriRuntime() || Boolean(hotChatState);
+let unsubscribeLocalStoreChanges: (() => void) | null = null;
 
 if (isTauriRuntime()) {
-  void hydrateChatFromLocalStore();
-  useChatStore.subscribe((state) => {
+  if (!hotChatState) void hydrateChatFromLocalStore();
+  unsubscribeLocalStoreChanges = useChatStore.subscribe(() => {
     if (!localStoreChatHydrated) return;
-    scheduleLocalStoreCommit('chat', {
-      chat: persistedChatState(state),
-      audit: {
-        domain: 'chat',
-        action: 'state.persist',
-        entityId: state.currentConversationId ?? undefined,
-        payload: { conversationCount: state.conversations.length, projectCount: state.projects.length },
-      },
+    scheduleLocalStoreCommit('chat', () => {
+      const state = useChatStore.getState();
+      return {
+        chat: persistedChatState(state),
+        audit: {
+          domain: 'chat',
+          action: 'state.persist',
+          entityId: state.currentConversationId ?? undefined,
+          payload: { conversationCount: state.conversations.length, projectCount: state.projects.length },
+        },
+      };
     });
   });
 }
 
 async function hydrateChatFromLocalStore(): Promise<void> {
   try {
-    const snapshot = await loadLocalStoreSnapshot();
+    // Always hit SQLite for a store initialization. loadLocalStoreSnapshot()
+    // intentionally caches the first app bootstrap and is unsafe after HMR.
+    const snapshot = await reloadLocalStoreSnapshot();
     if (snapshot?.premarketThemeRuns?.length) {
       savePremarketThemeRuns(snapshot.premarketThemeRuns as import('./themeResearch').PremarketThemeRun[]);
     }
@@ -2308,19 +2359,80 @@ function isProjectSort(value: unknown): value is ProjectSort {
   return value === 'updated' || value === 'created' || value === 'name';
 }
 
-// Subscribe to Codex streaming events exactly once per page load. We do this at
-// module scope rather than inside a React effect so it is immune to React
-// StrictMode's mount→cleanup→mount cycle and to Vite HMR remounts — both of
-// which previously leaked a second listener and replayed every streamed token
-// twice (the "duplicated characters" bug). The window flag survives HMR, so only
-// a full page reload ever re-subscribes.
+// Subscribe to Codex streaming events exactly once per page load. The native
+// listener forwards through a replaceable global dispatch function so Vite HMR
+// sends new events to the newly evaluated store instead of retaining a stale
+// store closure.
 const CODEX_SUBSCRIPTION_FLAG = '__alphaStudioCodexSubscribed__';
+const CODEX_EVENT_DISPATCH_KEY = '__alphaStudioCodexEventDispatch__';
+
+function createCodexEventFrameBatcher(dispatch: (event: CodexChatEvent) => void) {
+  let pending: CodexChatEvent | null = null;
+  let frameId: number | null = null;
+
+  const flush = () => {
+    frameId = null;
+    const event = pending;
+    pending = null;
+    if (event) dispatch(event);
+  };
+
+  return (event: CodexChatEvent) => {
+    const batchable = (event.type === 'text_delta' || event.type === 'reasoning_delta') && Boolean(event.text);
+    if (!batchable) {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+        frameId = null;
+      }
+      const queued = pending;
+      pending = null;
+      if (queued) dispatch(queued);
+      dispatch(event);
+      return;
+    }
+
+    const canMerge = pending
+      && pending.type === event.type
+      && pending.runId === event.runId
+      && pending.conversationId === event.conversationId;
+    if (canMerge && pending) {
+      pending = { ...event, text: `${pending.text ?? ''}${event.text ?? ''}` };
+    } else {
+      // Preserve event ordering if two runs or delta kinds interleave within a
+      // single paint frame.
+      if (pending) dispatch(pending);
+      pending = event;
+    }
+    if (frameId === null) frameId = window.requestAnimationFrame(flush);
+  };
+}
+
 if (isTauriRuntime()) {
-  const globalScope = window as unknown as Record<string, boolean>;
+  const globalScope = window as unknown as {
+    [CODEX_SUBSCRIPTION_FLAG]?: boolean;
+    [CODEX_EVENT_DISPATCH_KEY]?: (event: CodexChatEvent) => void;
+  };
+  globalScope[CODEX_EVENT_DISPATCH_KEY] = (event) => {
+    useChatStore.getState().handleCodexEvent(event);
+  };
   if (!globalScope[CODEX_SUBSCRIPTION_FLAG]) {
     globalScope[CODEX_SUBSCRIPTION_FLAG] = true;
-    void subscribeCodexEvents((event) => {
-      useChatStore.getState().handleCodexEvent(event);
+    const handleStreamEvent = createCodexEventFrameBatcher((event) => {
+      globalScope[CODEX_EVENT_DISPATCH_KEY]?.(event);
     });
+    void subscribeCodexEvents(handleStreamEvent);
   }
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose((data) => {
+    // Do not transfer the placeholder state if HMR happens before the initial
+    // SQLite hydration finishes; the next module evaluation will reload SQLite.
+    if (localStoreChatHydrated) {
+      data.alphaStudioChatState = persistedChatState(useChatStore.getState());
+    } else {
+      delete data.alphaStudioChatState;
+    }
+    unsubscribeLocalStoreChanges?.();
+  });
 }

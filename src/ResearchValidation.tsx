@@ -1,16 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
   BarChart3,
+  Check,
+  ChevronRight,
   Clock3,
   Crosshair,
   FileInput,
   Layers,
   Loader2,
+  MessageSquarePlus,
   Play,
   RefreshCw,
   RotateCcw,
+  ShieldAlert,
   ShieldCheck,
 } from 'lucide-react';
 import { fetchJqHistoricalBars, loadJqDataConfig } from './jqdata';
@@ -58,6 +62,7 @@ import {
   saveThemeBacktestRun,
   saveThemeReviews,
   saveThemeTrackingEvents,
+  summarizeStockConditions,
   type BacktestCurvePoint,
   type BacktestPriceBar,
   type ThemeBacktestConfig,
@@ -80,17 +85,28 @@ import {
   type ThemeEngineTickDetail,
 } from './themeTrackingEngine';
 import { loadLocalStoreSnapshot } from './localStore';
+import { insertIntoComposer } from './composerBridge';
+import { buildResearchCalibration } from './researchCalibration';
 
-type ValidationView = 'cockpit' | 'ledger' | 'review' | 'backtest';
+type ValidationView = 'cockpit' | 'ledger' | 'review' | 'backtest' | 'calibration';
 
 const VIEW_LABELS: Record<ValidationView, string> = {
   cockpit: '今日作战',
   ledger: '主题台账',
   review: '收盘复盘',
   backtest: '净值回测',
+  calibration: '概率校准',
 };
 
 const ROLE_ORDER = ['龙头', '情绪龙头', '中军', '容量核心', '趋势核心', '先锋', '补涨', '情绪扩散'];
+
+const STOCK_CONDITION_LABELS = {
+  ready: '买入条件达成',
+  partial: '部分达成',
+  waiting: '等待触发',
+  blocked: '失效 / 禁止',
+  data_missing: '待补数据',
+} as const;
 
 function roleOrderIndex(role: string | undefined): number {
   if (!role) return ROLE_ORDER.length;
@@ -424,7 +440,7 @@ export function ResearchValidationPanel() {
         </div>
       ) : null}
 
-      <div className="rv-view-tabs four" role="tablist" aria-label="跟踪验证视图">
+      <div className="rv-view-tabs five" role="tablist" aria-label="跟踪验证视图">
         {(Object.keys(VIEW_LABELS) as ValidationView[]).map((key) => (
           <button key={key} type="button" role="tab" aria-selected={view === key} className={view === key ? 'active' : ''} onClick={() => setView(key)}>
             {VIEW_LABELS[key]}
@@ -495,6 +511,9 @@ export function ResearchValidationPanel() {
           <BacktestView reports={reports} events={events} runs={backtestRuns} onRun={(run) => {
             setBacktestRuns(saveThemeBacktestRun(run));
           }} />
+        ) : null}
+        {selectedReport && view === 'calibration' ? (
+          <CalibrationView reports={reports} reviews={reviews} />
         ) : null}
       </div>
       {pendingImport ? (
@@ -637,33 +656,80 @@ function ThemeBattleCard({
   historical: boolean;
   onOverride: (event: ThemeTrackingEvent) => void;
 }) {
+  const [expandedStockKey, setExpandedStockKey] = useState('');
   const stocks = [...theme.stocks].sort((a, b) =>
     roleOrderIndex(a.role) === roleOrderIndex(b.role)
       ? a.roleRank - b.roleRank
       : roleOrderIndex(a.role) - roleOrderIndex(b.role));
+  const conditionRows = stocks.map((stock) => ({
+    stock,
+    key: `${stock.code || stock.name}:${stock.role || ''}:${stock.roleRank}`,
+    summary: summarizeStockConditions(theme, stock, latest),
+  }));
+  const readyCount = conditionRows.filter((row) => row.summary.state === 'ready').length;
+  const blockedCount = conditionRows.filter((row) => row.summary.state === 'blocked').length;
   return (
     <section className="rv-section rv-trigger-section">
       <header>
         <div><strong>#{theme.rank} {theme.name}</strong><span>{theme.grade} · {theme.lifecycle} · {theme.capitalType}</span></div>
-        <em>{theme.todayAttackProbability}</em>
+        <div className="rv-theme-condition-summary">
+          {readyCount ? <span className="ready">达成 {readyCount}</span> : null}
+          {blockedCount ? <span className="blocked">失效 {blockedCount}</span> : null}
+          <em>{theme.todayAttackProbability}</em>
+        </div>
       </header>
       {stocks.length ? (
         <table className="rv-matrix" aria-label={`${theme.name} 角色矩阵`}>
           <thead>
-            <tr><th>角色</th><th>标的</th><th className="num">现价</th><th className="num">涨跌</th><th>真实性</th></tr>
+            <tr><th>角色</th><th>标的 / 真实性</th><th className="num">行情</th><th>报告条件</th></tr>
           </thead>
           <tbody>
-            {stocks.map((stock) => {
+            {conditionRows.map(({ stock, key, summary }) => {
               const quote = stock.code ? quotes.get(stock.code) : undefined;
               const tone = quote ? (quote.changePct > 0 ? 'up' : quote.changePct < 0 ? 'down' : '') : '';
+              const expanded = expandedStockKey === key;
               return (
-                <tr key={`${stock.code || stock.name}`}>
-                  <td><span className="rv-role-chip">{stock.role || '未标注'}{stock.roleRank > 1 ? ` ${stock.roleRank}` : ''}</span></td>
-                  <td className="rv-matrix-name"><strong>{stock.name}</strong><span>{stock.code || '缺代码'}</span></td>
-                  <td className={`num ${tone}`}>{quote ? quote.price.toFixed(2) : historical ? '—' : '…'}</td>
-                  <td className={`num ${tone}`}>{quote ? formatPercent(quote.changePct) : historical ? '—' : '…'}</td>
-                  <td>{stock.authenticity || '—'}</td>
-                </tr>
+                <Fragment key={key}>
+                  <tr className={`rv-stock-decision-row state-${summary.state}`}>
+                    <td><span className="rv-role-chip">{stock.role || '未标注'}{stock.roleRank > 1 ? ` ${stock.roleRank}` : ''}</span></td>
+                    <td className="rv-matrix-name"><strong>{stock.name}</strong><span>{stock.code || '缺代码'} · {stock.authenticity || '真实性未标注'}</span></td>
+                    <td className={`num ${tone}`}><strong>{quote ? quote.price.toFixed(2) : historical ? '—' : '…'}</strong><span>{quote ? formatPercent(quote.changePct) : historical ? '历史' : '等待'}</span></td>
+                    <td>
+                      <button
+                        type="button"
+                        className={`rv-stock-condition state-${summary.state}`}
+                        aria-expanded={expanded}
+                        onClick={() => setExpandedStockKey(expanded ? '' : key)}
+                      >
+                        <span>{STOCK_CONDITION_LABELS[summary.state]}</span>
+                        <em>{summary.confirmed}/{summary.total || '—'}</em>
+                        <ChevronRight size={12} />
+                      </button>
+                    </td>
+                  </tr>
+                  {expanded ? (
+                    <tr key={`${key}:detail`} className="rv-stock-condition-detail">
+                      <td colSpan={4}>
+                        <div className="rv-stock-condition-action"><strong>当前动作</strong><span>{summary.action}</span></div>
+                        <div className="rv-stock-condition-columns">
+                          <div>
+                            <strong><Check size={12} />买入条件</strong>
+                            {summary.entryConditions.length ? <ul>{summary.entryConditions.map((condition) => <li key={condition}>{condition}</li>)}</ul> : <p>报告未提供逐股买入条件。</p>}
+                          </div>
+                          <div>
+                            <strong><ShieldAlert size={12} />失效条件</strong>
+                            {summary.invalidationConditions.length ? <ul>{summary.invalidationConditions.map((condition) => <li key={condition}>{condition}</li>)}</ul> : <p>报告未提供逐股失效条件。</p>}
+                          </div>
+                        </div>
+                        <div className="rv-stock-trigger-audit">
+                          {summary.triggers.map((trigger) => (
+                            <TriggerRow key={trigger.id} trigger={trigger} event={latest.get(trigger.id)} historical={historical} onOverride={onOverride} />
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
               );
             })}
           </tbody>
@@ -871,6 +937,40 @@ interface ScanCell {
   sampleCount: number;
 }
 
+function CalibrationView({ reports, reviews }: { reports: PremarketThemeRun[]; reviews: ThemeDailyReview[] }) {
+  const calibration = useMemo(() => buildResearchCalibration(reports, reviews), [reports, reviews]);
+  const pct = (value: number | null) => value === null ? '—' : `${(value * 100).toFixed(1)}%`;
+  const score = (value: number | null) => value === null ? '—' : value.toFixed(3);
+  const biasLabel = calibration.bias === null
+    ? '—'
+    : Math.abs(calibration.bias) < 0.03
+      ? '基本平衡'
+      : calibration.bias > 0 ? '整体高估' : '整体低估';
+  return <div className="rv-calibration">
+    <section className="rv-section">
+      <header><div><strong>概率可靠性</strong><span>盘前预测 × 不可变收盘复盘</span></div><button type="button" onClick={() => insertIntoComposer('使用 $alpha-studio-research-calibration 深度审计当前 Alpha Studio 日报概率与复盘结果；严格沿用工作台的结果定义，不自行补标签。')}><Activity size={13} />Agent 审计</button></header>
+      <div className="rv-calibration-metrics">
+        <div><span>有效样本</span><strong>{calibration.sampleCount}</strong><em>{calibration.reportCount} 份报告</em></div>
+        <div><span>Brier 分数</span><strong>{score(calibration.brierScore)}</strong><em>越低越好</em></div>
+        <div><span>平均预测</span><strong>{pct(calibration.meanProbability)}</strong><em>事前概率</em></div>
+        <div><span>实际兑现</span><strong>{pct(calibration.meanOutcome)}</strong><em>触发审计结果</em></div>
+        <div><span>平均绝对误差</span><strong>{score(calibration.meanAbsoluteError)}</strong><em>MAE</em></div>
+        <div className={calibration.bias && calibration.bias > 0.03 ? 'warn' : ''}><span>方向偏差</span><strong>{pct(calibration.bias)}</strong><em>{biasLabel}</em></div>
+      </div>
+      <p className={`rv-calibration-note ${calibration.sampleSufficient ? '' : 'warn'}`}><AlertTriangle size={12} />{calibration.sampleSufficient ? `已达到基础校准样本阈值；另有 ${calibration.excludedCount} 个主题因缺少可解析概率或有效复盘而排除。` : `当前仅 ${calibration.sampleCount} 个有效样本，低于 20 个基础阈值；先积累数据，不据此调整核心规则。另排除 ${calibration.excludedCount} 个主题。`}</p>
+    </section>
+    <section className="rv-section">
+      <header><div><strong>可靠性分桶</strong><span>同一概率区间的预测与兑现对照</span></div></header>
+      {calibration.buckets.length ? <div className="rv-calibration-buckets">{calibration.buckets.map((bucket) => <article key={bucket.label}>
+        <header><strong>{bucket.label}</strong><span>{bucket.count} 个样本</span></header>
+        <div className="rv-calibration-track"><i style={{ width: `${bucket.meanProbability * 100}%` }} /><b style={{ left: `${Math.min(100, bucket.meanOutcome * 100)}%` }} /></div>
+        <footer><span>预测 {pct(bucket.meanProbability)}</span><span>兑现 {pct(bucket.meanOutcome)}</span><em className={Math.abs(bucket.bias) >= 0.1 ? 'warn' : ''}>{bucket.bias > 0 ? '高估' : bucket.bias < 0 ? '低估' : '平衡'} {pct(Math.abs(bucket.bias))}</em></footer>
+      </article>)}</div> : <div className="rv-empty-inline">完成至少一份含可解析概率和触发复盘的日报后显示分桶。</div>}
+      <p className="rv-calibration-definition">口径：hit=1、partial=0.5、not_triggered/miss=0、data_missing 排除；同一主题多个触发取平均。本页评估“触发兑现概率”，不代表收益率或可成交性。</p>
+    </section>
+  </div>;
+}
+
 function BacktestView({ reports, events, runs, onRun }: { reports: PremarketThemeRun[]; events: ThemeTrackingEvent[]; runs: ThemeBacktestRun[]; onRun: (run: ThemeBacktestRun) => void }) {
   const [config, setConfig] = useState<ThemeBacktestConfig>(DEFAULT_THEME_BACKTEST_CONFIG);
   const [running, setRunning] = useState(false);
@@ -1006,6 +1106,13 @@ function BacktestView({ reports, events, runs, onRun }: { reports: PremarketThem
         <header>
           <div><strong>{config.name}</strong><span>信号曲线 + 可执行净值 · 防未来函数</span></div>
           <div className="rv-backtest-actions">
+            <button type="button" onClick={() => insertIntoComposer([
+              '请通过对话回测 Alpha Studio 每日结构化日报。',
+              `策略：题材排名 ${config.themeRank}，角色 ${config.stockRole} 第 ${config.roleRank} 顺位，持有 T+${config.holdingDays}。`,
+              `范围：${config.dateFrom || '最早留档日'} 至 ${config.dateTo || '最新留档日'}。`,
+              `成本：佣金率 ${config.commissionRate}，最低佣金 ${config.minimumCommission} 元，印花税率 ${config.stampDutyRate}，滑点 ${config.slippageBps}bp。`,
+              '请严格使用事前报告快照和已留痕触发事件，排除未来函数，并给出样本、净值、最大回撤、胜率、超额收益、未成交与数据缺口。',
+            ].join('\n'))}><MessageSquarePlus size={13} />对话回测</button>
             <button type="button" onClick={() => void scan()} disabled={scanning || running}>{scanning ? <Loader2 size={13} className="spin" /> : <Crosshair size={13} />}扫描矩阵</button>
             <button type="button" className="primary" onClick={() => void execute()} disabled={running || scanning}>{running ? <Loader2 size={13} className="spin" /> : <Play size={13} />}运行</button>
           </div>

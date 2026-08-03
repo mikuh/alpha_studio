@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alpha Studio 产业主线"
+  short_description: "用政策、定向信贷、长线资金与海外景气识别趋势主线"
+  default_prompt: "Use $alpha-studio-mainline-trend-research to generate today's A-share industry-mainline trend morning report, verify policy with directed credit and industrial investment, confirm persistence with long-term capital, apply the overseas-cycle gate only to globally priced tracks, and state the heavy-position permission plus evidence gaps."

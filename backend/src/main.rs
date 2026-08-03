@@ -1,4 +1,12 @@
-use alpha_studio_backend::{build_router, config::AppConfig, db, state::AppState};
+use alpha_studio_backend::{
+    build_router,
+    config::AppConfig,
+    db,
+    license::{hash_authorization_code, normalize_authorization_code},
+    secrets::AuthorizationCodeCipher,
+    state::AppState,
+};
+use tokio::io::AsyncReadExt;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -14,6 +22,39 @@ async fn main() -> anyhow::Result<()> {
     if command.as_deref() == Some("migrate") {
         db::migrate(&pool).await?;
         tracing::info!("migrations completed");
+        return Ok(());
+    }
+    if command.as_deref() == Some("protect-authorization-code") {
+        db::migrate(&pool).await?;
+        let id = std::env::args()
+            .nth(2)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("authorization code id is required"))?;
+        let mut plaintext = String::new();
+        tokio::io::stdin().read_to_string(&mut plaintext).await?;
+        let normalized = normalize_authorization_code(&plaintext);
+        if normalized.is_empty() {
+            anyhow::bail!("authorization code plaintext is required on stdin");
+        }
+        let code_hash = hash_authorization_code(&normalized);
+        let cipher = AuthorizationCodeCipher::new(&config.authorization_code_encryption_key);
+        let code_ciphertext = cipher.encrypt(&normalized)?;
+        let result = sqlx::query(
+            r#"
+            update authorization_codes
+            set code_ciphertext = $3, code_plaintext = null
+            where id = $1 and code_hash = $2
+            "#,
+        )
+        .bind(&id)
+        .bind(code_hash)
+        .bind(code_ciphertext)
+        .execute(&pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            anyhow::bail!("authorization code id and plaintext did not match");
+        }
+        tracing::info!(authorization_code_id = %id, "authorization code protected");
         return Ok(());
     }
     if command.as_deref() == Some("healthcheck") {

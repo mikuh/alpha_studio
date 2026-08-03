@@ -29,6 +29,8 @@ export interface LocalStoreSnapshot {
   researchRecommendations: unknown[];
   aiRiskAssessments: unknown[];
   recommendationEvents: unknown[];
+  evidenceRecords: unknown[];
+  companyTheses: unknown[];
 }
 
 export interface LocalStoreCommitRequest {
@@ -43,6 +45,8 @@ export interface LocalStoreCommitRequest {
   researchRecommendations?: unknown[];
   aiRiskAssessments?: unknown[];
   recommendationEvents?: unknown[];
+  evidenceRecords?: unknown[];
+  companyTheses?: unknown[];
   audit?: {
     domain: string;
     action: string;
@@ -113,15 +117,21 @@ export async function commitLocalStore(request: LocalStoreCommitRequest): Promis
   await invoke('local_store_commit', { request });
 }
 
-export function scheduleLocalStoreCommit(key: string, request: LocalStoreCommitRequest, delayMs = 500): void {
+export function scheduleLocalStoreCommit(
+  key: string,
+  request: LocalStoreCommitRequest | (() => LocalStoreCommitRequest),
+  delayMs = 500,
+): void {
   if (!isTauriRuntime() || typeof window === 'undefined') return;
   const existing = commitTimers.get(key);
   if (existing) window.clearTimeout(existing);
   const timer = window.setTimeout(() => {
     commitTimers.delete(key);
-    void commitLocalStore(request).catch((error) => {
-      console.warn(`Alpha Studio local store commit failed for ${key}:`, error);
-    });
+    void Promise.resolve()
+      .then(() => commitLocalStore(typeof request === 'function' ? request() : request))
+      .catch((error) => {
+        console.warn(`Alpha Studio local store commit failed for ${key}:`, error);
+      });
   }, delayMs);
   commitTimers.set(key, timer);
 }

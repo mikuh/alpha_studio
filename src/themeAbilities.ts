@@ -4,6 +4,7 @@ import {
   ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE,
   loadPremarketThemeRuns,
 } from './themeResearch';
+import { loadThemeBacktestRuns, loadThemeTrackingEvents } from './themeValidation';
 
 export const ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID = 'alpha-studio-intraday-monitor';
 export const ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_TITLE = 'Alpha Studio 盘中监控';
@@ -11,10 +12,10 @@ export const ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID = 'alpha-studio-report-review';
 export const ALPHA_STUDIO_REPORT_REVIEW_SKILL_TITLE = 'Alpha Studio 日报复盘';
 
 export const INTRADAY_MONITOR_CARD_PROMPT =
-  '创建盘中监控定时任务：每隔 10 分钟使用 alpha-studio-intraday-monitor，基于今日生成的报告检查盘中触发条件、升级条件和失效条件，仅在 A 股工作日 9:25–11:30、13:00–15:00 运行。';
+  `创建盘中监控定时任务：每隔 10 分钟使用 $${ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID}，基于今日生成的报告检查盘中触发条件、升级条件和失效条件，仅在 A 股工作日 9:25–11:30、13:00–15:00 运行。`;
 
 export const REPORT_REVIEW_CARD_PROMPT =
-  '使用 alpha-studio-report-review 复盘今日生成的报告，对照实际行情、盘中触发和失效情况，完成偏差归因与次日调整。';
+  `使用 $${ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID} 复盘今日生成的报告，对照实际行情、盘中触发和失效情况，完成偏差归因与次日调整。`;
 
 export function inferThemeAbilitySkill(prompt: string): SkillSelection | null {
   if (prompt.includes(ALPHA_STUDIO_DAILY_THEME_SKILL_ID)) {
@@ -47,6 +48,9 @@ export function addThemeAbilityContext(
   conversations: Conversation[],
   now = Date.now(),
 ): string {
+  if (isThemeBacktestRequest(prompt)) {
+    return addThemeBacktestContext(prompt);
+  }
   if (skillId !== ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID && skillId !== ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID) {
     return prompt;
   }
@@ -78,6 +82,84 @@ export function addThemeAbilityContext(
     '</alpha_studio_ability_context>',
   ];
   return lines.join('\n');
+}
+
+export function isThemeBacktestRequest(prompt: string): boolean {
+  return /(?:回测|历史检验|策略检验|backtest)/i.test(prompt)
+    && /(?:日报|报告|题材|主题|龙头|中军|趋势核心|补涨|角色矩阵)/i.test(prompt);
+}
+
+function addThemeBacktestContext(prompt: string): string {
+  const reports = loadPremarketThemeRuns()
+    .sort((left, right) => left.tradeDate.localeCompare(right.tradeDate) || left.generatedAt.localeCompare(right.generatedAt))
+    .slice(-120);
+  const reportIds = new Set(reports.map((report) => report.id));
+  const latestEvents = new Map<string, ReturnType<typeof loadThemeTrackingEvents>[number]>();
+  for (const event of loadThemeTrackingEvents()
+    .filter((item) => reportIds.has(item.reportId))
+    .sort((left, right) => left.observedAt.localeCompare(right.observedAt))) {
+    latestEvents.set(`${event.reportId}:${event.triggerId}`, event);
+  }
+  const payload = {
+    reportCount: reports.length,
+    tradeDateRange: reports.length ? [reports[0].tradeDate, reports[reports.length - 1].tradeDate] : [],
+    reports: reports.map((report) => ({
+      id: report.id,
+      contentHash: report.contentHash,
+      tradeDate: report.tradeDate,
+      generatedAt: report.generatedAt,
+      dataCutoff: report.dataCutoff,
+      reportMode: report.reportMode,
+      executionGate: report.executionGate.state,
+      primaryRoute: report.capitalAttackPath.primaryRoute,
+      themes: report.themes.map((theme) => ({
+        id: theme.id,
+        rank: theme.rank,
+        name: theme.name,
+        grade: theme.grade,
+        lifecycle: theme.lifecycle,
+        todayAttackProbability: theme.todayAttackProbability,
+        triggerIds: theme.triggerSpecs.map((trigger) => trigger.id),
+        stocks: theme.stocks.map((stock) => ({
+          code: stock.code,
+          name: stock.name,
+          role: stock.role,
+          roleRank: stock.roleRank,
+          triggerIds: stock.triggerIds || [],
+          entryConditions: stock.entryConditions || [],
+          invalidationConditions: stock.invalidationConditions || [],
+        })),
+      })),
+    })),
+    latestTriggerEvents: Array.from(latestEvents.values()).map((event) => ({
+      reportId: event.reportId,
+      themeId: event.themeId,
+      triggerId: event.triggerId,
+      status: event.status,
+      observedAt: event.observedAt,
+      marketPrice: event.marketPrice,
+      evidence: event.evidence,
+      source: event.source,
+    })),
+    savedBacktests: loadThemeBacktestRuns().slice(0, 12).map((run) => ({
+      id: run.id,
+      createdAt: run.createdAt,
+      dataSource: run.dataSource,
+      config: run.config,
+      metrics: run.metrics,
+      exclusions: run.exclusions.length,
+    })),
+  };
+  return [
+    prompt,
+    '',
+    '<alpha_studio_theme_backtest_context>',
+    '以下是 Alpha Studio 本地按日留档的不可变日报索引、当日触发事件终态和既有回测摘要。',
+    '回测必须使用事前可得信息：盘前/9:25 报告可进入开盘策略；盘中/盘后报告不得倒灌到当日开盘。没有历史行情时应先取得可信数据，不得用当前价或虚构样本代替。',
+    '请明确样本范围、角色选择、进出场时点、停牌/涨跌停/一手制、复权、滑点、佣金、印花税、基准、排除样本和数据版本。',
+    JSON.stringify(payload),
+    '</alpha_studio_theme_backtest_context>',
+  ].join('\n');
 }
 
 interface DailyReportEvidence {

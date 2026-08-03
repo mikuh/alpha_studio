@@ -11,6 +11,13 @@ import { useChatStore } from './store';
 import type { Conversation } from './types';
 import { INTRADAY_MONITOR_CARD_PROMPT, REPORT_REVIEW_CARD_PROMPT } from './themeAbilities';
 import { ALPHA_STUDIO_DAILY_THEME_SKILL_ID } from './themeResearch';
+import {
+  COMPANY_THESIS_CARD_PROMPT,
+  EVIDENCE_INTELLIGENCE_CARD_PROMPT,
+  FACTOR_MINING_CARD_PROMPT,
+  MAINLINE_TREND_CARD_PROMPT,
+  RESEARCH_CALIBRATION_CARD_PROMPT,
+} from './domain';
 
 const windowMockState = vi.hoisted(() => ({
   fullscreen: false,
@@ -262,6 +269,7 @@ function seedClientLicenseSession(codexSubscriptionEnabled = true, leaseExpiresA
     },
     device: {
       id: 'dev_demo',
+      accessToken: 'device-token',
       leaseExpiresAt,
     },
     models: [
@@ -489,6 +497,56 @@ describe('right feature panel', () => {
     expect(loadClientLicenseSession()?.device.id).toBe('dev_demo');
   });
 
+  it('keeps an in-app activation when the startup effect is re-executed in development', async () => {
+    clearClientLicenseSession();
+    useChatStore.getState().setClientLicenseSession(null);
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+      tenant: {
+        id: 'tenant_demo',
+        name: 'Demo Fund',
+        maxDevices: 5,
+        codexSubscriptionEnabled: false,
+      },
+      user: {
+        id: 'user_demo',
+        email: 'user@demo.local',
+        name: 'Demo User',
+      },
+      device: {
+        id: 'dev_demo',
+        accessToken: 'device-token',
+        leaseExpiresAt: futureIso(),
+      },
+      models: [],
+      codexAccounts: [],
+    }));
+    const user = userEvent.setup();
+    const originalRefresh = useChatStore.getState().refreshClientLicenseSession;
+
+    const { container } = render(<App />);
+    await user.type(screen.getByLabelText('公司名称'), 'Demo Fund');
+    await user.type(screen.getByLabelText('授权码'), 'AS-TEST-CODE');
+    await user.click(screen.getByRole('button', { name: '激活并进入' }));
+
+    await waitFor(() => expect(container.querySelector('.app-shell')).toBeInTheDocument());
+    const stored = loadClientLicenseSession();
+    expect(stored?.device.accessToken).toBe('device-token');
+
+    const refreshedLifecycle = vi.fn(() => Promise.resolve(stored));
+    act(() => {
+      useChatStore.setState({ refreshClientLicenseSession: refreshedLifecycle });
+    });
+
+    await waitFor(() => expect(refreshedLifecycle).toHaveBeenCalled());
+    expect(screen.queryByRole('heading', { name: '激活 Alpha Studio' })).not.toBeInTheDocument();
+    expect(container.querySelector('.app-shell')).toBeInTheDocument();
+    expect(useChatStore.getState().clientLicenseSession?.device.id).toBe('dev_demo');
+
+    act(() => {
+      useChatStore.setState({ refreshClientLicenseSession: originalRefresh });
+    });
+  });
+
   it('returns a freshly stored device to activation when the backend has revoked it', async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: false,
@@ -564,6 +622,7 @@ describe('right feature panel', () => {
     expect(screen.queryByLabelText('环境信息')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('用其他软件打开')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('打开下方终端')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('打开文件')).toBeInTheDocument();
     expect(screen.getByLabelText('打开投研工作台')).toBeInTheDocument();
     expect(screen.getByLabelText('打开浏览器')).toBeInTheDocument();
     expect(screen.queryByLabelText('日报决策')).not.toBeInTheDocument();
@@ -586,7 +645,7 @@ describe('right feature panel', () => {
     const panelTools = panelActions?.querySelectorAll('.topbar-tool-button');
 
     expect(panelActions).toBeInTheDocument();
-    expect(panelTools).toHaveLength(3);
+    expect(panelTools).toHaveLength(4);
     panelTools?.forEach((tool) => expect(tool).toHaveClass('chrome-tool-button'));
     expect(container.querySelector('.sidebar-collapse-btn')).toHaveClass('chrome-tool-button');
     expect(container.querySelector('.sidebar-collapse-btn svg')).toHaveClass('lucide-arrow-left-to-line');
@@ -631,12 +690,15 @@ describe('right feature panel', () => {
     });
   });
 
-  it('exposes the two finance tools as direct right-top actions', async () => {
+  it('exposes the finance dock tools as direct right-top actions', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
+    const filesToggle = screen.getByLabelText('打开文件');
     const workbenchToggle = screen.getByLabelText('打开投研工作台');
     const browserToggle = screen.getByLabelText('打开浏览器');
 
+    expect(filesToggle).toHaveAttribute('aria-pressed', 'false');
+    expect(filesToggle.querySelector('svg')).toHaveClass('lucide-folder');
     expect(workbenchToggle).toHaveAttribute('aria-pressed', 'false');
     expect(workbenchToggle.querySelector('svg')).toHaveClass('lucide-chart-candlestick');
     expect(browserToggle).toHaveAttribute('aria-pressed', 'false');
@@ -650,6 +712,60 @@ describe('right feature panel', () => {
     expect(container.querySelector('.browser-dock-panel')).toBeInTheDocument();
     expect(screen.getByLabelText('关闭浏览器')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByLabelText('打开投研工作台')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('opens and closes the research directory from the right-top file action', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    const { container } = render(<App />);
+
+    await user.click(screen.getByLabelText('打开文件'));
+
+    const filePanel = await screen.findByLabelText('研究主题文件');
+    expect(await within(filePanel).findByText('overview.md')).toBeInTheDocument();
+    expect(screen.getByLabelText('关闭文件')).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(screen.getByLabelText('关闭文件'));
+
+    expect(container.querySelector('.right-dock-workspace')).toHaveClass('collapsed');
+    expect(screen.getByLabelText('打开文件')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('renders mentioned stocks as cards and opens the matching workbench detail', async () => {
+    const user = userEvent.setup();
+    useChatStore.setState({
+      conversations: [conversation({
+        messages: [
+          { id: 'msg-1', role: 'user', timestamp: 1, blocks: [{ type: 'text', content: '比较贵州茅台和宁德时代' }] },
+          { id: 'msg-2', role: 'assistant', timestamp: 2, blocks: [{ type: 'text', content: '贵州茅台（600519.XSHG）偏消费防御，宁德时代（300750）偏成长，中文在线（300364.XSHE）关注内容产业催化。' }] },
+        ],
+      })],
+      currentConversationId: 'conv-right-panel',
+    });
+    const { container } = render(<App />);
+
+    const relatedStocks = screen.getAllByLabelText('对话相关股票');
+    expect(relatedStocks).toHaveLength(1);
+    expect(within(relatedStocks[0]).getAllByRole('button')).toHaveLength(3);
+    expect(within(relatedStocks[0]).getByText('600519')).toBeInTheDocument();
+    expect(within(relatedStocks[0]).getByText('白酒')).toBeInTheDocument();
+    const userMessage = container.querySelector('[data-message-id="msg-1"]') as HTMLElement;
+    expect(userMessage.querySelector('.stock-mention-strip')).not.toBeInTheDocument();
+    expect(within(userMessage).getByRole('button', { name: '打开贵州茅台投研详情' }))
+      .toHaveClass('stock-inline-mention');
+    const assistantMessage = container.querySelector('[data-message-id="msg-2"]') as HTMLElement;
+    const inlineStock = within(assistantMessage).getByRole('button', { name: '打开贵州茅台投研详情' });
+    expect(inlineStock).toHaveClass('stock-inline-mention');
+    expect(inlineStock).toHaveTextContent('贵州茅台600519');
+    expect(within(assistantMessage).getByRole('button', { name: '打开中文在线投研详情' }))
+      .toHaveTextContent('中文在线300364');
+
+    await user.click(inlineStock);
+
+    const workbench = await screen.findByLabelText('投研工作台');
+    await waitFor(() => expect(within(workbench).getByRole('heading', { name: '贵州茅台' })).toBeInTheDocument());
+    expect(within(container.querySelector('.right-dock-workspace') as HTMLElement).getByRole('tab', { name: '投研工作台' }))
+      .toHaveAttribute('aria-selected', 'true');
   });
 
   it('keeps the side-chat composer multiline before the sidebar is expanded', async () => {
@@ -1153,9 +1269,14 @@ describe('right feature panel', () => {
     expect(composerCard).not.toHaveClass('compact');
     const textbox = within(composerCard).getByRole('textbox');
     const suggestions = [
-      ['生成今日报告', `使用 ${ALPHA_STUDIO_DAILY_THEME_SKILL_ID} 生成今日的报告`],
+      ['生成今日报告', `使用 $${ALPHA_STUDIO_DAILY_THEME_SKILL_ID} 生成今日的报告`],
+      ['产业主线早报', MAINLINE_TREND_CARD_PROMPT],
       ['盘中监控', INTRADAY_MONITOR_CARD_PROMPT],
       ['晚间复盘', REPORT_REVIEW_CARD_PROMPT],
+      ['核验研究证据', EVIDENCE_INTELLIGENCE_CARD_PROMPT],
+      ['公司 Thesis', COMPANY_THESIS_CARD_PROMPT],
+      ['研究校准', RESEARCH_CALIBRATION_CARD_PROMPT],
+      ['挖掘量化因子', FACTOR_MINING_CARD_PROMPT],
     ];
 
     for (const [title, prompt] of suggestions) {
@@ -1163,8 +1284,13 @@ describe('right feature panel', () => {
       expect(textbox).toHaveValue(prompt);
     }
     expect(screen.getByRole('button', { name: /生成今日报告/ }).querySelector('.lucide-file-chart-column')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /产业主线早报/ }).querySelector('.lucide-network')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /盘中监控/ }).querySelector('.lucide-activity')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /晚间复盘/ }).querySelector('.lucide-moon-star')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /核验研究证据/ }).querySelector('.lucide-database')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /公司 Thesis/ }).querySelector('.lucide-target')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /研究校准/ }).querySelector('.lucide-sliders-horizontal')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /挖掘量化因子/ }).querySelector('.lucide-chart-candlestick')).toBeInTheDocument();
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
@@ -1244,6 +1370,59 @@ describe('right feature panel', () => {
 
     expect(screen.getByText('正在自动压缩上下文')).toBeInTheDocument();
     expect(container.querySelector('.context-window-indicator')).not.toBeInTheDocument();
+  });
+
+  it('explains prolonged streaming silence and offers an inline stop action', async () => {
+    const user = userEvent.setup();
+    const now = Date.now();
+    useChatStore.setState({
+      conversations: [conversation({
+        status: 'streaming',
+        updatedAt: now - 309_000,
+        messages: [
+          { id: 'msg-1', role: 'user', timestamp: now - 465_000, blocks: [{ type: 'text', content: '生成报告' }] },
+          { id: 'msg-2', role: 'assistant', timestamp: now - 464_000, isStreaming: true, blocks: [] },
+        ],
+      })],
+    });
+
+    render(<App />);
+
+    const indicator = screen.getByRole('status', { name: '等待模型响应较久' });
+    expect(indicator).toHaveAttribute('data-state', 'stalled');
+    expect(indicator).toHaveTextContent(/总计 7分4[4-5]秒/);
+    expect(indicator).toHaveTextContent(/5分(?:9|10)秒没有新进展/);
+    expect(within(indicator).getByRole('button', { name: '停止当前任务' })).toBeInTheDocument();
+
+    await user.click(within(indicator).getByRole('button', { name: '停止当前任务' }));
+
+    await waitFor(() => expect(useChatStore.getState().conversations[0].status).toBe('idle'));
+    expect(screen.queryByRole('status', { name: '等待模型响应较久' })).not.toBeInTheDocument();
+  });
+
+  it('returns the waiting indicator to normal as soon as new progress arrives', () => {
+    const now = Date.now();
+    useChatStore.setState({
+      conversations: [conversation({
+        status: 'streaming',
+        updatedAt: now - 75_000,
+        messages: [
+          { id: 'msg-1', role: 'user', timestamp: now - 120_000, blocks: [{ type: 'text', content: '继续分析' }] },
+          { id: 'msg-2', role: 'assistant', timestamp: now - 119_000, isStreaming: true, blocks: [] },
+        ],
+      })],
+    });
+
+    render(<App />);
+
+    expect(screen.getByRole('status', { name: '任务仍在运行' })).toHaveAttribute('data-state', 'waiting');
+    act(() => {
+      const current = useChatStore.getState().conversations[0];
+      useChatStore.setState({ conversations: [{ ...current, updatedAt: Date.now() }] });
+    });
+
+    expect(screen.getByRole('status', { name: '正在处理' })).toHaveAttribute('data-state', 'active');
+    expect(screen.queryByText(/没有新进展/)).not.toBeInTheDocument();
   });
 
   it('only follows streaming messages while the conversation scroll is near the bottom', () => {
@@ -1363,7 +1542,7 @@ describe('right feature panel', () => {
     await user.click(within(composerCard).getByLabelText('添加内容'));
     fireEvent.mouseEnter(composerCard.querySelector('.plus-flyout-row') as HTMLElement);
 
-    expect(await screen.findByRole('menuitem', { name: /Alpha Studio 盘前主题/ })).toBeInTheDocument();
+    expect(await screen.findByRole('menuitem', { name: '$alpha-studio-daily-theme-research' })).toBeInTheDocument();
   });
 
   it('collects multiple coworkers dropped onto the composer without duplicates', async () => {
@@ -1500,9 +1679,11 @@ describe('right feature panel', () => {
     expect(within(skillsPage).queryByLabelText('收起侧栏')).not.toBeInTheDocument();
     expect(within(skillsPage).queryByLabelText('展开侧栏')).not.toBeInTheDocument();
     expect(within(skillsPage).getByPlaceholderText('搜索技能')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('官方')).toBeInTheDocument();
     expect(within(skillsPage).getByText('个人')).toBeInTheDocument();
     expect(within(skillsPage).getByText('系统')).toBeInTheDocument();
     expect(within(skillsPage).getByText('Browser')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('Alpha Studio A股因子挖掘')).toBeInTheDocument();
     expect(within(skillsPage).getByText('Alpha Studio 盘前主题')).toBeInTheDocument();
     expect(within(skillsPage).queryByText('iOS App Intents')).not.toBeInTheDocument();
     expect(within(skillsPage).queryByText('SwiftUI Performance Audit')).not.toBeInTheDocument();
@@ -1844,6 +2025,23 @@ describe('right feature panel', () => {
     expect(within(skillsPage).queryByText('Browser')).not.toBeInTheDocument();
   });
 
+  it('keeps repository Skills in the official category', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '技能' }));
+    const skillsPage = container.querySelector('.skills-page') as HTMLElement;
+    await user.click(within(skillsPage).getByLabelText('筛选技能'));
+    await user.click(screen.getByRole('menuitemradio', { name: '官方' }));
+
+    expect(within(skillsPage).getByText('Alpha Studio A股因子挖掘')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('Alpha Studio 盘前主题')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('Alpha Studio 盘中监控')).toBeInTheDocument();
+    expect(within(skillsPage).getByText('Alpha Studio 日报复盘')).toBeInTheDocument();
+    expect(within(skillsPage).queryByText('Browser')).not.toBeInTheDocument();
+    expect(within(skillsPage).queryByText('OpenAI Docs')).not.toBeInTheDocument();
+  });
+
   it('opens a skill detail dialog and queues the skill for the chat composer', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
@@ -1855,12 +2053,14 @@ describe('right feature panel', () => {
     const dialog = screen.getByRole('dialog', { name: 'OpenAI Docs Skill' });
     expect(within(dialog).getByText(/Reference OpenAI docs/)).toBeInTheDocument();
     expect(within(dialog).getByRole('switch', { name: '禁用 OpenAI Docs' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(dialog).getByText('系统 · 由 Codex 运行时提供')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: '卸载' })).not.toBeInTheDocument();
 
     await user.click(within(dialog).getByRole('button', { name: '在对话中试用' }));
 
     expect(container.querySelector('.skills-page')).not.toBeInTheDocument();
     const composer = document.querySelector('.composer-card') as HTMLElement;
-    expect(within(composer).getByText('OpenAI Docs')).toBeInTheDocument();
+    expect(within(composer).getByText('$openai-docs')).toBeInTheDocument();
     expect(within(composer).getByText('将优先使用这个 Skill')).toBeInTheDocument();
   });
 
@@ -1879,7 +2079,7 @@ describe('right feature panel', () => {
     const plusMenu = document.querySelector('.plus-menu') as HTMLElement;
     fireEvent.click(within(plusMenu).getByRole('button', { name: /技能/ }));
 
-    expect(screen.getByRole('menuitem', { name: 'Playwright' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '$playwright' })).toBeInTheDocument();
   });
 
   it('returns from the skills page to chat when starting a new conversation', async () => {
@@ -1926,6 +2126,84 @@ describe('right feature panel', () => {
     expect(within(sidebar).queryByText('4天')).not.toBeInTheDocument();
   });
 
+  it('keeps standalone conversations to the latest eight until expanded', async () => {
+    const user = userEvent.setup();
+    const conversations = Array.from({ length: 10 }, (_, index) => conversation({
+      id: `standalone-${index + 1}`,
+      title: `未归类对话 ${index + 1}`,
+      createdAt: index + 1,
+      updatedAt: index + 1,
+    }));
+    useChatStore.setState({
+      conversations,
+      projects: [],
+      currentConversationId: 'standalone-10',
+      conversationSort: 'updated',
+    });
+
+    const { container } = render(<App />);
+    const sidebar = container.querySelector('.sidebar') as HTMLElement;
+
+    expect(within(sidebar).queryByRole('button', { name: '展开或收起对话' })).not.toBeInTheDocument();
+    const sectionCollapse = within(sidebar).getByRole('button', { name: '对话，收起列表' });
+    expect(sectionCollapse).toHaveAttribute('aria-expanded', 'true');
+
+    await user.click(sectionCollapse);
+
+    expect(within(sidebar).queryByText('未归类对话 10')).not.toBeInTheDocument();
+    const sectionExpand = within(sidebar).getByRole('button', { name: '对话，展开列表' });
+    expect(sectionExpand).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(sectionExpand);
+
+    expect(within(sidebar).getByText('未归类对话 10')).toBeInTheDocument();
+    expect(within(sidebar).getByText('未归类对话 3')).toBeInTheDocument();
+    expect(within(sidebar).queryByText('未归类对话 2')).not.toBeInTheDocument();
+    const expand = within(sidebar).getByRole('button', { name: '展开显示，另有 2 个对话' });
+    expect(expand).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(expand);
+
+    expect(within(sidebar).getByText('未归类对话 2')).toBeInTheDocument();
+    expect(within(sidebar).getByText('未归类对话 1')).toBeInTheDocument();
+    const collapse = within(sidebar).getByRole('button', { name: '收起显示' });
+    expect(collapse).toHaveAttribute('aria-expanded', 'true');
+
+    await user.click(collapse);
+
+    expect(within(sidebar).queryByText('未归类对话 2')).not.toBeInTheDocument();
+  });
+
+  it('applies the eight-conversation preview inside research themes', async () => {
+    const conversations = Array.from({ length: 10 }, (_, index) => conversation({
+      id: `project-conversation-${index + 1}`,
+      title: `主题对话 ${index + 1}`,
+      projectId: 'project-alpha',
+      createdAt: index + 1,
+      updatedAt: index + 1,
+    }));
+    useChatStore.setState({
+      conversations,
+      projects: [{
+        id: 'project-alpha',
+        name: 'alpha_studio',
+        cwd: '/tmp/alpha-studio',
+        createdAt: 1,
+        updatedAt: 10,
+      }],
+      currentConversationId: 'project-conversation-10',
+      conversationSort: 'updated',
+    });
+
+    const { container } = render(<App />);
+    const sidebar = container.querySelector('.sidebar') as HTMLElement;
+
+    await waitFor(() => expect(within(sidebar).getByText('主题对话 3')).toBeInTheDocument());
+    expect(within(sidebar).queryByText('主题对话 2')).not.toBeInTheDocument();
+    const expand = within(sidebar).getByRole('button', { name: '展开显示，另有 2 个对话' });
+    expect(expand).toHaveClass('nested');
+  });
+
   it('shows the activated tenant name in the sidebar title area without an icon', () => {
     const { container } = render(<App />);
     const sidebar = container.querySelector('.sidebar') as HTMLElement;
@@ -1942,6 +2220,20 @@ describe('right feature panel', () => {
     const { container } = render(<App />);
 
     expect(container.querySelector('.app-shell')).toHaveClass('window-fullscreen');
+  });
+
+  it('keeps the workspace and tenant identity visible when the fullscreen sidebar is collapsed', async () => {
+    Object.defineProperty(document, 'fullscreenElement', { value: document.body, configurable: true });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '收起侧栏' }));
+
+    const identity = container.querySelector('.collapsed-sidebar-identity') as HTMLElement;
+    expect(container.querySelector('.app-shell')).toHaveClass('window-fullscreen', 'sidebar-collapsed');
+    expect(identity).toHaveTextContent('ALPHASTUDIO');
+    expect(identity).toHaveTextContent('Demo Fund');
+    expect(identity).toHaveAttribute('title', 'Demo Fund · Demo User · user@demo.local');
   });
 
   it('does not show the mobile entry in the sidebar navigation', () => {
@@ -2649,10 +2941,10 @@ describe('right feature panel', () => {
     await user.click(screen.getByLabelText('添加内容'));
     const plusMenu = document.querySelector('.plus-menu') as HTMLElement;
     fireEvent.click(within(plusMenu).getByRole('button', { name: /技能/ }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Chrome' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '$chrome' }));
 
     const composer = document.querySelector('.composer-card') as HTMLElement;
-    expect(within(composer).getByText('Chrome')).toBeInTheDocument();
+    expect(within(composer).getByText('$chrome')).toBeInTheDocument();
 
     await user.type(within(composer).getByRole('textbox'), '检查页面控制台');
     await user.click(within(composer).getByLabelText('发送'));
@@ -2801,7 +3093,7 @@ describe('right feature panel', () => {
     const { container } = render(<App />);
     const messageList = container.querySelector('.message-list') as HTMLElement;
 
-    expect(within(messageList).getByText('$Chrome')).toBeInTheDocument();
+    expect(within(messageList).getByText('$chrome')).toBeInTheDocument();
   });
 
   it('briefly replaces the message copy icon with a success check', async () => {
@@ -2830,6 +3122,62 @@ describe('right feature panel', () => {
       vi.useRealTimers();
       delete (navigator as unknown as { clipboard?: Clipboard }).clipboard;
     }
+  });
+
+  it('keeps long markdown code blocks compact until the user expands them', async () => {
+    const user = userEvent.setup();
+    const jsonLines = Array.from({ length: 18 }, (_, index) => `  "field_${index + 1}": ${index + 1}`);
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-long-code',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [{ type: 'text', content: `\`\`\`json\n{\n${jsonLines.join(',\n')}\n}\n\`\`\`` }],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const codeBlock = container.querySelector('.markdown-code-block') as HTMLElement;
+    const expand = within(codeBlock).getByRole('button', { name: '展开代码' });
+
+    expect(codeBlock).toHaveClass('is-collapsed');
+    expect(codeBlock).toHaveTextContent('JSON');
+    expect(codeBlock).toHaveTextContent('20 行');
+    expect(expand).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(expand);
+
+    expect(codeBlock).toHaveClass('is-expanded');
+    expect(within(codeBlock).getByRole('button', { name: '收起代码' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('leaves short markdown code blocks fully visible', () => {
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-short-code',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [{ type: 'text', content: '```ts\nconst answer = 42;\n```' }],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const codeBlock = container.querySelector('.markdown-code-block') as HTMLElement;
+
+    expect(codeBlock).toHaveClass('is-static');
+    expect(within(codeBlock).queryByRole('button', { name: '展开代码' })).not.toBeInTheDocument();
   });
 
   it('renders generated image result blocks as clickable previews in chat', async () => {
@@ -3009,6 +3357,60 @@ describe('right feature panel', () => {
     const messageList = container.querySelector('.message-list') as HTMLElement;
 
     expect(within(messageList).queryByRole('button', { name: '打开 art_c9b4c4851de94b18809007ff90d9cce0.html' })).not.toBeInTheDocument();
+    expect(messageList.querySelector('.generated-file-result')).toBeNull();
+  });
+
+  it('hides persisted generated-file cards when their local files no longer exist', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === 'local_file_exists') return Promise.resolve(false);
+      return Promise.resolve(undefined);
+    });
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-missing-temp-pdfs',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'file_result',
+                  id: 'stale-temp-pdfs',
+                  title: '生成文件',
+                  files: [
+                    {
+                      id: 'missing-abnormal',
+                      path: '/var/folders/demo/T/tmp.1gyXXKvaSo/abnormal.pdf',
+                      name: 'abnormal.pdf',
+                      ext: 'pdf',
+                      kind: 'file',
+                    },
+                    {
+                      id: 'missing-reduction',
+                      path: '/var/folders/demo/T/tmp.1gyXXKvaSo/reduction.pdf',
+                      name: 'reduction.pdf',
+                      ext: 'pdf',
+                      kind: 'file',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const messageList = container.querySelector('.message-list') as HTMLElement;
+    expect(within(messageList).getByRole('button', { name: '打开 abnormal.pdf' })).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(within(messageList).queryByRole('button', { name: '打开 abnormal.pdf' })).not.toBeInTheDocument();
+      expect(within(messageList).queryByRole('button', { name: '打开 reduction.pdf' })).not.toBeInTheDocument();
+    });
     expect(messageList.querySelector('.generated-file-result')).toBeNull();
   });
 
@@ -3800,7 +4202,7 @@ describe('right feature panel', () => {
     expect(css).toMatch(/\.right-dock-workspace\s*{[^}]*width:\s*min\(\s*var\(--right-sidebar-width, 416px\),\s*calc\(100% - var\(--right-panel-main-min-width, 360px\)\)\s*\);/s);
     expect(css).toMatch(/\.main-stage\s*{[^}]*container-name:\s*main-stage;[^}]*container-type:\s*inline-size;/s);
     expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.composer-toolbar\s*{[^}]*flex-wrap:\s*nowrap;[\s\S]*?\.approval-pill > span,[\s\S]*?\.approval-pill > \.lucide-chevron-down\s*{[^}]*display:\s*none;/s);
-    expect(css).toMatch(/\.suggestion-row\s*{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(220px, 100%\), 1fr\)\);/s);
+    expect(css).toMatch(/\.suggestion-row\s*{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(180px, 100%\), 1fr\)\);/s);
     expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.suggestion-row\s*{[^}]*grid-template-columns:\s*1fr;/s);
     expect(css).not.toMatch(/\.suggestion-card:nth-child\(n \+ 2\)\s*{[^}]*display:\s*none;/s);
     expect(css).not.toContain('.model-pill-icon');
@@ -3822,8 +4224,8 @@ describe('right feature panel', () => {
     expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.main-stage\s*{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.right-dock-workspace\s*{[^}]*width:\s*auto;[^}]*flex:\s*1 1 auto;/s);
     expect(css).toMatch(/\.right-dock-expand-btn\s*{[^}]*width:\s*30px;[^}]*height:\s*30px;/s);
-    expect(css).toMatch(/\.app-shell\s*{[^}]*--top-panel-actions-width:\s*98px;/s);
-    expect(css).toMatch(/\.app-shell\.daily-decision-available\s*{[^}]*--top-panel-actions-width:\s*132px;/s);
+    expect(css).toMatch(/\.app-shell\s*{[^}]*--top-panel-actions-width:\s*132px;/s);
+    expect(css).toMatch(/\.app-shell\.daily-decision-available\s*{[^}]*--top-panel-actions-width:\s*166px;/s);
     expect(css).toMatch(/\.right-dock-tabs\s*{[^}]*padding:\s*0 calc\(var\(--top-panel-actions-width\) \+ 56px\) 0 8px;/s);
     expect(css).toMatch(/\.right-dock-tabbar-actions\s*{[^}]*right:\s*calc\(var\(--top-panel-actions-width\) \+ 20px\);/s);
     expect(css).toMatch(/\.app-shell\.right-dock-expanded\s+\.right-dock-tabs\s*{[^}]*padding-right:\s*calc\(var\(--top-panel-actions-width\) \+ 56px\);/s);

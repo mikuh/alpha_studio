@@ -41,6 +41,7 @@ import { insertIntoComposer } from './composerBridge';
 import { fetchCloudRealtimeBatch } from './cloudMarket';
 import { buildQuoteMap, loadResearchState, sectorExposure, researchAccountSummary } from './research';
 import { useChatStore, useCurrentConversation } from './store';
+import { ResearchValidationPanel } from './ResearchValidation';
 import {
   ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
   ALPHA_STUDIO_DAILY_THEME_SKILL_TITLE,
@@ -50,13 +51,14 @@ import {
   type PremarketThemeRun,
 } from './themeResearch';
 
-type DailyDecisionTab = 'summary' | 'themes' | 'research' | 'recommendations';
+type DailyDecisionTab = 'summary' | 'themes' | 'research' | 'recommendations' | 'validation';
 
 const TAB_LABELS: Record<DailyDecisionTab, string> = {
   summary: '今日摘要',
   themes: '主题',
   research: '联合研判',
   recommendations: '建议卡',
+  validation: '跟踪验证',
 };
 
 export function DailyDecisionPanel() {
@@ -281,6 +283,7 @@ export function DailyDecisionPanel() {
             }}
           />
         )}
+        {tab === 'validation' && <ResearchValidationPanel />}
       </div>
     </section>
   );

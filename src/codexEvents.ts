@@ -78,10 +78,12 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   }
 
   if (event.type === 'text_delta' && event.text) {
+    if (conversation.status !== 'streaming') return conversation;
     return appendTextDelta(conversation, now, event.text);
   }
 
   if (event.type === 'reasoning_delta' && event.text) {
+    if (conversation.status !== 'streaming') return conversation;
     return appendThinkingDelta(conversation, now, event.text);
   }
 
@@ -536,7 +538,11 @@ const DATA_IMAGE_PATTERN = /\bdata:image\/(?:png|jpe?g|gif|webp|bmp|svg\+xml|avi
 const MARKDOWN_FILE_LINK_PATTERN = /\[[^\]\n]+\]\((<[^>]+>|[^)\s]+)(?:\s+["'][^"']*["'])?\)/gi;
 const URL_FILE_PATTERN = new RegExp('\\b(?:https?:\\/\\/|file:\\/\\/\\/)[^\\s"\'<>`|]+?\\.' + FILE_EXT_PATTERN + '(?:[?#][^\\s"\'<>`|)]*)?(?=$|[\\s"\'<>`|)])', 'gi');
 const ABSOLUTE_FILE_PATH_PATTERN = new RegExp('(?:^|[\\s"\'(])((?:~|\\/)[^\\s"\'<>`|]+?\\.' + FILE_EXT_PATTERN + '(?:[?#][^\\s"\'<>`|)]*)?)(?=$|[\\s"\'<>`|)])', 'gi');
-const GENERATED_FILE_HINT_PATTERN = /\b(?:generated|created|saved|wrote|written|exported|output|file|path)\b|(?:生成|已生成|创建|已创建|保存|已保存|输出|文件|保存位置)/i;
+// Only treat a path as an artifact when the surrounding line says that a
+// write/export actually happened. Bare labels such as `FILE /tmp/input.pdf`
+// are commonly emitted while reading temporary inputs and must not become
+// deliverables (the temporary directory may be removed before the turn ends).
+const GENERATED_FILE_HINT_PATTERN = /\b(?:generated|created|saved|wrote|written|exported|downloaded)\b|\boutput\s*(?:(?:file|document|report|artifact|path)\s*)?[:=]|(?:已生成|已创建|已保存|已导出|已下载|生成文件|创建文件|保存文件|导出文件|下载文件|交付文件|文件已生成|文件已保存|保存位置|输出(?:文件|路径)?\s*[:：=])/i;
 const GENERATED_REMOTE_FILE_HINT_PATTERN = /\b(?:(?:generated|created|saved|exported|downloaded)\s+(?:file|document|report|artifact|output)|(?:file|document|report|artifact|output)\s+(?:generated|created|saved|exported))\b|(?:已生成|已创建|已保存|已导出|生成文件|创建文件|保存文件|导出文件|交付文件|下载文件|文件已生成|文件已保存|保存位置)/i;
 
 function imageResultFromToolEvent(event: CodexChatEvent, toolId: string): ImageResultBlock | null {

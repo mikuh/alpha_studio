@@ -1,323 +1,223 @@
 ---
 name: alpha-studio-a-share-factor-mining
-description: Design, mine, replicate, evaluate, compare, register, and monitor A-share quantitative factors with point-in-time data controls, complete trial accounting, multi-dimensional factor diagnostics, out-of-sample validation, multiple-testing correction, transaction-cost and capacity analysis, redundancy checks, and Stage-Gate decisions. Use when Codex needs to turn A-share market hypotheses, research papers, reports, data fields, formulas, or factor panels into auditable cross-sectional, time-series, event, fundamental, alternative-data, microstructure, or risk factors; produce factor tear sheets or factor cards; compare a candidate with an existing factor library; or determine whether a factor should be rejected, revised, shadow-tested, or promoted. Do not use for ordinary daily theme/news reports unless the task explicitly converts timestamped news or theme data into a formal factor experiment.
+description: Actively discover, calculate, screen, de-redund, combine, and out-of-sample test A-share quantitative factors, then deliver ranked single-factor and multi-factor trading-research candidates with formulas, weights, rebalance/holding rules, costs, invalidation conditions, and reproducible artifacts. Use whenever the user asks to 找好因子、自动挖掘因子、量化选股、Alpha挖掘、多因子组合、因子库构建、IC/RankIC筛选、价量/价值/动量/质量/规模/情绪因子发现，or wants raw A-share price/fundamental/turnover/text data turned into a shortlist usable for backtesting or shadow trading. Also use to evaluate a specified factor, but default to mining and recommending the best evidence-supported candidates when the user asks broadly for factors. Do not use for ordinary market commentary, theme/news reports, or discretionary stock tips without measurable factor construction and testing.
 ---
 
-# Alpha Studio A股因子挖掘
+# Alpha Studio A股量化因子挖掘
 
-## Objective
+## Primary objective
 
-Operate an auditable A-share factor research pipeline. Treat factor mining as controlled experimentation, not formula fishing. Let deterministic data and backtest engines produce all numerical evidence; use the language model to formulate hypotheses, compile specifications, coordinate tools, interpret results, and propose the next valid experiment.
+默认目标不是“解释因子”或“审计一份已有回测”，而是：
 
-## Non-negotiable Guardrails
+```text
+在用户允许的数据、股票池、持有期和搜索预算内，
+主动生成候选 → 深度计算 → 严格筛选 → 去冗余 → 搜索组合
+→ 冻结后做最终样本外检验 → 交付 Top 单因子与 Top 组合。
+```
 
-- Freeze the research contract before formal validation.
-- Require point-in-time data. Track source event time, publication time, ingestion time, and earliest tradable time when applicable.
-- Reconstruct the historical universe. Include delisted and failed securities where the mandate requires them; never backtest history with today's constituents.
-- Model A-share tradability explicitly: ST status, suspension, price limits, T+1, board/exchange rules, lot size, corporate actions, adjustment convention, liquidity, and actual executable price.
-- Record every candidate, parameter variant, label, universe, preprocessing variant, failed run, and viewed holdout result in the trial ledger.
-- Keep discovery, validation, final untouched holdout, shadow, and production data roles distinct. Never tune on the final holdout.
-- Never let an LLM score substitute for computed IC, returns, costs, risk, capacity, or statistical tests.
-- Report raw, processed, neutralized, and tradable-portfolio results separately.
-- Treat common IC, ICIR, correlation, participation-rate, and shadow-period numbers as configurable heuristics, never universal industry standards.
-- Do not collapse all evidence into one compensating total score. A data-correctness failure invalidates the experiment.
-- Label unavailable cost, borrow, crowding, or point-in-time evidence as `not_evaluable`; never silently pass it.
-- Present results as research evidence, not guaranteed returns or personalized securities advice.
+最终必须告诉用户：找到哪些候选、公式和方向是什么、组合权重如何、何时调仓和持有、验证/留出表现如何、何时停用、距 shadow 或实盘还缺什么。
 
-## Resolve the Task Mode
+因子不是固定有效的赚钱公式。没有真实计算就不能声称“好”；没有候选通过预设门槛时，明确报告本轮未找到，而不是降低门槛制造推荐。
 
-Select one or more modes and state them in the run manifest:
+## Default behavior
 
-- `discover`: form hypotheses and generate candidate FactorSpecs.
-- `replicate`: reproduce a published or existing factor with A-share-specific timing and universe rules.
-- `compile`: turn text, formula, or controlled code into a normalized FactorSpec and dependency graph.
-- `evaluate`: test a precomputed factor panel.
-- `validate`: run walk-forward, holdout, multiple-testing, and robustness checks.
-- `backtest`: translate the signal into a constrained portfolio and execution simulation.
-- `compare`: measure redundancy and marginal portfolio value against an existing library.
-- `publish`: freeze an approved factor package, Factor Card, and monitoring specification.
-- `monitor`: assess live decay, drift, cost slippage, exposure, crowding, and retirement rules.
+- 用户泛泛要求“挖掘好因子”时，默认进入 `mine`，不要停在概念介绍或让用户先给公式。
+- 用户给出一个公式时，进入 `evaluate`，同时搜索少量相邻参数和互补因子，除非用户要求只评测该公式。
+- 用户给出因子库时，进入 `select+combine`，先去冗余，再搜索受限组合。
+- 用户给出论文、研报或自然语言逻辑时，先转成可计算候选，再进入 `mine`。
+- 用户只问概念时才使用 `explain`。
+- 用户要求审计现有结果时使用 `review`；审计是挖掘链路的硬约束，不是默认终点。
 
-## Core Workflow
+## Required mining workflow
 
-### 1. Create the Research Contract
+### 1. Lock the trading question
 
-Create `research_spec.json` before generating candidates. Start from `assets/research-spec-example.json` and validate against `schemas/research-spec.schema.json`.
+先冻结最小交易研究口径：
 
-Define:
+- 目标是未来收益、风险还是组合约束；
+- 股票池与历史成分；
+- 日频/周频等信号频率；
+- 信号形成时点、最早成交时点；
+- 调仓频率、持有期、long-only 或 long-short；
+- 成本、可交易性和容量假设；
+- discovery、validation、final holdout；
+- 什么结果会推翻候选。
 
-- economic, behavioral, information, or microstructure mechanism;
-- falsifiable prediction and expected direction;
-- factor archetype, A-share universe, exchange/board scope, frequency, and calendar;
-- feature formation interval, decision time, earliest order/fill time, holding period, and label interval;
-- preprocessing, neutralization, portfolio formation, risk, cost, and capacity assumptions;
-- discovery, validation, final holdout, shadow, and production boundaries;
-- trial family, allowed search space, resource budget, and stopping rule.
+若这些信息可从数据、代码或用户现有回测系统发现，直接检查并继续。只有缺失会实质改变结果的字段才询问。
 
-Run:
+### 2. Audit data readiness
+
+检查用户提供的数据文件、列结构、数据字典和现有引擎。每个字段确认来源、单位、复权、首次可得时间、修订方式和缺失含义。
+
+正式 A 股研究前阅读 `references/data-and-leakage.md`。以下任一项错误会使实验 `INVALID`：
+
+- 财务数据按报告期回填而非公告可得时间；
+- 使用今日已结束的收盘价形成信号又以同一收盘价成交；
+- 股票池只有当前存续股票；
+- 标签或标准化使用未来/全样本信息；
+- 涨跌停、停牌、退市或不可成交样本被事后删除。
+
+### 3. Build a bounded candidate space
+
+阅读 `references/factor-catalog.md`，从现有字段能支持且有经济逻辑的因子族生成候选：
+
+- 价值：盈利收益率、账面市值比、现金流收益率；
+- 动量/反转：不同但预先限定的收益窗口；
+- 质量：ROE、现金流质量、盈利稳定性、低杠杆；
+- 规模：总/流通/自由流通市值；
+- 波动/风险：历史波动、下行波动、beta、特质波动；
+- 流动性/情绪：平均换手、换手变化、量价背离、关注度；
+- 事件/文本：公告、新闻、研报、供应链等可审计时点特征。
+
+候选定义必须同时包含公式、字段、窗口、方向、可得时点、预处理、预测期限和交易时点。限定 `max_factor_candidates`；不要默认做无约束公式枚举。
+
+### 4. Freeze the mining configuration
+
+复制 `assets/research-config.example.json`，填写：
+
+- 固定种子因子 `factors`；
+- 参数模板 `mining.candidate_templates`；
+- 单因子与组合预算；
+- 硬门槛和多指标权重；
+- 去冗余阈值、组合大小与定权方式；
+- 数据、股票池、切分、成本和失效条件。
+
+使用 `schemas/research-config.schema.json` 作为机器契约，并运行：
 
 ```bash
-python scripts/validate_spec.py --kind research --input research_spec.json
+python scripts/validate_research_config.py \
+  --config research_config.json \
+  --check-input
 ```
 
-Do not proceed past formal validation when the specification has hard errors.
+修复硬错误后再挖掘。结果出来后修改网格、门槛或权重必须创建新 trial。
 
-### 2. Route by Factor Archetype
+### 5. Run automatic mining
 
-Read `references/factor-archetypes.md`. Select the correct sample structure and primary tests:
-
-- cross-sectional stock-selection;
-- time-series directional;
-- event-driven;
-- fundamental;
-- alternative-data or NLP;
-- microstructure/intraday;
-- portfolio/risk factor.
-
-Do not use cross-sectional RankIC as the universal primary metric.
-
-### 3. Audit A-share Data and Timing
-
-Read `references/a-share-data-contract.md` before using any new dataset or building a production candidate.
-
-Build `data_manifest.json` and run these audits:
-
-- field availability and revision policy;
-- announcement and ingestion latency;
-- historical constituent replay;
-- delisting, suspension, ST, price-limit, and corporate-action handling;
-- calendar, timestamp, frequency, currency, unit, and adjustment alignment;
-- time-travel recomputation on randomly selected historical cutoffs;
-- tradability mask at the intended order and fill times.
-
-Stop with `INVALID` when point-in-time or historical-universe correctness cannot be established.
-
-### 4. Generate and Compile Candidates
-
-Allow candidates from economic hypotheses, papers, research reports, templates, parameter grids, symbolic/evolutionary search, or LLM proposals. Convert every candidate into `factor_spec.json` using `schemas/factor-spec.schema.json`.
-
-Prefer a controlled DSL or typed AST. Normalize the expression, hash its full semantics, and record:
-
-- data snapshot and universe snapshot;
-- source fields and `known_at` rules;
-- parameters and allowed ranges;
-- preprocessing and neutralization;
-- formula/code version and dependencies;
-- parent factor, mutation, prompt/model version, and search cost.
-
-Run:
+标准长表 CSV 使用默认挖掘器：
 
 ```bash
-python scripts/validate_spec.py --kind factor --input factor_spec.json
+python scripts/mine_quant_factors.py \
+  --config research_config.json \
+  --output-dir factor_mining_run
 ```
 
-Reject future references, hidden negative lags, unavailable fields, frequency mismatches, ambiguous adjustment, unbounded windows, unsafe division, and unrestricted generated code.
+执行器会：
 
-### 5. Maintain the Trial Ledger
+1. 从固定种子和参数模板展开候选；
+2. 计算原始因子值和未来收益；
+3. 逐日横截面去极值、标准化、行业/市值中性化；
+4. 批量计算 IC、RankIC、分组收益、单调性、覆盖和换手；
+5. 做成本后滚动 cohort 组合回测；
+6. 仅用 discovery/validation 做门槛筛选和多指标排名；
+7. 按验证期横截面相关去冗余；
+8. 在去冗余 pool 上搜索等权与验证期 IC 权重组合；
+9. 冻结 Top 单因子/组合后才打开 final holdout；
+10. 输出可直接阅读和机器消费的候选清单。
 
-Append a record before executing each run. Include unsuccessful and duplicate candidates.
+若用户已有 Qlib、聚宽、米筐、vn.py、数据库或内部回测器，优先使用现有引擎完成同一协议；不要为了使用内置脚本而降级数据质量。
 
-At minimum record:
+### 6. Rank on multiple dimensions
+
+阅读 `references/mining-and-selection.md`。先过硬门槛，再按显式权重综合：
+
+- 验证期 RankIC、ICIR、正向比例；
+- 分组收益与单调性；
+- 成本后 Sharpe 和净收益；
+- 最大回撤；
+- 换手与成本敏感性；
+- discovery 到 validation 的衰减；
+- 覆盖率和有效天数。
+
+综合分数只用于研究排序。不要用一个总分掩盖方向反转、样本不足、不可成交或成本后失效。
+
+### 7. De-redund and combine
+
+统一方向为“因子越大，预期收益越高”，在训练/验证窗口内标准化。按因子值、IC 序列、收益、持仓和交易相关性去冗余。
+
+只从去冗余后的候选构建组合。首个基线优先等权；学习权重只能使用 discovery/validation。组合必须重新计算横截面指标和成本后组合结果，不能把单因子指标相加。
+
+保留真正有增量的组合：提高验证期稳健性或成本后表现、降低回撤，且 final holdout 未明显反转。若复杂组合没有样本外增量，选择更简单的单因子或等权组合。
+
+### 8. Diagnose regimes and fragility
+
+对入围候选做年份、牛熊/震荡、波动、流动性、行业、市值、板块和交易制度切片。检查：
+
+- 相邻窗口是否稳定，最优点是否孤立；
+- 收益是否集中在少数月份、行业或微盘股；
+- 延迟一个成交时点、成本上调、股票池收紧后是否仍成立；
+- 换手、冲击和容量是否使结果不可实现；
+- 因子近期衰减或拥挤时的停用条件。
+
+数据不支持的切片标记 `not_evaluable`，不要编造状态适用性。
+
+### 9. Deliver trading-research candidates
+
+回答先给结果，不要先长篇复述流程。至少包含：
+
+1. 本轮是否找到通过门槛的候选；
+2. Top 单因子：公式、方向、参数、经济逻辑；
+3. Top 组合：成分、权重和组合增量；
+4. 信号时点、成交时点、调仓频率、持有期和组合构造；
+5. 验证与冻结 final holdout 的 RankIC、净 Sharpe、回撤、换手和成本；
+6. 冗余/失败候选及原因；
+7. 适用市场状态、失效/停用条件；
+8. 进入 shadow 或实盘前的缺口。
+
+不要把 `RESEARCH_ONLY` 候选包装成确定性交易建议。Skill 不能自行宣布 `APPROVED`，也不能承诺收益。
+
+## Output contract
+
+自动挖掘应产生：
 
 ```text
-run_id, trial_id, trial_family_id, parent_trial_id
-factor_id, normalized_ast_hash
-dataset_snapshot_id, universe_snapshot_id
-code_commit, environment_hash, random_seed
-parameters, preprocessing, label, split
-status, failure_reason, metrics_uri, artifact_uri
-model/prompt version, token cost, compute time
-holdout_seen, created_at, owner
+mining_config.json
+research_config.json
+trial_ledger.csv
+candidate_ranking.csv
+factor_correlation.csv
+factor_values.csv
+daily_metrics.csv
+factor_metrics.json
+backtest_daily.csv
+top_single_factors.json
+top_combinations.json
+strategy_candidates.json
+mining_report.md
 ```
 
-Never overwrite a prior trial after viewing results. Create a new derived trial.
+详细字段见 `references/output-contract.md`。未入围候选的 final holdout 收益必须遮蔽；`selection_score` 永远不能使用 final holdout。
 
-### 6. Compute Factor Values
-
-Use the customer's data/compute backend when available. Keep the skill as the orchestration layer.
-
-Require output indexed by at least:
-
-```text
-datetime, instrument, factor_id, factor_value, available_at, quality_flags
-```
-
-Cache by the full semantic key: data snapshot, universe snapshot, normalized AST, frequency, calendar, adjustment, timing, and preprocessing version. Preserve raw values before any transformation.
-
-### 7. Preprocess Explicitly
-
-Apply only training-window or same-date information:
-
-1. tradability and quality filters;
-2. missing/infinite handling;
-3. winsorization or robust clipping;
-4. transformation;
-5. cross-sectional standardization or ranking;
-6. industry, size, beta, volatility, liquidity, or other declared neutralization;
-7. optional orthogonalization for incremental-information tests.
-
-Save clipping counts, missingness, excluded securities, regression design, fitted parameters, and before/after distributions. Never present neutralization as automatically superior; report the raw exposure and the residual information separately.
-
-### 8. Run Deterministic Factor Diagnostics
-
-Read `references/evaluation-protocol.md`.
-
-For a cross-sectional CSV panel containing `date,instrument,factor,forward_return`, optionally `tradable`, run the bundled screening evaluator:
+若用户只要求评测一个已知因子，可使用：
 
 ```bash
-python scripts/evaluate_cross_section.py \
-  --input factor_panel.csv \
-  --output factor_metrics.json \
-  --quantiles 5 \
-  --min-cross-section 20
+python scripts/run_factor_research.py \
+  --config research_config.json \
+  --output-dir factor_evaluation_run
 ```
 
-Treat the bundled evaluator as a portable first-pass diagnostic. It intentionally does not replace point-in-time audits, HAC/bootstrap inference, production backtesting, risk models, transaction-cost models, or capacity analysis.
+该脚本是单因子/指定组合评测基线；广义“帮我找好因子”必须优先使用 `mine_quant_factors.py`。
 
-Produce, as appropriate:
+## Truthfulness rules
 
-- coverage, missingness, distribution, outliers, and stability;
-- Pearson IC, Spearman RankIC, ICIR, hit rate, and uncertainty;
-- multi-horizon decay;
-- quantile returns, monotonicity, Top-Bottom, and long/short leg decomposition;
-- Fama-MacBeth or sample-appropriate regression;
-- signal autocorrelation and turnover;
-- industry, size, style, liquidity, board, exchange, and market-regime slices;
-- raw, neutralized, delayed, and executable variants.
+- 区分 `computed`、`inferred`、`assumed`、`not_evaluable`。
+- 不把演示或合成数据结果描述成真实市场证据。
+- 不把相关性写成因果，不把回测写成收益保证。
+- discovery 用于探索，validation 用于选择，final holdout 只评测冻结名单。
+- 保留成功、失败、重复和预算淘汰 trial；不得只展示幸存者。
+- 当前交易规则、费率或板块制度必须查交易所、监管机构或券商最新正式资料并注明生效日期。
+- 输出仅用于量化研究，不构成个性化投资建议。
 
-### 9. Control Research Bias
+## Resource map
 
-Freeze candidates and thresholds before opening the final holdout.
-
-- Use HAC or block/bootstrap inference for serial dependence and overlapping labels.
-- Use FWER methods when even one false deployment is costly.
-- Use FDR when selecting multiple candidates from a broad library.
-- Use White Reality Check or Hansen SPA for correlated strategy families when suitable.
-- Use Deflated Sharpe Ratio for selected Sharpe inflation.
-- Use PBO to diagnose the full selection process, not as a probability that a single factor is true.
-- Use purging when label intervals overlap a test fold; derive embargo from the information overlap, not a universal percentage.
-- Preserve one final untouched holdout or a frozen shadow book.
-
-### 10. Translate the Signal into a Tradable Portfolio
-
-Separate:
-
-- signal policy;
-- portfolio construction;
-- risk constraints;
-- execution model.
-
-Report gross and net results under base and pessimistic assumptions. Include commissions, taxes, spread, impact, delay, price-limit/suspension failures, lot size, financing/borrow where relevant, and opportunity cost.
-
-Scan AUM, participation rate, and rebalance frequency. Report break-even cost, break-even AUM, concentration, days-to-trade, ADV usage, and capacity limits. Do not infer capacity from turnover alone.
-
-### 11. Test Redundancy and Incremental Value
-
-Compare the candidate with the existing library using:
-
-- factor-value Pearson/Spearman correlation through time;
-- neutralized-value correlation;
-- IC-series and factor-return correlation;
-- holding and trade overlap;
-- hierarchical clusters or graph communities;
-- residual RankIC, partial IC, and conditional regression;
-- marginal net return, Sharpe/IR, drawdown, tail risk, turnover, cost, capacity, and exposure under the same OOS constraints.
-
-Prefer a simpler, more stable, lower-cost, higher-capacity representative when two factors carry the same information. Do not delete solely because `|rho|` crosses a heuristic threshold.
-
-### 12. Issue a Stage-Gate Decision
-
-Read `references/artifact-and-gate-contract.md`. Return one status:
-
-- `INVALID`
-- `REJECTED`
-- `REVISE`
-- `RESEARCH_ONLY`
-- `SHADOW_CANDIDATE`
-- `PRODUCTION_CANDIDATE`
-- `APPROVED`
-- `DEPRECATED`
-
-For every gate, list:
-
-- hard failures;
-- warnings;
-- evidence and artifact locations;
-- confidence or uncertainty;
-- `not_evaluable` dimensions;
-- next permitted action;
-- explicit invalidation, reduce, stop, or retirement rules.
-
-Do not automatically promote a factor. Treat `APPROVED` as a governance decision that requires the customer's authorized process.
-
-### 13. Package and Monitor
-
-Copy `assets/factor-card-template.md` and populate it from machine-readable artifacts.
-
-Freeze:
-
-- FactorSpec and normalized AST;
-- data/universe snapshots;
-- code/environment hashes;
-- evaluation, validation, cost, capacity, redundancy, and incremental-value reports;
-- approval record, intended use, owner, and monitoring specification.
-
-Monitor rolling IC/RankIC, net alpha, exposure, turnover, realized/model cost ratio, capacity usage, crowding, data delay, missingness, and distribution drift. Use `warning`, `reduce`, and `stop` states with thresholds calibrated from the research distribution and risk budget.
-
-## Required Deliverables
-
-Produce the applicable subset, and explicitly mark missing items:
-
-```text
-run_manifest.json
-research_spec.json
-data_manifest.json
-data_audit.json
-factor_spec.json
-factor_lineage.json
-trial_ledger.parquet|csv
-factor_values_raw.parquet
-factor_values_processed.parquet
-factor_metrics.json|parquet
-slice_metrics.parquet
-multiple_testing_report.json
-walk_forward_report.json
-portfolio_gross_net.parquet
-cost_capacity_report.json
-redundancy_report.json
-incremental_portfolio_test.json
-gate_decision.json
-factor_card.md
-monitoring_spec.json
-```
-
-Lead the human report with the decision, then present evidence in this order:
-
-```text
-结论与状态
-硬失败 / not_evaluable
-研究假设与适用边界
-数据与时点审计
-预测力与衰减
-稳健性与反过拟合
-风险暴露与冗余
-成本、容量与组合增量
-下一步与失效规则
-```
-
-## Resource Map
-
-- `references/a-share-data-contract.md`: A股 point-in-time、历史股票池、交易约束和数据审计。
-- `references/factor-archetypes.md`: 因子类型识别、标签与统计方法路由。
-- `references/evaluation-protocol.md`: 指标、稳健性、多重检验、成本容量和经验阈值政策。
-- `references/artifact-and-gate-contract.md`: 工件、状态机、Stage-Gate 和生产监控。
-- `references/dsl-and-search-policy.md`: 受限 DSL、算子类别、搜索账本和自动挖掘约束。
-- `schemas/*.schema.json`: 研究、因子和评测配置的机器契约。
-- `scripts/validate_spec.py`: 研究/因子 specification 的零依赖静态校验。
-- `scripts/evaluate_cross_section.py`: 横截面因子的零依赖首轮 IC/RankIC/分层/自相关评测。
-- `assets/research-spec-example.json`: A股日频横截面研究合同示例。
-- `assets/factor-spec-example.json`: 可执行 FactorSpec 示例。
-- `assets/evaluation-profile-conservative.json`: 保守但可配置的经验预警配置。
-- `assets/trial-record-example.json`: 完整搜索记账的单条 trial 示例。
-- `assets/sample-factor-panel.csv`: 首轮评测器的最小 CSV 输入示例。
-- `assets/factor-card-template.md`: 因子准入和审计卡模板。
+- `references/mining-and-selection.md`：候选生成、评分、去冗余、组合和冻结留出集协议。
+- `references/factor-catalog.md`：因子族、公式、字段、默认小网格与失效机制。
+- `references/data-and-leakage.md`：PIT、历史股票池、标签和 A 股可交易性。
+- `references/evaluation-and-backtest.md`：IC、分组、成本、回撤、容量和组合评测。
+- `references/output-contract.md`：Top 候选、排名、账本和报告字段。
+- `schemas/research-config.schema.json`：研究与挖掘配置契约。
+- `assets/research-config.example.json`：种子因子 + 参数网格 + 组合搜索示例。
+- `assets/input-columns.example.csv`：输入长表列结构示例。
+- `scripts/validate_research_config.py`：配置、候选空间和防泄漏静态检查。
+- `scripts/mine_quant_factors.py`：默认自动候选生成、筛选、去冗余、组合与冻结留出执行器。
+- `scripts/run_factor_research.py`：指定因子评测与回测基线。

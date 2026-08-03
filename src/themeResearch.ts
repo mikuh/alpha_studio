@@ -52,6 +52,9 @@ export interface PremarketThemeStock {
   role?: string;
   roleRank: number;
   authenticity?: string;
+  triggerIds?: string[];
+  entryConditions?: string[];
+  invalidationConditions?: string[];
 }
 
 export type ThemeTriggerEvaluator = 'quote' | 'breadth' | 'time' | 'ai' | 'manual';
@@ -252,6 +255,26 @@ function stringList(value: unknown): string[] {
   return value.map((item) => stringValue(item)).filter(Boolean);
 }
 
+function structuredText(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  const raw = value as Record<string, unknown>;
+  const source = stringValue(raw.source || raw.vendor || raw.name);
+  const scope = stringValue(raw.scope || raw.summary || raw.assessment || raw.description || raw.note);
+  const cutoff = stringValue(raw.cutoff || raw.dataCutoff || raw.data_cutoff || raw.asOf || raw.as_of);
+  const url = stringValue(raw.url || raw.href);
+  return [source, scope, cutoff ? `截至 ${cutoff}` : '', url].filter(Boolean).join(' · ');
+}
+
+function structuredList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    const single = structuredText(value);
+    return single ? [single] : [];
+  }
+  return value.map(structuredText).filter(Boolean);
+}
+
 function normalizeGrade(value: unknown): PremarketTheme['grade'] {
   const grade = stringValue(value).toUpperCase();
   return grade === 'S' || grade === 'A' || grade === 'B' || grade === 'C' ? grade : 'C';
@@ -268,7 +291,9 @@ function positiveInteger(value: unknown, fallback: number): number {
 }
 
 function normalizeStock(value: unknown, index = 0): PremarketThemeStock | null {
-  if (typeof value === 'string') return { name: value, roleRank: index + 1 };
+  if (typeof value === 'string') {
+    return { name: value, roleRank: index + 1, triggerIds: [], entryConditions: [], invalidationConditions: [] };
+  }
   if (!value || typeof value !== 'object') return null;
   const raw = value as Record<string, unknown>;
   const name = stringValue(raw.name || raw.displayName || raw.display_name);
@@ -278,7 +303,14 @@ function normalizeStock(value: unknown, index = 0): PremarketThemeStock | null {
     code: stringValue(raw.code) || undefined,
     role: stringValue(raw.role) || undefined,
     roleRank: positiveInteger(raw.roleRank || raw.role_rank, index + 1),
-    authenticity: stringValue(raw.authenticity || raw.relevance || raw.evidenceLevel || raw.evidence_level) || undefined,
+    authenticity: stringValue(
+      raw.authenticityRating || raw.authenticity_rating || raw.authenticity || raw.relevance || raw.evidenceLevel || raw.evidence_level,
+    ) || undefined,
+    triggerIds: stringList(raw.triggerIds || raw.trigger_ids || raw.conditionIds || raw.condition_ids),
+    entryConditions: stringList(raw.entryConditions || raw.entry_conditions || raw.buyConditions || raw.buy_conditions),
+    invalidationConditions: stringList(
+      raw.invalidationConditions || raw.invalidation_conditions || raw.failureConditions || raw.failure_conditions,
+    ),
   };
 }
 
@@ -291,9 +323,27 @@ function normalizeTriggerEvaluator(value: unknown): ThemeTriggerEvaluator {
 
 function normalizeTriggerOperator(value: unknown): ThemeTriggerOperator | undefined {
   const operator = stringValue(value).toLowerCase();
+  if (operator === '>' || operator === 'greater_than') return 'gt';
+  if (operator === '>=' || operator === '≥' || operator === 'greater_than_or_equal') return 'gte';
+  if (operator === '<' || operator === 'less_than') return 'lt';
+  if (operator === '<=' || operator === '≤' || operator === 'less_than_or_equal') return 'lte';
+  if (operator === '=' || operator === '==' || operator === 'equals') return 'eq';
   return operator === 'gt' || operator === 'gte' || operator === 'lt' || operator === 'lte' || operator === 'eq' || operator === 'contains'
     ? operator
     : undefined;
+}
+
+function normalizeTriggerField(value: unknown): string | undefined {
+  const field = stringValue(value);
+  if (!field) return undefined;
+  const aliases: Record<string, string> = {
+    pctChange: 'changePct',
+    change_percent: 'changePct',
+    turnover_amount: 'turnoverAmount',
+    turnover_rate: 'turnoverRate',
+    volume_ratio: 'volumeRatio',
+  };
+  return aliases[field] || field;
 }
 
 function normalizeTrigger(value: unknown, themeId: string, index: number): PremarketThemeTrigger | null {
@@ -317,8 +367,8 @@ function normalizeTrigger(value: unknown, themeId: string, index: number): Prema
     id: stringValue(raw.id) || `${themeId}-trigger-${index + 1}`,
     label,
     evaluator: normalizeTriggerEvaluator(raw.evaluator || raw.type),
-    subjectCode: stringValue(raw.subjectCode || raw.subject_code || raw.code) || undefined,
-    field: stringValue(raw.field || raw.metric) || undefined,
+    subjectCode: stringValue(raw.subjectCode || raw.subject_code || raw.subject || raw.code) || undefined,
+    field: normalizeTriggerField(raw.field || raw.metric),
     operator: normalizeTriggerOperator(raw.operator || raw.op),
     threshold: typeof thresholdValue === 'number' || typeof thresholdValue === 'string' ? thresholdValue : undefined,
     windowStart: stringValue(raw.windowStart || raw.window_start) || undefined,
@@ -485,12 +535,25 @@ function normalizeContinuity(value: unknown): PremarketContinuityRow[] {
       if (!name) return null;
       return {
         name,
-        status: stringValue(raw.status || raw.continuityStatus || raw.continuity_label),
+        status: stringValue(raw.status || raw.currentState || raw.current_state || raw.continuityStatus || raw.continuity_label),
         action: stringValue(raw.action || raw.carryoverAction || raw.carryover_action),
-        evidence: stringValue(raw.evidence || raw.evidenceSummary || raw.evidence_summary),
+        evidence: stringValue(
+          raw.evidence || raw.continuityConclusion || raw.continuity_conclusion || raw.evidenceSummary || raw.evidence_summary,
+        ),
       };
     })
     .filter((item): item is PremarketContinuityRow => Boolean(item));
+}
+
+function normalizeMarketSentiment(value: unknown): string {
+  const direct = stringValue(value);
+  if (direct) return direct;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '未给出';
+  const raw = value as Record<string, unknown>;
+  const regime = stringValue(raw.regime || raw.state || raw.label);
+  const score = Number(raw.score);
+  const assessment = stringValue(raw.assessment || raw.summary || raw.conclusion || raw.description);
+  return [regime, Number.isFinite(score) ? `${score.toFixed(1)}分` : '', assessment].filter(Boolean).join(' · ') || '未给出';
 }
 
 function extractJsonCandidates(text: string): Array<{ json: string; endIndex: number }> {
@@ -763,11 +826,11 @@ export function parsePremarketThemeResult(text: string, options: { requireComple
           title: stringValue(parsed.title, '盘前主题研究'),
           executionGate: normalizeExecutionGate(parsed.executionGate || parsed.execution_gate),
           capitalAttackPath,
-          marketSentiment: stringValue(parsed.marketSentiment || parsed.market_sentiment, '未给出'),
+          marketSentiment: normalizeMarketSentiment(parsed.marketSentiment || parsed.market_sentiment),
           themes,
           previousContinuity: normalizeContinuity(parsed.previousContinuity || parsed.previous_continuity),
           risks: stringList(parsed.risks),
-          sourceNotes: stringList(parsed.sourceNotes || parsed.source_notes),
+          sourceNotes: structuredList(parsed.sourceNotes || parsed.source_notes),
           reportMarkdown,
         },
       };
@@ -927,7 +990,7 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
   const previousLedger = previousLedgerLines(input.previousRuns);
 
   return [
-    '请使用 alpha-studio-daily-theme-research skill 生成 Alpha Studio 右侧投研工作台的盘前主题研究。',
+    '请使用 $alpha-studio-daily-theme-research skill 生成 Alpha Studio 右侧投研工作台的盘前主题研究。',
     '该 skill 的研究规则、报告深度、模块顺序、评分/连续跟踪/产业链真实性/校验要求必须与 neostream-daily-theme-research 保持一致；只把名称与品牌替换为 Alpha Studio / Alpha Studio Research。',
     '',
     '输出要求：',
@@ -940,6 +1003,8 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
     '7. `今日资金进攻路径` 必须放在广义题材排名之前，包含主路径、备选路径、失效路径、今日进攻概率、资金为什么现在会选择该路径、只在什么条件下做。',
     '8. 每个 S/A/B 主题必须给出已运行天数、预计剩余窗口、默认持有协议、延长条件、缩短/退出条件；没有历史样本时写 `模型估计`。',
     '9. 股票角色矩阵必须保留一行多股的 `龙头 / 中军 / 趋势核心 / 补涨矩阵` 节奏，默认不要拆成 ROLE MATRIX I/II；使用 5 列紧凑表：`题材 / 角色 / 标的 / 角色逻辑 / 确认/失效`。不要把 `持有复核`、`今日处理` 做成角色矩阵列；这些内容放到表后的 callout 或单独 `角色限制` 表。产业链真实性只写股票名后的评级括号，如 `浪潮信息（A）`，表后一句解释 A/B/C/D。',
+    '10. 结构化 JSON 使用工作台规范字段：`marketSentiment` 为字符串，`previousContinuity` 使用 `name/status/action/evidence`，`sourceNotes` 为字符串数组；数值运算符只用 `gt/gte/lt/lte/eq/contains`，行情标的字段用 `subjectCode`。',
+    '11. 角色矩阵中的每只股票都必须通过 `triggerIds` 绑定到本主题已有的触发规则，并给出 `entryConditions` 与 `invalidationConditions`；这样工作台才能逐股显示“条件达成 / 等待触发 / 已失效”。',
     '',
     'JSON 结构必须使用这些字段：',
     JSON.stringify(
@@ -1007,7 +1072,16 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
             }],
             invalidation: '...',
             risk: '...',
-            stocks: [{ name: '标的（A）', code: '000000.XSHE', role: '中军/趋势核心/龙头/补涨', roleRank: 1, authenticity: 'A/B/C/D' }],
+            stocks: [{
+              name: '标的（A）',
+              code: '000000.XSHE',
+              role: '中军/趋势核心/龙头/补涨',
+              roleRank: 1,
+              authenticity: 'A/B/C/D',
+              triggerIds: ['theme-ai-hardware-breadth'],
+              entryConditions: ['题材宽度和个股承接同时确认后才进入可执行区'],
+              invalidationConditions: ['题材宽度跌破阈值或个股放量转弱时失效'],
+            }],
           },
         ],
         risks: ['...'],

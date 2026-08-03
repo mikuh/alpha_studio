@@ -1,5 +1,21 @@
 import { INTRADAY_MONITOR_CARD_PROMPT, REPORT_REVIEW_CARD_PROMPT } from './themeAbilities';
 
+export const ALPHA_STUDIO_FACTOR_MINING_SKILL_ID = 'alpha-studio-a-share-factor-mining';
+export const FACTOR_MINING_CARD_PROMPT =
+  `使用 $${ALPHA_STUDIO_FACTOR_MINING_SKILL_ID} 深度分析可用的行情、财务和成交数据，自动生成候选、批量计算、验证集筛选、去冗余并搜索组合，给出 Top 单因子、Top 组合和交易研究配置`;
+export const ALPHA_STUDIO_MAINLINE_TREND_SKILL_ID = 'alpha-studio-mainline-trend-research';
+export const MAINLINE_TREND_CARD_PROMPT =
+  `使用 $${ALPHA_STUDIO_MAINLINE_TREND_SKILL_ID} 生成今日产业主线趋势早报，按政策、定向信贷/产业投入、长线机构资金与自适应海外景气识别主升共振，过滤单因子脉冲，并给出主线重仓权限、最大证据缺口及升级/失效条件`;
+export const ALPHA_STUDIO_EVIDENCE_INTELLIGENCE_SKILL_ID = 'alpha-studio-evidence-intelligence';
+export const EVIDENCE_INTELLIGENCE_CARD_PROMPT =
+  `使用 $${ALPHA_STUDIO_EVIDENCE_INTELLIGENCE_SKILL_ID} 核验一条公司、行业、政策或市场研究命题，优先检索一手时点来源，分离事实与推断，保留冲突和质量标记，并输出可追溯的 alpha.evidence.v1 证据记录`;
+export const ALPHA_STUDIO_COMPANY_THESIS_SKILL_ID = 'alpha-studio-company-thesis-tracker';
+export const COMPANY_THESIS_CARD_PROMPT =
+  `使用 $${ALPHA_STUDIO_COMPANY_THESIS_SKILL_ID} 为指定 A 股公司创建或更新可证伪的投资 Thesis，维护核心逻辑、关键指标、估值假设、催化、风险和失效条件的版本链；如未提供公司，先询问代码或名称`;
+export const ALPHA_STUDIO_RESEARCH_CALIBRATION_SKILL_ID = 'alpha-studio-research-calibration';
+export const RESEARCH_CALIBRATION_CARD_PROMPT =
+  `使用 $${ALPHA_STUDIO_RESEARCH_CALIBRATION_SKILL_ID} 对已冻结的研究概率和复盘结果进行校准审计，计算 Brier 分数、可靠性分桶及高估/低估偏差，并给出一条可检验的规则调整建议`;
+
 export interface DomainPromptPack {
   systemLines: string[];
   responseGuidance: string[];
@@ -7,7 +23,15 @@ export interface DomainPromptPack {
 
 export type WorkModeId = 'finance-research';
 
-export type DomainSuggestionIcon = 'report' | 'monitor' | 'review';
+export type DomainSuggestionIcon =
+  | 'report'
+  | 'mainline'
+  | 'monitor'
+  | 'review'
+  | 'evidence'
+  | 'thesis'
+  | 'calibration'
+  | 'factor';
 
 export type DomainFeatureIcon = 'browser';
 
@@ -118,8 +142,14 @@ export const financeResearchDomain: DomainConfig = {
       {
         id: 'daily-report',
         title: '生成今日报告',
-        prompt: '使用 alpha-studio-daily-theme-research 生成今日的报告',
+        prompt: '使用 $alpha-studio-daily-theme-research 生成今日的报告',
         icon: 'report',
+      },
+      {
+        id: 'mainline-trend-report',
+        title: '产业主线早报',
+        prompt: MAINLINE_TREND_CARD_PROMPT,
+        icon: 'mainline',
       },
       {
         id: 'intraday-monitor',
@@ -132,6 +162,30 @@ export const financeResearchDomain: DomainConfig = {
         title: '晚间复盘',
         prompt: REPORT_REVIEW_CARD_PROMPT,
         icon: 'review',
+      },
+      {
+        id: 'evidence-intelligence',
+        title: '核验研究证据',
+        prompt: EVIDENCE_INTELLIGENCE_CARD_PROMPT,
+        icon: 'evidence',
+      },
+      {
+        id: 'company-thesis',
+        title: '公司 Thesis',
+        prompt: COMPANY_THESIS_CARD_PROMPT,
+        icon: 'thesis',
+      },
+      {
+        id: 'research-calibration',
+        title: '研究校准',
+        prompt: RESEARCH_CALIBRATION_CARD_PROMPT,
+        icon: 'calibration',
+      },
+      {
+        id: 'factor-mining',
+        title: '挖掘量化因子',
+        prompt: FACTOR_MINING_CARD_PROMPT,
+        icon: 'factor',
       },
     ],
     features: [

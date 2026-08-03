@@ -6,8 +6,10 @@ import test from 'node:test';
 import {
   discoverAlphaStudioSkills,
   encodeDiscoveredSkills,
+  loadOfficialSkillCatalog,
   RESERVED_SKILL_PREFIX,
 } from './encode-skills.mjs';
+import { buildSkillRelease } from './build-skill-release.mjs';
 
 function fixtureName(suffix) {
   return `${RESERVED_SKILL_PREFIX}fixture-${suffix}`;
@@ -35,6 +37,23 @@ async function tempWorkspace() {
   return { root, skillsRoot, outputRoot: path.join(root, '.alpha-encoded') };
 }
 
+async function writeCatalog(skillsRoot, skillNames) {
+  await writeFile(
+    path.join(skillsRoot, 'catalog.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      skills: skillNames.map((id) => ({
+        id,
+        category: 'official',
+        title: id,
+        description: `${id} description`,
+        icon: 'skill',
+        overview: `${id} overview`,
+      })),
+    }, null, 2)}\n`,
+  );
+}
+
 test('discovers every reserved Skill and recursively encodes only regular files', async () => {
   const { skillsRoot, outputRoot } = await tempWorkspace();
   const first = fixtureName('one');
@@ -42,6 +61,7 @@ test('discovers every reserved Skill and recursively encodes only regular files'
   await createSkill(skillsRoot, first, { 'scripts/run.py': 'print("one")\n' });
   await createSkill(skillsRoot, second, { 'assets/data.bin': Buffer.from([0, 1, 2, 3]) });
   await createSkill(skillsRoot, 'user-fixture', { 'private.txt': 'not bundled' });
+  await writeCatalog(skillsRoot, [first, second]);
 
   const messages = [];
   const manifest = await encodeDiscoveredSkills({
@@ -55,7 +75,7 @@ test('discovers every reserved Skill and recursively encodes only regular files'
     [first, second],
   );
   assert.equal(manifest.encodedFileCount, 4);
-  assert.ok(messages.some((message) => message.includes('2 Alpha Studio Skill(s)')));
+  assert.ok(messages.some((message) => message.includes('2 official Skill(s)')));
   assert.ok(await readFile(path.join(outputRoot, first, 'SKILL.md.asx')));
   assert.ok(await readFile(path.join(outputRoot, first, 'scripts', 'run.py.asx')));
   assert.ok(await readFile(path.join(outputRoot, 'manifest.json.asx')));
@@ -82,10 +102,11 @@ test('fails with the concrete SKILL.md path when directory and frontmatter names
 test('fails rather than producing an empty built-in Skill bundle', async () => {
   const { skillsRoot, outputRoot } = await tempWorkspace();
   await createSkill(skillsRoot, 'user-fixture');
+  await writeCatalog(skillsRoot, []);
 
   await assert.rejects(
     encodeDiscoveredSkills({ skillsRoot, outputRoot }),
-    /No alpha-studio-\* built-in Skills were discovered/,
+    /No official Alpha Studio Skills were discovered/,
   );
 });
 
@@ -122,6 +143,7 @@ test('rejects a nested second Skill root', async () => {
 test('encoded output contains only asx regular files', async () => {
   const { skillsRoot, outputRoot } = await tempWorkspace();
   await createSkill(skillsRoot, fixtureName('extensions'), { 'notes/readme.md': 'fixture' });
+  await writeCatalog(skillsRoot, [fixtureName('extensions')]);
   await encodeDiscoveredSkills({ skillsRoot, outputRoot, logger: { log() {} } });
 
   async function visit(directory) {
@@ -136,4 +158,47 @@ test('encoded output contains only asx regular files', async () => {
     }
   }
   await visit(outputRoot);
+});
+
+test('builds a server-uploadable release without exposing plaintext Skill files', async () => {
+  const { root, skillsRoot } = await tempWorkspace();
+  const skillName = fixtureName('release');
+  await createSkill(skillsRoot, skillName, { 'references/private.md': 'protected-content' });
+  await writeCatalog(skillsRoot, [skillName]);
+  const outputPath = path.join(root, '.alpha-releases', 'fixture.asb.json');
+
+  const release = await buildSkillRelease({
+    repositoryRoot: root,
+    version: '1.2.3',
+    channel: 'beta',
+    minClientVersion: '0.1.0',
+    releaseNotes: 'fixture',
+    outputPath,
+    logger: { log() {} },
+  });
+  const artifactText = await readFile(outputPath, 'utf8');
+  const artifact = JSON.parse(artifactText);
+
+  assert.equal(artifact.formatVersion, 1);
+  assert.equal(artifact.version, '1.2.3');
+  assert.equal(artifact.channel, 'beta');
+  assert.equal(artifact.manifestSummary.skillCount, 1);
+  assert.equal(artifact.files.length, artifact.manifestSummary.encodedFileCount + 1);
+  assert.ok(artifact.files.every((file) => file.path.endsWith('.asx')));
+  assert.ok(!artifactText.includes('protected-content'));
+  assert.match(release.sha256, /^[a-f0-9]{64}$/);
+});
+
+test('rejects an official catalog that omits or invents repository Skills', async () => {
+  const { skillsRoot } = await tempWorkspace();
+  const discoveredName = fixtureName('catalogued');
+  await createSkill(skillsRoot, discoveredName);
+  await writeCatalog(skillsRoot, [fixtureName('stale')]);
+  const discovered = await discoverAlphaStudioSkills(skillsRoot);
+
+  await assert.rejects(
+    loadOfficialSkillCatalog(skillsRoot, discovered),
+    (error) => error.message.includes(`missing: ${discoveredName}`)
+      && error.message.includes(`stale: ${fixtureName('stale')}`),
+  );
 });

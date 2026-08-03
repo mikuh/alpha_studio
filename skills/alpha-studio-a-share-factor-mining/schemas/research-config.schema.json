@@ -1,0 +1,316 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alpha-studio.local/schemas/quant-factor-research.v1.json",
+  "title": "Alpha Studio A-share Quantitative Factor Research Configuration",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "research",
+    "data",
+    "universe",
+    "timing",
+    "splits",
+    "preprocessing",
+    "factors",
+    "evaluation",
+    "guardrails"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "alpha.quant_factor_research.v1"
+    },
+    "research": {
+      "type": "object",
+      "required": ["research_id", "hypothesis", "falsifiable_prediction", "invalidation_rules"],
+      "properties": {
+        "research_id": {"type": "string", "minLength": 3},
+        "hypothesis": {"type": "string", "minLength": 10},
+        "falsifiable_prediction": {"type": "string", "minLength": 10},
+        "invalidation_rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 3}
+        }
+      },
+      "additionalProperties": true
+    },
+    "data": {
+      "type": "object",
+      "required": ["input_csv", "dataset_id", "point_in_time", "columns"],
+      "properties": {
+        "input_csv": {"type": "string", "minLength": 1},
+        "dataset_id": {"type": "string", "minLength": 1},
+        "point_in_time": {"type": "boolean"},
+        "columns": {
+          "type": "object",
+          "required": ["date", "instrument", "signal_price", "fill_price"],
+          "properties": {
+            "date": {"type": "string", "minLength": 1},
+            "instrument": {"type": "string", "minLength": 1},
+            "signal_price": {"type": "string", "minLength": 1},
+            "fill_price": {"type": "string", "minLength": 1},
+            "tradable": {"type": ["string", "null"]},
+            "industry": {"type": ["string", "null"]},
+            "market_cap": {"type": ["string", "null"]}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "universe": {
+      "type": "object",
+      "required": ["market", "universe_id", "historical_membership", "include_delisted"],
+      "properties": {
+        "market": {"const": "CN_A"},
+        "universe_id": {"type": "string", "minLength": 1},
+        "historical_membership": {"type": "boolean"},
+        "include_delisted": {"type": "boolean"},
+        "filters": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "timing": {
+      "type": "object",
+      "required": ["signal_time", "fill_time", "entry_lag", "holding_period", "rebalance_every"],
+      "properties": {
+        "signal_time": {"type": "string", "minLength": 1},
+        "fill_time": {"type": "string", "minLength": 1},
+        "entry_lag": {"type": "integer", "minimum": 0},
+        "holding_period": {"type": "integer", "minimum": 1},
+        "rebalance_every": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "splits": {
+      "type": "object",
+      "required": ["discovery", "validation", "final_holdout"],
+      "properties": {
+        "discovery": {"$ref": "#/$defs/dateRange"},
+        "validation": {"$ref": "#/$defs/dateRange"},
+        "final_holdout": {"$ref": "#/$defs/dateRange"}
+      },
+      "additionalProperties": false
+    },
+    "preprocessing": {
+      "type": "object",
+      "required": ["winsorize", "standardize", "neutralize"],
+      "properties": {
+        "winsorize": {"enum": ["none", "mad"]},
+        "mad_multiplier": {"type": "number", "exclusiveMinimum": 0},
+        "standardize": {"enum": ["none", "zscore", "rank"]},
+        "neutralize": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["industry", "log_market_cap"]}
+        }
+      },
+      "additionalProperties": true
+    },
+    "factors": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "required": ["name", "kind"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"},
+          "kind": {
+            "enum": [
+              "momentum",
+              "reversal",
+              "low_volatility",
+              "turnover_mean",
+              "turnover_change",
+              "earnings_yield",
+              "book_to_price",
+              "roe",
+              "low_leverage",
+              "small_size",
+              "column"
+            ]
+          },
+          "lookback": {"type": "integer", "minimum": 1},
+          "short_window": {"type": "integer", "minimum": 1},
+          "long_window": {"type": "integer", "minimum": 2},
+          "source_column": {"type": "string", "minLength": 1},
+          "sign": {"enum": [-1, 1]},
+          "description": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "mining": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "candidate_templates",
+        "max_factor_candidates",
+        "top_single_factors",
+        "top_combinations",
+        "combination_pool_size",
+        "combination_sizes",
+        "weight_schemes",
+        "require_combination_increment",
+        "max_combination_candidates",
+        "max_pair_correlation",
+        "selection"
+      ],
+      "properties": {
+        "enabled": {"const": true},
+        "candidate_templates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "momentum",
+                  "reversal",
+                  "low_volatility",
+                  "turnover_mean",
+                  "turnover_change",
+                  "earnings_yield",
+                  "book_to_price",
+                  "roe",
+                  "low_leverage",
+                  "small_size",
+                  "column"
+                ]
+              },
+              "name_prefix": {"type": "string", "minLength": 1},
+              "lookbacks": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {"type": "integer", "minimum": 1}
+              },
+              "window_pairs": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": ["short_window", "long_window"],
+                  "properties": {
+                    "short_window": {"type": "integer", "minimum": 1},
+                    "long_window": {"type": "integer", "minimum": 2}
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "source_column": {"type": "string", "minLength": 1},
+              "signs": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {"enum": [-1, 1]}
+              },
+              "description": {"type": "string"}
+            },
+            "additionalProperties": true
+          }
+        },
+        "max_factor_candidates": {"type": "integer", "minimum": 1, "maximum": 500},
+        "top_single_factors": {"type": "integer", "minimum": 1},
+        "top_combinations": {"type": "integer", "minimum": 1},
+        "combination_pool_size": {"type": "integer", "minimum": 2},
+        "combination_sizes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 2}
+        },
+        "weight_schemes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["equal", "validation_ic"]}
+        },
+        "require_combination_increment": {"type": "boolean"},
+        "max_combination_candidates": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "max_pair_correlation": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+        "selection": {
+          "type": "object",
+          "required": [
+            "min_validation_rank_ic_days",
+            "min_validation_coverage",
+            "min_validation_rank_ic",
+            "require_discovery_validation_same_sign",
+            "metric_weights"
+          ],
+          "properties": {
+            "min_validation_rank_ic_days": {"type": "integer", "minimum": 1},
+            "min_validation_coverage": {"type": "number", "minimum": 0, "maximum": 1},
+            "min_validation_rank_ic": {"type": ["number", "null"]},
+            "min_validation_net_sharpe": {"type": ["number", "null"]},
+            "require_discovery_validation_same_sign": {"type": "boolean"},
+            "metric_weights": {
+              "type": "object",
+              "minProperties": 1,
+              "properties": {
+                "rank_ic": {"type": "number", "minimum": 0},
+                "rank_ic_ir": {"type": "number", "minimum": 0},
+                "rank_ic_positive_ratio": {"type": "number", "minimum": 0},
+                "net_sharpe": {"type": "number", "minimum": 0},
+                "max_drawdown": {"type": "number", "minimum": 0},
+                "turnover": {"type": "number", "minimum": 0},
+                "stability": {"type": "number", "minimum": 0}
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "combination": {
+      "type": ["object", "null"],
+      "required": ["name", "weights"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"},
+        "weights": {
+          "type": "object",
+          "minProperties": 2,
+          "additionalProperties": {"type": "number"}
+        },
+        "minimum_available": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "evaluation": {
+      "type": "object",
+      "required": ["quantiles", "min_cross_section", "cost_bps", "annualization"],
+      "properties": {
+        "quantiles": {"type": "integer", "minimum": 2, "maximum": 20},
+        "min_cross_section": {"type": "integer", "minimum": 3},
+        "cost_bps": {"type": "number", "minimum": 0},
+        "annualization": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "guardrails": {
+      "type": "object",
+      "required": ["record_all_trials", "final_holdout_single_use", "allow_same_close_fill"],
+      "properties": {
+        "record_all_trials": {"const": true},
+        "final_holdout_single_use": {"const": true},
+        "allow_same_close_fill": {"const": false}
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "dateRange": {
+      "type": "object",
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"type": "string", "format": "date"},
+        "end": {"type": "string", "format": "date"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

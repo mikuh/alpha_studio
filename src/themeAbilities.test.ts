@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { Conversation } from './types';
 import {
   ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID,
   ALPHA_STUDIO_REPORT_REVIEW_SKILL_ID,
   addThemeAbilityContext,
   inferThemeAbilitySkill,
+  isThemeBacktestRequest,
 } from './themeAbilities';
-import { ALPHA_STUDIO_DAILY_THEME_SKILL_ID } from './themeResearch';
+import { ALPHA_STUDIO_DAILY_THEME_SKILL_ID, PREMARKET_THEME_RUNS_KEY } from './themeResearch';
+import { THEME_BACKTEST_RUNS_KEY, THEME_TRACKING_EVENTS_KEY } from './themeValidation';
 
 const now = new Date('2026-07-13T08:00:00.000Z').getTime();
 
@@ -23,6 +25,8 @@ function conversation(id: string, messages: Conversation['messages']): Conversat
 }
 
 describe('theme follow-up abilities', () => {
+  beforeEach(() => window.localStorage.clear());
+
   it('infers the daily report, monitor, and review skills from card prompts', () => {
     expect(inferThemeAbilitySkill(`使用 ${ALPHA_STUDIO_DAILY_THEME_SKILL_ID} 生成今日报告`)?.id).toBe(ALPHA_STUDIO_DAILY_THEME_SKILL_ID);
     expect(inferThemeAbilitySkill(`使用 ${ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID}`)?.id).toBe(ALPHA_STUDIO_INTRADAY_MONITOR_SKILL_ID);
@@ -76,5 +80,30 @@ describe('theme follow-up abilities', () => {
 
     expect(prompt).toContain('[今日盘中监控记录]');
     expect(prompt).toContain('机器人中军未放量');
+  });
+
+  it('injects archived report and trigger indexes for natural-language backtest conversations', () => {
+    window.localStorage.setItem(PREMARKET_THEME_RUNS_KEY, JSON.stringify([{
+      schema: 'alpha.premarket_theme.v2', id: 'report-1', tradeDate: '2026-07-13', generatedAt: '2026-07-13T01:20:00Z',
+      dataCutoff: '2026-07-13T01:20:00Z', reportMode: 'pre_market', title: '盘前日报',
+      executionGate: { state: '只观察' }, capitalAttackPath: { primaryRoute: 'AI算力' }, marketSentiment: 'trial',
+      themes: [{
+        id: 'theme-ai', rank: 1, name: 'AI算力', grade: 'A', lifecycle: 'fermentation',
+        triggerSpecs: [{ id: 'trigger-ai', label: '中军确认', evaluator: 'manual', dataSource: 'review', actionOnTrigger: '确认', actionOnFailure: '失效' }],
+        stocks: [{ name: '浪潮信息', code: '000977.XSHE', role: '中军', roleRank: 1, triggerIds: ['trigger-ai'] }],
+      }],
+    }]));
+    window.localStorage.setItem(THEME_TRACKING_EVENTS_KEY, JSON.stringify([{
+      id: 'event-1', reportId: 'report-1', tradeDate: '2026-07-13', themeId: 'theme-ai', triggerId: 'trigger-ai',
+      status: 'triggered', observedAt: '2026-07-13T02:00:00Z', evidence: '中军确认', source: 'manual', actor: 'user',
+    }]));
+    window.localStorage.setItem(THEME_BACKTEST_RUNS_KEY, JSON.stringify([]));
+
+    expect(isThemeBacktestRequest('回测最近日报里第一中军的 T+1 表现')).toBe(true);
+    const prompt = addThemeAbilityContext('回测最近日报里第一中军的 T+1 表现', undefined, [], now);
+    expect(prompt).toContain('<alpha_studio_theme_backtest_context>');
+    expect(prompt).toContain('report-1');
+    expect(prompt).toContain('trigger-ai');
+    expect(prompt).toContain('盘中/盘后报告不得倒灌');
   });
 });

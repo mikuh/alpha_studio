@@ -12,12 +12,12 @@ Codex CLI -> POST /v1/responses -> Alpha Studio adapter -> 上游模型服务
 
 | 上游协议 | `apiFormat` | 典型服务 | 转换范围 |
 | --- | --- | --- | --- |
-| OpenAI Responses | `responses` | OpenAI、Azure OpenAI、OpenRouter Responses 代理 | 模型别名、非流式上游、Codex SSE 输出 |
+| OpenAI Responses | `responses` | OpenAI、Azure OpenAI、OpenRouter Responses 代理 | 模型别名、原生 SSE 逐块透传、用量结算 |
 | OpenAI Chat Completions | `chat_completions` | DeepSeek、Qwen、Kimi、GLM、SiliconFlow、Ollama 等 | system/developer、文本/图片、function/custom 工具调用与结果、用量、常见 reasoning 字段 |
 | Anthropic Messages | `anthropic_messages` | Anthropic Claude、Anthropic-compatible 代理 | system、文本/图片、tool_use/tool_result、thinking、缓存用量 |
 | Gemini generateContent | `gemini_generate_content` | Google Gemini 原生 API | systemInstruction、文本/图片、functionCall/functionResponse、thought、用量 |
 
-成功响应会统一转换为 Responses 对象；Codex 请求流式响应时，网关会生成带 `sequence_number` 的完整 Responses SSE 事件序列。Codex 的 free-form custom tool 会在上游临时包装成带 `input` 字段的 function/tool，再按原始工具表恢复成 `custom_tool_call` 和 `response.custom_tool_call_input.*` 事件。包含点号、命名空间或超长名称的工具会生成稳定的上游安全名称，响应时再恢复原名。上游错误也会归一化为 `error.message/type/code/provider/upstream_status`，避免 Codex 因供应商错误结构不同而只显示解析失败。
+成功响应会统一转换为 Responses 对象；Codex 请求流式响应时，Responses 上游的 SSE 会按网络块立即透传，Chat Completions、Anthropic Messages 和 Gemini 原生流会边接收边转换为带 `sequence_number` 的 Responses SSE，不再等待完整生成结束。流结束后网关从最终 usage 事件异步完成计费结算。Codex 的 free-form custom tool 会在上游临时包装成带 `input` 字段的 function/tool，再按原始工具表恢复成 `custom_tool_call` 和 `response.custom_tool_call_input.*` 事件。包含点号、命名空间或超长名称的工具会生成稳定的上游安全名称，响应时再恢复原名。上游错误也会归一化为 `error.message/type/code/provider/upstream_status`，避免 Codex 因供应商错误结构不同而只显示解析失败。
 
 ## 添加供应商
 
@@ -107,14 +107,16 @@ base_url = "https://YOUR_ALPHA_STUDIO_HOST/v1"
 wire_api = "responses"
 ```
 
-Run token 作为 Bearer API key 使用，并绑定客户、设备、运行和模型。`GET /v1/models` 只返回该 token 对应的模型，`POST /v1/responses` 不能借 token 切换到其他模型。
+Run token 作为 Bearer API key 使用，并绑定客户、设备、运行、模型和预授权预算。创建运行时会原子冻结预算；`GET /v1/models` 只返回该 token 对应的模型，`POST /v1/responses` 不能借 token 切换到其他模型，而且同一个 token 只能真正发起一次上游推理。结算与余额更新在同一数据库事务内完成，未使用预算会返还。
+
+若上游成功响应缺失 usage、流在发出后中断、请求超时，或上游在可能已产生推理成本后返回 5xx，网关会按预授权预算执行保守兜底结算并在 usage 记录中标记 `budget_fallback`，避免上游已收费而客户侧记为 0 元。启用按量模型前，输入与输出成本价必须为正数，所有价格与加价率必须为有限非负数；部署级 `MIN_GATEWAY_MARKUP_BPS`（默认 500，即 5%）还会阻止低于安全毛利线的路由启用或调用。
 
 ## 兼容性边界
 
 - 模型服务必须至少支持文本和当前路由所需的工具调用能力；仅“能聊天”不代表适合 Codex agent 工作流。
 - 模型发现依赖供应商的 `/models`。404/405 或非标准响应时请手工填写模型 ID。
 - Azure Entra ID、Google OAuth/Vertex AI、AWS SigV4/Bedrock 等动态凭据签名不属于静态 API Key 配置，当前应放在一个负责换取/签名的内部代理之后，再让 Alpha Studio 连接该代理。
-- 网关目前为兼容性优先：上游使用非流式请求，收到完整响应后再输出 Codex SSE。它不会提供上游首 token 的实时延迟。
+- 流式请求在收到上游首个 SSE 数据块后立即向 Codex 输出；若供应商自身或其前置代理启用了缓冲，首 token 延迟仍会受该上游链路影响。
 
 ## 参考
 

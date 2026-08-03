@@ -145,7 +145,7 @@ export async function discoverAlphaStudioSkills(skillsRoot) {
       fail('Built-in Skill roots cannot be symbolic links', skillRoot);
     }
     if (!metadata.isDirectory()) {
-      fail('Reserved built-in Skill entries must be directories', skillRoot);
+      fail('Alpha Studio built-in Skill entries must be directories', skillRoot);
     }
     const canonicalSkillRoot = await realpath(skillRoot);
     safeRelativePath(canonicalSkillsRoot, canonicalSkillRoot, 'Built-in Skill root');
@@ -161,7 +161,7 @@ export async function discoverAlphaStudioSkills(skillsRoot) {
     const frontmatterName = parseSkillFrontmatterName(skillDefinition, skillDefinitionPath);
     if (!frontmatterName.startsWith(RESERVED_SKILL_PREFIX)) {
       fail(
-        `SKILL.md frontmatter name must start with ${RESERVED_SKILL_PREFIX}`,
+        `Official SKILL.md frontmatter name must start with ${RESERVED_SKILL_PREFIX}`,
         skillDefinitionPath,
       );
     }
@@ -172,19 +172,64 @@ export async function discoverAlphaStudioSkills(skillsRoot) {
       );
     }
 
-    const files = await collectRegularFiles(skillRoot, canonicalSkillRoot);
     discovered.push({
       skillName: frontmatterName,
       relativePath: entry.name,
       absolutePath: skillRoot,
-      files,
+      files: await collectRegularFiles(skillRoot, canonicalSkillRoot),
     });
   }
 
   if (discovered.length === 0) {
-    fail(`No ${RESERVED_SKILL_PREFIX}* built-in Skills were discovered`, skillsRoot);
+    fail('No official Alpha Studio Skills were discovered', skillsRoot);
   }
   return discovered;
+}
+
+export async function loadOfficialSkillCatalog(skillsRoot, discoveredSkills) {
+  const catalogPath = path.join(skillsRoot, 'catalog.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(await readFile(catalogPath, 'utf8'));
+  } catch (error) {
+    fail(`Cannot read protected Skill catalog (${error.message})`, catalogPath);
+  }
+  if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.skills)) {
+    fail('Protected Skill catalog must use schemaVersion 1 and contain a skills array', catalogPath);
+  }
+
+  const catalogById = new Map();
+  for (const entry of parsed.skills) {
+    if (!entry || typeof entry !== 'object') {
+      fail('Protected Skill catalog entries must be objects', catalogPath);
+    }
+    const requiredStrings = ['id', 'category', 'title', 'description', 'icon', 'overview'];
+    for (const field of requiredStrings) {
+      if (typeof entry[field] !== 'string' || !entry[field].trim()) {
+        fail(`Protected Skill catalog entry has an invalid ${field}`, catalogPath);
+      }
+    }
+    if (entry.category !== 'official'
+      || !entry.id.startsWith(RESERVED_SKILL_PREFIX)
+      || catalogById.has(entry.id)) {
+      fail(`Protected Skill catalog contains an invalid or duplicate id "${entry.id}"`, catalogPath);
+    }
+    if (entry.workflow != null && (typeof entry.workflow !== 'string' || !entry.workflow.trim())) {
+      fail(`Protected Skill catalog entry has an invalid workflow for "${entry.id}"`, catalogPath);
+    }
+    catalogById.set(entry.id, entry);
+  }
+
+  const discoveredNames = new Set(discoveredSkills.map((skill) => skill.skillName));
+  const missing = [...discoveredNames].filter((name) => !catalogById.has(name));
+  const stale = [...catalogById.keys()].filter((name) => !discoveredNames.has(name));
+  if (missing.length || stale.length) {
+    fail(
+      `Protected Skill catalog does not match repository Skills (missing: ${missing.join(', ') || 'none'}; stale: ${stale.join(', ') || 'none'})`,
+      catalogPath,
+    );
+  }
+  return parsed;
 }
 
 function codecAad(logicalPath) {
@@ -234,6 +279,7 @@ export async function encodeDiscoveredSkills({ skillsRoot, outputRoot, logger = 
   }
 
   const skills = await discoverAlphaStudioSkills(resolvedSkillsRoot);
+  const catalog = await loadOfficialSkillCatalog(resolvedSkillsRoot, skills);
   const stagingRoot = `${resolvedOutputRoot}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
   await mkdir(stagingRoot, { recursive: false });
 
@@ -267,6 +313,7 @@ export async function encodeDiscoveredSkills({ skillsRoot, outputRoot, logger = 
         0,
       ),
       skills: manifestSkills,
+      catalog,
     };
     const manifestContents = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
     const manifestLogicalPath = 'manifest.json';
@@ -278,7 +325,7 @@ export async function encodeDiscoveredSkills({ skillsRoot, outputRoot, logger = 
 
     await replaceDirectoryAtomically(stagingRoot, resolvedOutputRoot);
     logger.log(
-      `[skills:encode] Auto-discovered and encoded ${skills.length} Alpha Studio Skill(s): ${skills
+      `[skills:encode] Auto-discovered and encoded ${skills.length} official Skill(s): ${skills
         .map((skill) => skill.skillName)
         .join(', ')}`,
     );

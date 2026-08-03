@@ -4,6 +4,7 @@ use alpha_studio_backend::gateway::{
     normalize_upstream_success_body_for_request, responses_body_to_sse, ProviderApiFormat,
     ProviderAuthType, ProviderConfig, UpstreamResponseFormat,
 };
+use alpha_studio_backend::gateway_stream::{restore_namespace_tools_in_sse_frame, SseDecoder};
 
 #[test]
 fn builds_openai_responses_url_and_injects_upstream_model() {
@@ -25,7 +26,7 @@ fn builds_openai_responses_url_and_injects_upstream_model() {
 }
 
 #[test]
-fn forces_streaming_responses_requests_to_non_streaming_upstream() {
+fn preserves_streaming_responses_requests_for_upstream() {
     let provider = ProviderConfig {
         provider: "openai".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
@@ -38,12 +39,12 @@ fn forces_streaming_responses_requests_to_non_streaming_upstream() {
     let request = build_upstream_request(&provider, "gpt-5.5", &mut body).unwrap();
 
     assert!(request.stream_response);
-    assert_eq!(body["stream"], false);
+    assert_eq!(body["stream"], true);
     assert_eq!(body["model"], "gpt-5.5");
 }
 
 #[test]
-fn strips_codex_client_metadata_from_responses_upstream_request() {
+fn strips_codex_extensions_unsupported_by_volcengine_responses() {
     let provider = ProviderConfig {
         provider: "volcengine-ark-responses".to_string(),
         base_url: "https://ark.cn-beijing.volces.com/api/v3".to_string(),
@@ -54,16 +55,164 @@ fn strips_codex_client_metadata_from_responses_upstream_request() {
     };
     let mut body = serde_json::json!({
         "model": "alpha-alias",
-        "input": "hello",
+        "input": [
+            { "type": "message", "role": "user", "content": "hello" },
+            {
+                "type": "function_call",
+                "namespace": "mcp__calendar",
+                "name": "create_event",
+                "call_id": "call_previous",
+                "arguments": "{}"
+            }
+        ],
         "client_metadata": { "originator": "codex_cli_rs" },
-        "metadata": { "request": "preserve-standard-field" }
+        "reasoning": { "effort": "medium", "summary": "auto" },
+        "max_output_tokens": 1_000_000,
+        "metadata": { "request": "preserve-standard-field" },
+        "tools": [
+            {
+                "type": "function",
+                "name": "exec_command",
+                "description": "run",
+                "strict": false,
+                "defer_loading": false,
+                "parameters": { "type": "object" }
+            },
+            {
+                "type": "namespace",
+                "name": "mcp__calendar",
+                "description": "calendar tools",
+                "tools": [{
+                    "type": "function",
+                    "name": "create_event",
+                    "description": "create",
+                    "strict": false,
+                    "defer_loading": true,
+                    "parameters": { "type": "object" }
+                }]
+            },
+            {
+                "type": "web_search",
+                "external_web_access": true
+            }
+        ]
     });
 
-    build_upstream_request(&provider, "deepseek-v4-pro-260425", &mut body).unwrap();
+    let request = build_upstream_request(&provider, "deepseek-v4-pro-260425", &mut body).unwrap();
 
+    assert!(request.namespace_tool_compat);
     assert!(body.get("client_metadata").is_none());
+    assert_eq!(body["reasoning"]["effort"], "medium");
+    assert!(body["reasoning"].get("summary").is_none());
+    assert_eq!(body["max_output_tokens"], 393_216);
     assert_eq!(body["metadata"]["request"], "preserve-standard-field");
     assert_eq!(body["model"], "deepseek-v4-pro-260425");
+    assert_eq!(body["tools"].as_array().unwrap().len(), 3);
+    assert!(body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|tool| tool["type"] != "namespace"));
+    assert!(body["tools"][0].get("defer_loading").is_none());
+    assert!(body["tools"][2].get("external_web_access").is_none());
+    let flattened_name = body["tools"][1]["name"].as_str().unwrap();
+    assert_ne!(flattened_name, "create_event");
+    assert!(flattened_name.starts_with("alpha_ns__"));
+    assert_eq!(body["input"][1]["name"], flattened_name);
+    assert!(body["input"][1].get("namespace").is_none());
+}
+
+#[test]
+fn restores_volcengine_namespace_calls_in_body_and_stream() {
+    let provider = ProviderConfig {
+        provider: "volcengine-ark-responses".to_string(),
+        base_url: "https://ark.cn-beijing.volces.com/api/v3".to_string(),
+        endpoint_path: "/responses".to_string(),
+        api_key: "test-key".to_string(),
+        api_format: ProviderApiFormat::Responses,
+        ..ProviderConfig::default()
+    };
+    let original = serde_json::json!({
+        "model": "alpha-alias",
+        "stream": true,
+        "tools": [{
+            "type": "namespace",
+            "name": "mcp__calendar",
+            "description": "calendar tools",
+            "tools": [{
+                "type": "function",
+                "name": "create_event",
+                "description": "create",
+                "strict": false,
+                "parameters": { "type": "object" }
+            }]
+        }]
+    });
+    let mut upstream_request_body = original.clone();
+    build_upstream_request(
+        &provider,
+        "deepseek-v4-flash-260425",
+        &mut upstream_request_body,
+    )
+    .unwrap();
+    let flattened_name = upstream_request_body["tools"][0]["name"].as_str().unwrap();
+    let upstream_response = serde_json::json!({
+        "id": "resp_test",
+        "output": [{
+            "type": "function_call",
+            "name": flattened_name,
+            "call_id": "call_1",
+            "arguments": "{}"
+        }]
+    });
+
+    let restored = normalize_upstream_success_body_for_request(
+        UpstreamResponseFormat::Responses,
+        upstream_response,
+        &original,
+    )
+    .unwrap();
+    assert_eq!(restored["output"][0]["namespace"], "mcp__calendar");
+    assert_eq!(restored["output"][0]["name"], "create_event");
+
+    let event = serde_json::json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "function_call",
+            "name": flattened_name,
+            "call_id": "call_1",
+            "arguments": "{}"
+        }
+    });
+    let raw = format!("event: response.output_item.done\ndata: {event}\n\n");
+    let mut decoder = SseDecoder::default();
+    let frame = decoder.push(raw.as_bytes()).remove(0);
+    let restored_stream =
+        String::from_utf8(restore_namespace_tools_in_sse_frame(frame, &original)).unwrap();
+    assert!(restored_stream.contains("\"namespace\":\"mcp__calendar\""));
+    assert!(restored_stream.contains("\"name\":\"create_event\""));
+    assert!(!restored_stream.contains(flattened_name));
+}
+
+#[test]
+fn preserves_reasoning_summary_for_openai_responses() {
+    let provider = ProviderConfig {
+        provider: "openai".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        endpoint_path: "/responses".to_string(),
+        api_key: "sk-test".to_string(),
+        api_format: ProviderApiFormat::Responses,
+        ..ProviderConfig::default()
+    };
+    let mut body = serde_json::json!({
+        "model": "alpha-alias",
+        "input": "hello",
+        "reasoning": { "effort": "medium", "summary": "auto" }
+    });
+
+    build_upstream_request(&provider, "gpt-5.5", &mut body).unwrap();
+
+    assert_eq!(body["reasoning"]["summary"], "auto");
 }
 
 #[test]
@@ -173,6 +322,8 @@ fn remaps_custom_tools_through_chat_and_back_to_native_responses_events() {
     let mut upstream_body = original.clone();
     let upstream = build_upstream_request(&provider, "deepseek-chat", &mut upstream_body).unwrap();
 
+    assert_eq!(upstream_body["stream"], true);
+    assert_eq!(upstream_body["stream_options"]["include_usage"], true);
     assert_eq!(upstream_body["tools"][0]["type"], "function");
     assert_eq!(
         upstream_body["tools"][0]["function"]["parameters"]["required"][0],
@@ -283,7 +434,7 @@ fn translates_responses_tools_for_anthropic_messages() {
     assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
     assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
     assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
-    assert_eq!(body["stream"], false);
+    assert_eq!(body["stream"], true);
 }
 
 #[test]

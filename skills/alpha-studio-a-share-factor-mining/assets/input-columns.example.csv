@@ -1,0 +1,4 @@
+date,instrument,close,tradable,industry,float_market_cap,pe_ttm,pb,roe_ttm,debt_to_assets,turnover_rate,custom_factor
+2025-01-02,600000.SH,10.25,true,bank,285000000000,5.8,0.62,0.108,0.91,0.0042,0.31
+2025-01-03,600000.SH,10.31,true,bank,286700000000,5.9,0.63,0.108,0.91,0.0046,0.28
+2025-01-06,600000.SH,10.20,true,bank,283600000000,5.8,0.62,0.108,0.91,0.0051,0.22

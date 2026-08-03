@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alpha-studio.local/schemas/alpha.mainline_trend.v1.json",
+  "title": "Alpha Studio Mainline Trend Tracking",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "tradeDate",
+    "generatedAt",
+    "dataCutoff",
+    "mode",
+    "overallConclusion",
+    "heavyPositionPermission",
+    "mainlines",
+    "sources",
+    "risks"
+  ],
+  "properties": {
+    "schema": { "const": "alpha.mainline_trend.v1" },
+    "tradeDate": { "type": "string", "format": "date" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "dataCutoff": { "type": "string", "format": "date-time" },
+    "mode": { "enum": ["premarket", "intraday", "postmarket", "brief"] },
+    "overallConclusion": { "type": "string", "minLength": 1 },
+    "heavyPositionPermission": {
+      "enum": [
+        "允许重仓主线核心",
+        "共振成立，重仓权限待执行闸门确认",
+        "中等仓位参与",
+        "轻仓验证",
+        "禁止重仓，仅观察脉冲",
+        "不参与"
+      ]
+    },
+    "topMainlineId": { "type": ["string", "null"] },
+    "previousReportId": { "type": ["string", "null"] },
+    "mainlines": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/mainline" }
+    },
+    "sources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/source" }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "$defs": {
+    "pillar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "active",
+        "strength",
+        "marginal",
+        "confidence",
+        "asOf",
+        "sourceTier",
+        "confirmed",
+        "evidence",
+        "counterEvidence"
+      ],
+      "properties": {
+        "active": { "type": "boolean" },
+        "strength": { "type": ["integer", "null"], "minimum": 0, "maximum": 5 },
+        "marginal": { "type": ["integer", "null"], "minimum": -1, "maximum": 1 },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "asOf": { "type": ["string", "null"], "format": "date-time" },
+        "sourceTier": { "type": ["integer", "null"], "minimum": 1, "maximum": 4 },
+        "confirmed": { "type": "boolean" },
+        "score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "counterEvidence": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "mainline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "pricingScope",
+        "overseasGate",
+        "pillars",
+        "score",
+        "grade",
+        "resonanceState",
+        "heavyPositionPermission",
+        "falseThemeFilter",
+        "largestEvidenceGap",
+        "upgradeTriggers",
+        "invalidationTriggers",
+        "continuityState",
+        "coreStocks"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "pricingScope": { "enum": ["domestic", "global", "mixed"] },
+        "overseasGate": { "enum": ["off", "on"] },
+        "pillars": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policy", "directedCredit", "longTermCapital", "overseasCycle"],
+          "properties": {
+            "policy": { "$ref": "#/$defs/pillar" },
+            "directedCredit": { "$ref": "#/$defs/pillar" },
+            "longTermCapital": { "$ref": "#/$defs/pillar" },
+            "overseasCycle": { "$ref": "#/$defs/pillar" }
+          }
+        },
+        "score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "grade": { "enum": ["S", "A", "B", "C"] },
+        "resonanceState": {
+          "enum": ["主升共振", "趋势候选", "部分共振", "单因子脉冲", "未形成主线"]
+        },
+        "heavyPositionPermission": {
+          "enum": [
+            "允许重仓主线核心",
+            "共振成立，重仓权限待执行闸门确认",
+            "中等仓位参与",
+            "轻仓验证",
+            "禁止重仓，仅观察脉冲",
+            "不参与"
+          ]
+        },
+        "falseThemeFilter": { "type": "string", "minLength": 1 },
+        "largestEvidenceGap": { "type": "string", "minLength": 1 },
+        "upgradeTriggers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "invalidationTriggers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "continuityState": {
+          "enum": ["新进", "强化", "维持", "降级", "证伪", "退出跟踪"]
+        },
+        "coreStocks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stock" }
+        }
+      }
+    },
+    "stock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "name", "role", "authenticity", "pillarContribution", "confirmation", "invalidation"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^(SH|SZ|BJ)\\d{6}$" },
+        "name": { "type": "string", "minLength": 1 },
+        "role": { "enum": ["产业中枢", "资本开支受益核心", "业绩兑现核心", "高弹性映射"] },
+        "authenticity": { "enum": ["A", "A-", "B+", "B", "C", "D"] },
+        "pillarContribution": {
+          "type": "array",
+          "items": { "enum": ["policy", "directedCredit", "longTermCapital", "overseasCycle", "price"] }
+        },
+        "confirmation": { "type": "string", "minLength": 1 },
+        "invalidation": { "type": "string", "minLength": 1 }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "publisher", "publishedAt", "url", "tier", "pillar"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "publisher": { "type": "string", "minLength": 1 },
+        "publishedAt": { "type": "string", "format": "date-time" },
+        "url": { "type": "string", "format": "uri" },
+        "tier": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "pillar": { "enum": ["policy", "directedCredit", "longTermCapital", "overseasCycle", "price", "risk"] }
+      }
+    }
+  }
+}

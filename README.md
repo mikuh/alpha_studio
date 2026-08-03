@@ -69,10 +69,22 @@ curl http://localhost/readyz
 open http://localhost/admin/
 ```
 
-Keep deployment secrets such as `JWT_SECRET`, `RUN_TOKEN_SECRET`, and
-`ADMIN_PASSWORD` in `.env` on the server; `.env` is intentionally ignored by
+Keep deployment secrets such as `JWT_SECRET`, `RUN_TOKEN_SECRET`,
+`AUTHORIZATION_CODE_ENCRYPTION_KEY`, and `ADMIN_PASSWORD` in `.env` on the server; `.env` is intentionally ignored by
 git. Upstream model provider keys are configured inside `/admin` under the
 model gateway section, not through environment variables.
+`MIN_GATEWAY_MARKUP_BPS` defaults to `500` (5%) and blocks enabled pay-as-you-go
+routes whose markup is below that deployment-level safety floor.
+
+The backend fails closed when those secrets are missing, weak, still use the
+example placeholders, or when the JWT and run-token secrets are identical.
+Protected client routes require the signed device Bearer token returned by
+activation; admin routes require an expiring signed admin JWT; model gateway
+routes require a short-lived, model-bound, single-use run token. Existing
+desktop activation sessions created before this authentication hardening must
+be activated once again to receive a device token.
+Browser cross-origin access is restricted to the explicit
+`CORS_ALLOWED_ORIGINS` list; wildcard origins are rejected at startup.
 
 The admin app now covers the commercial operating loop:
 
@@ -81,10 +93,14 @@ The admin app now covers the commercial operating loop:
 - configure provider presets, upstream protocols/auth, discover models, and manage aliases, prices, and markup
 - assign GPT subscription accounts to customers for monthly or yearly subscription access
 - inspect audit logs and usage-ledger totals
+- upload, publish, and roll back authenticated Skill release bundles
 
 See [Multi-model gateway setup](./docs/model-gateway.md) for OpenAI Responses,
 Chat Completions, Anthropic Messages, Gemini, Azure, Ollama, and other
 OpenAI-compatible provider configuration.
+
+See [Managed Skill releases](./docs/managed-skills.md) for the protected build,
+admin publishing, client synchronization, offline fallback, and rollback flow.
 
 ### Cloud market data
 

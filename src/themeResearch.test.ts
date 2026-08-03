@@ -5,6 +5,7 @@ import {
   PREMARKET_THEME_SCHEMA,
   PREMARKET_THEME_SCHEMA_V1,
   ALPHA_STUDIO_DAILY_THEME_SKILL_ID,
+  automaticPremarketThemeImportError,
   buildPremarketThemePrompt,
   extractLegacyPremarketThemeDraft,
   loadPremarketThemeRuns,
@@ -158,6 +159,39 @@ describe('themeResearch', () => {
     expect(parsed.run?.themes[0].name).toBe('AI算力');
     expect(parsed.run?.themes[0].status).toBe('pending');
     expect(parsed.run?.reportMarkdown).toContain('# 盘前主题研究');
+  });
+
+  it('imports richer sidecars emitted by formal reports without losing the workbench contract', () => {
+    const base = validThemeJson();
+    const parsed = parsePremarketThemeResult(JSON.stringify({
+      ...base,
+      marketSentiment: { score: 57.8, regime: 'trial', assessment: '指数偏弱，只允许核心试错。' },
+      previousContinuity: [{
+        name: 'AI算力', currentState: '降级观察', carryoverAction: '无仓不新开', continuityConclusion: '宽度回落',
+      }],
+      sourceNotes: [{ source: 'Eastmoney', scope: '行情快照', cutoff: '08:25', url: 'https://example.test/quote' }],
+      themes: [{
+        ...(base.themes as Record<string, unknown>[])[0],
+        triggerSpecs: [{
+          id: 'ai-core-change', label: '中际旭创涨幅不低于2%', evaluator: 'quote', subject: '300308.XSHE',
+          field: 'pctChange', operator: '>=', threshold: 2, confirmForSeconds: 60, dataSource: 'eastmoney',
+          actionOnTrigger: '进入二次确认', actionOnFailure: '禁止新开',
+        }],
+        stocks: [{
+          name: '中际旭创', code: '300308.XSHE', role: '趋势核心', roleRank: 1,
+          authenticity: '产业链核心', authenticityRating: 'A', triggerIds: ['ai-core-change'],
+          entryConditions: ['涨幅与题材宽度共振'], invalidationConditions: ['放量转负'],
+        }],
+      }],
+    }), { requireCompleteReport: false });
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.run?.marketSentiment).toContain('57.8分');
+    expect(parsed.run?.previousContinuity[0]).toMatchObject({ status: '降级观察', action: '无仓不新开', evidence: '宽度回落' });
+    expect(parsed.run?.sourceNotes[0]).toContain('Eastmoney · 行情快照');
+    expect(parsed.run?.themes[0].triggerSpecs[0]).toMatchObject({ subjectCode: '300308.XSHE', field: 'changePct', operator: 'gte' });
+    expect(parsed.run?.themes[0].stocks[0]).toMatchObject({ authenticity: 'A', triggerIds: ['ai-core-change'] });
+    expect(automaticPremarketThemeImportError(parsed.run!)).toBeNull();
   });
 
   it('upgrades v1 reports to the v2 tracking model without changing their source schema', () => {

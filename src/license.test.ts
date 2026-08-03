@@ -34,6 +34,7 @@ const activationResponse = {
   },
   device: {
     id: 'dev_demo',
+    accessToken: 'device-token',
     leaseExpiresAt: '2026-07-01T00:00:00.000Z',
   },
   models: [
@@ -116,6 +117,26 @@ describe('client license session', () => {
     );
     expect(session.tenant.id).toBe('tenant_demo');
     expect(loadClientLicenseSession()?.device.id).toBe('dev_demo');
+  });
+
+  it('rejects an activation response that cannot be restored on the next launch', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+      ...activationResponse,
+      device: {
+        id: activationResponse.device.id,
+        leaseExpiresAt: activationResponse.device.leaseExpiresAt,
+      },
+    }));
+
+    await expect(activateClient({
+      apiBaseUrl: 'http://localhost:18080',
+      companyName: 'Demo Fund',
+      authorizationCode: 'AS-TEST-CODE',
+      deviceName: 'Geb Mac',
+      fingerprint: 'fp-test',
+    })).rejects.toThrow('激活响应不完整');
+
+    expect(loadClientLicenseSession()).toBeNull();
   });
 
   it('maps gateway models without enabling Codex subscription models', () => {

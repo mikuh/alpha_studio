@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{REPORT_TITLE}}</title>
+  <link rel="stylesheet" href="./report-style.css">
+</head>
+<body>
+  <!--
+    Alpha Studio 产业主线趋势早报模板
+    - 默认保留 8 个 section.page；内容溢出时增加续页，不删除核心模块。
+    - 所有占位符必须替换后再运行 scripts/validate_report.py。
+    - 海外开关关闭时明确写“N/A（不计分、不扣分）”；开启时在任意容器增加 overseas-gate-on 类。
+    - 共振表不得只写总分，必须并列 P/C/L/O、最大缺口和仓位权限。
+  -->
+
+  <section class="page cover">
+    <div class="cover-frame">
+      <div class="brand-row">
+        <div class="brand-mark">AS</div>
+        <div class="brand-name">Alpha Studio Research</div>
+        <div class="doc-meta">{{REPORT_ID}}<br>{{GENERATED_AT}}</div>
+      </div>
+      <div class="cover-main">
+        <div class="eyebrow">Industry Mainline Trend · A-Share</div>
+        <h1>{{REPORT_TITLE}}</h1>
+        <p class="cover-subtitle">政策定方向 · 定向信贷验真 · 长线资金验持续 · 海外景气按需开启</p>
+        <div class="cover-grid">
+          <div><span>交易日</span><b>{{TRADE_DATE}}</b></div>
+          <div><span>数据截止</span><b>{{DATA_CUTOFF}}</b></div>
+          <div><span>趋势窗口</span><b>20–60个交易日</b></div>
+          <div><span>边际窗口</span><b>5 / 20个交易日</b></div>
+        </div>
+      </div>
+      <div class="cover-note">本报告识别产业趋势主线，不以新闻数量、单日涨停或主力净流入替代产业资金落地。</div>
+    </div>
+    <footer><b>Alpha Studio Research</b><span>产业主线趋势早报</span><span>1 / 8</span></footer>
+  </section>
+
+  <section class="page">
+    <header><span>Mainline Command</span><em>主线决策台</em></header>
+    <main>
+      <div class="decision-grid">
+        <div class="decision primary"><span>今日主线结论</span><b>{{OVERALL_CONCLUSION}}</b></div>
+        <div class="decision"><span>主线重仓权限</span><b>{{HEAVY_POSITION_PERMISSION}}</b></div>
+        <div class="decision"><span>第一主线</span><b>{{TOP_MAINLINE}}</b></div>
+        <div class="decision warning"><span>最大证据缺口</span><b>{{LARGEST_EVIDENCE_GAP}}</b></div>
+      </div>
+      <h2>多因子边际共振总表</h2>
+      {{RESONANCE_MATRIX}}
+      <div class="grid-2">
+        <div class="callout"><b>伪题材过滤</b>{{FALSE_THEME_FILTER}}</div>
+        <div class="callout blue"><b>执行闸门</b>{{EXECUTION_GATE}}</div>
+      </div>
+      <p class="note">多因子共振是提高研究仓位权限的必要条件，不构成自动交易指令。</p>
+    </main>
+    <footer><b>Alpha Studio Research</b><span>结论、共振与权限</span><span>2 / 8</span></footer>
+  </section>
+
+  <section class="page">
+    <header><span>Continuity</span><em>主线连续性与迁移</em></header>
+    <main>
+      <h2>上一期主线连续跟踪</h2>
+      {{CONTINUITY_TABLE}}
+      <h2>主线阶段迁移</h2>
+      {{STAGE_MIGRATION_TABLE}}
+      <div class="grid-2">
+        <div class="panel"><h3>上一期缺口补证</h3>{{PREVIOUS_GAP_REVIEW}}</div>
+        <div class="panel"><h3>新增反证</h3>{{NEW_COUNTER_EVIDENCE}}</div>
+      </div>
+      <h2>今日状态变化摘要</h2>
+      {{STATE_CHANGE_SUMMARY}}
+    </main>
+    <footer><b>Alpha Studio Research</b><span>强化、维持、降级与证伪</span><span>3 / 8</span></footer>
+  </section>
+
+  <section class="page">
+    <header><span>Policy &amp; Directed Credit</span><em>方向与真金白银</em></header>
+    <main>
+      <h2>政策方向</h2>
+      {{POLICY_TABLE}}
+      <h2>定向信贷 / 产业投入闭环</h2>
+      {{DIRECTED_CREDIT_TABLE}}
+      <div class="callout rust"><b>伪题材过滤结果</b>{{CREDIT_AUTHENTICITY_RESULT}}</div>
+      <h2>政策到订单的传导链</h2>
+      {{POLICY_TO_ORDER_CHAIN}}
+    </main>
+    <footer><b>Alpha Studio Research</b><span>政策方向与定向信贷验真</span><span>4 / 8</span></footer>
+  </section>
+
+  <section class="page {{OVERSEAS_GATE_CLASS}}">
+    <header><span>Long Capital &amp; Global Cycle</span><em>持续性与外部约束</em></header>
+    <main>
+      <h2>长线机构资金</h2>
+      {{LONG_TERM_CAPITAL_TABLE}}
+      <h2>海外产业景气自适应开关</h2>
+      {{OVERSEAS_GATE_DECISION}}
+      {{OVERSEAS_CYCLE_TABLE}}
+      <div class="grid-2">
+        <div class="panel"><h3>机构确认窗口</h3>{{CAPITAL_WINDOW_NOTE}}</div>
+        <div class="panel"><h3>海外到A股映射</h3>{{GLOBAL_TRANSMISSION}}</div>
+      </div>
+    </main>
+    <footer><b>Alpha Studio Research</b><span>长线资金与海外景气</span><span>5 / 8</span></footer>
+  </section>
+
+  <section class="page">
+    <header><span>Industry Chain</span><em>利润池与核心标的</em></header>
+    <main>
+      <h2>产业链利润池迁移</h2>
+      {{INDUSTRY_CHAIN_MAP}}
+      <h2>产业核心标的矩阵</h2>
+      {{CORE_STOCK_TABLE}}
+      <div class="callout blue"><b>真实性评级</b>A/A- = 一手证据与直接链条；B/B+ = 相关但业绩弹性待确认；C = 概念映射；D = 弱相关或待验证。C/D 不承担产业中枢或重仓核心角色。</div>
+      <h2>核心标的验证职责</h2>
+      {{STOCK_PILLAR_CONTRIBUTION}}
+    </main>
+    <footer><b>Alpha Studio Research</b><span>产业中枢、资本开支与业绩兑现</span><span>6 / 8</span></footer>
+  </section>
+
+  <section class="page">
+    <header><span>Scenarios &amp; Gates</span><em>触发、失效与权限</em></header>
+    <main>
+      <h2>三情景推演</h2>
+      {{SCENARIO_TABLE}}
+      <h2>升级 / 降级 / 证伪触发</h2>
+      {{TRIGGER_TABLE}}
+      <h2>研究仓位权限矩阵</h2>
+      {{POSITION_PERMISSION_TABLE}}
+      <div class="callout"><b>短线与趋势冲突处理</b>{{THEME_MAINLINE_CONFLICT_RULE}}</div>
+      <div class="callout rust"><b>风险纪律</b>{{RISK_DISCIPLINE}}</div>
+    </main>
+    <footer><b>Alpha Studio Research</b><span>情景、触发与风险纪律</span><span>7 / 8</span></footer>
+  </section>
+
+  <section class="page compact">
+    <header><span>Evidence &amp; Risk</span><em>缺口、来源与声明</em></header>
+    <main>
+      <h2>最大证据缺口与补证清单</h2>
+      {{EVIDENCE_GAP_TABLE}}
+      <h2>来源与数据口径</h2>
+      {{SOURCE_LIST}}
+      <div class="callout"><b>数据质量</b>{{DATA_QUALITY_NOTE}}</div>
+      <div class="disclaimer"><b>风险声明</b>本报告基于公开信息整理和模型研究框架，仅用于研究与决策支持，不构成证券投资咨询、个性化投资建议、买卖指令或收益承诺。研究评分、主线判断与仓位权限标签均存在数据延迟、模型误差和情景变化风险。</div>
+    </main>
+    <footer><b>Alpha Studio Research</b><span>证据、来源与风险</span><span>8 / 8</span></footer>
+  </section>
+</body>
+</html>

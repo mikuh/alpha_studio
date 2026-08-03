@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { CoworkerAgentDefinition } from './coworkers';
 import type { ModelProfile } from './models';
+import type { ClientLicenseSession } from './license';
 import type {
   CodexChatEvent,
   CodexStatus,
@@ -87,6 +88,14 @@ export interface ModelConfigFile {
   path?: string;
 }
 
+export interface ManagedSkillsSyncResult {
+  status: 'installed' | 'current' | 'no-release' | 'incompatible' | string;
+  version?: string | null;
+  channel: string;
+  skillNames: string[];
+  message: string;
+}
+
 export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
@@ -102,6 +111,22 @@ export async function checkCodex(): Promise<CodexStatus> {
     };
   }
   return invoke<CodexStatus>('codex_check');
+}
+
+export async function syncManagedSkills(
+  session: ClientLicenseSession,
+  channel = 'stable',
+): Promise<ManagedSkillsSyncResult | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<ManagedSkillsSyncResult>('managed_skills_sync', {
+    request: {
+      apiBaseUrl: session.apiBaseUrl,
+      tenantId: session.tenant.id,
+      deviceId: session.device.id,
+      accessToken: session.device.accessToken,
+      channel,
+    },
+  });
 }
 
 export async function listCodexModels(forceRefetch: boolean): Promise<CodexModelCatalogItem[]> {
@@ -216,6 +241,18 @@ export async function localImageDataUrl(path: string): Promise<string | null> {
     return await invoke<string>('local_image_data_url', { request: { path } });
   } catch {
     return null;
+  }
+}
+
+export async function localFileExists(path: string): Promise<boolean> {
+  if (!path || !isTauriRuntime()) return true;
+  try {
+    const exists = await invoke<unknown>('local_file_exists', { request: { path } });
+    // Fail open when paired with an older desktop backend that does not yet
+    // expose this command, so a compatibility issue never hides real files.
+    return typeof exists === 'boolean' ? exists : true;
+  } catch {
+    return true;
   }
 }
 

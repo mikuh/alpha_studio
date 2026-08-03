@@ -23,6 +23,7 @@ use tokio::sync::{oneshot, Mutex};
 mod builtin_skills;
 mod jqdata_http;
 mod local_store;
+mod managed_skills;
 mod skill_codec;
 
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
@@ -385,6 +386,12 @@ pub struct CopyFileToClipboardRequest {
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalImageDataUrlRequest {
+    path: String,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalFileExistsRequest {
     path: String,
 }
 
@@ -2303,6 +2310,15 @@ async fn local_image_data_url(request: LocalImageDataUrlRequest) -> Result<Strin
 }
 
 #[tauri::command]
+fn local_file_exists(request: LocalFileExistsRequest) -> bool {
+    let path = request.path.trim();
+    !path.is_empty()
+        && fs::metadata(path)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+}
+
+#[tauri::command]
 async fn local_text_file_read(
     request: LocalTextFileReadRequest,
 ) -> Result<LocalTextFileReadResult, String> {
@@ -2340,8 +2356,8 @@ async fn local_text_file_read(
 }
 
 fn list_local_directory_entries(path: &Path) -> Result<Vec<LocalDirectoryEntry>, String> {
-    let metadata = fs::metadata(path)
-        .map_err(|e| format!("Failed to read directory metadata: {e}"))?;
+    let metadata =
+        fs::metadata(path).map_err(|e| format!("Failed to read directory metadata: {e}"))?;
     if !metadata.is_dir() {
         return Err(format!("Path is not a directory: {}", path.display()));
     }
@@ -5717,6 +5733,17 @@ fn prepare_alpha_studio_codex_home_from_with_builtin(
 }
 
 fn alpha_studio_encoded_skills_path(app: Option<&AppHandle>) -> Option<PathBuf> {
+    // Development always follows the repository source that predev/prebuild
+    // just encoded. Managed releases only take precedence in packaged builds.
+    if cfg!(debug_assertions) {
+        let development = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.alpha-encoded");
+        if development.is_dir() {
+            return Some(development);
+        }
+    }
+    if let Some(managed) = managed_skills::active_encoded_skills_path() {
+        return Some(managed);
+    }
     if let Some(app) = app {
         if let Ok(resource_dir) = app.path().resource_dir() {
             for relative_path in [".alpha-encoded", "_up_/.alpha-encoded"] {
@@ -7149,6 +7176,7 @@ pub fn run() {
             codex_models,
             model_config_load,
             model_config_save,
+            managed_skills::managed_skills_sync,
             project_folder_create,
             project_folder_rename,
             clipboard_attachment_save,
@@ -7172,6 +7200,7 @@ pub fn run() {
             copy_file_to_clipboard,
             open_external_target,
             local_image_data_url,
+            local_file_exists,
             local_text_file_read,
             local_directory_list,
             local_pdf_file_read,
@@ -7204,6 +7233,11 @@ pub fn run() {
             gh_pr_create_web,
         ])
         .setup(|app| {
+            // Materialize the protected official Skills as soon as
+            // the desktop client starts. This is independent of GPT login, so
+            // a fresh installation has its official Skill runtime
+            // before the first authorization or chat request.
+            prepare_alpha_studio_codex_home(Some(app.handle())).map_err(std::io::Error::other)?;
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("Alpha Studio");
                 #[cfg(target_os = "macos")]
@@ -9197,7 +9231,10 @@ mod tests {
             input[3].get("path").and_then(Value::as_str),
             Some("/tmp/notes.md")
         );
-        assert_eq!(input[4].get("type").and_then(Value::as_str), Some("mention"));
+        assert_eq!(
+            input[4].get("type").and_then(Value::as_str),
+            Some("mention")
+        );
         assert_eq!(
             input[4].get("path").and_then(Value::as_str),
             Some("/tmp/research")

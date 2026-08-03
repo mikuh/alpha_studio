@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "skills:encode": "node scripts/encode-skills.mjs",
+    "skills:release": "node scripts/build-skill-release.mjs",
     "skills:test": "node --test scripts/encode-skills.tests.mjs",
     "predev": "npm run skills:encode",
     "dev": "vite",
