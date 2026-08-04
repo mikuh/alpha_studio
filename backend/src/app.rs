@@ -1,15 +1,22 @@
+use std::time::Instant;
+
 use axum::{
-    http::{header, HeaderName, HeaderValue, Method},
+    body::Body,
+    extract::{Request, State},
+    http::{header, HeaderName, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
-    Router,
+    Json, Router,
 };
+use serde_json::json;
 use tower_http::{
     compression::CompressionLayer,
     cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
 };
 
-use crate::{routes, skill_registry, state::AppState};
+use crate::{observability, routes, skill_registry, state::AppState};
 
 pub fn build_router(state: AppState) -> Router {
     let allowed_origins = state
@@ -37,9 +44,11 @@ pub fn build_router(state: AppState) -> Router {
             HeaderName::from_static("x-alpha-device-id"),
             HeaderName::from_static("x-alpha-device-fingerprint"),
         ]);
+    let origin_guard_state = state.clone();
     Router::new()
         .route("/healthz", get(routes::healthz))
         .route("/readyz", get(routes::readyz))
+        .route("/metrics", get(observability::metrics))
         .route("/api/auth/login", post(routes::auth_login))
         .route("/api/client/bootstrap", get(routes::client_bootstrap))
         .route("/api/market/snapshot", get(routes::market_snapshot))
@@ -77,6 +86,18 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/admin/tenants/:id/billing",
             get(routes::admin_tenant_billing),
+        )
+        .route(
+            "/api/admin/tenants/:id/offline-payments",
+            post(routes::admin_record_offline_payment),
+        )
+        .route(
+            "/api/admin/offline-payments/:id/correct",
+            post(routes::admin_correct_offline_payment),
+        )
+        .route(
+            "/api/admin/billing/reconciliation",
+            get(routes::admin_billing_reconciliation),
         )
         .route(
             "/api/admin/authorization-codes",
@@ -144,8 +165,81 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/responses", post(routes::gateway_responses))
         .route("/v1/models", get(routes::gateway_models))
-        .with_state(state)
+        .with_state(state.clone())
         .layer(CompressionLayer::new())
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        .layer(middleware::from_fn_with_state(
+            origin_guard_state,
+            reject_untrusted_browser_origin,
+        ))
+        .layer(middleware::from_fn_with_state(state, observe_request))
+}
+
+async fn observe_request(
+    State(state): State<AppState>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
+    let started = Instant::now();
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.len() <= 128 && value.is_ascii())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        request
+            .headers_mut()
+            .insert(HeaderName::from_static("x-request-id"), value);
+    }
+
+    state.http_metrics.start_request();
+    let mut response = next.run(request).await;
+    let status = response.status();
+    let elapsed = started.elapsed();
+    state.http_metrics.finish_request(status.as_u16(), elapsed);
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static("x-request-id"), value);
+    }
+    tracing::info!(
+        request_id = %request_id,
+        method = %method,
+        path = %path,
+        status = status.as_u16(),
+        duration_ms = elapsed.as_secs_f64() * 1000.0,
+        "http request completed"
+    );
+    response
+}
+
+async fn reject_untrusted_browser_origin(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if let Some(origin) = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    {
+        let allowed = state
+            .config
+            .cors_allowed_origins
+            .iter()
+            .any(|candidate| candidate == origin);
+        if !allowed {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": { "message": "origin is not allowed" } })),
+            )
+                .into_response();
+        }
+    }
+    next.run(request).await
 }

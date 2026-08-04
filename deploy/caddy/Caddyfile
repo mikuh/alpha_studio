@@ -13,6 +13,12 @@
 
   redir / /admin/ 302
 
+  # Prometheus should scrape the API container over the private network.
+  # Never publish operational metrics through the customer-facing proxy.
+  handle /metrics {
+    respond 404
+  }
+
   handle /api/* {
     reverse_proxy api:8080
   }

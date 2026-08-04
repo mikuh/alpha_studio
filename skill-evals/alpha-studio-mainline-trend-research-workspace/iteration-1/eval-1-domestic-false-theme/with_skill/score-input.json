@@ -1,0 +1,32 @@
+{
+  "as_of": "2026-08-04T08:30:00+08:00",
+  "tracks": [
+    {
+      "name": "电网设备",
+      "pricing_scope": "domestic",
+      "pillars": {
+        "policy": {"strength": 4, "marginal": 1, "confidence": 0.9},
+        "directed_credit": {"strength": 5, "marginal": 1, "confidence": 0.9},
+        "long_term_capital": {"strength": 2, "marginal": null, "confidence": 0.6}
+      }
+    },
+    {
+      "name": "低空经济",
+      "pricing_scope": "domestic",
+      "pillars": {
+        "policy": {"strength": 3, "marginal": 1, "confidence": 0.75},
+        "directed_credit": {"strength": 0, "marginal": null, "confidence": 0.9},
+        "long_term_capital": {"strength": 0, "marginal": null, "confidence": 0.9}
+      }
+    },
+    {
+      "name": "创新药",
+      "pricing_scope": "domestic",
+      "pillars": {
+        "policy": {"strength": 4, "marginal": 1, "confidence": 0.9},
+        "directed_credit": {"strength": 3, "marginal": 1, "confidence": 0.8},
+        "long_term_capital": {"strength": 4, "marginal": 1, "confidence": 0.85}
+      }
+    }
+  ]
+}

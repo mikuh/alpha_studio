@@ -1,0 +1,119 @@
+{
+  "expectations": [
+    {
+      "text": "报告显著包含今日主线结论、主线重仓权限、伪题材过滤和最大证据缺口",
+      "passed": true,
+      "evidence": "report.html 首页用三张优先级卡和“早报结论”给出当日主线判断，第6页实质完成低空经济伪题材过滤，第7页给出重仓权限矩阵，第8页列出全局及逐主题最大证据缺口。"
+    },
+    {
+      "text": "本土赛道海外景气显示N/A且不计分不扣分",
+      "passed": false,
+      "evidence": "报告与台账均未设置海外景气支柱或海外开关，也未显示N/A（不计分、不扣分）；其自定义第四柱是“市场结构”。技能自带验证器因此报错“missing HTML marker: 海外产业景气”和“report must show an overseas gate decision”。"
+    },
+    {
+      "text": "只有政策和涨停热度的低空经济被标记为单因子脉冲并禁止重仓",
+      "passed": false,
+      "evidence": "禁止重仓部分有充分证据：报告给出L0观察、0%且台账 heavy_allowed=false；但报告和台账都没有将其状态标记为“单因子脉冲”，台账只有 high false-theme risk 与 price_surge_only，因此该合取断言未被完整满足。"
+    },
+    {
+      "text": "定向信贷与长线资金被分开核验，单日市场资金流不替代任何硬支柱",
+      "passed": true,
+      "evidence": "report.html 将P2产业落地/项目资金与P3长线机构资金分列；对低空经济即使P4涨停热度记2.0，仍把P2和P3均记0，并明确“不能从涨停潮推断机构参与”及“弱P1 + 短线P4不能替代P2”。台账也独立保存P2/P3评估。"
+    },
+    {
+      "text": "HTML含8至12个A4 page区块",
+      "passed": true,
+      "evidence": "程序计数得到8个 section.page，页面内联样式设置@page size:A4，并将.page设置为210mm×297mm。"
+    },
+    {
+      "text": "机器台账使用有效alpha.mainline_trend.v1结构，并与报告的状态和权限一致",
+      "passed": false,
+      "evidence": "台账虽与本报告自定义的L0/L2/L3权限大体一致，但顶层是 schema_version=1.0.0-test 和 themes，而非 schema=alpha.mainline_trend.v1 与 mainlines；技能自带验证器报错“tracking schema must be alpha.mainline_trend.v1”及多项必填字段缺失。"
+    },
+    {
+      "text": "仅有单期长线持仓且执行检查缺失的电网设备不得获得可立即执行的重仓权限",
+      "passed": false,
+      "evidence": "报告承认电网设备仅有单期公募持仓、市场结构未知，却授予“L3 有条件重仓”、60%主题预算上限，并写明“可开启重仓”“建立主仓”；台账也设置 heavy_allowed=true，违反该权限约束。"
+    },
+    {
+      "text": "所有假设证据在报告和台账中标记为测试数据，且没有伪造外部引用",
+      "passed": true,
+      "evidence": "报告各页带“测试假设数据 · 禁止外推”水印，具体证据使用“测试假设”标签并声明未联网补数；台账9条 evidence_registry 记录全部 test_data=true、source_kind=user_test_assumption、external_reference=null。报告与台账均无HTTP(S)链接。"
+    }
+  ],
+  "summary": {
+    "passed": 4,
+    "failed": 4,
+    "total": 8,
+    "pass_rate": 0.5
+  },
+  "execution_metrics": {
+    "executor_reported": {
+      "evaluation_id": "eval-1-domestic-false-theme-without-skill",
+      "test_only": true,
+      "status": "validated",
+      "deliverables": {
+        "required": 4,
+        "present": 4,
+        "missing": 0
+      },
+      "report": {
+        "declared_format": "HTML",
+        "a4_page_sections_expected": 8,
+        "a4_page_sections_found": 8,
+        "external_assets": 0,
+        "external_citations": 0
+      },
+      "ledger": {
+        "themes": 3,
+        "pillars": 4,
+        "evidence_records": 9,
+        "all_evidence_marked_test_data": true,
+        "all_external_references_null": true
+      }
+    },
+    "output_chars": 36707,
+    "transcript_chars": 1400
+  },
+  "claims": [
+    {
+      "claim": "The report contains eight page containers.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "Counted 8 section elements with class page, matching the reported page count."
+    },
+    {
+      "claim": "All nine evidence records are explicitly test data with null external references.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "The ledger contains 9 evidence_registry entries; each has test_data=true and external_reference=null."
+    },
+    {
+      "claim": "The run is validated as a complete requested mainline report and machine ledger.",
+      "type": "quality",
+      "verified": false,
+      "evidence": "Although metrics.json reports status=validated and JSON parsing succeeds, the required validator rejects the missing overseas decision and the non-alpha.mainline_trend.v1 ledger schema."
+    },
+    {
+      "claim": "Low-altitude economy is filtered out of heavy-position eligibility.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The report assigns L0 observation and 0%; the ledger sets heavy_allowed=false and false_theme_filter.passed=false."
+    },
+    {
+      "claim": "No web completion or external citation was used.",
+      "type": "process",
+      "verified": true,
+      "evidence": "The transcript states no networking or external fact completion; report and ledger contain zero HTTP(S) URLs and all external_reference values are null."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [],
+    "overall": "更新后的断言成功把基线的页数通过与schema失败分开，并直接捕获电网设备过早开放重仓权限的问题；当前评测覆盖充分。"
+  }
+}

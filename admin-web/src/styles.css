@@ -634,6 +634,86 @@ nav button.active::before {
   min-width: 0;
 }
 
+.current-skill-release-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  padding: 18px;
+}
+
+.current-skill-release-card {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  padding: 16px;
+}
+
+.current-skill-release-head,
+.current-skill-release-head > div {
+  display: flex;
+  align-items: center;
+}
+
+.current-skill-release-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.current-skill-release-head > div {
+  min-width: 0;
+  gap: 10px;
+}
+
+.current-skill-release-head > div > strong {
+  color: var(--text-1);
+  font-size: 15px;
+  text-transform: uppercase;
+}
+
+.current-skill-release-head > div > span,
+.current-skill-release-meta span,
+.current-skill-list-missing {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.current-skill-release-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.current-skill-release-meta strong {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.current-skill-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.current-skill-list code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  border: 1px solid #dce3f1;
+  border-radius: 6px;
+  background: #fff;
+  color: #40506c;
+  font-size: 11.5px;
+  padding: 7px 9px;
+}
+
+.current-skill-list-missing {
+  display: block;
+  margin-top: 12px;
+}
+
 .skill-upload-form {
   display: grid;
   grid-template-columns: minmax(280px, 1fr) minmax(220px, 0.7fr) auto;
@@ -1608,6 +1688,90 @@ tr.selected-row td:first-child {
   padding: 14px 18px;
 }
 
+.form-hint {
+  grid-column: 1 / -1;
+  border: 1px solid #dbe4f5;
+  border-radius: 8px;
+  background: #f7f9ff;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 12px;
+}
+
+.reconciliation-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  border-bottom: 1px solid var(--border);
+  background: var(--border);
+}
+
+.reconciliation-strip > span {
+  display: grid;
+  gap: 5px;
+  background: var(--surface-2);
+  color: var(--text-1);
+  font-size: 13px;
+  padding: 12px 18px;
+}
+
+.reconciliation-strip strong {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.reconciliation-strip.warning > span:first-child {
+  background: var(--danger-soft);
+  color: var(--danger-strong);
+}
+
+.reconciliation-strip.balanced > span:first-child {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.offline-payment-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  padding: 16px 18px;
+}
+
+.offline-payment-form label,
+.offline-correction-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.offline-payment-table {
+  min-width: 920px;
+}
+
+.offline-correction-form {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  background: var(--danger-soft);
+  padding: 14px 18px;
+}
+
+.offline-correction-form .form-actions {
+  padding: 0;
+}
+
+.offline-correction-form small {
+  grid-column: 1 / -1;
+  color: var(--danger-strong);
+}
+
 .usage-model-table {
   min-width: 860px;
 }
@@ -2076,8 +2240,22 @@ code {
     flex-direction: column;
   }
 
+  .offline-payment-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .reconciliation-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .usage-tenant-select {
     width: 100%;
+  }
+
+  .offline-payment-form,
+  .offline-correction-form,
+  .reconciliation-strip {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -2122,6 +2300,17 @@ code {
 
   .skill-security-note {
     flex-direction: column;
+  }
+
+  .current-skill-release-grid,
+  .current-skill-list {
+    grid-template-columns: 1fr;
+  }
+
+  .current-skill-release-meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .content > header {

@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 
 const USER_AGENT: &str = "AlphaStudio/0.1 JQDataHttp";
 const REQUEST_TIMEOUT_SECONDS: u64 = 65;
+type JqDataPayload = (Map<String, Value>, String, Option<usize>);
 
 #[derive(Clone, Debug)]
 struct CachedToken {
@@ -515,10 +516,7 @@ fn is_expired_token_response(text: &str) -> bool {
     lower.contains("invalid token") || lower.contains("token expired")
 }
 
-fn build_payload(
-    method: &str,
-    params: &Map<String, Value>,
-) -> Result<(Map<String, Value>, String, Option<usize>), String> {
+fn build_payload(method: &str, params: &Map<String, Value>) -> Result<JqDataPayload, String> {
     let supported = [
         "get_query_count",
         "get_trade_days",

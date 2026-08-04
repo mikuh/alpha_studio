@@ -57,7 +57,7 @@ Rust API/model gateway, Postgres, Redis, the internal admin web app, and Caddy:
 cp .env.example .env
 docker compose build
 docker compose up -d postgres redis
-docker compose run --rm api migrate
+docker compose run --rm api alpha-studio-backend migrate
 docker compose up -d
 ```
 
@@ -70,9 +70,20 @@ open http://localhost/admin/
 ```
 
 Keep deployment secrets such as `JWT_SECRET`, `RUN_TOKEN_SECRET`,
-`AUTHORIZATION_CODE_ENCRYPTION_KEY`, and `ADMIN_PASSWORD` in `.env` on the server; `.env` is intentionally ignored by
-git. Upstream model provider keys are configured inside `/admin` under the
-model gateway section, not through environment variables.
+`AUTHORIZATION_CODE_ENCRYPTION_KEY`, `ADMIN_PASSWORD`, and `ADMIN_TOTP_SECRET`
+outside source control. `.env` is intentionally ignored by git. Generate the
+Base32 TOTP secret with a cryptographically secure generator, enroll it in the
+administrator's authenticator, and enter the current six-digit code on every
+admin login. Five failed login attempts within 15 minutes lock the account for
+15 minutes; successful admin JWTs expire after two hours.
+
+Upstream model provider keys are configured inside `/admin`. They are encrypted
+with AES-256-GCM using a dedicated deployment KMS master key before being stored
+in PostgreSQL; legacy plaintext rows are migrated and cleared automatically at
+backend startup. Development may set `PROVIDER_KMS_MASTER_KEY` directly. With
+`APP_ENV=production`, the backend requires `PROVIDER_KMS_MASTER_KEY_FILE` so the
+key can be mounted from the production KMS/secret manager instead of living in
+the environment or database.
 `MIN_GATEWAY_MARKUP_BPS` defaults to `500` (5%) and blocks enabled pay-as-you-go
 routes whose markup is below that deployment-level safety floor.
 
@@ -84,11 +95,21 @@ routes require a short-lived, model-bound, single-use run token. Existing
 desktop activation sessions created before this authentication hardening must
 be activated once again to receive a device token.
 Browser cross-origin access is restricted to the explicit
-`CORS_ALLOWED_ORIGINS` list; wildcard origins are rejected at startup.
+`CORS_ALLOWED_ORIGINS` list; wildcard origins are rejected at startup and a
+request carrying an unlisted `Origin` is rejected before route handling. In
+production the API base URL must use HTTPS, loopback development origins are
+rejected, and the CORS list must be supplied explicitly.
+
+On desktop, JQData passwords and custom model API keys are stored in the native
+OS credential vault (macOS Keychain, Windows Credential Manager, or Linux Secret
+Service). Existing plaintext JSON values are moved on first load and then
+removed from the local configuration file. The Tauri webview uses an explicit
+CSP, has no asset-protocol filesystem scope, and opens/reveals files only
+through the validated Rust commands.
 
 The admin app now covers the commercial operating loop:
 
-- create and update customer tenants, balances, subscription dates, and machine limits
+- create and update customer tenants, subscription dates, and machine limits; balances change only through immutable usage and offline-receipt ledger records
 - generate customer authorization codes for first-device activation by company name
 - configure provider presets, upstream protocols/auth, discover models, and manage aliases, prices, and markup
 - assign GPT subscription accounts to customers for monthly or yearly subscription access
@@ -101,6 +122,13 @@ OpenAI-compatible provider configuration.
 
 See [Managed Skill releases](./docs/managed-skills.md) for the protected build,
 admin publishing, client synchronization, offline fallback, and rollback flow.
+
+Customer and operator references:
+
+- [Customer guide](./docs/customer-guide.md)
+- [Release checklist](./docs/operations/release-checklist.md)
+- [Database backup and restore](./docs/operations/database-backup-and-restore.md)
+- [Monitoring and incident response](./docs/operations/monitoring-and-incidents.md)
 
 ### Cloud market data
 

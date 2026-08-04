@@ -155,3 +155,6 @@ src-tauri/target/
 
 # Generated upload artifacts for the managed Skill registry
 .alpha-releases/
+
+# Local database backup artifacts
+backups/

@@ -687,6 +687,8 @@ mod tests {
     use crate::skill_codec::encode_asx_for_test;
     use serde_json::json;
 
+    type FixtureSkill<'a> = (&'a str, Vec<(&'a str, &'a [u8])>);
+
     fn fixture_name(suffix: &str) -> String {
         format!("{RESERVED_SKILL_PREFIX}fixture-{suffix}")
     }
@@ -701,7 +703,7 @@ mod tests {
         .unwrap();
     }
 
-    fn write_fixture_bundle(root: &Path, skills: &[(&str, Vec<(&str, &[u8])>)]) {
+    fn write_fixture_bundle(root: &Path, skills: &[FixtureSkill<'_>]) {
         fs::create_dir_all(root).unwrap();
         let mut manifest_skills = Vec::new();
         let mut total_files = 0;

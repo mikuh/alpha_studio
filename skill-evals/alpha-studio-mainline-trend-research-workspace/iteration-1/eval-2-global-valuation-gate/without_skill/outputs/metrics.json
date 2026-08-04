@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "run_id": "eval-2-global-valuation-gate-without-skill",
+  "deliverables": {
+    "report_html": true,
+    "machine_ledger": true,
+    "metrics_json": true,
+    "transcript": true
+  },
+  "scope_checks": {
+    "internet_used": false,
+    "external_references_count": 0,
+    "input_files_count": 0,
+    "tracks_covered": 3,
+    "all_evidence_marked_test_data": true,
+    "real_market_claims_made": false,
+    "numeric_probabilities_invented": false,
+    "position_percentages_invented": false
+  },
+  "content_checks": {
+    "overseas_cycle_switch_explained": true,
+    "resonance_state_explained_for_all_tracks": true,
+    "non_additivity_explained": true,
+    "heavy_position_conditions_explained": true,
+    "valuation_fail_used_as_hard_veto": true,
+    "global_and_local_pricing_distinguished": true,
+    "unknown_data_preserved_as_unknown": true
+  },
+  "report_design": {
+    "target_print_pages": 2,
+    "self_contained_html": true,
+    "external_assets": false,
+    "external_scripts": false,
+    "screenshots_created": false
+  },
+  "decision_summary": {
+    "heavy_position_allowed_count": 0,
+    "overseas_switch_on_count": 2,
+    "overseas_switch_not_applicable_count": 1,
+    "hard_gate_failure_count": 1,
+    "partial_resonance_count": 1,
+    "divergent_resonance_count": 1
+  }
+}

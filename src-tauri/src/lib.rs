@@ -22,6 +22,7 @@ use tokio::sync::{oneshot, Mutex};
 
 mod builtin_skills;
 mod jqdata_http;
+mod keychain;
 mod local_store;
 mod managed_skills;
 mod skill_codec;
@@ -251,6 +252,7 @@ pub struct JqDataConfigFile {
     #[serde(default)]
     username: String,
     #[serde(default)]
+    #[serde(skip_serializing)]
     password: String,
     #[serde(default = "default_jqdata_api_url")]
     api_url: String,
@@ -815,11 +817,32 @@ async fn model_config_load() -> Result<ModelConfigLoadResult, String> {
         });
     }
 
-    let text =
-        fs::read_to_string(&path).map_err(|e| format!("Failed to read model config: {e}"))?;
-    let mut config: ModelConfigLoadResult =
-        serde_json::from_str(&text).map_err(|e| format!("Failed to parse model config: {e}"))?;
+    let mut config = read_model_config_file(&path)?;
+    let mut migrated_plaintext = false;
+    for profile in &mut config.model_profiles {
+        let account = keychain::model_provider_account(&profile.id);
+        let legacy_secret = profile
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        profile.api_key = if let Some(secret) = legacy_secret {
+            keychain::set_secret(account, secret.clone()).await?;
+            migrated_plaintext = true;
+            Some(secret)
+        } else {
+            keychain::get_secret(account).await?
+        };
+    }
     config.path = path.to_string_lossy().to_string();
+    if migrated_plaintext {
+        let mut sanitized = config.clone();
+        for profile in &mut sanitized.model_profiles {
+            profile.api_key = None;
+        }
+        write_model_config_file(&path, &sanitized)?;
+    }
     Ok(config)
 }
 
@@ -828,20 +851,43 @@ async fn model_config_save(
     request: ModelConfigSaveRequest,
 ) -> Result<ModelConfigSaveResult, String> {
     let path = model_config_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create model config directory: {e}"))?;
+    let existing_ids = read_model_config_file(&path)
+        .map(|config| {
+            config
+                .model_profiles
+                .into_iter()
+                .map(|profile| profile.id)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let retained_ids = request
+        .model_profiles
+        .iter()
+        .map(|profile| profile.id.clone())
+        .collect::<HashSet<_>>();
+    for removed_id in existing_ids.difference(&retained_ids) {
+        keychain::delete_secret(keychain::model_provider_account(removed_id)).await?;
     }
-    let config = ModelConfigLoadResult {
+    for profile in &request.model_profiles {
+        if let Some(secret) = profile
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            keychain::set_secret(keychain::model_provider_account(&profile.id), secret).await?;
+        }
+    }
+    let mut config = ModelConfigLoadResult {
         version: 1,
         selected_model_profile_id: request.selected_model_profile_id,
         model_profiles: request.model_profiles,
         path: path.to_string_lossy().to_string(),
     };
-    let text = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to encode model config: {e}"))?;
-    fs::write(&path, format!("{text}\n"))
-        .map_err(|e| format!("Failed to write model config: {e}"))?;
+    for profile in &mut config.model_profiles {
+        profile.api_key = None;
+    }
+    write_model_config_file(&path, &config)?;
     Ok(ModelConfigSaveResult {
         path: path.to_string_lossy().to_string(),
     })
@@ -887,10 +933,7 @@ async fn jqdata_config_load() -> Result<JqDataConfigLoadResult, String> {
         return Ok(jqdata_config_load_result(JqDataConfigFile::default(), path));
     }
 
-    let text =
-        fs::read_to_string(&path).map_err(|e| format!("Failed to read JQData config: {e}"))?;
-    let config: JqDataConfigFile =
-        serde_json::from_str(&text).map_err(|e| format!("Failed to parse JQData config: {e}"))?;
+    let config = read_jqdata_config_secure(&path).await?;
     Ok(jqdata_config_load_result(config, path))
 }
 
@@ -900,7 +943,11 @@ async fn jqdata_config_save(
     request: JqDataConfigSaveRequest,
 ) -> Result<JqDataConfigSaveResult, String> {
     let path = jqdata_config_path()?;
-    let existing = read_jqdata_config_file(&path).unwrap_or_default();
+    let existing = if path.exists() {
+        read_jqdata_config_secure(&path).await?
+    } else {
+        JqDataConfigFile::default()
+    };
     let password = request
         .password
         .as_deref()
@@ -908,6 +955,9 @@ async fn jqdata_config_save(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .unwrap_or(existing.password);
+    if !password.trim().is_empty() {
+        keychain::set_secret(keychain::JQDATA_PASSWORD_ACCOUNT, password.clone()).await?;
+    }
     let api_url = request
         .api_url
         .as_deref()
@@ -943,7 +993,7 @@ async fn jqdata_test_connection(
     state: State<'_, JqDataQueryState>,
 ) -> Result<JqDataProbeResult, String> {
     let path = jqdata_config_path()?;
-    let config = read_jqdata_config_file(&path)?;
+    let config = read_jqdata_config_secure(&path).await?;
     if !config.enabled {
         return Ok(JqDataProbeResult {
             ok: false,
@@ -970,10 +1020,7 @@ async fn jqdata_query(
     request: JqDataQueryRequest,
 ) -> Result<JqDataQueryResult, String> {
     let path = jqdata_config_path()?;
-    let config = match read_jqdata_config_file(&path) {
-        Ok(config) => config,
-        Err(_) => JqDataConfigFile::default(),
-    };
+    let config: JqDataConfigFile = read_jqdata_config_secure(&path).await.unwrap_or_default();
     if !config.enabled || config.username.trim().is_empty() || config.password.trim().is_empty() {
         return Ok(JqDataQueryResult {
             ok: false,
@@ -1320,10 +1367,10 @@ impl CodexDriver {
         // 1. Handshake.
         initialize_codex_app_server(stdin, reader).await?;
         self.register_skill_roots(stdin, reader).await?;
-        let native_skill = match self.resolve_selected_skill(stdin, reader).await {
-            Ok(skill) => skill,
-            Err(_) => None,
-        };
+        let native_skill: Option<NativeSkillInput> = self
+            .resolve_selected_skill(stdin, reader)
+            .await
+            .unwrap_or_default();
 
         // 2. Start a fresh thread, or resume the conversation's existing one.
         let mut thread_params = Map::new();
@@ -1441,10 +1488,8 @@ impl CodexDriver {
                 ) {
                     emit_event(&self.app, chat_event);
                 }
-                if method == "error" {
-                    if !is_retryable_app_server_error(params) {
-                        return Ok(());
-                    }
+                if method == "error" && !is_retryable_app_server_error(params) {
+                    return Ok(());
                 }
             } else if message.get("id").is_some() {
                 if let Some(error) = message.get("error") {
@@ -2251,11 +2296,11 @@ end run"#;
             return Ok(());
         }
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
+        Err(if stderr.is_empty() {
             "Failed to copy file to clipboard.".to_string()
         } else {
             stderr
-        });
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -2268,6 +2313,28 @@ end run"#;
 async fn open_external_target(request: OpenExternalTargetRequest) -> Result<(), String> {
     let target = validate_external_target(&request.target)?;
     open_target_with_system(&target).await
+}
+
+#[tauri::command]
+async fn reveal_local_path(request: LocalFileExistsRequest) -> Result<(), String> {
+    let path = validate_open_path(&request.path)?;
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("open")
+            .args(["-R", path])
+            .output()
+            .await
+            .map_err(|error| format!("Failed to reveal local path: {error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(command_failure_summary(&output.stdout, &output.stderr))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Err("Revealing local paths is only supported on macOS in this build.".to_string())
+    }
 }
 
 #[tauri::command]
@@ -3159,7 +3226,7 @@ async fn open_path_with_system(path: &Path) -> Result<(), String> {
         if output.status.success() {
             return Ok(());
         }
-        return Err(command_failure_summary(&output.stdout, &output.stderr));
+        Err(command_failure_summary(&output.stdout, &output.stderr))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -3179,7 +3246,7 @@ async fn open_target_with_system(target: &str) -> Result<(), String> {
         if output.status.success() {
             return Ok(());
         }
-        return Err(command_failure_summary(&output.stdout, &output.stderr));
+        Err(command_failure_summary(&output.stdout, &output.stderr))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -3906,6 +3973,21 @@ fn model_config_path() -> Result<PathBuf, String> {
         .join("model-providers.json"))
 }
 
+fn read_model_config_file(path: &Path) -> Result<ModelConfigLoadResult, String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("Failed to read model config: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("Failed to parse model config: {e}"))
+}
+
+fn write_model_config_file(path: &Path, config: &ModelConfigLoadResult) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create model config directory: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to encode model config: {e}"))?;
+    fs::write(path, format!("{text}\n")).map_err(|e| format!("Failed to write model config: {e}"))
+}
+
 fn jqdata_config_path() -> Result<PathBuf, String> {
     let home = home_dir().ok_or_else(|| "Cannot resolve home directory.".to_string())?;
     Ok(Path::new(&home)
@@ -3917,6 +3999,21 @@ fn read_jqdata_config_file(path: &Path) -> Result<JqDataConfigFile, String> {
     let text =
         fs::read_to_string(path).map_err(|e| format!("Failed to read JQData config: {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("Failed to parse JQData config: {e}"))
+}
+
+async fn read_jqdata_config_secure(path: &Path) -> Result<JqDataConfigFile, String> {
+    let mut config = read_jqdata_config_file(path)?;
+    let legacy_password = config.password.trim().to_string();
+    if !legacy_password.is_empty() {
+        keychain::set_secret(keychain::JQDATA_PASSWORD_ACCOUNT, legacy_password.clone()).await?;
+        config.password = legacy_password;
+        write_jqdata_config_file(path, &config)?;
+    } else {
+        config.password = keychain::get_secret(keychain::JQDATA_PASSWORD_ACCOUNT)
+            .await?
+            .unwrap_or_default();
+    }
+    Ok(config)
 }
 
 fn write_jqdata_config_file(path: &Path, config: &JqDataConfigFile) -> Result<(), String> {
@@ -4520,7 +4617,7 @@ async fn write_adapter_http_response(
         response.status,
         status_text,
         response.content_type,
-        response.body.as_bytes().len()
+        response.body.len()
     );
     stream
         .write_all(head.as_bytes())
@@ -5420,7 +5517,7 @@ fn push_response_function_call_events(
 fn push_sse_event(buffer: &mut String, event: &str, data: &Value) {
     buffer.push_str("event: ");
     buffer.push_str(event);
-    buffer.push_str("\n");
+    buffer.push('\n');
     buffer.push_str("data: ");
     buffer.push_str(&data.to_string());
     buffer.push_str("\n\n");
@@ -6057,8 +6154,7 @@ fn validate_external_target(target: &str) -> Result<String, String> {
         return Ok(target.to_string());
     }
     let lower = target.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("file://")
-    {
+    if lower.starts_with("http://") || lower.starts_with("https://") {
         return Ok(target.to_string());
     }
     Err("Unsupported external target.".to_string())
@@ -6998,8 +7094,7 @@ fn normalized_item_type(item: &Value) -> String {
     item.get("type")
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .replace('_', "")
-        .replace('-', "")
+        .replace(['_', '-'], "")
         .to_lowercase()
 }
 
@@ -7164,7 +7259,6 @@ fn event(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
         .manage(CodexProcessState::default())
         .manage(TerminalState::default())
         .manage(JqDataQueryState::default())
@@ -7199,6 +7293,7 @@ pub fn run() {
             open_in_app,
             copy_file_to_clipboard,
             open_external_target,
+            reveal_local_path,
             local_image_data_url,
             local_file_exists,
             local_text_file_read,
@@ -9035,7 +9130,7 @@ mod tests {
                 .map(String::as_str),
             Some("conv one reasoning")
         );
-        assert!(adapter_reasoning_snapshot(&second).get("call_1").is_none());
+        assert!(!adapter_reasoning_snapshot(&second).contains_key("call_1"));
     }
 
     #[test]

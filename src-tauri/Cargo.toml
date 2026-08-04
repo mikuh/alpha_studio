@@ -16,9 +16,8 @@ tauri-build = { version = "2", features = [] }
 aes-gcm = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["protocol-asset", "macos-private-api", "unstable"] }
+tauri = { version = "2", features = ["macos-private-api", "unstable"] }
 tauri-plugin-dialog = "2"
-tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["full"] }
 portable-pty = "0.9"
 base64 = "0.22"
@@ -26,6 +25,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 csv = "1"
+keyring = "4.1.6"
 sha2 = "0.10"
 
 [target."cfg(target_os = \"macos\")".dependencies]

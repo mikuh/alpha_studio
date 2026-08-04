@@ -11,9 +11,20 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
-        .init();
+    let env_filter = EnvFilter::from_default_env().add_directive("info".parse()?);
+    if std::env::var("LOG_FORMAT")
+        .map(|value| value.eq_ignore_ascii_case("json"))
+        .unwrap_or(false)
+    {
+        tracing_subscriber::fmt()
+            .json()
+            .with_current_span(false)
+            .with_span_list(false)
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    }
 
     let config = AppConfig::from_env()?;
     let command = std::env::args().nth(1);
@@ -70,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
     let bind_addr = config.bind_addr;
     let redis = db::redis_client(&config);
     let state = AppState::new(config, pool, redis);
+    state.migrate_legacy_managed_secrets().await?;
     state.start_market_feed();
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;

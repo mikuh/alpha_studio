@@ -15,5 +15,19 @@ export default defineConfig({
       : process.env.TAURI_PLATFORM
         ? 'safari13'
         : 'es2020',
+    chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('pdfjs-dist')) return 'pdf';
+          if (id.includes('@xterm')) return 'terminal';
+          if (id.includes('react-markdown') || id.includes('remark-') || id.includes('micromark') || id.includes('mdast') || id.includes('hast') || id.includes('unified')) return 'markdown';
+          if (id.includes('lightweight-charts') || id.includes('d3-')) return 'charts';
+          if (/node_modules\/(react|react-dom|scheduler|zustand|lucide-react)\//.test(id)) return 'ui-vendor';
+          return undefined;
+        },
+      },
+    },
   },
 });

@@ -133,6 +133,26 @@ const codexAccounts = [
 
 const skillReleases = [
   {
+    id: 'skillrel_current',
+    version: '1.2.4',
+    channel: 'stable',
+    status: 'published',
+    minClientVersion: '0.1.0',
+    releaseNotes: 'current fixture',
+    codecVersion: 1,
+    skillCount: 3,
+    encodedFileCount: 6,
+    manifestSummary: { skills: [
+      { skillName: 'alpha-studio-current-one' },
+      { skillName: 'alpha-studio-current-two' },
+      { skillName: 'alpha-studio-current-three' },
+    ] },
+    artifactSha256: 'b'.repeat(64),
+    artifactSize: 2048,
+    createdAt: '2026-07-03T00:00:00Z',
+    publishedAt: '2026-07-04T00:00:00Z',
+  },
+  {
     id: 'skillrel_alpha',
     version: '1.2.3',
     channel: 'stable',
@@ -272,6 +292,19 @@ describe('admin model gateway', () => {
       '/api/admin/skill-releases/skillrel_alpha/publish',
       expect.objectContaining({ method: 'POST' }),
     ));
+  });
+
+  it('shows the complete Skill list for every currently published channel', async () => {
+    await import('./main');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Skills 发行' }));
+    const currentReleases = await screen.findByRole('region', { name: '当前已发布 Skills' });
+
+    expect(within(currentReleases).getByText('当前版本 1.2.4')).toBeTruthy();
+    expect(within(currentReleases).getByText('3 个官方 Skills')).toBeTruthy();
+    expect(within(currentReleases).getByText('alpha-studio-current-one')).toBeTruthy();
+    expect(within(currentReleases).getByText('alpha-studio-current-two')).toBeTruthy();
+    expect(within(currentReleases).getByText('alpha-studio-current-three')).toBeTruthy();
   });
 
   it('assigns one GPT account to multiple customers', async () => {
@@ -449,6 +482,27 @@ describe('admin model gateway', () => {
     expect(await screen.findByText('usage charge 2')).toBeTruthy();
   });
 
+  it('records an already-received offline payment without exposing payment or refund actions', async () => {
+    await import('./main');
+    fireEvent.click(await screen.findByRole('button', { name: 'LLM 用量' }));
+
+    fireEvent.change(await screen.findByLabelText('实收金额 元'), { target: { value: '250.125001' } });
+    fireEvent.change(screen.getByLabelText('线下凭证号'), { target: { value: 'BANK-20260804-01' } });
+    fireEvent.click(screen.getByRole('button', { name: '登记已收款项' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/admin/tenants/tenant_alpha/offline-payments',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/offline-payments'));
+    expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
+      amountYuan: 250.125001,
+      reference: 'BANK-20260804-01',
+    });
+    expect(await screen.findByText('线下收款记录已登记；系统未发起任何支付')).toBeTruthy();
+    expect(screen.getByText('这里只记录已经在线下收到的款项，不发起支付、扣款或退款')).toBeTruthy();
+  });
+
   it('keeps the selected admin section in the url across reloads', async () => {
     window.history.replaceState({}, '', '/admin/tenants');
 
@@ -481,6 +535,28 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
     const page = new URL(path, 'https://admin.test').searchParams.get('page') === '2' ? 2 : 1;
     return jsonResponse(tenantBillingSummary(page));
   }
+  if (path === '/api/admin/billing/reconciliation') return jsonResponse({
+    balanced: true,
+    requiresReview: false,
+    generatedAt: '2026-08-04T08:00:00.000Z',
+    paymentCapability: 'offline-records-only',
+    tenants: [{
+      tenantId: 'tenant_alpha',
+      tenantName: 'Alpha Fund',
+      storedBalanceYuan: 1200,
+      ledgerBalanceYuan: 1200,
+      differenceYuan: 0,
+      openRuns: 0,
+      staleOpenRuns: 0,
+      failedRuns24h: 0,
+      usageEvents24h: 1,
+      totalTokens24h: 21000,
+      fallbackMeteredEvents24h: 0,
+      billableYuan24h: 3.25,
+      balanced: true,
+      requiresReview: false,
+    }],
+  });
   if (path === '/api/admin/authorization-codes' && method === 'POST') return jsonResponse({ authorizationCode: 'NEW-CODE-1234' });
   if (path === '/api/admin/authorization-codes') return jsonResponse({ authorizationCodes });
   if (path === '/api/admin/authorization-codes/auth_alpha/reveal' && method === 'POST') {
@@ -552,6 +628,7 @@ function tenantBillingSummary(page: number) {
         hasPrevious: page > 1,
         hasNext: page < 3,
       },
+      offlinePayments: [],
     },
   };
 }

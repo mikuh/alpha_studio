@@ -15281,6 +15281,233 @@ select {
   border-radius: 0;
 }
 
+/* Activation agreements */
+.license-card:not(.license-card-compact) {
+  width: min(620px, 100%);
+  margin: 56px 0 24px;
+}
+
+.license-consents {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  padding: 0;
+}
+
+.license-consents legend {
+  margin-left: 10px;
+  padding: 0 6px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.license-consent-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  padding: 11px 12px;
+}
+
+.license-consent-row:last-child {
+  border-bottom: 0;
+}
+
+.license-card .license-consent-row input[type="checkbox"] {
+  width: 16px;
+  min-height: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--text);
+}
+
+.license-card .license-consent-row label {
+  display: grid;
+  gap: 3px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.license-consent-row label small {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 450;
+  line-height: 1.45;
+}
+
+.license-consent-row > button {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 0 2px 8px;
+}
+
+.license-consent-row > button:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.license-local-data-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-left: 2px solid var(--success);
+  background: var(--bg-elev-1);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 9px 11px;
+}
+
+.license-local-data-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--success);
+}
+
+.legal-dialog-backdrop {
+  position: fixed;
+  z-index: 5000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.72);
+  padding: 24px;
+}
+
+.legal-dialog {
+  width: min(820px, 100%);
+  max-height: min(820px, calc(100dvh - 48px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.legal-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--border);
+  padding: 18px 20px;
+}
+
+.legal-dialog > header span {
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.legal-dialog > header h2 {
+  margin: 5px 0 0;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.legal-dialog > header button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.legal-dialog-content {
+  overflow: auto;
+  padding: 22px 24px 28px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.72;
+}
+
+.legal-dialog-content h1 {
+  display: none;
+}
+
+.legal-dialog-content h2 {
+  margin: 26px 0 8px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.legal-dialog-content h2:first-of-type {
+  margin-top: 0;
+}
+
+.legal-dialog-content p,
+.legal-dialog-content ul {
+  margin: 8px 0;
+}
+
+.legal-dialog-content li + li {
+  margin-top: 5px;
+}
+
+.legal-dialog-content code {
+  color: var(--text);
+}
+
+.legal-dialog > footer {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding: 12px 20px;
+}
+
+.legal-dialog > footer button {
+  min-width: 110px;
+  min-height: 36px;
+  border: 0;
+  background: var(--text);
+  color: var(--bg);
+  cursor: pointer;
+  font-weight: 750;
+}
+
+@media (max-width: 620px) {
+  .license-card:not(.license-card-compact) {
+    margin-top: 44px;
+    padding: 22px 18px;
+  }
+
+  .license-consent-row {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .license-consent-row > button {
+    grid-column: 2;
+    justify-self: start;
+    padding-left: 0;
+  }
+
+  .legal-dialog-backdrop {
+    padding: 10px;
+  }
+
+  .legal-dialog {
+    max-height: calc(100dvh - 20px);
+  }
+}
+
 @media (max-width: 720px) {
   .empty-intro,
   .empty-state > .composer-wrap,
@@ -20650,5 +20877,147 @@ details[open] > .event-summary,
   .stock-inline-mention,
   .stock-mention-card {
     transition: none;
+  }
+}
+
+.first-use-guide-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 14, 27, 0.62);
+  backdrop-filter: blur(8px);
+  padding: 24px;
+}
+
+.first-use-guide {
+  position: relative;
+  width: min(520px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel-bg);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
+  color: var(--text);
+  padding: 30px;
+}
+
+.first-use-guide-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-faint);
+}
+
+.first-use-guide-mark {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border-radius: 13px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.first-use-guide-kicker {
+  display: block;
+  margin-top: 22px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.first-use-guide h2 {
+  margin: 8px 0 12px;
+  font-size: 24px;
+}
+
+.first-use-guide > p {
+  min-height: 66px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.first-use-guide-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 11px 12px;
+}
+
+.first-use-guide-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.first-use-guide-progress {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-top: 24px;
+}
+
+.first-use-guide-progress span {
+  height: 3px;
+  border-radius: 99px;
+  background: var(--border);
+}
+
+.first-use-guide-progress span.active {
+  background: var(--accent);
+}
+
+.first-use-guide-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.first-use-guide-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 108px;
+}
+
+.lazy-panel-fallback {
+  display: flex;
+  min-height: 160px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .first-use-guide-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+
+  .first-use-guide {
+    border-radius: 18px 18px 0 0;
+    padding: 24px 20px max(20px, env(safe-area-inset-bottom));
   }
 }

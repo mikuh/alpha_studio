@@ -1,0 +1,38 @@
+{
+  "evaluation_id": "eval-1-domestic-false-theme-without-skill",
+  "test_only": true,
+  "status": "validated",
+  "deliverables": {
+    "required": 4,
+    "present": 4,
+    "missing": 0
+  },
+  "report": {
+    "declared_format": "HTML",
+    "a4_page_sections_expected": 8,
+    "a4_page_sections_found": 8,
+    "external_assets": 0,
+    "external_citations": 0
+  },
+  "ledger": {
+    "themes": 3,
+    "pillars": 4,
+    "evidence_records": 9,
+    "all_evidence_marked_test_data": true,
+    "all_external_references_null": true
+  },
+  "content_checks": {
+    "four_pillar_margin_table": true,
+    "false_theme_filter": true,
+    "heavy_position_permission": true,
+    "largest_evidence_gap": true,
+    "no_web_completion": true,
+    "no_investment_advice_claim": true
+  },
+  "validation": {
+    "json_parse_ok": true,
+    "html_has_doctype": true,
+    "html_page_count_ok": true,
+    "cross_file_permission_consistency": true
+  }
+}

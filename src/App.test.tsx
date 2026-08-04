@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { App } from './App';
 import { ALPHA_GATEWAY_PROVIDER_ID, clearClientLicenseSession, loadClientLicenseSession, saveClientLicenseSession } from './license';
 import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles, modelProfilesFromCodexCatalog } from './models';
@@ -479,8 +479,23 @@ describe('right feature panel', () => {
     expect(screen.queryByLabelText('设备名称')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('用户邮箱')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('用户名称')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('checkbox')).toHaveLength(4);
+    expect(screen.getByRole('button', { name: '激活并进入' })).toBeDisabled();
     expect(container.querySelector('.license-window-drag-region')).toHaveAttribute('data-tauri-drag-region');
     expect(container.querySelector('.app-shell')).not.toBeInTheDocument();
+  });
+
+  it('shows the full activation agreements before consent', async () => {
+    clearClientLicenseSession();
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(screen.getAllByRole('button', { name: '查看' })[0]);
+
+    expect(screen.getByRole('dialog', { name: 'Alpha Studio 软件许可及用户服务协议' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '2. 软件费与 Token 消耗费' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '我已阅读' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('keeps a fresh stored activation when the startup lease refresh fails', async () => {
@@ -526,6 +541,7 @@ describe('right feature panel', () => {
     const { container } = render(<App />);
     await user.type(screen.getByLabelText('公司名称'), 'Demo Fund');
     await user.type(screen.getByLabelText('授权码'), 'AS-TEST-CODE');
+    for (const checkbox of screen.getAllByRole('checkbox')) await user.click(checkbox);
     await user.click(screen.getByRole('button', { name: '激活并进入' }));
 
     await waitFor(() => expect(container.querySelector('.app-shell')).toBeInTheDocument());
@@ -3257,8 +3273,7 @@ describe('right feature panel', () => {
     const preview = within(container.querySelector('.message-list') as HTMLElement).getByRole('button', { name: /查看生成图片 猫图预览/ });
     const image = within(preview).getByAltText('猫图预览') as HTMLImageElement;
 
-    expect(convertFileSrc).toHaveBeenCalledWith('/Users/geb/.alpha-studio/codex-home/generated_images/cat.png');
-    expect(image.getAttribute('src')).toBe('asset://localhost//Users/geb/.alpha-studio/codex-home/generated_images/cat.png');
+    expect(image.getAttribute('src')).toBe('file:///Users/geb/.alpha-studio/codex-home/generated_images/cat.png');
 
     fireEvent.error(image);
 
@@ -3503,7 +3518,6 @@ describe('right feature panel', () => {
     expect(within(card).getByRole('button', { name: 'index.html 打开方式' })).toBeInTheDocument();
     await user.click(card);
 
-    await waitFor(() => expect(convertFileSrc).toHaveBeenCalledWith('/Users/geb/reports/daily-theme/index.html'));
     await waitFor(() => expect(container.querySelector('.browser-frame')).not.toBeNull());
     expect(screen.getByPlaceholderText('搜索或输入网址')).toHaveValue('/Users/geb/reports/daily-theme/index.html');
     const frame = container.querySelector('.browser-frame') as HTMLIFrameElement;
@@ -3577,7 +3591,6 @@ describe('right feature panel', () => {
     const { container } = render(<App />);
     await user.click(screen.getByRole('link', { name: /index\.html/ }));
 
-    await waitFor(() => expect(convertFileSrc).toHaveBeenCalledWith('/Users/geb/reports/daily-theme/index.html'));
     await waitFor(() => expect(container.querySelector('.browser-frame')).not.toBeNull());
     expect(screen.getByPlaceholderText('搜索或输入网址')).toHaveValue('/Users/geb/reports/daily-theme/index.html');
     const frame = container.querySelector('.browser-frame') as HTMLIFrameElement;

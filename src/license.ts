@@ -1,4 +1,5 @@
 import { defaultModelProfiles, publicModelLabel, type ModelProfile } from './models';
+import type { ClientAgreementAcceptance } from './legal';
 
 const SESSION_KEY = 'alpha:client-license-session';
 const DEVICE_FINGERPRINT_KEY = 'alpha:device-fingerprint';
@@ -85,6 +86,7 @@ export interface ClientActivateInput {
   fingerprint?: string;
   userEmail?: string;
   userName?: string;
+  agreementAcceptance: ClientAgreementAcceptance;
 }
 
 export interface GatewayRunConfig {
@@ -199,6 +201,7 @@ export async function activateClient(input: ClientActivateInput): Promise<Client
     deviceName: input.deviceName,
     userEmail: input.userEmail || undefined,
     userName: input.userName || undefined,
+    agreementAcceptance: input.agreementAcceptance,
   };
   const data = await alphaFetch<Omit<ClientLicenseSession, 'apiBaseUrl' | 'activatedAt'>>(
     apiBaseUrl,

@@ -12,7 +12,17 @@ System Skills are supplied by the Codex/plugin runtime. Personal and recommended
 2. Build an upload artifact:
 
    ```bash
+   cd /path/to/alpha_studio
    npm run skills:release -- --version=1.2.3 --channel=stable --min-client-version=0.1.0 --notes="release notes"
+   ```
+
+   Run this from the `alpha_studio` repository root (the directory containing
+   the root `package.json`). The script resolves and auto-discovers every
+   protected `skills/alpha-studio-*` directory, so do not pass a Skill folder.
+   From another working directory, use npm's prefix option instead:
+
+   ```bash
+   npm --prefix /path/to/alpha_studio run skills:release -- --version=1.2.3 --channel=stable --min-client-version=0.1.0 --notes="release notes"
    ```
 
    The generated file is written under `.alpha-releases/`, which is ignored by Git. Every contained Skill file is still an AES-256-GCM authenticated `.asx` payload whose authentication data binds it to its logical path.

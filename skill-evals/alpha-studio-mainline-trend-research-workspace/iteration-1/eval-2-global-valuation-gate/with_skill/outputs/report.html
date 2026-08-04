@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>全球定价赛道主线研究简报｜结构测试</title>
+  <link rel="stylesheet" href="./report-style.css">
+  <style>
+    .test-banner { margin-bottom: 4mm; padding: 3mm 4mm; border: 1px solid #d6b75a; background: #fff8df; color: #5f4c16; }
+    .mini-meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2mm; margin-bottom: 4mm; }
+    .mini-meta div { padding: 2.5mm; border: 1px solid var(--line); background: #f8fafc; }
+    .mini-meta span { display: block; color: var(--muted); font-size: 6.8pt; }
+    .mini-meta b { display: block; margin-top: .6mm; font-size: 8pt; }
+    .brief-title { margin: 0 0 3mm; font-size: 19pt; line-height: 1.12; }
+    .tight { margin-top: 2.8mm; }
+    .tight th, .tight td { padding: 1.5mm 1.4mm; }
+    .logic-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2mm; margin-top: 3mm; }
+    .logic-strip div { padding: 2.2mm; border-top: 2px solid var(--blue); background: var(--blue-soft); font-size: 7.2pt; }
+    .logic-strip b { display: block; margin-bottom: .5mm; }
+    .evidence-test { color: #806b2f; font-weight: 800; }
+    .permission-stop { color: var(--rust); font-weight: 850; }
+    ul { margin: 1.5mm 0 0; padding-left: 4.5mm; }
+    li { margin-bottom: .8mm; }
+  </style>
+</head>
+<body>
+  <section class="page compact overseas-gate-on">
+    <header><span>Alpha Studio Research · Structure Test</span><em>全球定价赛道主线研究简报</em></header>
+    <main>
+      <h1 class="brief-title">全球定价赛道主线研究简报</h1>
+      <div class="test-banner"><b>结构测试｜非真实市场报告</b>　全文只使用题设假设；所有事实性证据均标注“测试数据”。未联网、未补数、无外部引用。下述“确认”仅表示在测试假设成立时通过模型条件，不代表现实证据已经核验。</div>
+      <div class="mini-meta">
+        <div><span>测试日期</span><b>2026-08-04</b></div>
+        <div><span>生成时间</span><b>2026-08-04 00:25 CST</b></div>
+        <div><span>数据截止</span><b>题设测试快照</b></div>
+        <div><span>研究 / 边际窗口</span><b>20–60日 / 5–20日（模型口径）</b></div>
+      </div>
+
+      <div class="decision-grid">
+        <div class="decision primary"><span>今日主线结论</span><b>AI算力条件性主升共振；铜为单因子脉冲；国产软件为部分共振</b></div>
+        <div class="decision warning"><span>主线重仓权限</span><b>共振成立，重仓权限待执行闸门确认</b></div>
+        <div class="decision"><span>第一主线</span><b>AI算力｜A｜79.0分</b></div>
+        <div class="decision warning"><span>最大证据缺口</span><b>AI算力估值闸门为 fail；不得输出“允许重仓主线核心”</b></div>
+      </div>
+
+      <h2>多因子边际共振总表</h2>
+      <table class="tight">
+        <thead><tr><th style="width:12%">赛道</th><th style="width:13%">定价 / O开关</th><th style="width:26%">P / C / L / O</th><th style="width:10%">分数 / 评级</th><th style="width:14%">共振状态</th><th style="width:25%">权限与硬约束</th></tr></thead>
+        <tbody>
+          <tr><td><b>AI算力</b></td><td>混合定价<br><span class="tag tag-up">O 开启</span></td><td>P 4↑ / C 4↑ / L 4↑ / O 4↑<br><span class="evidence-test">[测试数据]</span> 四支柱均按题设改善</td><td>79.0 / A</td><td><span class="tag tag-full">主升共振</span><br>条件性</td><td class="permission-stop">估值 fail；共振成立但重仓权限待执行闸门确认</td></tr>
+          <tr><td><b>国产软件</b></td><td>本土定价<br><span class="tag tag-na">O 关闭</span></td><td>P 4↑ / C 3↑ / L 2↓ / O N/A<br><span class="evidence-test">[测试数据]</span> 机构资金边际流出</td><td>50.4 / C</td><td><span class="tag tag-flat">部分共振</span></td><td>轻仓验证；L 恶化是反证，不按中性计</td></tr>
+          <tr><td><b>铜</b></td><td>全球定价<br><span class="tag tag-up">O 开启</span></td><td>P 0? / C 1? / L 0? / O 4↑<br><span class="evidence-test">[测试数据]</span> 海外价升、库存降</td><td>19.8 / C</td><td><span class="tag tag-down">单因子脉冲</span></td><td>禁止重仓，仅观察脉冲；C 未确认形成硬封顶</td></tr>
+        </tbody>
+      </table>
+
+      <div class="grid-2">
+        <div class="callout rust"><b>伪题材过滤结果</b>AI算力在测试假设下通过 P/C/L/O 硬支柱验真，但估值仍拦截执行；铜因国内定向信贷/产业投入不明确而未通过；国产软件订单使 C 条件性确认，但 L 边际流出阻止趋势持续性确认。</div>
+        <div class="callout blue"><b>海外产业景气开关</b>AI算力受北美云资本开支传导，按混合定价开启 O；铜价格与库存由全球变量主导，开启 O；国产软件需求与定价由国内信创驱动，O=N/A（不计分、不扣分）。</div>
+      </div>
+
+      <h2>为什么不能把“政策 + 资金 + 景气”简单相加</h2>
+      <div class="logic-strip">
+        <div><b>政策 P</b>回答方向是否被允许与支持，不能证明资金已落地。</div>
+        <div><b>定向信贷 C</b>回答是否形成项目、订单或资本开支；缺失时直接触发伪题材封顶。</div>
+        <div><b>长线资金 L</b>回答配置能否持续；边际流出是反证，不能被政策利好平均掉。</div>
+        <div><b>海外景气 O</b>全球/混合赛道的外部约束；本土赛道关闭，不应被无关海外变量惩罚。</div>
+      </div>
+      <p class="note">四支柱承担不同证伪职责，硬闸门优先于总分；即使全共振成立，价格结构、估值、市场风险、证据时效任一未通过，也不得开放最高研究权限。</p>
+    </main>
+    <footer><b>Alpha Studio Research</b><span>测试假设下的条件判断</span><span>1 / 2</span></footer>
+  </section>
+
+  <section class="page compact overseas-gate-on">
+    <header><span>Evidence · Triggers · Risk</span><em>证据、缺口与执行条件</em></header>
+    <main>
+      <h2>政策方向、定向信贷、长线机构资金与海外产业景气</h2>
+      <table class="tight">
+        <thead><tr><th style="width:12%">赛道</th><th style="width:18%">政策 P</th><th style="width:22%">定向信贷 / 产业投入 C</th><th style="width:22%">长线机构资金 L</th><th style="width:26%">海外产业景气 O</th></tr></thead>
+        <tbody>
+          <tr><td><b>AI算力</b></td><td><span class="evidence-test">[测试数据]</span> 国内算力政策；强度4、改善、置信0.85。</td><td><span class="evidence-test">[测试数据]</span> 专项贷款；强度4、改善、置信0.85。题设未给投放金额与项目链，仅作结构测试强假设。</td><td><span class="evidence-test">[测试数据]</span> 主动基金连续增配；强度4、改善、置信0.85。</td><td><span class="evidence-test">[测试数据]</span> 北美云厂商资本开支上修；强度4、改善、置信0.85。开关开启。</td></tr>
+          <tr><td><b>铜</b></td><td><span class="evidence-test">[测试数据]</span> 未提供，未知。</td><td><span class="evidence-test">[测试数据]</span> 国内定向产业资金不明确；强度1、边际未知、置信0.40，未确认。</td><td><span class="evidence-test">[测试数据]</span> 未提供，未知。</td><td><span class="evidence-test">[测试数据]</span> 海外价格上涨、库存下降；强度4、改善、置信0.85。只有 O 被确认。</td></tr>
+          <tr><td><b>国产软件</b></td><td><span class="evidence-test">[测试数据]</span> 信创政策；强度4、改善、置信0.85。</td><td><span class="evidence-test">[测试数据]</span> 已有订单；强度3、改善、置信0.75。金额、客户与执行期未给，仅作条件确认。</td><td><span class="evidence-test">[测试数据]</span> 机构资金边际流出；强度2、恶化、置信0.80，为反证。</td><td>本土定价，N/A（不计分、不扣分）。</td></tr>
+        </tbody>
+      </table>
+
+      <h2>最大证据缺口、升级与失效</h2>
+      <table class="tight">
+        <thead><tr><th style="width:12%">赛道</th><th style="width:27%">最大证据缺口</th><th style="width:31%">升级触发</th><th style="width:30%">降级 / 证伪</th></tr></thead>
+        <tbody>
+          <tr><td><b>AI算力</b></td><td>执行层唯一已知硬缺口为<span class="permission-stop">估值闸门 fail</span>；价格结构、市场风险、证据时效未提供，按未知处理。</td><td>估值由 fail 转为 pass；价格结构、市场风险、证据时效均为 pass；并完成 A/A- 真实性产业核心映射与退出条件。</td><td>专项贷款不能落到项目/订单；主动基金停止连续增配或转为流出；北美云资本开支下修；任一支柱恶化。</td></tr>
+          <tr><td><b>铜</b></td><td>定向信贷 / 产业投入边际未知，且 P、L 也未提供。</td><td>最小补证为可追踪的国内产业资金投放，并形成项目/订单/资本开支；同时补齐长线资金持续配置。</td><td>海外价格回落且库存回升；或国内资金继续无法落到产业链。单有 O 不升级。</td></tr>
+          <tr><td><b>国产软件</b></td><td>长线机构资金边际恶化。</td><td>机构资金由流出转为连续多期净增配，并由持仓/申赎与中枢价格结构两个独立维度交叉确认。</td><td>订单延期或不能兑现；机构减配延续；政策落地弱于题设。O 保持关闭，不因海外变量升降级。</td></tr>
+        </tbody>
+      </table>
+
+      <div class="grid-2">
+        <div class="panel"><h3>何时才允许重仓</h3><ul><li>主升共振成立且总分不低于 78；</li><li>价格结构、估值、市场风险、证据时效全部 pass；</li><li>只选择已验证的 A/A- 产业中枢、资本开支受益核心或业绩兑现核心；</li><li>预先定义降级与退出条件。本测试没有提供公司级证据，因此不虚构标的，机器台账的 coreStocks 留空。</li></ul></div>
+        <div class="panel"><h3>研究仓位权限</h3><ul><li>AI算力：共振成立，重仓权限待执行闸门确认；</li><li>铜：禁止重仓，仅观察脉冲；</li><li>国产软件：轻仓验证；</li><li>以上均为研究权限标签，不是个性化仓位或买入指令。</li></ul></div>
+      </div>
+
+      <h2>来源、口径与风险</h2>
+      <div class="callout"><b>来源说明</b>唯一输入为用户给定的结构测试假设；没有外部来源、没有联网检索、没有外部链接。机器台账 sources 为空。支柱 sourceTier 记为 null，避免把测试命题伪装成真实 Tier 1–4 证据。</div>
+      <div class="disclaimer"><b>风险声明</b>本简报是结构测试，基于假设测试数据与模型研究框架，不代表真实行情、真实政策、真实资金流或真实产业景气。仅用于研究流程与决策结构验证，不构成证券投资咨询、个性化投资建议、买卖指令或收益承诺。任何真实使用都必须补充可核验来源并重新评分。</div>
+    </main>
+    <footer><b>Alpha Studio Research</b><span>无外部引用 · 机器台账同步</span><span>2 / 2</span></footer>
+  </section>
+</body>
+</html>

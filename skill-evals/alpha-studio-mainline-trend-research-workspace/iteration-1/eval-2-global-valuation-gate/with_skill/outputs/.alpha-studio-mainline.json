@@ -1,0 +1,284 @@
+{
+  "schema": "alpha.mainline_trend.v1",
+  "tradeDate": "2026-08-04",
+  "generatedAt": "2026-08-04T00:25:05+08:00",
+  "dataCutoff": "2026-08-04T00:25:05+08:00",
+  "mode": "brief",
+  "overallConclusion": "结构测试条件下，AI算力四支柱形成主升共振，但估值闸门为fail，重仓权限不得开放；铜只有海外景气确认，为单因子脉冲；国产软件为本土定价，政策与订单形成部分共振，但长线机构资金边际流出构成反证。",
+  "heavyPositionPermission": "共振成立，重仓权限待执行闸门确认",
+  "topMainlineId": "ai-compute",
+  "previousReportId": null,
+  "mainlines": [
+    {
+      "id": "ai-compute",
+      "name": "AI算力",
+      "pricingScope": "mixed",
+      "overseasGate": "on",
+      "pillars": {
+        "policy": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": true,
+          "score": 79.0,
+          "evidence": [
+            "[测试数据｜无外部引用] 题设假设存在国内算力政策；仅用于结构测试中的政策支柱条件确认。"
+          ],
+          "counterEvidence": [
+            "[测试反证条件] 若政策缺少可执行细则或产业映射，应降低政策支柱强度。"
+          ]
+        },
+        "directedCredit": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": true,
+          "score": 79.0,
+          "evidence": [
+            "[测试数据｜无外部引用] 题设假设存在AI算力专项贷款；仅用于结构测试中的定向信贷条件确认，未提供真实投放金额或项目清单。"
+          ],
+          "counterEvidence": [
+            "[测试反证条件] 专项贷款不能落到项目、设备采购或订单时，定向信贷支柱应降级。"
+          ]
+        },
+        "longTermCapital": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": true,
+          "score": 79.0,
+          "evidence": [
+            "[测试数据｜无外部引用] 题设假设主动基金连续增配；仅用于结构测试中的长线资金条件确认。"
+          ],
+          "counterEvidence": [
+            "[测试反证条件] 主动基金停止连续增配或转为持续流出时，长线资金支柱失效。"
+          ]
+        },
+        "overseasCycle": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": true,
+          "score": 79.0,
+          "evidence": [
+            "[测试数据｜无外部引用] 题设假设北美云厂商资本开支上修；AI算力按混合定价开启海外景气支柱。"
+          ],
+          "counterEvidence": [
+            "[测试反证条件] 北美云厂商资本开支下修或不能传导至国内算力链收入与订单时，海外景气支柱应降级。"
+          ]
+        }
+      },
+      "score": 79.0,
+      "grade": "A",
+      "resonanceState": "主升共振",
+      "heavyPositionPermission": "共振成立，重仓权限待执行闸门确认",
+      "falseThemeFilter": "通过硬支柱验真；但估值执行闸门为fail，价格结构、市场风险与证据时效未提供，重仓权限保持关闭。",
+      "largestEvidenceGap": "估值执行闸门为fail；其余执行检查未提供，均不得默认为pass。",
+      "upgradeTriggers": [
+        "估值由fail转为pass，且价格结构、市场风险、证据时效全部为pass。",
+        "补充A/A-真实性的产业中枢、资本开支受益核心或业绩兑现核心，并定义退出条件。"
+      ],
+      "invalidationTriggers": [
+        "专项贷款无法落到项目、设备采购或订单。",
+        "主动基金连续增配中断并转为流出。",
+        "北美云厂商资本开支下修，或海外景气不能映射至国内产业链。"
+      ],
+      "continuityState": "新进",
+      "coreStocks": []
+    },
+    {
+      "id": "domestic-software",
+      "name": "国产软件",
+      "pricingScope": "domestic",
+      "overseasGate": "off",
+      "pillars": {
+        "policy": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": true,
+          "score": 79.0,
+          "evidence": [
+            "[测试数据｜无外部引用] 题设假设存在信创政策；仅用于结构测试中的政策支柱条件确认。"
+          ],
+          "counterEvidence": [
+            "[测试反证条件] 信创政策缺少执行细则或落地弱于题设时，政策支柱降级。"
+          ]
+        },
+        "directedCredit": {
+          "active": true,
+          "strength": 3,
+          "marginal": 1,
+          "confidence": 0.75,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": true,
+          "score": 61.2,
+          "evidence": [
+            "[测试数据｜无外部引用] 题设假设已有国产软件订单；在结构测试中将其作为产业投入结果性证据，但未提供订单金额、客户与执行期。"
+          ],
+          "counterEvidence": [
+            "[测试反证条件] 订单延期、取消或不能形成收入时，产业投入支柱失效。"
+          ]
+        },
+        "longTermCapital": {
+          "active": true,
+          "strength": 2,
+          "marginal": -1,
+          "confidence": 0.8,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": false,
+          "score": 11.0,
+          "evidence": [
+            "[测试数据｜无外部引用] 题设假设机构资金边际流出；该信息按反证和恶化项处理，不按中性处理。"
+          ],
+          "counterEvidence": [
+            "[测试数据｜反证] 机构资金边际流出直接否定当前长线资金确认。"
+          ]
+        },
+        "overseasCycle": {
+          "active": false,
+          "strength": null,
+          "marginal": null,
+          "confidence": null,
+          "asOf": null,
+          "sourceTier": null,
+          "confirmed": false,
+          "score": null,
+          "evidence": [
+            "[测试数据｜无外部引用] 国产软件按本土定价处理，海外景气N/A，不计分、不扣分。"
+          ],
+          "counterEvidence": []
+        }
+      },
+      "score": 50.4,
+      "grade": "C",
+      "resonanceState": "部分共振",
+      "heavyPositionPermission": "轻仓验证",
+      "falseThemeFilter": "政策与订单使P/C条件性确认，但长线机构资金边际流出，趋势持续性未确认。",
+      "largestEvidenceGap": "长线机构资金边际恶化。",
+      "upgradeTriggers": [
+        "机构资金由流出转为连续多期净增配，并由持仓或申赎与产业中枢价格结构两个独立维度交叉确认。"
+      ],
+      "invalidationTriggers": [
+        "订单延期、取消或无法兑现。",
+        "机构减配延续。",
+        "政策执行弱于题设。"
+      ],
+      "continuityState": "新进",
+      "coreStocks": []
+    },
+    {
+      "id": "copper",
+      "name": "铜",
+      "pricingScope": "global",
+      "overseasGate": "on",
+      "pillars": {
+        "policy": {
+          "active": true,
+          "strength": 0,
+          "marginal": null,
+          "confidence": 0.0,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": false,
+          "score": 0.0,
+          "evidence": [
+            "[测试数据｜无外部引用] 题设未提供铜产业的国内政策证据，按未知处理。"
+          ],
+          "counterEvidence": [
+            "[测试反证条件] 无政策与国内产业映射时，不得用海外价格上涨替代政策支柱。"
+          ]
+        },
+        "directedCredit": {
+          "active": true,
+          "strength": 1,
+          "marginal": null,
+          "confidence": 0.4,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": false,
+          "score": 0.0,
+          "evidence": [
+            "[测试数据｜无外部引用] 国内定向产业资金不明确；按边际未知和未确认处理。"
+          ],
+          "counterEvidence": [
+            "[测试数据｜反证] 定向产业资金不明确，不能构成从政策到项目、订单或资本开支的闭环。"
+          ]
+        },
+        "longTermCapital": {
+          "active": true,
+          "strength": 0,
+          "marginal": null,
+          "confidence": 0.0,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": false,
+          "score": 0.0,
+          "evidence": [
+            "[测试数据｜无外部引用] 题设未提供铜产业长线机构资金证据，按未知处理。"
+          ],
+          "counterEvidence": [
+            "[测试反证条件] 只有价格上涨而没有多期持仓或配置证据，不能确认趋势持续性。"
+          ]
+        },
+        "overseasCycle": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "asOf": "2026-08-04T00:25:05+08:00",
+          "sourceTier": null,
+          "confirmed": true,
+          "score": 79.0,
+          "evidence": [
+            "[测试数据｜无外部引用] 题设假设海外铜价上涨且库存下降；全球定价赛道开启海外景气支柱。"
+          ],
+          "counterEvidence": [
+            "[测试反证条件] 海外价格回落且库存回升时，海外景气支柱应降级。"
+          ]
+        }
+      },
+      "score": 19.8,
+      "grade": "C",
+      "resonanceState": "单因子脉冲",
+      "heavyPositionPermission": "禁止重仓，仅观察脉冲",
+      "falseThemeFilter": "未通过：定向信贷/产业投入未确认，按伪题材高风险处理；海外价格和库存改善不能替代国内产业资金落地。",
+      "largestEvidenceGap": "定向信贷/产业投入边际方向未知。",
+      "upgradeTriggers": [
+        "补充可追踪的国内定向产业资金投放，并形成项目、订单或资本开支证据。",
+        "补充长线机构资金连续配置的至少两个独立维度。"
+      ],
+      "invalidationTriggers": [
+        "海外铜价回落且库存回升。",
+        "国内定向产业资金继续无法落到产业链。"
+      ],
+      "continuityState": "新进",
+      "coreStocks": []
+    }
+  ],
+  "sources": [],
+  "risks": [
+    "本台账只记录用户给定的测试假设，没有联网、没有外部来源，不能代表真实市场状态。",
+    "confirmed=true只表示在测试假设成立时通过模型条件，不表示完成真实证据核验。",
+    "AI算力估值闸门为fail，且其他执行闸门未提供，不得输出允许重仓主线核心。",
+    "公司级业务、订单、估值与价格结构未提供，因此不虚构核心标的，coreStocks为空。",
+    "本台账及报告不构成证券投资咨询、个性化投资建议、买卖指令或收益承诺。"
+  ]
+}

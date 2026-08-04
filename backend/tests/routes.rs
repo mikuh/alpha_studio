@@ -9,6 +9,49 @@ use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn health_and_metrics_expose_request_correlation_without_customer_data() {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
+        .expect("lazy postgres pool");
+    let state = AppState::new(test_config(), pool, None);
+    let app = build_router(state);
+
+    let health = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let request_id = health
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok());
+    assert!(request_id.is_some_and(|value| !value.is_empty()));
+
+    let metrics = app
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(metrics.status(), StatusCode::OK);
+    assert_eq!(
+        metrics
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/plain; version=0.0.4; charset=utf-8")
+    );
+}
+
+#[tokio::test]
 async fn admin_dynamic_delete_routes_match_before_auth() {
     let pool = PgPoolOptions::new()
         .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
@@ -211,6 +254,35 @@ async fn cors_rejects_unlisted_browser_origins() {
         .headers()
         .get("access-control-allow-origin")
         .is_none());
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn unlisted_origin_is_rejected_before_a_state_changing_route_runs() {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
+        .expect("lazy postgres pool");
+    let state = AppState::new(test_config(), pool, None);
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/client/activate")
+                .header("origin", "https://evil.example")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(response
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
 }
 
 #[tokio::test]
@@ -247,14 +319,17 @@ async fn cors_allows_the_configured_tauri_dev_origin() {
 
 fn test_config() -> AppConfig {
     AppConfig {
+        app_environment: "test".to_string(),
         database_url: "postgres://postgres:postgres@localhost/alpha_studio_test".to_string(),
         redis_url: "redis://localhost:6379".to_string(),
         app_base_url: "http://localhost:8080".to_string(),
         jwt_secret: "test-jwt-secret".to_string(),
         run_token_secret: "test-run-secret".to_string(),
         authorization_code_encryption_key: "test-authorization-code-key".to_string(),
+        provider_kms_master_key: "test-provider-kms-master-key".to_string(),
         admin_email: "admin@alpha-studio.local".to_string(),
         admin_password: "alpha-admin".to_string(),
+        admin_totp_secret: b"12345678901234567890".to_vec(),
         bind_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
         market_data_enabled: false,
         market_refresh_seconds: 45,

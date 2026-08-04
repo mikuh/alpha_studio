@@ -186,8 +186,7 @@ export async function saveModelConfig(config: ModelConfigFile): Promise<string |
 export async function revealPath(path: string): Promise<boolean> {
   if (!path || !isTauriRuntime()) return false;
   try {
-    const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
-    await revealItemInDir(path);
+    await invoke('reveal_local_path', { request: { path } });
     return true;
   } catch {
     return false;
@@ -197,8 +196,7 @@ export async function revealPath(path: string): Promise<boolean> {
 export async function openLocalPath(path: string): Promise<boolean> {
   if (!path || !isTauriRuntime()) return false;
   try {
-    const { openPath } = await import('@tauri-apps/plugin-opener');
-    await openPath(path);
+    await invoke('open_external_target', { request: { target: path } });
     return true;
   } catch {
     return false;

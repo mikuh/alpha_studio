@@ -1,0 +1,126 @@
+{
+  "expectations": [
+    {
+      "text": "全球或混合赛道开启海外景气支柱，本土赛道关闭且不受惩罚",
+      "passed": true,
+      "evidence": "The substance is explicit in both artifacts. report.html turns the overseas switch on for AI算力 and 铜, marks 国产软件 ‘海外开关：不适用’, and states that a local-pricing track ‘不能机械地因缺少海外信号扣分’. The ledger independently records on/on/not_applicable and identifies domestic software as local pricing."
+    },
+    {
+      "text": "AI算力在估值闸门未通过时不输出允许重仓主线核心",
+      "passed": true,
+      "evidence": "report.html calls the valuation fail a hard veto, labels AI ‘禁止重仓’, and says valuation must turn pass before heavy positioning. The ledger records valuation_gate=fail, heavy_position_allowed=false, and current_action as watching the candidate pending valuation unlock. No allowed-heavy core is emitted."
+    },
+    {
+      "text": "铜因定向信贷或产业投入缺失而被评级/权限封顶",
+      "passed": true,
+      "evidence": "report.html explicitly connects ‘国内定向产业资金不明确’ to an incomplete evidence chain and the decision ‘观察 / 轻仓条件单；不升级为主线重仓’. The ledger records missing_axis=domestic_targeted_industry_capital and heavy_position_allowed=false, with clarification of domestic targeted capital as the first upgrade condition. This is a substantive permission cap caused by the missing confirmation."
+    },
+    {
+      "text": "国产软件的长线资金流出被当作反证而非中性",
+      "passed": true,
+      "evidence": "report.html says institutional marginal outflow means the capital side is unconfirmed and ‘甚至与政策、订单方向背离’; it labels the resonance ‘背离’ and requires the flow to reverse before upgrade. The ledger records institutional_fund_flow=marginal_outflow and makes it resonance.negative_axis, so it is treated negatively rather than neutrally."
+    },
+    {
+      "text": "报告明确说明多支柱是不同证伪职责而非简单利好相加",
+      "passed": true,
+      "evidence": "report.html has a dedicated section titled ‘为什么不能“政策 + 资金 + 景气”简单相加’. It explains non-independence/double counting, sequential responsibilities for overseas demand, domestic transmission, and valuation, different confirmation structures by pricing domain, valuation as a hard veto, and negative evidence that cannot be drowned out. This is a genuine falsification/gating explanation, not keyword-only compliance."
+    },
+    {
+      "text": "机器台账使用alpha.mainline_trend.v1结构，并与报告的海外开关、共振状态和权限一致",
+      "passed": false,
+      "evidence": "The ledger does not use the required alpha.mainline_trend.v1 structure: its root declares schema_version='1.0' and artifact_type='alpha_studio_mainline_ledger' rather than schema='alpha.mainline_trend.v1'. Its decisions broadly agree with the report, but the assertion is conjunctive, so failure of the required structure is decisive."
+    },
+    {
+      "text": "所有假设证据在报告和台账中标记为测试数据，且没有伪造外部引用",
+      "passed": true,
+      "evidence": "report.html declares all policy, loan, capex, flow, price, inventory, and order evidence to be test data and labels the evidence table accordingly. Every ledger test_evidence entry has provenance='test_data'; the run records external_sources_used=false, and inspection found no external URL in either artifact."
+    }
+  ],
+  "summary": {
+    "passed": 6,
+    "failed": 1,
+    "total": 7,
+    "pass_rate": 0.8571428571428571
+  },
+  "execution_metrics": {
+    "schema_version": "1.0",
+    "run_id": "eval-2-global-valuation-gate-without-skill",
+    "deliverables": {
+      "report_html": true,
+      "machine_ledger": true,
+      "metrics_json": true,
+      "transcript": true
+    },
+    "scope_checks": {
+      "internet_used": false,
+      "external_references_count": 0,
+      "input_files_count": 0,
+      "tracks_covered": 3,
+      "all_evidence_marked_test_data": true,
+      "real_market_claims_made": false,
+      "numeric_probabilities_invented": false,
+      "position_percentages_invented": false
+    },
+    "content_checks": {
+      "overseas_cycle_switch_explained": true,
+      "resonance_state_explained_for_all_tracks": true,
+      "non_additivity_explained": true,
+      "heavy_position_conditions_explained": true,
+      "valuation_fail_used_as_hard_veto": true,
+      "global_and_local_pricing_distinguished": true,
+      "unknown_data_preserved_as_unknown": true
+    },
+    "report_design": {
+      "target_print_pages": 2,
+      "self_contained_html": true,
+      "external_assets": false,
+      "external_scripts": false,
+      "screenshots_created": false
+    },
+    "decision_summary": {
+      "heavy_position_allowed_count": 0,
+      "overseas_switch_on_count": 2,
+      "overseas_switch_not_applicable_count": 1,
+      "hard_gate_failure_count": 1,
+      "partial_resonance_count": 1,
+      "divergent_resonance_count": 1
+    },
+    "output_chars": 14573,
+    "transcript_chars": 1141
+  },
+  "claims": [
+    {
+      "claim": "The run produced both the requested HTML brief and a machine ledger.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "outputs/report.html is a substantive two-page HTML brief and outputs/.alpha-studio-mainline.json parses as a populated ledger containing all three tracks."
+    },
+    {
+      "claim": "Only supplied hypothetical data was used and no external citations were introduced.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The report's banner and data declaration identify all evidence as test data and state no external references; the ledger records user_supplied_hypothetical_test_data_only and external_sources_used=false. The transcript records no web access, and no external URL appears in the inspected report or ledger."
+    },
+    {
+      "claim": "No track currently qualifies for a heavy position.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "All three ledger tracks have heavy_position_allowed=false, the portfolio conclusion has heavy_position_candidate_count=0, and the report's final decision explicitly says ‘当前没有可重仓赛道’."
+    },
+    {
+      "claim": "The HTML is self-contained and designed for two A4 print pages.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "report.html contains all CSS inline, has no external asset or script references, defines @page A4, and contains exactly two top-level section.page elements labeled 1/2 and 2/2."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [],
+    "overall": "No further suggestion: the revised assertions now discriminate the baseline's custom ledger from the required alpha.mainline_trend.v1 contract while retaining substantive logic and provenance checks."
+  }
+}

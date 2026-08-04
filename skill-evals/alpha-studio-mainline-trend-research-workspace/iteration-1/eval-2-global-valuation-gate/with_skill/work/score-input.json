@@ -1,0 +1,40 @@
+{
+  "as_of": "2026-08-04T00:25:05+08:00",
+  "tracks": [
+    {
+      "name": "AI算力",
+      "pricing_scope": "mixed",
+      "pillars": {
+        "policy": {"strength": 4, "marginal": 1, "confidence": 0.85},
+        "directed_credit": {"strength": 4, "marginal": 1, "confidence": 0.85},
+        "long_term_capital": {"strength": 4, "marginal": 1, "confidence": 0.85},
+        "overseas_cycle": {"strength": 4, "marginal": 1, "confidence": 0.85}
+      },
+      "execution_checks": {
+        "price_structure": "unknown",
+        "valuation": "fail",
+        "market_risk": "unknown",
+        "evidence_freshness": "unknown"
+      }
+    },
+    {
+      "name": "铜",
+      "pricing_scope": "global",
+      "pillars": {
+        "policy": {"strength": 0, "marginal": null, "confidence": 0.0},
+        "directed_credit": {"strength": 1, "marginal": null, "confidence": 0.4},
+        "long_term_capital": {"strength": 0, "marginal": null, "confidence": 0.0},
+        "overseas_cycle": {"strength": 4, "marginal": 1, "confidence": 0.85}
+      }
+    },
+    {
+      "name": "国产软件",
+      "pricing_scope": "domestic",
+      "pillars": {
+        "policy": {"strength": 4, "marginal": 1, "confidence": 0.85},
+        "directed_credit": {"strength": 3, "marginal": 1, "confidence": 0.75},
+        "long_term_capital": {"strength": 2, "marginal": -1, "confidence": 0.8}
+      }
+    }
+  ]
+}

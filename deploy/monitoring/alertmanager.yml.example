@@ -1,0 +1,13 @@
+route:
+  receiver: incident-webhook
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: incident-webhook
+    webhook_configs:
+      # 上线时替换成由飞书、钉钉、Slack 或值班平台提供的真实地址。
+      - url: https://replace.example.invalid/incident-webhook
+        send_resolved: true

@@ -1,0 +1,29 @@
+groups:
+  - name: alpha-studio
+    rules:
+      - alert: AlphaStudioApiDown
+        expr: up{job="alpha-studio-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Alpha Studio API 无法抓取
+          description: API 指标端点连续 2 分钟不可用，请检查容器、数据库和网络。
+
+      - alert: AlphaStudioServerErrorRateHigh
+        expr: increase(alpha_http_request_errors_total[5m]) / clamp_min(increase(alpha_http_requests_total[5m]), 1) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Alpha Studio 5xx 错误率超过 5%
+          description: 请按 request_id 检索 JSON 日志并确认最近发布和上游状态。
+
+      - alert: AlphaStudioAverageLatencyHigh
+        expr: increase(alpha_http_request_duration_seconds_sum[5m]) / clamp_min(increase(alpha_http_request_duration_seconds_count[5m]), 1) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Alpha Studio 平均请求耗时超过 2 秒
+          description: 检查数据库慢查询、模型上游延迟和主机资源。

@@ -1,4 +1,9 @@
 use alpha_studio_backend::billing::{settle_usage_yuan, GatewayUsage, Pricing};
+use rust_decimal::Decimal;
+
+fn dec(mantissa: i64, scale: u32) -> Decimal {
+    Decimal::new(mantissa, scale)
+}
 
 #[test]
 fn settles_gateway_usage_from_real_token_counts() {
@@ -9,17 +14,17 @@ fn settles_gateway_usage_from_real_token_counts() {
         cached_tokens: 20_000,
     };
     let pricing = Pricing {
-        input_yuan_per_million: 1.2,
-        output_yuan_per_million: 4.8,
-        reasoning_yuan_per_million: 4.8,
-        cached_input_yuan_per_million: 0.3,
+        input_yuan_per_million: dec(12, 1),
+        output_yuan_per_million: dec(48, 1),
+        reasoning_yuan_per_million: dec(48, 1),
+        cached_input_yuan_per_million: dec(3, 1),
         markup_bps: 2_500,
     };
 
     let charge = settle_usage_yuan(&usage, &pricing);
 
-    assert_eq!(charge.cost_yuan, 0.27);
-    assert_eq!(charge.billable_yuan, 0.3375);
+    assert_eq!(charge.cost_yuan, dec(27, 2));
+    assert_eq!(charge.billable_yuan, dec(3375, 4));
 }
 
 #[test]
@@ -31,17 +36,17 @@ fn settles_fractional_gateway_prices() {
         cached_tokens: 2_000_000,
     };
     let pricing = Pricing {
-        input_yuan_per_million: 1.5,
-        output_yuan_per_million: 0.0,
-        reasoning_yuan_per_million: 0.0,
-        cached_input_yuan_per_million: 0.02,
+        input_yuan_per_million: dec(15, 1),
+        output_yuan_per_million: Decimal::ZERO,
+        reasoning_yuan_per_million: Decimal::ZERO,
+        cached_input_yuan_per_million: dec(2, 2),
         markup_bps: 0,
     };
 
     let charge = settle_usage_yuan(&usage, &pricing);
 
-    assert_eq!(charge.cost_yuan, 1.54);
-    assert_eq!(charge.billable_yuan, 1.54);
+    assert_eq!(charge.cost_yuan, dec(154, 2));
+    assert_eq!(charge.billable_yuan, dec(154, 2));
 }
 
 #[test]
@@ -53,26 +58,26 @@ fn rounds_tiny_charges_up_instead_of_leaking_fractional_cost() {
         cached_tokens: 0,
     };
     let pricing = Pricing {
-        input_yuan_per_million: 0.01,
-        output_yuan_per_million: 1.0,
-        reasoning_yuan_per_million: 0.0,
-        cached_input_yuan_per_million: 0.0,
+        input_yuan_per_million: dec(1, 2),
+        output_yuan_per_million: Decimal::ONE,
+        reasoning_yuan_per_million: Decimal::ZERO,
+        cached_input_yuan_per_million: Decimal::ZERO,
         markup_bps: 0,
     };
 
     let charge = settle_usage_yuan(&usage, &pricing);
 
-    assert_eq!(charge.cost_yuan, 0.000001);
-    assert_eq!(charge.billable_yuan, 0.000001);
+    assert_eq!(charge.cost_yuan, dec(1, 6));
+    assert_eq!(charge.billable_yuan, dec(1, 6));
 }
 
 #[test]
 fn rejects_incomplete_or_loss_making_pricing() {
     let pricing = Pricing {
-        input_yuan_per_million: 1.0,
-        output_yuan_per_million: 0.0,
-        reasoning_yuan_per_million: 0.0,
-        cached_input_yuan_per_million: 0.0,
+        input_yuan_per_million: Decimal::ONE,
+        output_yuan_per_million: Decimal::ZERO,
+        reasoning_yuan_per_million: Decimal::ZERO,
+        cached_input_yuan_per_million: Decimal::ZERO,
         markup_bps: 0,
     };
 

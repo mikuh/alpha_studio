@@ -1,0 +1,177 @@
+{
+  "schema": "alpha.mainline_score.v1",
+  "as_of": "2026-08-04T00:25:05+08:00",
+  "tracks": [
+    {
+      "name": "AI算力",
+      "pricing_scope": "mixed",
+      "overseas_gate": "on",
+      "pillars": {
+        "policy": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "confirmed": true,
+          "accelerating": true,
+          "score": 79.0,
+          "status": "改善"
+        },
+        "directed_credit": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "confirmed": true,
+          "accelerating": true,
+          "score": 79.0,
+          "status": "改善"
+        },
+        "long_term_capital": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "confirmed": true,
+          "accelerating": true,
+          "score": 79.0,
+          "status": "改善"
+        },
+        "overseas_cycle": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "confirmed": true,
+          "accelerating": true,
+          "score": 79.0,
+          "status": "改善"
+        }
+      },
+      "active_pillar_count": 4,
+      "confirmed_pillar_count": 4,
+      "accelerating_pillar_count": 4,
+      "score": 79.0,
+      "grade": "A",
+      "resonance_state": "主升共振",
+      "heavy_position_permission": "共振成立，重仓权限待执行闸门确认",
+      "false_theme_filter": "通过硬支柱验真；仍需执行闸门控制仓位",
+      "largest_evidence_gap": "无硬支柱缺口；继续检查价格、估值、市场风险与证据时效",
+      "execution_checks_present": true
+    },
+    {
+      "name": "国产软件",
+      "pricing_scope": "domestic",
+      "overseas_gate": "off",
+      "pillars": {
+        "policy": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "confirmed": true,
+          "accelerating": true,
+          "score": 79.0,
+          "status": "改善"
+        },
+        "directed_credit": {
+          "active": true,
+          "strength": 3,
+          "marginal": 1,
+          "confidence": 0.75,
+          "confirmed": true,
+          "accelerating": true,
+          "score": 61.2,
+          "status": "改善"
+        },
+        "long_term_capital": {
+          "active": true,
+          "strength": 2,
+          "marginal": -1,
+          "confidence": 0.8,
+          "confirmed": false,
+          "accelerating": false,
+          "score": 11.0,
+          "status": "恶化"
+        },
+        "overseas_cycle": {
+          "active": false,
+          "strength": null,
+          "marginal": null,
+          "confidence": null,
+          "confirmed": false,
+          "accelerating": false,
+          "score": null,
+          "status": "N/A"
+        }
+      },
+      "active_pillar_count": 3,
+      "confirmed_pillar_count": 2,
+      "accelerating_pillar_count": 2,
+      "score": 50.4,
+      "grade": "C",
+      "resonance_state": "部分共振",
+      "heavy_position_permission": "轻仓验证",
+      "false_theme_filter": "初步通过验真，但长线机构资金未确认，趋势持续性不足",
+      "largest_evidence_gap": "长线机构资金：边际恶化",
+      "execution_checks_present": false
+    },
+    {
+      "name": "铜",
+      "pricing_scope": "global",
+      "overseas_gate": "on",
+      "pillars": {
+        "policy": {
+          "active": true,
+          "strength": 0,
+          "marginal": null,
+          "confidence": 0,
+          "confirmed": false,
+          "accelerating": false,
+          "score": 0.0,
+          "status": "未知"
+        },
+        "directed_credit": {
+          "active": true,
+          "strength": 1,
+          "marginal": null,
+          "confidence": 0.4,
+          "confirmed": false,
+          "accelerating": false,
+          "score": 0.0,
+          "status": "未知"
+        },
+        "long_term_capital": {
+          "active": true,
+          "strength": 0,
+          "marginal": null,
+          "confidence": 0,
+          "confirmed": false,
+          "accelerating": false,
+          "score": 0.0,
+          "status": "未知"
+        },
+        "overseas_cycle": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "confirmed": true,
+          "accelerating": true,
+          "score": 79.0,
+          "status": "改善"
+        }
+      },
+      "active_pillar_count": 4,
+      "confirmed_pillar_count": 1,
+      "accelerating_pillar_count": 1,
+      "score": 19.8,
+      "grade": "C",
+      "resonance_state": "单因子脉冲",
+      "heavy_position_permission": "禁止重仓，仅观察脉冲",
+      "false_theme_filter": "未通过：定向信贷/产业投入未确认，按伪题材高风险处理",
+      "largest_evidence_gap": "定向信贷/产业投入：边际方向未知",
+      "execution_checks_present": false
+    }
+  ]
+}

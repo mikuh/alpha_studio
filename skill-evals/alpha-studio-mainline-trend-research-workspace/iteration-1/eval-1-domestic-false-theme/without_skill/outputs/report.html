@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>A股产业主线趋势早报｜结构测试</title>
+  <style>
+    :root{--ink:#162033;--muted:#627087;--line:#d9e0ea;--navy:#163a63;--blue:#2369a8;--cyan:#eaf4fb;--green:#13735b;--greenbg:#eaf6f1;--amber:#9a5a00;--amberbg:#fff5df;--red:#a33a36;--redbg:#fff0ee;--paper:#fff;--ground:#e9edf2}
+    *{box-sizing:border-box}html,body{margin:0;padding:0;background:var(--ground);color:var(--ink);font-family:"PingFang SC","Microsoft YaHei",Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    body{font-size:10.6px;line-height:1.5}.page{position:relative;width:210mm;height:297mm;margin:8mm auto;background:var(--paper);padding:14mm 15mm 13mm;overflow:hidden;page-break-after:always}.page:last-child{page-break-after:auto}
+    @page{size:A4;margin:0}@media print{body{background:#fff}.page{margin:0;box-shadow:none}}
+    h1,h2,h3,p{margin-top:0}h1{font-size:27px;line-height:1.25;letter-spacing:.4px;margin-bottom:7px}h2{font-size:19px;line-height:1.3;color:var(--navy);margin-bottom:10px}h3{font-size:12.5px;color:var(--navy);margin:12px 0 6px}.kicker{color:var(--blue);font-weight:700;letter-spacing:1.7px;text-transform:uppercase}.lead{font-size:13px;color:#36465f;line-height:1.7}.muted{color:var(--muted)}.small{font-size:9px}.strong{font-weight:700}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.rule{height:2px;background:linear-gradient(90deg,var(--navy),var(--blue),transparent);margin:10px 0 15px}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.card{border:1px solid var(--line);border-radius:7px;padding:9px;background:#fff}.card.tint{background:#f6f9fc}.card.good{border-left:4px solid var(--green)}.card.warn{border-left:4px solid var(--amber)}.card.bad{border-left:4px solid var(--red)}.score{font-size:25px;font-weight:800;color:var(--navy);line-height:1}.tag{display:inline-block;padding:2px 6px;border-radius:99px;font-size:8.5px;font-weight:700;margin-right:3px}.tag.test{color:#7a3900;background:#ffedc7}.tag.good{color:var(--green);background:var(--greenbg)}.tag.warn{color:var(--amber);background:var(--amberbg)}.tag.bad{color:var(--red);background:var(--redbg)}.tag.unk{color:#566177;background:#edf0f4}
+    table{width:100%;border-collapse:collapse;table-layout:fixed;margin:6px 0 10px}th{background:var(--navy);color:#fff;font-weight:600;text-align:left}th,td{padding:5px 6px;border:1px solid var(--line);vertical-align:top}tbody tr:nth-child(even){background:#f8fafc}.tight th,.tight td{padding:4px 5px}.center{text-align:center}.nowrap{white-space:nowrap}.callout{padding:9px 11px;border-radius:6px;background:var(--cyan);border-left:4px solid var(--blue);margin:8px 0}.callout.red{background:var(--redbg);border-left-color:var(--red)}.callout.amber{background:var(--amberbg);border-left-color:var(--amber)}ul{margin:5px 0 8px;padding-left:17px}li{margin:2px 0}.footer{position:absolute;left:15mm;right:15mm;bottom:7mm;display:flex;justify-content:space-between;color:#788398;font-size:8px;border-top:1px solid var(--line);padding-top:3px}.watermark{position:absolute;right:-9mm;top:12mm;transform:rotate(30deg);font-size:9px;color:#a36100;background:#fff0c7;border:1px solid #e4b35d;padding:3px 13mm;letter-spacing:2px}.hero{margin-top:31mm}.rank{display:flex;align-items:center;gap:8px;margin:5px 0}.rank b{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--navy);color:#fff}.bar{height:7px;background:#e8edf3;border-radius:10px;overflow:hidden;margin-top:4px}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),#48a0c8)}.signal{font-size:17px;font-weight:800}.up{color:var(--green)}.flat{color:var(--amber)}.unknown{color:#758198}.down{color:var(--red)}.stamp{border:2px solid var(--red);color:var(--red);font-weight:800;padding:5px 9px;transform:rotate(-3deg);display:inline-block;letter-spacing:2px}.timeline{border-left:2px solid var(--line);padding-left:12px;margin-left:5px}.timeline div{margin:8px 0;position:relative}.timeline div:before{content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:var(--blue);left:-16px;top:4px}.permission{font-size:16px;font-weight:800}.check{color:var(--green);font-weight:800}.cross{color:var(--red);font-weight:800}.note{border-top:1px dashed var(--line);padding-top:6px;margin-top:8px}
+  </style>
+</head>
+<body>
+  <section class="page" id="p1">
+    <div class="watermark">测试假设数据 · 禁止外推</div>
+    <div class="hero">
+      <div class="kicker">Alpha Studio · Domestic Mainline Test</div>
+      <h1>A股产业主线趋势早报</h1>
+      <p class="lead">四支柱证据约束下的主线筛选、伪题材过滤与重仓权限</p>
+      <div class="rule"></div>
+      <p><span class="tag test">全部内容为用户给定测试假设</span><span class="tag unk">无联网补数</span><span class="tag unk">无外部引用</span></p>
+      <div class="grid3" style="margin-top:16px">
+        <div class="card good"><div class="muted">优先级 1</div><div class="score">68.3</div><h3>电网设备</h3><p>正式政策 + 项目贷款 + 连续招标，满足产业落地硬门槛；机构边际仍不完整。</p><span class="tag good">有条件重仓</span></div>
+        <div class="card warn"><div class="muted">优先级 2</div><div class="score">59.2</div><h3>创新药</h3><p>医保改善 + 并购基金 + 保险资金连续增配，资金确认较强；经营兑现缺证。</p><span class="tag warn">标准仓/候选</span></div>
+        <div class="card bad"><div class="muted">优先级 3</div><div class="score">18.3</div><h3>低空经济</h3><p>仅部委支持表述与涨停潮，缺产业贷款、项目付款和长线资金。</p><span class="tag bad">禁止重仓</span></div>
+      </div>
+      <div class="callout" style="margin-top:16px"><b>早报结论：</b>电网设备是唯一获得“有条件重仓权限”的测试主线；创新药进入主线候选但暂不开放重仓；低空经济触发伪题材过滤，只允许事件观察。</div>
+      <p class="small muted">分数为结构化测试指数，不是收益预测；仓位上限为研究纪律示例，不构成投资建议。测试截面：T0（非真实市场日期）。文档生成日：2026-08-04。</p>
+    </div>
+    <div class="footer"><span>结构测试早报｜仅测试假设数据</span><span>1 / 8</span></div>
+  </section>
+
+  <section class="page" id="p2">
+    <div class="watermark">测试假设数据 · 禁止外推</div>
+    <div class="kicker">Framework</div><h2>判定框架与证据纪律</h2>
+    <div class="grid2">
+      <div class="card"><h3>P1 政策硬度｜权重 25%</h3><p>区分正式政策、可执行制度改善与泛化支持表述。正式设备更新政策强于部委支持性表述。</p></div>
+      <div class="card"><h3>P2 产业落地/项目资金｜权重 35%</h3><p>项目贷款、付款、连续招标、订单或经营兑现构成产业硬证据；并购基金只算资本落地，不能替代经营现金流。</p></div>
+      <div class="card"><h3>P3 长线机构资金｜权重 25%</h3><p>连续增配才可确认边际方向。单期公募持仓只能证明“某期存在”，不能推出趋势。</p></div>
+      <div class="card"><h3>P4 市场结构｜权重 15%</h3><p>持续性、承接、扩散质量优于单日涨停潮。未提供行情时标为未知，不臆测。</p></div>
+    </div>
+    <h3>评分与权限映射</h3>
+    <table class="tight"><thead><tr><th style="width:18%">单柱分值</th><th>含义</th><th style="width:31%">纪律</th></tr></thead><tbody>
+      <tr><td>3.0</td><td>强确认，且边际连续或具正式约束</td><td>可承担主线确认</td></tr><tr><td>2.0</td><td>中等确认，已有实质动作但链条不完整</td><td>需第二证据交叉验证</td></tr><tr><td>1.0</td><td>弱确认、单期或仅方向性表述</td><td>不能独立开启重仓</td></tr><tr><td>0.0</td><td>明确给定为缺失/不存在</td><td>视作硬门槛未通过</td></tr><tr><td>未知</td><td>用户未提供，不等于负面</td><td>按零计入权限指数，但保留“待证”</td></tr>
+    </tbody></table>
+    <div class="callout amber"><b>主线硬门槛：</b>P2 至少出现一项可核验产业落地证据；不少于两根独立支柱为正；重仓还需 P3 连续性或更强的 P2 现金流/订单链。只出现“支持表述 + 涨停潮”自动进入伪题材池。</div>
+    <h3>证据使用边界</h3>
+    <ul><li>本报告仅重述用户提供的假设，不新增证券、日期、金额、政策名称或外部出处。</li><li>所有“连续”只沿用输入中明确给出的连续性；未给持续期的连续招标不擅自写成具体月数。</li><li>指数 = Σ（支柱分值 ÷ 3 × 权重）；未知按 0 计入权限，防止缺失信息被乐观填充。</li></ul>
+    <div class="footer"><span>口径：四支柱 × 硬门槛 × 缺失惩罚</span><span>2 / 8</span></div>
+  </section>
+
+  <section class="page" id="p3">
+    <div class="watermark">测试假设数据 · 禁止外推</div>
+    <div class="kicker">Marginal Matrix</div><h2>四支柱边际表</h2>
+    <table class="tight">
+      <thead><tr><th style="width:13%">主题</th><th style="width:21%">P1 政策硬度</th><th style="width:25%">P2 产业落地/项目资金</th><th style="width:22%">P3 长线机构资金</th><th style="width:19%">P4 市场结构</th></tr></thead>
+      <tbody>
+        <tr><td><b>电网设备</b></td><td><span class="signal up">↑</span> 3.0/3<br>正式设备更新政策<br><span class="tag test">测试假设</span></td><td><span class="signal up">↑</span> 3.0/3<br>政策性银行项目贷款 + 连续招标<br><span class="tag test">测试假设</span></td><td><span class="signal flat">→?</span> 1.0/3<br>仅单期公募持仓，不能判定增减<br><span class="tag test">测试假设</span></td><td><span class="signal unknown">?</span> 未知<br>未提供价格、成交或扩散数据</td></tr>
+        <tr><td><b>创新药</b></td><td><span class="signal up">↑</span> 2.0/3<br>医保政策改善<br><span class="tag test">测试假设</span></td><td><span class="signal up">↑</span> 1.5/3<br>并购基金属资本落地；尚非经营兑现<br><span class="tag test">测试假设</span></td><td><span class="signal up">↑↑</span> 3.0/3<br>保险资金连续两个月增配<br><span class="tag test">测试假设</span></td><td><span class="signal unknown">?</span> 未知<br>未提供市场结构数据</td></tr>
+        <tr><td><b>低空经济</b></td><td><span class="signal flat">↗</span> 1.0/3<br>仅部委支持表述，执行约束弱<br><span class="tag test">测试假设</span></td><td><span class="signal down">×</span> 0.0/3<br>明确缺产业贷款或项目付款<br><span class="tag test">测试假设</span></td><td><span class="signal down">×</span> 0.0/3<br>未给长线机构资金证据</td><td><span class="signal up">↑*</span> 2.0/3<br>涨停潮，仅为短线热度，持续性未知<br><span class="tag test">测试假设</span></td></tr>
+      </tbody>
+    </table>
+    <div class="grid3">
+      <div class="card good"><div class="muted">电网设备</div><div class="score">68.3</div><div class="bar"><i style="width:68.3%"></i></div><p>覆盖 3/4 支柱；P1、P2 强，P3 弱，P4 未知。</p></div>
+      <div class="card warn"><div class="muted">创新药</div><div class="score">59.2</div><div class="bar"><i style="width:59.2%"></i></div><p>覆盖 3/4 支柱；P3 最强，P2 尚待经营兑现。</p></div>
+      <div class="card bad"><div class="muted">低空经济</div><div class="score">18.3</div><div class="bar"><i style="width:18.3%"></i></div><p>仅弱政策与短线热度；P2 硬门槛失败。</p></div>
+    </div>
+    <div class="callout"><b>边际解释：</b>箭头表达测试假设相对方向，不代表真实市场时序。电网设备的“单期持仓”特意标为方向未知；低空的涨停潮不反推产业兑现。</div>
+    <h3>排序结论</h3><p>产业硬证据优先级：电网设备 ＞ 创新药 ＞ 低空经济。长线资金确认度：创新药 ＞ 电网设备 ＞ 低空经济。综合重仓权限并非简单按指数排序，还要执行 P2 硬门槛。</p>
+    <div class="footer"><span>所有箭头与分值均源于测试假设映射</span><span>3 / 8</span></div>
+  </section>
+
+  <section class="page" id="p4">
+    <div class="watermark">测试假设数据 · 禁止外推</div>
+    <div class="kicker">Theme 01</div><h2>电网设备｜产业硬证据最完整</h2>
+    <div class="grid2">
+      <div class="card good"><div class="muted">主线状态</div><div class="permission">有条件主线 / 可开启重仓</div><p>测试权限指数 68.3；产业链条通过硬门槛。</p></div>
+      <div class="card"><div class="muted">建议权限上限（纪律示例）</div><div class="score">60%</div><p>指主题预算内部上限，不是总资产建议。</p></div>
+    </div>
+    <h3>证据链</h3>
+    <div class="timeline">
+      <div><b>正式设备更新政策</b> <span class="tag test">测试假设</span><br><span class="muted">从方向性叙事进入正式政策，P1 强确认。</span></div>
+      <div><b>政策性银行项目贷款</b> <span class="tag test">测试假设</span><br><span class="muted">资金进入项目侧，连接政策与资本开支，P2 强确认。</span></div>
+      <div><b>连续招标</b> <span class="tag test">测试假设</span><br><span class="muted">需求并非孤立单点，形成订单前端连续性，P2 再确认。</span></div>
+      <div><b>公募持仓仅单期可见</b> <span class="tag test">测试假设</span><br><span class="muted">只能确认样本期持有，无法判定增配、减配或拥挤，P3 降级。</span></div>
+    </div>
+    <h3>为何获得“有条件重仓”</h3>
+    <table class="tight"><thead><tr><th>门槛</th><th style="width:15%">结果</th><th>判断</th></tr></thead><tbody>
+      <tr><td>正式政策</td><td class="center check">通过</td><td>不是泛化表述</td></tr><tr><td>产业落地</td><td class="center check">通过</td><td>项目贷款与连续招标双验证</td></tr><tr><td>独立支柱 ≥ 2</td><td class="center check">通过</td><td>P1 + P2；P3 仅弱确认</td></tr><tr><td>机构连续性</td><td class="center cross">未通过</td><td>单期持仓不能构成边际趋势</td></tr><tr><td>市场结构</td><td class="center muted">未知</td><td>不填补、不推断</td></tr>
+    </tbody></table>
+    <div class="callout amber"><b>权限约束：</b>允许基于产业证据建立主仓，但不得因单期公募持仓追加“机构共振”溢价。若后续仍无连续机构数据或项目贷款/招标失去连续性，应降回标准仓。</div>
+    <h3>最大证据缺口</h3><p><b>公募持仓连续序列与市场承接结构。</b>需要至少可比较的连续持仓口径，才能确认机构边际；需要持续成交/扩散信息，才能判断产业主线是否已形成市场共识。</p>
+    <div class="footer"><span>电网设备：硬产业链成立，资金共振待证</span><span>4 / 8</span></div>
+  </section>
+
+  <section class="page" id="p5">
+    <div class="watermark">测试假设数据 · 禁止外推</div>
+    <div class="kicker">Theme 02</div><h2>创新药｜长线资金确认，经营兑现待证</h2>
+    <div class="grid2">
+      <div class="card warn"><div class="muted">主线状态</div><div class="permission">主线候选 / 暂不开放重仓</div><p>测试权限指数 59.2；政策与资金成立，但产业经营链条仍短。</p></div>
+      <div class="card"><div class="muted">建议权限上限（纪律示例）</div><div class="score">30%</div><p>主题预算内标准仓，等待经营或市场确认。</p></div>
+    </div>
+    <h3>证据拆解</h3>
+    <table class="tight"><thead><tr><th style="width:18%">测试证据</th><th style="width:14%">归属</th><th>有效推论</th><th>禁止外推</th></tr></thead><tbody>
+      <tr><td>医保政策改善</td><td>P1｜2.0</td><td>支付环境边际改善</td><td>不能直接推出企业盈利兑现</td></tr>
+      <tr><td>并购基金</td><td>P2｜1.5</td><td>资本层面出现产业整合工具</td><td>不能等同项目付款、产品放量或现金流</td></tr>
+      <tr><td>保险资金连续两个月增配</td><td>P3｜3.0</td><td>长线资金方向具连续性</td><td>不能推断具体规模、标的或未来持续</td></tr>
+      <tr><td>市场结构未提供</td><td>P4｜未知</td><td>保持待证</td><td>不能补写行情表现</td></tr>
+    </tbody></table>
+    <div class="callout"><b>结构优势：</b>相比电网设备，创新药的 P3 更强——连续两个月的保险资金增配能说明边际方向；相比低空经济，它拥有真实资本部署，不是只有口号与短线涨停。</div>
+    <div class="callout amber"><b>重仓阻断点：</b>并购基金属于资本动作，但题设没有给出临床、获批、授权交易、收入、订单、医保放量或项目付款。P2 因此只计中低强度，不能单靠长线增配升级为重仓主线。</div>
+    <h3>升级 / 降级触发</h3>
+    <div class="grid2"><div class="card good"><b>升级至有条件重仓</b><ul><li>出现可核验经营兑现或产业现金流证据</li><li>保险资金连续性延续且口径可比</li><li>市场承接形成持续结构，而非单日脉冲</li></ul></div><div class="card bad"><b>降级为观察</b><ul><li>医保改善未进入执行</li><li>并购基金停留在设立而无部署</li><li>保险资金连续增配中断或口径不可比</li></ul></div></div>
+    <h3>最大证据缺口</h3><p><b>资本投入向经营兑现的传导证据。</b>当前可以确认“钱在配置/工具在建立”，不能确认“产业现金流已经改善”。</p>
+    <div class="footer"><span>创新药：资金先行，经营兑现决定重仓升级</span><span>5 / 8</span></div>
+  </section>
+
+  <section class="page" id="p6">
+    <div class="watermark">测试假设数据 · 禁止外推</div>
+    <div class="kicker">False-theme Filter</div><h2>低空经济｜伪题材过滤结果</h2>
+    <div class="grid2">
+      <div class="card bad"><div class="muted">过滤结果</div><div class="permission">高伪题材风险 / 禁止重仓</div><p>测试权限指数 18.3；P2 产业落地硬门槛明确失败。</p></div>
+      <div class="card"><div class="muted">建议权限上限（纪律示例）</div><div class="score">0%</div><p>不授予主线仓位；仅进入观察清单。</p></div>
+    </div>
+    <h3>过滤器逐项</h3>
+    <table class="tight"><thead><tr><th>检查项</th><th style="width:16%">结果</th><th>证据与解释</th></tr></thead><tbody>
+      <tr><td>正式、可执行政策</td><td class="center cross">不满足</td><td>只有部委支持表述 <span class="tag test">测试假设</span>，政策硬度不足</td></tr>
+      <tr><td>项目贷款 / 产业融资</td><td class="center cross">缺失</td><td>题设明确没有产业贷款 <span class="tag test">测试假设</span></td></tr>
+      <tr><td>项目付款 / 经营兑现</td><td class="center cross">缺失</td><td>题设明确没有项目付款 <span class="tag test">测试假设</span></td></tr>
+      <tr><td>长线机构连续配置</td><td class="center cross">未提供</td><td>不能从涨停潮推断机构参与</td></tr>
+      <tr><td>市场热度</td><td class="center check">存在</td><td>出现涨停潮 <span class="tag test">测试假设</span>，但持续性与承接未知</td></tr>
+      <tr><td>“两柱 + P2硬门槛”</td><td class="center cross">失败</td><td>弱 P1 + 短线 P4 不能替代 P2</td></tr>
+    </tbody></table>
+    <div class="callout red"><b>伪题材判定：</b>“部委支持表述 → 涨停潮”是一条叙事—价格自强化链，缺少项目资金与付款这一外部锚。它可以形成交易事件，但在本框架下不能被认证为产业主线。</div>
+    <h3>解除过滤所需最小证据集</h3>
+    <ol style="padding-left:18px"><li>正式、可执行且对象清晰的政策文件；</li><li>至少一项独立产业硬证据：项目贷款、实际付款、连续招标/订单或资本开支；</li><li>长线资金连续配置或可核验的市场持续承接，两者至少其一；</li><li>证据时间与口径可比，排除仅由涨停反向制造“产业景气”的循环论证。</li></ol>
+    <h3>最大证据缺口</h3><p><b>产业侧真实资金流：贷款、付款或订单。</b>这是从“支持性叙事”跨越到“可验证产业趋势”的决定性缺口，也是三主题中最严重的单项缺口。</p>
+    <div class="footer"><span>低空经济：事件热度不等于产业主线</span><span>6 / 8</span></div>
+  </section>
+
+  <section class="page" id="p7">
+    <div class="watermark">测试假设数据 · 禁止外推</div>
+    <div class="kicker">Permission Book</div><h2>主线重仓权限与执行矩阵</h2>
+    <table class="tight"><thead><tr><th style="width:14%">主题</th><th style="width:16%">当前级别</th><th style="width:14%">主题预算上限*</th><th>准入理由</th><th>下一步动作</th></tr></thead><tbody>
+      <tr><td><b>电网设备</b></td><td><span class="tag good">L3 有条件重仓</span></td><td class="center"><b>60%</b></td><td>正式政策；项目贷款；连续招标。P2 硬门槛强通过。</td><td>建立主仓但不计机构共振溢价；补连续持仓与市场承接。</td></tr>
+      <tr><td><b>创新药</b></td><td><span class="tag warn">L2 标准仓/候选</span></td><td class="center"><b>30%</b></td><td>政策改善；并购基金；保险资金连续两个月增配。</td><td>等待经营兑现或产业现金流证据再升级。</td></tr>
+      <tr><td><b>低空经济</b></td><td><span class="tag bad">L0 观察</span></td><td class="center"><b>0%</b></td><td>仅支持表述与涨停潮；产业贷款、付款缺失。</td><td>维持伪题材标签，直到最小硬证据集出现。</td></tr>
+    </tbody></table>
+    <p class="small muted">* 上限仅指预先设定的“主题研究预算”内部占比，用于比较权限，不代表总资产仓位，不构成投资建议。</p>
+    <h3>权限等级</h3>
+    <div class="grid2"><div class="card"><b>L0｜观察</b><p>不得建立主线仓位；可记录触发证据。</p></div><div class="card"><b>L1｜试探</b><p>有一项硬证据但尚未双柱确认。</p></div><div class="card"><b>L2｜标准仓/候选</b><p>多柱确认，但关键产业或市场链未闭合。</p></div><div class="card"><b>L3｜有条件重仓</b><p>P2 强通过且至少双柱；对证据缺口设置降级阈值。</p></div></div>
+    <h3>晨会执行顺序</h3>
+    <div class="rank"><b>1</b><div><strong>先查电网设备 P2 是否保持连续</strong><div class="muted">贷款/招标若失真或中断，重仓权限立即降级。</div></div></div>
+    <div class="rank"><b>2</b><div><strong>再查创新药 P2 是否从资本动作走向经营兑现</strong><div class="muted">否则维持 L2，不因保险资金连续增配单独升仓。</div></div></div>
+    <div class="rank"><b>3</b><div><strong>最后检验低空是否出现独立产业锚</strong><div class="muted">涨停数量本身不作为解除过滤的证据。</div></div></div>
+    <div class="callout amber"><b>组合层纪律：</b>本次只给出主题相对权限，不涉及个股、价格与交易时点。任一主题如出现关键证据撤销、口径不一致或仅剩行情自证，应至少下调一级。</div>
+    <div class="footer"><span>权限是证据函数，不是情绪函数</span><span>7 / 8</span></div>
+  </section>
+
+  <section class="page" id="p8">
+    <div class="watermark">测试假设数据 · 禁止外推</div>
+    <div class="kicker">Gap & Audit</div><h2>最大证据缺口、待办与审计声明</h2>
+    <h3>缺口优先级</h3>
+    <table class="tight"><thead><tr><th style="width:9%">级别</th><th style="width:16%">主题</th><th>最大缺口</th><th style="width:29%">对权限的影响</th></tr></thead><tbody>
+      <tr><td class="center"><span class="tag bad">G1</span></td><td><b>低空经济</b></td><td>产业贷款、项目付款或订单等真实资金流</td><td>决定能否从伪题材进入主线候选</td></tr>
+      <tr><td class="center"><span class="tag warn">G2</span></td><td><b>创新药</b></td><td>并购/配置向经营现金流和产业兑现的传导</td><td>决定能否由 L2 升级至 L3</td></tr>
+      <tr><td class="center"><span class="tag warn">G3</span></td><td><b>电网设备</b></td><td>公募持仓连续序列及市场承接结构</td><td>限制“机构共振”溢价，构成 L3 条件</td></tr>
+    </tbody></table>
+    <div class="callout red"><b>全局最大证据缺口：</b>低空经济缺少产业侧真实资金流。这不是一般信息空白，而是主线认证的 P2 硬门槛缺失。</div>
+    <h3>机器台账同步字段</h3>
+    <div class="grid2"><div class="card tint"><b>可追溯对象</b><ul><li>3 个主题、4 根支柱</li><li>9 条用户测试假设证据</li><li>每条证据标注 source_kind = user_test_assumption</li><li>无 URL、无外部引用、无虚构政策名称</li></ul></div><div class="card tint"><b>输出审计</b><ul><li>HTML 固定 8 个 A4 页面容器</li><li>机器台账为 JSON</li><li>缺失值区分 false / unknown</li><li>权限、分数、缺口与 HTML 一致</li></ul></div></div>
+    <h3>最终晨报摘要</h3>
+    <p><b>电网设备：</b>政策—项目资金—招标链最完整，授予有条件重仓；单期公募持仓不得包装成连续增配。</p>
+    <p><b>创新药：</b>医保环境、并购资本与保险资金形成多柱改善，但经营兑现缺席，维持标准仓/候选。</p>
+    <p><b>低空经济：</b>支持表述和涨停潮不足以建立产业主线，伪题材过滤生效，主线仓位为零。</p>
+    <div class="note"><span class="stamp">结构测试专用</span><p class="small muted" style="margin-top:9px">审计声明：本报告没有访问互联网，没有补充题设以外事实，没有创建外部引用。所有行业判断均为对用户给定假设数据的结构化演绎，不应被解释为真实市场研究、投资建议或事实陈述。</p><p class="small mono">companion ledger: outputs/.alpha-studio-mainline.json<br>metrics: outputs/metrics.json</p></div>
+    <div class="footer"><span>End｜测试数据、零外引、可机器审计</span><span>8 / 8</span></div>
+  </section>
+</body>
+</html>

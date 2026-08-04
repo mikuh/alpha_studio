@@ -10,13 +10,14 @@ COPY backend/src ./src
 COPY migrations /migrations
 RUN --mount=type=cache,id=alpha-studio-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=alpha-studio-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    cargo build --release
+    --mount=type=cache,id=alpha-studio-backend-target,target=/app/target,sharing=locked \
+    cargo build --release && cp target/release/alpha-studio-backend /tmp/alpha-studio-backend
 
 FROM debian:bookworm-slim AS runtime
 
 RUN useradd --system --uid 10001 --create-home alpha
 WORKDIR /app
-COPY --from=builder /app/target/release/alpha-studio-backend /usr/local/bin/alpha-studio-backend
+COPY --from=builder /tmp/alpha-studio-backend /usr/local/bin/alpha-studio-backend
 USER alpha
 EXPOSE 8080
 CMD ["alpha-studio-backend"]

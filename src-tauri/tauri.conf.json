@@ -34,10 +34,9 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; img-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*; font-src 'self' data:; media-src 'self' data: blob: https:; frame-src 'self' https: http://localhost:* http://127.0.0.1:* data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
       "assetProtocol": {
-        "enable": true,
-        "scope": ["**"]
+        "enable": false
       }
     }
   },

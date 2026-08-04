@@ -19,6 +19,7 @@ import {
 } from './license';
 import { modelProfilesFromCodexCatalog } from './models';
 import type { CodexModelCatalogItem } from './types';
+import { currentClientAgreementAcceptance } from './legal';
 
 const activationResponse = {
   tenant: {
@@ -83,6 +84,13 @@ const assignedCodexAccount = {
   seatLimit: 2,
 };
 
+const acceptedAgreements = currentClientAgreementAcceptance({
+  serviceTerms: true,
+  privacyPolicy: true,
+  thirdPartyModelNotice: true,
+  researchRiskDisclosure: true,
+});
+
 describe('client license session', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -106,6 +114,7 @@ describe('client license session', () => {
       authorizationCode: 'AS-TEST-CODE',
       deviceName: 'Geb Mac',
       fingerprint: 'fp-test',
+      agreementAcceptance: acceptedAgreements,
     });
 
     expect(fetch).toHaveBeenCalledWith(
@@ -116,6 +125,15 @@ describe('client license session', () => {
       }),
     );
     expect(session.tenant.id).toBe('tenant_demo');
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toMatchObject({
+      agreementAcceptance: {
+        serviceTermsVersion: '2026-08-04',
+        serviceTermsAccepted: true,
+        privacyPolicyAccepted: true,
+        thirdPartyModelNoticeAccepted: true,
+        researchRiskDisclosureAccepted: true,
+      },
+    });
     expect(loadClientLicenseSession()?.device.id).toBe('dev_demo');
   });
 
@@ -134,6 +152,7 @@ describe('client license session', () => {
       authorizationCode: 'AS-TEST-CODE',
       deviceName: 'Geb Mac',
       fingerprint: 'fp-test',
+      agreementAcceptance: acceptedAgreements,
     })).rejects.toThrow('激活响应不完整');
 
     expect(loadClientLicenseSession()).toBeNull();

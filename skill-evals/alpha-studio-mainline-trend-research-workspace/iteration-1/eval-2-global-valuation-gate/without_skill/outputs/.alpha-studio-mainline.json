@@ -1,0 +1,119 @@
+{
+  "schema_version": "1.0",
+  "artifact_type": "alpha_studio_mainline_ledger",
+  "run": {
+    "mode": "structural_test",
+    "as_of": "2026-08-04",
+    "language": "zh-CN",
+    "internet_used": false,
+    "external_sources_used": false,
+    "input_files": [],
+    "data_provenance": "user_supplied_hypothetical_test_data_only",
+    "disclaimer": "All evidence and conclusions are for structural testing and are not statements about real markets or investment advice."
+  },
+  "framework": {
+    "decision_order": [
+      "pricing_domain",
+      "overseas_cycle_switch",
+      "domestic_industry_and_capital_confirmation",
+      "valuation_gate",
+      "resonance_and_divergence_check",
+      "position_permission"
+    ],
+    "non_additivity_reasons": [
+      "Policy, orders, and fund flows may share one catalyst and cannot be counted as independent evidence.",
+      "Evidence is sequential: overseas demand, domestic transmission, and valuation answer different gating questions.",
+      "Global-pricing and local-pricing tracks require different confirmation structures.",
+      "A hard valuation failure overrides positive soft signals.",
+      "Missing or negative capital confirmation cannot be hidden by counting positive items."
+    ],
+    "heavy_position_rule": "allowed_only_if_all_required_gates_pass_and_no_key_divergence_exists"
+  },
+  "tracks": [
+    {
+      "id": "ai_compute",
+      "name_zh": "AI算力",
+      "pricing_domain": "global",
+      "test_evidence": [
+        {"factor": "domestic_compute_policy", "direction": "positive", "provenance": "test_data"},
+        {"factor": "special_purpose_loans", "direction": "positive", "provenance": "test_data"},
+        {"factor": "north_american_hyperscaler_capex_revision", "direction": "up", "provenance": "test_data"},
+        {"factor": "active_fund_allocation", "direction": "continuous_increase", "provenance": "test_data"},
+        {"factor": "valuation_gate", "direction": "fail", "provenance": "test_data"}
+      ],
+      "overseas_cycle_switch": {
+        "state": "on",
+        "basis": "North American cloud-vendor capital expenditure was revised upward in the test data."
+      },
+      "resonance": {
+        "state": "strong_but_vetoed",
+        "positive_axes": ["domestic_policy", "industry_financing", "overseas_demand", "active_funds"],
+        "blocking_axis": "valuation"
+      },
+      "valuation_gate": "fail",
+      "heavy_position_allowed": false,
+      "current_action": "watch_as_first_candidate_pending_valuation_unlock",
+      "upgrade_conditions": [
+        "valuation_gate_turns_pass",
+        "overseas_capex_signal_remains_positive",
+        "domestic_financing_and_active_fund_confirmation_remain_intact"
+      ],
+      "downgrade_conditions": ["overseas_capex_revision_reverses", "active_funds_stop_adding", "valuation_gate_remains_fail"]
+    },
+    {
+      "id": "copper",
+      "name_zh": "铜",
+      "pricing_domain": "global",
+      "test_evidence": [
+        {"factor": "overseas_price", "direction": "up", "provenance": "test_data"},
+        {"factor": "inventory", "direction": "down", "provenance": "test_data"},
+        {"factor": "domestic_targeted_industry_capital", "direction": "unclear", "provenance": "test_data"}
+      ],
+      "overseas_cycle_switch": {
+        "state": "on",
+        "basis": "Overseas price rose while inventory fell in the test data."
+      },
+      "resonance": {
+        "state": "partial",
+        "positive_axes": ["overseas_price", "inventory_tightening"],
+        "missing_axis": "domestic_targeted_industry_capital"
+      },
+      "valuation_gate": "not_provided",
+      "heavy_position_allowed": false,
+      "current_action": "observe_or_use_light_conditional_exposure_only",
+      "upgrade_conditions": ["domestic_targeted_industry_capital_becomes_clear", "overseas_price_and_inventory_signals_persist"],
+      "downgrade_conditions": ["price_inventory_relationship_reverses", "domestic_capital_confirmation_remains_absent"]
+    },
+    {
+      "id": "domestic_software",
+      "name_zh": "国产软件",
+      "pricing_domain": "local",
+      "test_evidence": [
+        {"factor": "xinchuang_policy", "direction": "positive", "provenance": "test_data"},
+        {"factor": "orders", "direction": "positive", "provenance": "test_data"},
+        {"factor": "institutional_fund_flow", "direction": "marginal_outflow", "provenance": "test_data"}
+      ],
+      "overseas_cycle_switch": {
+        "state": "not_applicable",
+        "basis": "The test defines this as a local-pricing track."
+      },
+      "resonance": {
+        "state": "divergent",
+        "positive_axes": ["domestic_policy", "orders"],
+        "negative_axis": "institutional_fund_flow"
+      },
+      "valuation_gate": "not_provided",
+      "heavy_position_allowed": false,
+      "current_action": "observe_pending_institutional_flow_reversal",
+      "upgrade_conditions": ["institutional_outflow_stops_and_turns_into_sustained_inflow", "orders_remain_positive"],
+      "downgrade_conditions": ["orders_weaken", "institutional_outflow_accelerates"]
+    }
+  ],
+  "portfolio_conclusion": {
+    "heavy_position_candidate_count": 0,
+    "priority_order_for_monitoring": ["ai_compute", "copper", "domestic_software"],
+    "priority_is_return_forecast": false,
+    "position_sizes_generated": false,
+    "position_size_omission_reason": "The test data provides no price range, risk budget, or loss tolerance."
+  }
+}

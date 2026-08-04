@@ -1,4 +1,4 @@
-import { Children, Fragment, createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Children, Fragment, Suspense, createContext, isValidElement, lazy, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   AnchorHTMLAttributes,
   ChangeEvent,
@@ -16,7 +16,7 @@ import type {
 import ReactMarkdown, { type Components } from 'react-markdown';
 import { createPortal } from 'react-dom';
 import remarkGfm from 'remark-gfm';
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import officialSkillCatalog from '../skills/catalog.json';
@@ -178,8 +178,7 @@ import {
   type BrowserWebviewEvent,
   type LocalDirectoryEntry,
 } from './codexBridge';
-import { BrowserPdfViewer } from './BrowserPdfViewer';
-import { NativeBrowserSurface } from './NativeBrowserSurface';
+import { FirstUseGuide, OPEN_FIRST_USE_GUIDE_EVENT } from './FirstUseGuide';
 import {
   COWORKER_CATALOG,
   COWORKER_GROUP_LABELS,
@@ -231,6 +230,14 @@ import {
   type ClientManagedDevice,
 } from './license';
 import {
+  EMPTY_LEGAL_ACCEPTANCE,
+  LEGAL_DOCUMENTS,
+  allLegalDocumentsAccepted,
+  currentClientAgreementAcceptance,
+  type LegalAcceptanceState,
+  type LegalDocumentDefinition,
+} from './legal';
+import {
   APPROVAL_OPTIONS,
   EFFORT_OPTIONS,
   reasoningEffortOptionsForProfile,
@@ -275,8 +282,6 @@ import {
   type ResearchSecurityMention,
 } from './research';
 import { registerComposerInsertHandler } from './composerBridge';
-import { ResearchWorkbenchPanel } from './ResearchWorkbench';
-import { DailyDecisionPanel } from './DailyDecisionPanel';
 import {
   DAILY_DECISION_CHANGED_EVENT,
   OPEN_DAILY_DECISION_EVENT,
@@ -316,6 +321,11 @@ import type {
   SelectedTextContext,
   SkillSelection,
 } from './types';
+
+const BrowserPdfViewer = lazy(() => import('./BrowserPdfViewer').then((module) => ({ default: module.BrowserPdfViewer })));
+const NativeBrowserSurface = lazy(() => import('./NativeBrowserSurface').then((module) => ({ default: module.NativeBrowserSurface })));
+const ResearchWorkbenchPanel = lazy(() => import('./ResearchWorkbench').then((module) => ({ default: module.ResearchWorkbenchPanel })));
+const DailyDecisionPanel = lazy(() => import('./DailyDecisionPanel').then((module) => ({ default: module.DailyDecisionPanel })));
 
 type RightPanel = 'none' | 'git' | 'features' | 'coworkers' | 'review' | 'terminal' | 'browser' | 'files' | 'side-chat' | 'research-workbench' | 'daily-decision';
 type RightDockKind = 'review' | 'terminal' | 'browser' | 'files' | 'side-chat' | 'research-workbench' | 'daily-decision';
@@ -1136,8 +1146,13 @@ function ClientActivationScreen({
 }) {
   const [companyName, setCompanyName] = useState('');
   const [authorizationCode, setAuthorizationCode] = useState('');
+  const [legalAcceptance, setLegalAcceptance] = useState<LegalAcceptanceState>(
+    () => ({ ...EMPTY_LEGAL_ACCEPTANCE }),
+  );
+  const [openLegalDocument, setOpenLegalDocument] = useState<LegalDocumentDefinition | null>(null);
   const [error, setError] = useState(initialError);
   const [loading, setLoading] = useState(false);
+  const agreementsAccepted = allLegalDocumentsAccepted(legalAcceptance);
 
   useEffect(() => setError(initialError), [initialError]);
 
@@ -1152,6 +1167,7 @@ function ClientActivationScreen({
         authorizationCode,
         deviceName: defaultDeviceName(),
         fingerprint: getOrCreateDeviceFingerprint(),
+        agreementAcceptance: currentClientAgreementAcceptance(legalAcceptance),
       });
       onActivated(session);
     } catch (activationError) {
@@ -1181,12 +1197,91 @@ function ClientActivationScreen({
           授权码
           <input value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} required />
         </label>
+        <fieldset className="license-consents">
+          <legend>激活前确认</legend>
+          {LEGAL_DOCUMENTS.map((document) => {
+            const checkboxId = `legal-acceptance-${document.id}`;
+            return (
+              <div className="license-consent-row" key={document.id}>
+                <input
+                  id={checkboxId}
+                  type="checkbox"
+                  checked={legalAcceptance[document.id]}
+                  onChange={(event) => setLegalAcceptance((current) => ({
+                    ...current,
+                    [document.id]: event.target.checked,
+                  }))}
+                />
+                <label htmlFor={checkboxId}>
+                  <span>我已阅读并同意《{document.shortTitle}》</span>
+                  <small>{document.summary}</small>
+                </label>
+                <button type="button" onClick={() => setOpenLegalDocument(document)}>查看</button>
+              </div>
+            );
+          })}
+        </fieldset>
+        <div className="license-local-data-note">
+          <HardDrive size={15} aria-hidden="true" />
+          <span>项目、持仓、研究记录和会话历史默认仅保存在本机；只有发起模型调用时，必要会话内容才发送给所选大模型服务方。</span>
+        </div>
         {error && <div className="license-error">{error}</div>}
-        <button type="submit" disabled={loading}>
+        <button type="submit" disabled={loading || !agreementsAccepted}>
           {loading ? '正在激活...' : '激活并进入'}
         </button>
       </form>
+      {openLegalDocument ? (
+        <LegalDocumentDialog
+          legalDocument={openLegalDocument}
+          onClose={() => setOpenLegalDocument(null)}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function LegalDocumentDialog({
+  legalDocument,
+  onClose,
+}: {
+  legalDocument: LegalDocumentDefinition;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [onClose]);
+
+  return createPortal(
+    <div className="legal-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="legal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="legal-dialog-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <span>协议版本 {legalDocument.version}</span>
+            <h2 id="legal-dialog-title">{legalDocument.title}</h2>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭协议">
+            <X size={18} />
+          </button>
+        </header>
+        <article className="legal-dialog-content">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{legalDocument.content}</ReactMarkdown>
+        </article>
+        <footer>
+          <button type="button" onClick={onClose}>我已阅读</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
   );
 }
 
@@ -1221,7 +1316,7 @@ function isDocumentFullscreen(): boolean {
 export function App() {
   return (
     <ClientLicenseBoundary>
-      <AppWorkspace />
+      <FirstUseGuide><AppWorkspace /></FirstUseGuide>
     </ClientLicenseBoundary>
   );
 }
@@ -4376,9 +4471,15 @@ function RightDockWorkspace({
                   />
                 )}
                 {tab.kind === 'research-workbench' && (
-                  <ResearchWorkbenchPanel requestedStockCode={tab.stockCode} requestKey={tab.requestKey} />
+                  <Suspense fallback={<LazyPanelFallback label="正在加载个股研究" />}>
+                    <ResearchWorkbenchPanel requestedStockCode={tab.stockCode} requestKey={tab.requestKey} />
+                  </Suspense>
                 )}
-                {tab.kind === 'daily-decision' && <DailyDecisionPanel />}
+                {tab.kind === 'daily-decision' && (
+                  <Suspense fallback={<LazyPanelFallback label="正在加载每日决策" />}>
+                    <DailyDecisionPanel />
+                  </Suspense>
+                )}
               </div>
             ))}
           </div>
@@ -5107,6 +5208,8 @@ function BrowserDockPanel({
           className="browser-frame"
           srcDoc={htmlPreview.srcDoc}
           title={activeDisplay || htmlPreview.path}
+          sandbox=""
+          referrerPolicy="no-referrer"
           onLoad={(event) => {
             setIsLoading(false);
             const title = event.currentTarget.contentDocument?.title.trim();
@@ -5114,7 +5217,9 @@ function BrowserDockPanel({
           }}
         />
       ) : localPdfPath ? (
-        <BrowserPdfViewer path={localPdfPath} revision={frameKey} onOpenExternal={() => void openExternal(localPdfPath)} />
+        <Suspense fallback={<LazyPanelFallback label="正在加载 PDF 阅读器" />}>
+          <BrowserPdfViewer path={localPdfPath} revision={frameKey} onOpenExternal={() => void openExternal(localPdfPath)} />
+        </Suspense>
       ) : frameError ? (
         <div className="browser-frame-status error" role="alert">
           <AlertCircle size={18} />
@@ -5123,13 +5228,15 @@ function BrowserDockPanel({
           <button type="button" className="generated-file-open" onClick={refreshFrame}><span>重试</span><RefreshCw size={13} /></button>
         </div>
       ) : nativeHttpUrl ? (
-        <NativeBrowserSurface
-          id={nativeBrowserId}
-          url={url}
-          visible={active}
-          onEvent={handleNativeBrowserEvent}
-          onError={handleNativeBrowserError}
-        />
+        <Suspense fallback={<LazyPanelFallback label="正在加载浏览器" />}>
+          <NativeBrowserSurface
+            id={nativeBrowserId}
+            url={url}
+            visible={active}
+            onEvent={handleNativeBrowserEvent}
+            onError={handleNativeBrowserError}
+          />
+        </Suspense>
       ) : url ? (
         <iframe
           ref={browserFrameRef}
@@ -5179,11 +5286,13 @@ async function buildLocalHtmlPreviewDocument(path: string): Promise<string> {
 
   const parser = new DOMParser();
   const doc = parser.parseFromString(html.content, 'text/html');
-  const baseDir = ensureTrailingSlash(directoryName(path));
-
-  const base = doc.createElement('base');
-  base.href = localFileBrowserUrl(baseDir);
-  doc.head.prepend(base);
+  doc.querySelectorAll('script, iframe, object, embed, form, base, meta[http-equiv="refresh" i]')
+    .forEach((element) => element.remove());
+  doc.querySelectorAll<HTMLElement>('*').forEach((element) => {
+    Array.from(element.attributes).forEach((attribute) => {
+      if (attribute.name.toLowerCase().startsWith('on')) element.removeAttribute(attribute.name);
+    });
+  });
 
   const stylesheets = Array.from(doc.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][href]'));
   await Promise.all(stylesheets.map(async (link) => {
@@ -8930,8 +9039,8 @@ async function buildAttachmentFromPastedFile(file: File, index: number): Promise
   return buildAttachmentFromPath(path);
 }
 
-// Desktop: the dialog returns absolute paths; images get an asset URL the
-// webview can render via the Tauri asset protocol.
+// Desktop: the dialog returns absolute paths; image previews are copied into a
+// bounded data URL so the webview never receives broad filesystem protocol access.
 async function buildAttachmentFromPath(path: string, isDirectory = false): Promise<MessageAttachment> {
   const name = basename(path);
   if (isDirectory) {
@@ -8941,12 +9050,7 @@ async function buildAttachmentFromPath(path: string, isDirectory = false): Promi
   const kind: MessageAttachment['kind'] = isImageExt(ext) ? 'image' : 'file';
   let previewUrl: string | undefined;
   if (kind === 'image') {
-    try {
-      const { convertFileSrc } = await import('@tauri-apps/api/core');
-      previewUrl = convertFileSrc(path);
-    } catch {
-      previewUrl = undefined;
-    }
+    previewUrl = await localImageDataUrl(path) || undefined;
   }
   return { id: createAttachmentId(), name, kind, ext, path, previewUrl };
 }
@@ -12331,6 +12435,9 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
           <SettingsSegment value={theme} onChange={onThemeChange} options={[{ id: 'light', label: '浅色', icon: <Sun size={13} /> }, { id: 'dark', label: '深色', icon: <Moon size={13} /> }]} />
         </SettingsRow>
         <SettingsRow title="界面语言" description="Alpha Studio 金融版默认使用简体中文。"><span className="settings-static">简体中文</span></SettingsRow>
+        <SettingsRow title="首次使用引导" description="重新查看本地数据、大模型服务方、账号安全、备份和费用说明。">
+          <button className="settings-btn" type="button" onClick={() => window.dispatchEvent(new Event(OPEN_FIRST_USE_GUIDE_EVENT))}>打开引导</button>
+        </SettingsRow>
       </SettingsGroup>
     );
   }
@@ -13488,10 +13595,23 @@ function formatUsageBreakdown(usage: BillingUsageTotals): string {
   return `输入 ${formatWholeNumber(usage.inputTokens)} · 输出 ${formatWholeNumber(usage.outputTokens)} · 推理 ${formatWholeNumber(usage.reasoningTokens)} · 缓存 ${formatWholeNumber(usage.cachedTokens)}`;
 }
 
+function LazyPanelFallback({ label }: { label: string }) {
+  return (
+    <div className="lazy-panel-fallback" role="status">
+      <Loader2 size={17} className="spin" />
+      <span>{label}…</span>
+    </div>
+  );
+}
+
 function formatLedgerEntryType(type: string): string {
   if (type === 'usage_charge') return '按量扣费';
-  if (type === 'topup') return '余额充值';
-  if (type === 'adjustment') return '账务调整';
+  if (type === 'usage_settlement_credit') return '用量结算退回';
+  if (type === 'offline_receipt') return '线下收款登记';
+  if (type === 'offline_receipt_correction') return '线下登记更正';
+  if (type === 'opening_balance') return '期初余额迁移';
+  if (type === 'topup') return '历史余额登记';
+  if (type === 'adjustment') return '历史账务调整';
   return type;
 }
 
@@ -13747,15 +13867,7 @@ async function openExternal(url: string): Promise<void> {
       await invoke('open_external_target', { request: { target: localPath || url } });
       return;
     } catch {
-      // Fall back to the plugin opener below for older desktop builds.
-    }
-    try {
-      const { openPath, openUrl } = await import('@tauri-apps/plugin-opener');
-      if (localPath) await openPath(localPath);
-      else await openUrl(url);
-      return;
-    } catch {
-      // Fall back to the web behavior below.
+      // Fall through to the browser behavior in degraded runtimes.
     }
   }
   window.open(localPath ? localFileBrowserUrl(localPath) : url, '_blank', 'noopener,noreferrer');
@@ -13893,21 +14005,10 @@ function renderableImageSrc(src: string): string {
   if (!isTauriRuntime()) return src;
   const localPath = localFilePath(src);
   if (!localPath) return src;
-  try {
-    return convertFileSrc(localPath);
-  } catch {
-    return src;
-  }
+  return pathToFileUrl(localPath);
 }
 
 function localFileBrowserUrl(path: string): string {
-  if (isTauriRuntime()) {
-    try {
-      return convertFileSrc(path);
-    } catch {
-      // Fall through to a file URL for degraded runtimes.
-    }
-  }
   return pathToFileUrl(path);
 }
 

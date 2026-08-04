@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>全球定价赛道主线研究简报｜结构测试</title>
+  <style>
+    :root{--ink:#17212b;--muted:#65717d;--line:#d9e0e6;--paper:#fff;--navy:#173a5e;--blue:#e9f2fa;--green:#1f6f55;--amber:#a65b00;--red:#a63d40;--soft:#f5f7f9}
+    *{box-sizing:border-box} html{background:#e9edf1} body{margin:0;color:var(--ink);font:13px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    .page{width:210mm;min-height:297mm;margin:10mm auto;padding:15mm 16mm 14mm;background:var(--paper);box-shadow:0 4px 18px rgba(23,33,43,.1);position:relative}
+    .eyebrow{color:var(--navy);font-weight:750;letter-spacing:.08em;font-size:11px}.stamp{display:inline-block;margin-left:8px;padding:2px 7px;border:1px solid var(--red);color:var(--red);border-radius:3px;letter-spacing:0}
+    h1{margin:7px 0 4px;font-size:26px;line-height:1.2;letter-spacing:-.02em} h2{font-size:17px;margin:20px 0 9px;color:var(--navy)} h3{font-size:14px;margin:0 0 5px}.sub{color:var(--muted);margin:0 0 15px}.notice{background:#fff4e5;border-left:4px solid var(--amber);padding:8px 11px;margin:12px 0 14px}.thesis{background:var(--navy);color:#fff;padding:13px 15px;margin:12px 0 16px;font-size:15px}.thesis b{color:#d9edff}
+    table{border-collapse:collapse;width:100%;font-size:12px} th{background:var(--soft);text-align:left;color:#40505e} th,td{border:1px solid var(--line);padding:8px;vertical-align:top}.tag{white-space:nowrap;font-weight:700}.on{color:var(--green)}.partial{color:var(--amber)}.fail{color:var(--red)}.na{color:var(--muted)}
+    .cards{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px}.card{border:1px solid var(--line);border-top:4px solid var(--navy);padding:10px;background:#fff}.card p{margin:4px 0}.card .decision{margin-top:8px;padding-top:7px;border-top:1px solid var(--line);font-weight:750}.small{font-size:11px;color:var(--muted)}
+    .flow{display:grid;grid-template-columns:1fr 24px 1fr 24px 1fr;align-items:stretch;margin:10px 0}.step{padding:10px;border:1px solid var(--line);background:var(--soft)}.arrow{display:flex;align-items:center;justify-content:center;color:var(--navy);font-weight:800}.rule{padding:10px 12px;border:1px solid var(--line);margin:8px 0}.rule b{color:var(--navy)}
+    ul{margin:6px 0 0;padding-left:18px}li{margin:4px 0}.gate{display:grid;grid-template-columns:28px 1fr;gap:9px;align-items:start;margin:7px 0}.num{width:25px;height:25px;background:var(--navy);color:white;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800}.footer{position:absolute;bottom:8mm;left:16mm;right:16mm;border-top:1px solid var(--line);padding-top:5px;color:var(--muted);font-size:10px;display:flex;justify-content:space-between}
+    @page{size:A4;margin:0}@media print{html{background:#fff}.page{margin:0;box-shadow:none;page-break-after:always}.page:last-child{page-break-after:auto}}
+  </style>
+</head>
+<body>
+  <section class="page">
+    <div class="eyebrow">ALPHA STUDIO · MAINLINE BRIEF <span class="stamp">结构测试 / 非实盘</span></div>
+    <h1>全球定价赛道：强共振不等于可重仓</h1>
+    <p class="sub">测试基准日：2026-08-04｜证据范围：仅限题目所给假设｜无联网、无外部引用</p>
+    <div class="notice"><b>数据声明：</b>本简报中的政策、贷款、资本开支、资金流、价格、库存与订单，全部为题目提供的<b>测试数据</b>，并非对真实市场的陈述。结论仅用于结构测试。</div>
+    <div class="thesis"><b>核心结论：</b>AI 算力具备三端共振，却因估值闸门 fail 不能重仓；铜的海外景气开关已开，但国内资金确认缺位；国产软件属于本土定价，政策与订单被机构资金边际流出抵消。当前三条赛道均不满足重仓条件。</div>
+
+    <h2>一页决策表</h2>
+    <table>
+      <thead><tr><th style="width:14%">赛道</th><th style="width:16%">定价域 / 海外开关</th><th>题设证据（均为测试数据）</th><th style="width:16%">共振状态</th><th style="width:18%">仓位裁决</th></tr></thead>
+      <tbody>
+        <tr><td><b>AI 算力</b></td><td>全球定价<br><span class="tag on">海外开关：开</span></td><td>国内算力政策、专项贷款；北美云厂商资本开支上修；主动基金连续增配；<span class="fail">估值闸门 fail</span>。</td><td><span class="tag on">高强度共振</span><br>但被硬闸门否决</td><td><span class="tag fail">禁止重仓</span><br>候选主线，等待估值修复</td></tr>
+        <tr><td><b>铜</b></td><td>全球定价<br><span class="tag on">海外开关：开</span></td><td>海外价格上涨、库存下降；国内定向产业资金不明确。</td><td><span class="tag partial">局部共振</span><br>海外强、国内验证不足</td><td><span class="tag partial">观察 / 轻仓条件单</span><br>不升级为主线重仓</td></tr>
+        <tr><td><b>国产软件</b></td><td>本土定价<br><span class="tag na">海外开关：不适用</span></td><td>信创政策、订单；机构资金边际流出。</td><td><span class="tag fail">背离</span><br>政策与订单未获资金确认</td><td><span class="tag fail">不重仓</span><br>等待机构流向转正</td></tr>
+      </tbody>
+    </table>
+
+    <h2>赛道拆解</h2>
+    <div class="cards">
+      <article class="card"><h3>① AI 算力</h3><p><b>海外景气：</b>北美云厂商资本开支上修，构成全球需求确认，开关为“开”。</p><p><b>国内承接：</b>政策与专项贷款提供产业侧支持，主动基金连续增配提供交易侧确认。</p><p><b>冲突：</b>估值闸门 fail 是否决项，意味着预期透支或赔率不足的风险未通过。</p><p class="decision fail">排序靠前 ≠ 允许重仓</p></article>
+      <article class="card"><h3>② 铜</h3><p><b>海外景气：</b>价格上涨与库存下降方向一致，开关为“开”。</p><p><b>国内承接：</b>定向产业资金不明确，无法确认海外景气能否形成国内资本与产业共振。</p><p><b>冲突：</b>仅凭量价库存线索，不能把阶段性紧张直接外推为完整主线。</p><p class="decision partial">有线索，但证据链未闭环</p></article>
+      <article class="card"><h3>③ 国产软件</h3><p><b>定价属性：</b>本土定价，海外景气开关不是必要条件。</p><p><b>基本面线索：</b>信创政策与订单同向，说明产业催化存在。</p><p><b>冲突：</b>机构资金边际流出，资金端未确认，甚至与政策、订单方向背离。</p><p class="decision fail">政策催化不能替代资金确认</p></article>
+    </div>
+    <p class="small">注：上述“开 / fail / 共振”等判断均为对题设测试数据的规则化解释，不代表真实资产评级。</p>
+    <div class="footer"><span>仅供结构测试 · 禁止外推实盘</span><span>1 / 2</span></div>
+  </section>
+
+  <section class="page">
+    <div class="eyebrow">DECISION LOGIC <span class="stamp">全部证据为测试数据</span></div>
+    <h1>闸门、共振与重仓许可</h1>
+    <p class="sub">先识别定价域，再判断海外开关，最后检查共振与否决项。</p>
+
+    <h2>海外景气开关是什么</h2>
+    <div class="flow">
+      <div class="step"><b>全球定价赛道</b><br>必须先看海外需求 / 价格信号是否确认。</div><div class="arrow">→</div>
+      <div class="step"><b>开关“开”</b><br>AI：北美云资本开支上修。<br>铜：价格涨 + 库存降。</div><div class="arrow">→</div>
+      <div class="step"><b>只获得入场资格</b><br>还需国内产业、资金、估值与赔率共同过关。</div>
+    </div>
+    <div class="rule"><b>本土定价例外：</b>国产软件主要由本土政策、订单与国内资金定价，因此海外开关标为“不适用”，不能机械地因缺少海外信号扣分；但国内机构流出仍会破坏共振。</div>
+
+    <h2>为什么不能“政策 + 资金 + 景气”简单相加</h2>
+    <ul>
+      <li><b>它们不是独立样本：</b>政策可能同时推动订单预期与基金买入，直接相加会重复计数同一催化。</li>
+      <li><b>证据有先后关系：</b>海外景气解决“需求是否存在”，国内资金解决“能否被本地资产承接”，估值解决“价格是否已透支”；顺序不能被总分替代。</li>
+      <li><b>定价域不同：</b>全球定价赛道需要海外开关，本土定价赛道更依赖国内订单与资金。把同一套权重套在铜和国产软件上会失真。</li>
+      <li><b>存在硬否决项：</b>AI 算力即使政策、贷款、海外资本开支和主动资金全部同向，估值 fail 仍覆盖所有加分，重仓许可为否。</li>
+      <li><b>负证据不应被淹没：</b>国产软件的机构流出、铜的国内定向资金不明，分别代表背离与缺口，不可用正面项目数量掩盖。</li>
+    </ul>
+
+    <h2>重仓许可：必须同时满足</h2>
+    <div class="gate"><div class="num">1</div><div><b>定价域匹配。</b>全球定价赛道的海外景气开关明确为“开”；本土定价赛道则由国内订单 / 基本面持续性替代验证。</div></div>
+    <div class="gate"><div class="num">2</div><div><b>产业与资金双确认。</b>政策或订单不仅存在，还要看到定向产业资金明确、机构资金不再逆向；“不明确”不等于“通过”。</div></div>
+    <div class="gate"><div class="num">3</div><div><b>估值硬闸门通过。</b>任何赛道在估值 fail 时都不得重仓；AI 算力需先由估值消化或盈利兑现使闸门转为 pass。</div></div>
+    <div class="gate"><div class="num">4</div><div><b>证据链无关键背离。</b>景气、订单与资金需同向，且不是同一催化的重复表达；铜需补足国内定向资金，国产软件需机构流向转稳并转正。</div></div>
+    <div class="gate"><div class="num">5</div><div><b>风险收益与退出条件可定义。</b>重仓前应能明确触发、失效与降仓条件；本测试未提供价格区间或风险预算，因此不生成具体仓位比例。</div></div>
+
+    <h2>下一步验证清单（仍须使用后续测试输入）</h2>
+    <table>
+      <thead><tr><th>赛道</th><th>升级条件</th><th>失效 / 降级条件</th></tr></thead>
+      <tbody>
+        <tr><td><b>AI 算力</b></td><td>估值闸门由 fail 转 pass，且海外资本开支、国内专项贷款与主动资金趋势未逆转。</td><td>海外资本开支下修、主动资金停止增配，或估值继续 fail。</td></tr>
+        <tr><td><b>铜</b></td><td>国内定向产业资金明确，并与海外价格、库存信号同向延续。</td><td>价格与库存关系反转，或国内资金确认继续缺席。</td></tr>
+        <tr><td><b>国产软件</b></td><td>机构资金边际流出停止并转为持续净流入，订单延续。</td><td>订单转弱或机构流出扩大；单有政策不足以维持评级。</td></tr>
+      </tbody>
+    </table>
+    <div class="notice"><b>最终裁决：</b>当前没有可重仓赛道。AI 算力列入“估值待解锁”的第一候选；铜列入“国内资金待确认”的第二候选；国产软件列入“资金背离待修复”的本土观察组。该排序是结构判断，不是收益预测。</div>
+    <div class="footer"><span>仅供结构测试 · 数据不足处保持未知</span><span>2 / 2</span></div>
+  </section>
+</body>
+</html>

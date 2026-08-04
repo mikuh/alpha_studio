@@ -1,0 +1,102 @@
+{
+  "expectations": [
+    {
+      "text": "报告显著包含今日主线结论、主线重仓权限、伪题材过滤和最大证据缺口",
+      "passed": true,
+      "evidence": "report.html 第2页决策台实质给出今日主线结论、总体重仓权限和最大证据缺口，并在同页说明低空经济伪题材过滤；后续第4、7、8页分别展开过滤、权限和逐主题补证清单。"
+    },
+    {
+      "text": "本土赛道海外景气显示N/A且不计分不扣分",
+      "passed": true,
+      "evidence": "report.html 总表将三条本土赛道的O柱均显示为N/A，并明确写明“全部O支柱均为 N/A（不计分、不扣分）”；台账中三条 mainline 均为 pricingScope=domestic、overseasGate=off、overseasCycle.active=false、score=null。"
+    },
+    {
+      "text": "只有政策和涨停热度的低空经济被标记为单因子脉冲并禁止重仓",
+      "passed": true,
+      "evidence": "report.html 总表把低空经济标为“单因子脉冲”和“禁止重仓，仅观察脉冲”；台账对应 resonanceState 与 heavyPositionPermission 完全一致，且C/L均为0、未确认，涨停潮仅作价格反馈。"
+    },
+    {
+      "text": "定向信贷与长线资金被分开核验，单日市场资金流不替代任何硬支柱",
+      "passed": true,
+      "evidence": "report.html 分设“定向信贷 / 产业投入闭环”和“长线机构资金”核验表；低空经济的涨停潮在C表中“不计”、在L表中为L=0未确认，并明确写明短线热度不能替代P/C/L硬证据。台账也分别保存 directedCredit 与 longTermCapital。"
+    },
+    {
+      "text": "HTML含8至12个A4 page区块",
+      "passed": true,
+      "evidence": "程序计数得到8个 section.page；report-style.css 将.page设为210mm×297mm，并通过@page配置A4打印页。"
+    },
+    {
+      "text": "机器台账使用有效alpha.mainline_trend.v1结构，并与报告的状态和权限一致",
+      "passed": true,
+      "evidence": "台账声明 schema=alpha.mainline_trend.v1，技能自带 validate_report.py 返回“Mainline report validation passed.”；创新药、电网设备、低空经济的状态与权限分别和HTML中的主升共振/待闸门、部分共振/轻仓验证、单因子脉冲/禁止重仓一致。"
+    },
+    {
+      "text": "仅有单期长线持仓且执行检查缺失的电网设备不得获得可立即执行的重仓权限",
+      "passed": true,
+      "evidence": "报告将电网设备的公募证据标为“单期”“L=2，未确认”，台账记录 execution_checks_present=false；其权限仅为“轻仓验证”，没有开放重仓执行。"
+    },
+    {
+      "text": "所有假设证据在报告和台账中标记为测试数据，且没有伪造外部引用",
+      "passed": true,
+      "evidence": "报告封面明确全篇仅使用【测试数据】，来源表逐项以【测试数据】标记；台账证据和source标题同样标记，publisher为“结构测试题设（非外部来源）”、URL为urn:test-data:*。报告与台账均无HTTP(S)链接。"
+    }
+  ],
+  "summary": {
+    "passed": 8,
+    "failed": 0,
+    "total": 8,
+    "pass_rate": 1.0
+  },
+  "execution_metrics": {
+    "executor_reported": {
+      "evalId": 1,
+      "evalName": "domestic-false-theme-filter",
+      "status": "passed",
+      "generatedAt": "2026-08-04T08:30:00+08:00",
+      "mode": "premarket-structure-test",
+      "networkUsed": false,
+      "externalReferences": 0,
+      "pageCount": 8,
+      "testDataMarkersInHtml": 27,
+      "candidateCount": 3,
+      "validationResult": "Mainline report validation passed."
+    },
+    "output_chars": 45605,
+    "transcript_chars": 1981
+  },
+  "claims": [
+    {
+      "claim": "The formal report contains eight A4 page sections.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "Counted 8 section elements whose class contains page; CSS specifies 210mm by 297mm and @page size A4."
+    },
+    {
+      "claim": "The machine ledger is a valid alpha.mainline_trend.v1 artifact.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The ledger declares schema alpha.mainline_trend.v1 and the bundled report/tracking validator completed successfully."
+    },
+    {
+      "claim": "No web research or external citation was used.",
+      "type": "process",
+      "verified": true,
+      "evidence": "The transcript explicitly records no web search or external lookup; report and ledger contain zero HTTP(S) URLs and all sources are labeled test data with urn:test-data identifiers."
+    },
+    {
+      "claim": "Low-altitude economy is only a price/policy pulse and is not eligible for a heavy position.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Both report and ledger classify it as 单因子脉冲, set C/L to unconfirmed zero, and assign 禁止重仓，仅观察脉冲."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [],
+    "overall": "更新后的断言已分别检查页结构、台账schema/跨文件一致性、权限正确性和测试数据来源纪律，具备良好诊断力。"
+  }
+}

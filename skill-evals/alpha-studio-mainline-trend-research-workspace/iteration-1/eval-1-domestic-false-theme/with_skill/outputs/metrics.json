@@ -1,0 +1,70 @@
+{
+  "evalId": 1,
+  "evalName": "domestic-false-theme-filter",
+  "status": "passed",
+  "generatedAt": "2026-08-04T08:30:00+08:00",
+  "mode": "premarket-structure-test",
+  "networkUsed": false,
+  "externalReferences": 0,
+  "pageCount": 8,
+  "testDataMarkersInHtml": 27,
+  "candidateCount": 3,
+  "topMainline": {
+    "name": "创新药",
+    "score": 74.1,
+    "grade": "A",
+    "resonanceState": "主升共振",
+    "heavyPositionPermission": "共振成立，重仓权限待执行闸门确认"
+  },
+  "candidates": [
+    {
+      "name": "创新药",
+      "score": 74.1,
+      "grade": "A",
+      "resonanceState": "主升共振",
+      "overseasGate": "off",
+      "permission": "共振成立，重仓权限待执行闸门确认"
+    },
+    {
+      "name": "电网设备",
+      "score": 60.8,
+      "grade": "B",
+      "resonanceState": "部分共振",
+      "overseasGate": "off",
+      "permission": "轻仓验证"
+    },
+    {
+      "name": "低空经济",
+      "score": 20.4,
+      "grade": "C",
+      "resonanceState": "单因子脉冲",
+      "overseasGate": "off",
+      "permission": "禁止重仓，仅观察脉冲"
+    }
+  ],
+  "assertions": {
+    "headlineDecisionFieldsPresent": true,
+    "domesticOverseasPillarIsNaAndExcluded": true,
+    "lowAltitudeIsSingleFactorPulse": true,
+    "lowAltitudeHeavyPositionForbidden": true,
+    "directedCreditSeparatedFromLongTermCapital": true,
+    "priceHeatNotUsedAsHardPillar": true,
+    "formalHtmlHasEightA4Pages": true,
+    "trackingSchemaNameIsValid": true,
+    "allHypotheticalEvidenceMarkedAsTestData": true,
+    "noExternalUrls": true
+  },
+  "validation": {
+    "validator": "scripts/validate_report.py",
+    "result": "Mainline report validation passed.",
+    "jsonSchemaLibraryAvailable": false,
+    "note": "Bundled validator completed successfully; optional python jsonschema package was not installed."
+  },
+  "outputs": [
+    "outputs/report.html",
+    "outputs/report-style.css",
+    "outputs/.alpha-studio-mainline.json",
+    "outputs/metrics.json",
+    "transcript.md"
+  ]
+}

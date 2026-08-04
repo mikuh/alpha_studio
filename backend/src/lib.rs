@@ -1,3 +1,4 @@
+pub mod admin_auth;
 pub mod app;
 pub mod billing;
 pub mod config;
@@ -7,6 +8,8 @@ pub mod gateway;
 pub mod gateway_stream;
 pub mod license;
 pub mod market;
+pub mod money;
+pub mod observability;
 pub mod routes;
 pub mod secrets;
 pub mod skill_registry;

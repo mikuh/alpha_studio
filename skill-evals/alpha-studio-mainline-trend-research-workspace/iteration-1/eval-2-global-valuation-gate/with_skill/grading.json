@@ -1,0 +1,133 @@
+{
+  "expectations": [
+    {
+      "text": "全球或混合赛道开启海外景气支柱，本土赛道关闭且不受惩罚",
+      "passed": true,
+      "evidence": "Substantive evidence appears in both artifacts. report.html classifies AI算力 as 混合定价 with ‘O 开启’, 铜 as 全球定价 with ‘O 开启’, and 国产软件 as 本土定价 with ‘O 关闭’ and ‘O=N/A（不计分、不扣分）’. The ledger independently records pricingScope mixed/global/domestic and overseasGate on/on/off; the domestic software overseasCycle pillar is inactive with null score and evidence stating ‘不计分、不扣分’."
+    },
+    {
+      "text": "AI算力在估值闸门未通过时不输出允许重仓主线核心",
+      "passed": true,
+      "evidence": "report.html explicitly says ‘AI算力估值闸门为 fail；不得输出“允许重仓主线核心”’ and gives permission ‘共振成立但重仓权限待执行闸门确认’. The ledger's falseThemeFilter says the fail keeps heavy-position permission closed, its upgrade trigger requires valuation to turn pass, and coreStocks is empty."
+    },
+    {
+      "text": "铜因定向信贷或产业投入缺失而被评级/权限封顶",
+      "passed": true,
+      "evidence": "report.html assigns 铜 19.8/C, ‘单因子脉冲’, and ‘禁止重仓，仅观察脉冲；C 未确认形成硬封顶’. The ledger records directedCredit confirmed=false and states that unconfirmed directed credit/industrial investment makes the false-theme filter fail; heavyPositionPermission is ‘禁止重仓，仅观察脉冲’. This establishes the required causal cap, not merely a low label."
+    },
+    {
+      "text": "国产软件的长线资金流出被当作反证而非中性",
+      "passed": true,
+      "evidence": "report.html says ‘L 恶化是反证，不按中性计’ and describes institutional outflow as strength 2, worsening, confidence 0.80, ‘为反证’. The ledger sets longTermCapital marginal=-1 and confirmed=false, and its counterEvidence says the outflow directly negates current long-term-capital confirmation."
+    },
+    {
+      "text": "报告明确说明多支柱是不同证伪职责而非简单利好相加",
+      "passed": true,
+      "evidence": "report.html contains a dedicated section titled ‘为什么不能把“政策 + 资金 + 景气”简单相加’, separately defines what P, C, L, and O answer, and concludes ‘四支柱承担不同证伪职责，硬闸门优先于总分’. The explanation includes concrete veto behavior for missing C, negative L, and failed valuation rather than just repeating the assertion's keywords."
+    },
+    {
+      "text": "机器台账使用alpha.mainline_trend.v1结构，并与报告的海外开关、共振状态和权限一致",
+      "passed": true,
+      "evidence": "The ledger declares schema='alpha.mainline_trend.v1'. Its AI/国产软件/铜 records match report.html on overseasGate (on/off/on), resonance (主升共振/部分共振/单因子脉冲), and permission (待执行闸门确认/轻仓验证/禁止重仓仅观察脉冲)."
+    },
+    {
+      "text": "所有假设证据在报告和台账中标记为测试数据，且没有伪造外部引用",
+      "passed": true,
+      "evidence": "report.html prominently declares the structure-test scope and labels each evidence row ‘[测试数据]’. Every ledger evidence item is marked ‘测试数据｜无外部引用’, sources is empty, and inspection found no external URL in the report or ledger."
+    }
+  ],
+  "summary": {
+    "passed": 7,
+    "failed": 0,
+    "total": 7,
+    "pass_rate": 1.0
+  },
+  "execution_metrics": {
+    "evalId": 2,
+    "evalName": "global-cycle-and-valuation-gate",
+    "mode": "brief",
+    "pageCount": 2,
+    "generatedAt": "2026-08-04T00:25:05+08:00",
+    "networkUsed": false,
+    "screenshotsUsed": false,
+    "externalSourceCount": 0,
+    "htmlTestDataLabelCount": 14,
+    "scoreResults": {
+      "AI算力": {
+        "score": 79.0,
+        "grade": "A",
+        "resonanceState": "主升共振",
+        "permission": "共振成立，重仓权限待执行闸门确认",
+        "overseasGate": "on"
+      },
+      "国产软件": {
+        "score": 50.4,
+        "grade": "C",
+        "resonanceState": "部分共振",
+        "permission": "轻仓验证",
+        "overseasGate": "off"
+      },
+      "铜": {
+        "score": 19.8,
+        "grade": "C",
+        "resonanceState": "单因子脉冲",
+        "permission": "禁止重仓，仅观察脉冲",
+        "overseasGate": "on"
+      }
+    },
+    "assertions": {
+      "global_or_mixed_tracks_enable_overseas_gate": true,
+      "domestic_track_disables_overseas_gate_without_penalty": true,
+      "ai_valuation_fail_blocks_heavy_permission": true,
+      "copper_missing_directed_credit_caps_grade_and_permission": true,
+      "software_capital_outflow_is_negative_counterevidence": true,
+      "report_explains_non_additive_pillars": true,
+      "all_tracking_evidence_is_test_labeled": true,
+      "no_external_sources_or_links_fabricated": true
+    },
+    "validation": {
+      "scoreMainlinesExitCode": 0,
+      "trackingJsonParse": "passed",
+      "skillValidator": "passed",
+      "skillValidatorCommandMode": "--brief",
+      "semanticChecks": "12/12 passed"
+    },
+    "output_chars": 23177,
+    "transcript_chars": 1634
+  },
+  "claims": [
+    {
+      "claim": "The run produced both the requested HTML brief and a machine ledger.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "outputs/report.html is a substantive two-page brief and outputs/.alpha-studio-mainline.json parses as a populated alpha.mainline_trend.v1 ledger with three mainlines."
+    },
+    {
+      "claim": "Only supplied hypothetical data was used and no external sources were represented as evidence.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The report prominently labels the work a structure test and marks factual evidence as 测试数据; the ledger prefixes every evidence item with 测试数据/无外部引用 and has sources=[]. The transcript records no networking, and no external URL appears in the inspected report or ledger."
+    },
+    {
+      "claim": "AI compute is resonant but cannot receive heavy-position permission until the valuation and other execution gates pass.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The report and ledger consistently pair 主升共振/A/79.0 with closed heavy-position permission, identify valuation fail as the known hard gap, and list valuation plus price-structure, market-risk, and evidence-recency passes as upgrade conditions."
+    },
+    {
+      "claim": "The report and ledger were semantically validated.",
+      "type": "process",
+      "verified": true,
+      "evidence": "The transcript records score_mainlines.py exit code 0, JSON parse success, validate_report.py --brief success, and 12/12 local semantic checks; outputs/metrics.json reports the same validation results."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [],
+    "overall": "No further suggestion: the revised assertions now test the core decision logic, required ledger contract and report/ledger consistency, and provenance/no-fabricated-reference constraint."
+  }
+}

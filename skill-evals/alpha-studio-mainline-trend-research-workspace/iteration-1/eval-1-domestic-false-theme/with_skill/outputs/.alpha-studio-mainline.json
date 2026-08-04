@@ -1,0 +1,348 @@
+{
+  "schema": "alpha.mainline_trend.v1",
+  "tradeDate": "2026-08-04",
+  "generatedAt": "2026-08-04T08:30:00+08:00",
+  "dataCutoff": "2026-08-04T08:30:00+08:00",
+  "mode": "premarket",
+  "overallConclusion": "【结构测试】创新药三根本土支柱均改善，为主升共振测试候选，但执行闸门与核心标的真实性未核验；电网设备为部分共振；低空经济仅为政策单因子脉冲。",
+  "heavyPositionPermission": "共振成立，重仓权限待执行闸门确认",
+  "topMainlineId": "innovative-drugs",
+  "previousReportId": null,
+  "mainlines": [
+    {
+      "id": "innovative-drugs",
+      "name": "创新药",
+      "pricingScope": "domestic",
+      "overseasGate": "off",
+      "pillars": {
+        "policy": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.9,
+          "asOf": "2026-08-04T08:30:00+08:00",
+          "sourceTier": 1,
+          "confirmed": true,
+          "score": 80.6,
+          "evidence": [
+            "【测试数据】医保政策改善，作为正式政策改善输入；未引用任何外部文件或真实政策编号。"
+          ],
+          "counterEvidence": [
+            "【测试反证条件】若医保改善缺少执行细则、覆盖范围收窄或兑现延后，则政策支柱降级。"
+          ]
+        },
+        "directedCredit": {
+          "active": true,
+          "strength": 3,
+          "marginal": 1,
+          "confidence": 0.8,
+          "asOf": "2026-08-04T08:30:00+08:00",
+          "sourceTier": 2,
+          "confirmed": true,
+          "score": 62.6,
+          "evidence": [
+            "【测试数据】创新药并购基金作为产业资本工具输入；题设未提供基金金额、项目清单或付款进度。"
+          ],
+          "counterEvidence": [
+            "【测试反证条件】若基金仅设立未投资、投向偏离创新药或并购付款未发生，则C支柱降为未确认。"
+          ]
+        },
+        "longTermCapital": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.85,
+          "asOf": "2026-08-04T08:30:00+08:00",
+          "sourceTier": 2,
+          "confirmed": true,
+          "score": 79.0,
+          "evidence": [
+            "【测试数据】保险资金连续两个月增配创新药，作为具有明确长线身份与跨期连续性的配置确认输入。"
+          ],
+          "counterEvidence": [
+            "【测试反证条件】若后续月度配置转为减配，或高容量产业中枢未出现一致价格结构，则L支柱降级。"
+          ]
+        },
+        "overseasCycle": {
+          "active": false,
+          "strength": null,
+          "marginal": null,
+          "confidence": null,
+          "asOf": null,
+          "sourceTier": null,
+          "confirmed": false,
+          "score": null,
+          "evidence": [
+            "【测试数据】按题设将创新药设为本土定价候选，海外产业景气为N/A（不计分、不扣分）。"
+          ],
+          "counterEvidence": [
+            "【测试反证条件】若后续确认海外收入或全球定价显著，则应将海外开关改为on并补证。"
+          ]
+        }
+      },
+      "score": 74.1,
+      "grade": "A",
+      "resonanceState": "主升共振",
+      "heavyPositionPermission": "共振成立，重仓权限待执行闸门确认",
+      "falseThemeFilter": "通过P/C/L硬支柱验真；但题设未提供价格结构、估值、市场风险、证据时效及A/A-核心标的，不能开放重仓权限。",
+      "largestEvidenceGap": "执行闸门：补齐价格结构、估值、市场风险、证据时效四项检查，并核验至少一个A/A-产业核心标的。",
+      "upgradeTriggers": [
+        "【测试触发】四项执行检查全部pass，且完成A/A-产业核心标的业务与容量核验。",
+        "【测试触发】并购基金披露已投项目、付款进度或交易完成数据。"
+      ],
+      "invalidationTriggers": [
+        "【测试失效】医保改善不落地或并购基金未形成真实投资。",
+        "【测试失效】保险资金连续配置转为减配。"
+      ],
+      "continuityState": "新进",
+      "coreStocks": []
+    },
+    {
+      "id": "grid-equipment",
+      "name": "电网设备",
+      "pricingScope": "domestic",
+      "overseasGate": "off",
+      "pillars": {
+        "policy": {
+          "active": true,
+          "strength": 4,
+          "marginal": 1,
+          "confidence": 0.9,
+          "asOf": "2026-08-04T08:30:00+08:00",
+          "sourceTier": 1,
+          "confirmed": true,
+          "score": 80.6,
+          "evidence": [
+            "【测试数据】存在正式设备更新政策，作为具有约束力的政策输入；无外部文件编号。"
+          ],
+          "counterEvidence": [
+            "【测试反证条件】若设备更新细则延迟、范围收窄或预算未落实，则P支柱降级。"
+          ]
+        },
+        "directedCredit": {
+          "active": true,
+          "strength": 5,
+          "marginal": 1,
+          "confidence": 0.9,
+          "asOf": "2026-08-04T08:30:00+08:00",
+          "sourceTier": 2,
+          "confirmed": true,
+          "score": 96.0,
+          "evidence": [
+            "【测试数据】政策性银行项目贷款明确投向电网设备项目。",
+            "【测试数据】连续招标与项目贷款交叉验证，构成从资金工具到采购的测试闭环。"
+          ],
+          "counterEvidence": [
+            "【测试反证条件】若贷款未实际投放、用途偏离设备项目或后续招标中断，则C支柱降级。"
+          ]
+        },
+        "longTermCapital": {
+          "active": true,
+          "strength": 2,
+          "marginal": null,
+          "confidence": 0.6,
+          "asOf": "2026-08-04T08:30:00+08:00",
+          "sourceTier": 2,
+          "confirmed": false,
+          "score": 5.9,
+          "evidence": [
+            "【测试数据】仅观察到单期公募持仓截面，无法判断增配、持平或减配，故边际方向记为未知。"
+          ],
+          "counterEvidence": [
+            "【测试数据边界】单期持仓不得替代跨期配置或第二个独立长线资金维度。"
+          ]
+        },
+        "overseasCycle": {
+          "active": false,
+          "strength": null,
+          "marginal": null,
+          "confidence": null,
+          "asOf": null,
+          "sourceTier": null,
+          "confirmed": false,
+          "score": null,
+          "evidence": [
+            "【测试数据】按题设将电网设备设为本土定价候选，海外产业景气为N/A（不计分、不扣分）。"
+          ],
+          "counterEvidence": [
+            "【测试反证条件】若后续确认海外订单或全球原材料定价成为核心驱动，应重新开启O支柱。"
+          ]
+        }
+      },
+      "score": 60.8,
+      "grade": "B",
+      "resonanceState": "部分共振",
+      "heavyPositionPermission": "轻仓验证",
+      "falseThemeFilter": "政策与定向信贷闭环初步通过，但长线机构资金未确认，不能称趋势持续性完成确认。",
+      "largestEvidenceGap": "长线机构资金：补充至少两期可比公募持仓及另一独立维度，才能判定配置边际。",
+      "upgradeTriggers": [
+        "【测试触发】出现至少两期可比公募持仓连续增配，并由保险、ETF申赎或高容量中军趋势中的一项交叉验证。"
+      ],
+      "invalidationTriggers": [
+        "【测试失效】政策性银行贷款未投放、贷款用途偏离或连续招标中断。",
+        "【测试失效】后续公募持仓显示明确减配。"
+      ],
+      "continuityState": "新进",
+      "coreStocks": []
+    },
+    {
+      "id": "low-altitude-economy",
+      "name": "低空经济",
+      "pricingScope": "domestic",
+      "overseasGate": "off",
+      "pillars": {
+        "policy": {
+          "active": true,
+          "strength": 3,
+          "marginal": 1,
+          "confidence": 0.75,
+          "asOf": "2026-08-04T08:30:00+08:00",
+          "sourceTier": 1,
+          "confirmed": true,
+          "score": 61.2,
+          "evidence": [
+            "【测试数据】仅有部委支持表述，作为政策方向改善输入；未提供配套预算或项目清单。"
+          ],
+          "counterEvidence": [
+            "【测试反证条件】若后续没有正式细则、预算和责任主体，政策强度不得上调。"
+          ]
+        },
+        "directedCredit": {
+          "active": true,
+          "strength": 0,
+          "marginal": null,
+          "confidence": 0.9,
+          "asOf": "2026-08-04T08:30:00+08:00",
+          "sourceTier": 2,
+          "confirmed": false,
+          "score": 0.0,
+          "evidence": [
+            "【测试数据】题设明确没有产业贷款或项目付款，C支柱未确认。"
+          ],
+          "counterEvidence": [
+            "【测试数据边界】涨停潮、股票资金流或新闻热度均不能替代产业贷款、项目付款和订单。"
+          ]
+        },
+        "longTermCapital": {
+          "active": true,
+          "strength": 0,
+          "marginal": null,
+          "confidence": 0.9,
+          "asOf": "2026-08-04T08:30:00+08:00",
+          "sourceTier": 4,
+          "confirmed": false,
+          "score": 0.0,
+          "evidence": [
+            "【测试数据】仅有涨停潮，属于短期价格反馈，未提供长线资金身份、窗口或配置连续性。"
+          ],
+          "counterEvidence": [
+            "【测试数据边界】单日涨停热度不得计作长线机构资金确认。"
+          ]
+        },
+        "overseasCycle": {
+          "active": false,
+          "strength": null,
+          "marginal": null,
+          "confidence": null,
+          "asOf": null,
+          "sourceTier": null,
+          "confirmed": false,
+          "score": null,
+          "evidence": [
+            "【测试数据】按题设将低空经济设为本土定价候选，海外产业景气为N/A（不计分、不扣分）。"
+          ],
+          "counterEvidence": [
+            "【测试反证条件】若未来出现显著海外需求敞口，则重新评估O支柱开关。"
+          ]
+        }
+      },
+      "score": 20.4,
+      "grade": "C",
+      "resonanceState": "单因子脉冲",
+      "heavyPositionPermission": "禁止重仓，仅观察脉冲",
+      "falseThemeFilter": "未通过：只有部委支持表述与涨停潮，定向信贷/产业投入为零确认；按伪题材高风险处理。",
+      "largestEvidenceGap": "定向信贷/产业投入：补充已投放产业贷款或项目付款，并由招标、订单或开工交叉验证。",
+      "upgradeTriggers": [
+        "【测试触发】出现明确产业投向的已投放贷款或项目付款，并出现可核验招标、订单或开工。"
+      ],
+      "invalidationTriggers": [
+        "【测试失效】政策表述长期没有预算、项目、贷款或付款承接。",
+        "【测试失效】涨停潮退却且没有产业中枢承接。"
+      ],
+      "continuityState": "新进",
+      "coreStocks": []
+    }
+  ],
+  "sources": [
+    {
+      "title": "【测试数据】电网设备正式设备更新政策",
+      "publisher": "结构测试题设（非外部来源）",
+      "publishedAt": "2026-08-04T08:30:00+08:00",
+      "url": "urn:test-data:grid-policy",
+      "tier": 1,
+      "pillar": "policy"
+    },
+    {
+      "title": "【测试数据】电网设备政策性银行项目贷款与连续招标",
+      "publisher": "结构测试题设（非外部来源）",
+      "publishedAt": "2026-08-04T08:30:00+08:00",
+      "url": "urn:test-data:grid-credit-tenders",
+      "tier": 2,
+      "pillar": "directedCredit"
+    },
+    {
+      "title": "【测试数据】电网设备单期公募持仓",
+      "publisher": "结构测试题设（非外部来源）",
+      "publishedAt": "2026-08-04T08:30:00+08:00",
+      "url": "urn:test-data:grid-fund-single-period",
+      "tier": 2,
+      "pillar": "longTermCapital"
+    },
+    {
+      "title": "【测试数据】低空经济部委支持表述",
+      "publisher": "结构测试题设（非外部来源）",
+      "publishedAt": "2026-08-04T08:30:00+08:00",
+      "url": "urn:test-data:low-altitude-policy-statement",
+      "tier": 1,
+      "pillar": "policy"
+    },
+    {
+      "title": "【测试数据】低空经济涨停潮（仅价格反馈）",
+      "publisher": "结构测试题设（非外部来源）",
+      "publishedAt": "2026-08-04T08:30:00+08:00",
+      "url": "urn:test-data:low-altitude-price-heat",
+      "tier": 4,
+      "pillar": "price"
+    },
+    {
+      "title": "【测试数据】创新药医保政策改善",
+      "publisher": "结构测试题设（非外部来源）",
+      "publishedAt": "2026-08-04T08:30:00+08:00",
+      "url": "urn:test-data:innovative-drugs-policy",
+      "tier": 1,
+      "pillar": "policy"
+    },
+    {
+      "title": "【测试数据】创新药并购基金",
+      "publisher": "结构测试题设（非外部来源）",
+      "publishedAt": "2026-08-04T08:30:00+08:00",
+      "url": "urn:test-data:innovative-drugs-ma-fund",
+      "tier": 2,
+      "pillar": "directedCredit"
+    },
+    {
+      "title": "【测试数据】保险资金连续两个月增配创新药",
+      "publisher": "结构测试题设（非外部来源）",
+      "publishedAt": "2026-08-04T08:30:00+08:00",
+      "url": "urn:test-data:innovative-drugs-insurance-two-months",
+      "tier": 2,
+      "pillar": "longTermCapital"
+    }
+  ],
+  "risks": [
+    "全部产业证据均为结构测试假设，不代表真实市场、政策、贷款、持仓或项目状态。",
+    "本次不得联网，未核验真实交易日历、政策原文、金额、标的、价格、估值与市场风险。",
+    "创新药L支柱按题设的保险资金连续两个月增配作为跨期长线确认输入；若要求第二种独立资金维度，权限应进一步下调。",
+    "所有仓位权限均为研究标签，不构成证券投资咨询或个性化投资建议。"
+  ]
+}

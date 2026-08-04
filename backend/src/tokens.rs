@@ -1,6 +1,9 @@
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+
+use crate::money::{deserialize_decimal, serialize_decimal_string};
 
 const RUN_TOKEN_TYPE: &str = "run";
 const ADMIN_TOKEN_TYPE: &str = "admin";
@@ -11,7 +14,7 @@ pub struct RunTokenService {
     secret: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RunTokenClaims {
     pub token_type: String,
@@ -20,7 +23,11 @@ pub struct RunTokenClaims {
     pub device_id: String,
     pub run_id: String,
     pub model_id: String,
-    pub budget_yuan: f64,
+    #[serde(
+        deserialize_with = "deserialize_decimal",
+        serialize_with = "serialize_decimal_string"
+    )]
+    pub budget_yuan: Decimal,
     pub iat: usize,
     pub exp: usize,
 }
@@ -32,7 +39,7 @@ impl RunTokenClaims {
         device_id: String,
         run_id: String,
         model_id: String,
-        budget_yuan: f64,
+        budget_yuan: Decimal,
         ttl_seconds: i64,
     ) -> Self {
         let now = Utc::now();

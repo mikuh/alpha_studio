@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use reqwest::Client;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
 use crate::{
     config::AppConfig,
     market::{MarketCapitalFlowHub, MarketDataHub},
-    secrets::AuthorizationCodeCipher,
+    observability::HttpMetrics,
+    secrets::{AuthorizationCodeCipher, ManagedSecretCipher},
     tokens::{AdminTokenService, DeviceTokenService, RunTokenService},
 };
 
@@ -20,8 +21,10 @@ pub struct AppState {
     pub admin_tokens: AdminTokenService,
     pub device_tokens: DeviceTokenService,
     pub authorization_code_cipher: AuthorizationCodeCipher,
+    pub managed_secret_cipher: ManagedSecretCipher,
     pub market: MarketDataHub,
     pub capital_flow: MarketCapitalFlowHub,
+    pub http_metrics: HttpMetrics,
 }
 
 impl AppState {
@@ -31,6 +34,7 @@ impl AppState {
         let device_tokens = DeviceTokenService::new(config.jwt_secret.clone());
         let authorization_code_cipher =
             AuthorizationCodeCipher::new(&config.authorization_code_encryption_key);
+        let managed_secret_cipher = ManagedSecretCipher::new(&config.provider_kms_master_key);
         let market =
             MarketDataHub::new(config.market_refresh_seconds, config.market_snapshot_limit);
         let capital_flow = MarketCapitalFlowHub::new(config.market_refresh_seconds);
@@ -43,9 +47,65 @@ impl AppState {
             admin_tokens,
             device_tokens,
             authorization_code_cipher,
+            managed_secret_cipher,
             market,
             capital_flow,
+            http_metrics: HttpMetrics::default(),
         }
+    }
+
+    pub async fn migrate_legacy_managed_secrets(&self) -> anyhow::Result<()> {
+        let provider_rows = sqlx::query(
+            "select provider, api_key from provider_configs where api_key <> '' and api_key_ciphertext = ''",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        let provider_count = provider_rows.len();
+        for row in provider_rows {
+            let provider = row.get::<String, _>("provider");
+            let plaintext = row.get::<String, _>("api_key");
+            let ciphertext = self
+                .managed_secret_cipher
+                .encrypt_provider_api_key(&plaintext)?;
+            sqlx::query(
+                "update provider_configs set api_key_ciphertext = $2, api_key = '', updated_at = now() where provider = $1 and api_key = $3 and api_key_ciphertext = ''",
+            )
+            .bind(&provider)
+            .bind(ciphertext)
+            .bind(&plaintext)
+            .execute(&self.db)
+            .await?;
+        }
+
+        let codex_rows = sqlx::query(
+            "select id, login_secret from codex_accounts where login_secret <> '' and login_secret_ciphertext = ''",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        let codex_count = codex_rows.len();
+        for row in codex_rows {
+            let id = row.get::<String, _>("id");
+            let plaintext = row.get::<String, _>("login_secret");
+            let ciphertext = self
+                .managed_secret_cipher
+                .encrypt_codex_login_secret(&plaintext)?;
+            sqlx::query(
+                "update codex_accounts set login_secret_ciphertext = $2, login_secret = '', updated_at = now() where id = $1 and login_secret = $3 and login_secret_ciphertext = ''",
+            )
+            .bind(&id)
+            .bind(ciphertext)
+            .bind(&plaintext)
+            .execute(&self.db)
+            .await?;
+        }
+        if provider_count > 0 || codex_count > 0 {
+            tracing::info!(
+                provider_keys = provider_count,
+                account_secrets = codex_count,
+                "migrated legacy plaintext credentials into KMS-protected ciphertext"
+            );
+        }
+        Ok(())
     }
 
     pub fn start_market_feed(&self) {

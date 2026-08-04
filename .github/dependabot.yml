@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      root-npm: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /admin-web
+    schedule: { interval: weekly }
+    groups:
+      admin-npm: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: /backend
+    schedule: { interval: weekly }
+    groups:
+      backend-cargo: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule: { interval: weekly }
+    groups:
+      tauri-cargo: { patterns: ["*"] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }

@@ -1,0 +1,295 @@
+{
+  "metadata": {
+    "skill_name": "alpha-studio-mainline-trend-research",
+    "skill_path": "/Users/geb/codes/alpha_studio/skills/alpha-studio-mainline-trend-research",
+    "executor_model": "GPT-5 family",
+    "analyzer_model": "GPT-5 family",
+    "timestamp": "2026-08-03T16:35:54.786Z",
+    "evals_run": [
+      1,
+      2
+    ],
+    "runs_per_configuration": 1
+  },
+  "runs": [
+    {
+      "eval_id": 1,
+      "eval_name": "domestic-false-theme-filter",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1,
+        "passed": 8,
+        "failed": 0,
+        "total": 8,
+        "time_seconds": 0,
+        "tokens": 45605,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "报告显著包含今日主线结论、主线重仓权限、伪题材过滤和最大证据缺口",
+          "passed": true,
+          "evidence": "report.html 第2页决策台实质给出今日主线结论、总体重仓权限和最大证据缺口，并在同页说明低空经济伪题材过滤；后续第4、7、8页分别展开过滤、权限和逐主题补证清单。"
+        },
+        {
+          "text": "本土赛道海外景气显示N/A且不计分不扣分",
+          "passed": true,
+          "evidence": "report.html 总表将三条本土赛道的O柱均显示为N/A，并明确写明“全部O支柱均为 N/A（不计分、不扣分）”；台账中三条 mainline 均为 pricingScope=domestic、overseasGate=off、overseasCycle.active=false、score=null。"
+        },
+        {
+          "text": "只有政策和涨停热度的低空经济被标记为单因子脉冲并禁止重仓",
+          "passed": true,
+          "evidence": "report.html 总表把低空经济标为“单因子脉冲”和“禁止重仓，仅观察脉冲”；台账对应 resonanceState 与 heavyPositionPermission 完全一致，且C/L均为0、未确认，涨停潮仅作价格反馈。"
+        },
+        {
+          "text": "定向信贷与长线资金被分开核验，单日市场资金流不替代任何硬支柱",
+          "passed": true,
+          "evidence": "report.html 分设“定向信贷 / 产业投入闭环”和“长线机构资金”核验表；低空经济的涨停潮在C表中“不计”、在L表中为L=0未确认，并明确写明短线热度不能替代P/C/L硬证据。台账也分别保存 directedCredit 与 longTermCapital。"
+        },
+        {
+          "text": "HTML含8至12个A4 page区块",
+          "passed": true,
+          "evidence": "程序计数得到8个 section.page；report-style.css 将.page设为210mm×297mm，并通过@page配置A4打印页。"
+        },
+        {
+          "text": "机器台账使用有效alpha.mainline_trend.v1结构，并与报告的状态和权限一致",
+          "passed": true,
+          "evidence": "台账声明 schema=alpha.mainline_trend.v1，技能自带 validate_report.py 返回“Mainline report validation passed.”；创新药、电网设备、低空经济的状态与权限分别和HTML中的主升共振/待闸门、部分共振/轻仓验证、单因子脉冲/禁止重仓一致。"
+        },
+        {
+          "text": "仅有单期长线持仓且执行检查缺失的电网设备不得获得可立即执行的重仓权限",
+          "passed": true,
+          "evidence": "报告将电网设备的公募证据标为“单期”“L=2，未确认”，台账记录 execution_checks_present=false；其权限仅为“轻仓验证”，没有开放重仓执行。"
+        },
+        {
+          "text": "所有假设证据在报告和台账中标记为测试数据，且没有伪造外部引用",
+          "passed": true,
+          "evidence": "报告封面明确全篇仅使用【测试数据】，来源表逐项以【测试数据】标记；台账证据和source标题同样标记，publisher为“结构测试题设（非外部来源）”、URL为urn:test-data:*。报告与台账均无HTTP(S)链接。"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 1,
+      "eval_name": "domestic-false-theme-filter",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.5,
+        "passed": 4,
+        "failed": 4,
+        "total": 8,
+        "time_seconds": 0,
+        "tokens": 36707,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "报告显著包含今日主线结论、主线重仓权限、伪题材过滤和最大证据缺口",
+          "passed": true,
+          "evidence": "report.html 首页用三张优先级卡和“早报结论”给出当日主线判断，第6页实质完成低空经济伪题材过滤，第7页给出重仓权限矩阵，第8页列出全局及逐主题最大证据缺口。"
+        },
+        {
+          "text": "本土赛道海外景气显示N/A且不计分不扣分",
+          "passed": false,
+          "evidence": "报告与台账均未设置海外景气支柱或海外开关，也未显示N/A（不计分、不扣分）；其自定义第四柱是“市场结构”。技能自带验证器因此报错“missing HTML marker: 海外产业景气”和“report must show an overseas gate decision”。"
+        },
+        {
+          "text": "只有政策和涨停热度的低空经济被标记为单因子脉冲并禁止重仓",
+          "passed": false,
+          "evidence": "禁止重仓部分有充分证据：报告给出L0观察、0%且台账 heavy_allowed=false；但报告和台账都没有将其状态标记为“单因子脉冲”，台账只有 high false-theme risk 与 price_surge_only，因此该合取断言未被完整满足。"
+        },
+        {
+          "text": "定向信贷与长线资金被分开核验，单日市场资金流不替代任何硬支柱",
+          "passed": true,
+          "evidence": "report.html 将P2产业落地/项目资金与P3长线机构资金分列；对低空经济即使P4涨停热度记2.0，仍把P2和P3均记0，并明确“不能从涨停潮推断机构参与”及“弱P1 + 短线P4不能替代P2”。台账也独立保存P2/P3评估。"
+        },
+        {
+          "text": "HTML含8至12个A4 page区块",
+          "passed": true,
+          "evidence": "程序计数得到8个 section.page，页面内联样式设置@page size:A4，并将.page设置为210mm×297mm。"
+        },
+        {
+          "text": "机器台账使用有效alpha.mainline_trend.v1结构，并与报告的状态和权限一致",
+          "passed": false,
+          "evidence": "台账虽与本报告自定义的L0/L2/L3权限大体一致，但顶层是 schema_version=1.0.0-test 和 themes，而非 schema=alpha.mainline_trend.v1 与 mainlines；技能自带验证器报错“tracking schema must be alpha.mainline_trend.v1”及多项必填字段缺失。"
+        },
+        {
+          "text": "仅有单期长线持仓且执行检查缺失的电网设备不得获得可立即执行的重仓权限",
+          "passed": false,
+          "evidence": "报告承认电网设备仅有单期公募持仓、市场结构未知，却授予“L3 有条件重仓”、60%主题预算上限，并写明“可开启重仓”“建立主仓”；台账也设置 heavy_allowed=true，违反该权限约束。"
+        },
+        {
+          "text": "所有假设证据在报告和台账中标记为测试数据，且没有伪造外部引用",
+          "passed": true,
+          "evidence": "报告各页带“测试假设数据 · 禁止外推”水印，具体证据使用“测试假设”标签并声明未联网补数；台账9条 evidence_registry 记录全部 test_data=true、source_kind=user_test_assumption、external_reference=null。报告与台账均无HTTP(S)链接。"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 2,
+      "eval_name": "global-cycle-and-valuation-gate",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1,
+        "passed": 7,
+        "failed": 0,
+        "total": 7,
+        "time_seconds": 0,
+        "tokens": 23177,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "全球或混合赛道开启海外景气支柱，本土赛道关闭且不受惩罚",
+          "passed": true,
+          "evidence": "Substantive evidence appears in both artifacts. report.html classifies AI算力 as 混合定价 with ‘O 开启’, 铜 as 全球定价 with ‘O 开启’, and 国产软件 as 本土定价 with ‘O 关闭’ and ‘O=N/A（不计分、不扣分）’. The ledger independently records pricingScope mixed/global/domestic and overseasGate on/on/off; the domestic software overseasCycle pillar is inactive with null score and evidence stating ‘不计分、不扣分’."
+        },
+        {
+          "text": "AI算力在估值闸门未通过时不输出允许重仓主线核心",
+          "passed": true,
+          "evidence": "report.html explicitly says ‘AI算力估值闸门为 fail；不得输出“允许重仓主线核心”’ and gives permission ‘共振成立但重仓权限待执行闸门确认’. The ledger's falseThemeFilter says the fail keeps heavy-position permission closed, its upgrade trigger requires valuation to turn pass, and coreStocks is empty."
+        },
+        {
+          "text": "铜因定向信贷或产业投入缺失而被评级/权限封顶",
+          "passed": true,
+          "evidence": "report.html assigns 铜 19.8/C, ‘单因子脉冲’, and ‘禁止重仓，仅观察脉冲；C 未确认形成硬封顶’. The ledger records directedCredit confirmed=false and states that unconfirmed directed credit/industrial investment makes the false-theme filter fail; heavyPositionPermission is ‘禁止重仓，仅观察脉冲’. This establishes the required causal cap, not merely a low label."
+        },
+        {
+          "text": "国产软件的长线资金流出被当作反证而非中性",
+          "passed": true,
+          "evidence": "report.html says ‘L 恶化是反证，不按中性计’ and describes institutional outflow as strength 2, worsening, confidence 0.80, ‘为反证’. The ledger sets longTermCapital marginal=-1 and confirmed=false, and its counterEvidence says the outflow directly negates current long-term-capital confirmation."
+        },
+        {
+          "text": "报告明确说明多支柱是不同证伪职责而非简单利好相加",
+          "passed": true,
+          "evidence": "report.html contains a dedicated section titled ‘为什么不能把“政策 + 资金 + 景气”简单相加’, separately defines what P, C, L, and O answer, and concludes ‘四支柱承担不同证伪职责，硬闸门优先于总分’. The explanation includes concrete veto behavior for missing C, negative L, and failed valuation rather than just repeating the assertion's keywords."
+        },
+        {
+          "text": "机器台账使用alpha.mainline_trend.v1结构，并与报告的海外开关、共振状态和权限一致",
+          "passed": true,
+          "evidence": "The ledger declares schema='alpha.mainline_trend.v1'. Its AI/国产软件/铜 records match report.html on overseasGate (on/off/on), resonance (主升共振/部分共振/单因子脉冲), and permission (待执行闸门确认/轻仓验证/禁止重仓仅观察脉冲)."
+        },
+        {
+          "text": "所有假设证据在报告和台账中标记为测试数据，且没有伪造外部引用",
+          "passed": true,
+          "evidence": "report.html prominently declares the structure-test scope and labels each evidence row ‘[测试数据]’. Every ledger evidence item is marked ‘测试数据｜无外部引用’, sources is empty, and inspection found no external URL in the report or ledger."
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 2,
+      "eval_name": "global-cycle-and-valuation-gate",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.8571428571428571,
+        "passed": 6,
+        "failed": 1,
+        "total": 7,
+        "time_seconds": 0,
+        "tokens": 14573,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "全球或混合赛道开启海外景气支柱，本土赛道关闭且不受惩罚",
+          "passed": true,
+          "evidence": "The substance is explicit in both artifacts. report.html turns the overseas switch on for AI算力 and 铜, marks 国产软件 ‘海外开关：不适用’, and states that a local-pricing track ‘不能机械地因缺少海外信号扣分’. The ledger independently records on/on/not_applicable and identifies domestic software as local pricing."
+        },
+        {
+          "text": "AI算力在估值闸门未通过时不输出允许重仓主线核心",
+          "passed": true,
+          "evidence": "report.html calls the valuation fail a hard veto, labels AI ‘禁止重仓’, and says valuation must turn pass before heavy positioning. The ledger records valuation_gate=fail, heavy_position_allowed=false, and current_action as watching the candidate pending valuation unlock. No allowed-heavy core is emitted."
+        },
+        {
+          "text": "铜因定向信贷或产业投入缺失而被评级/权限封顶",
+          "passed": true,
+          "evidence": "report.html explicitly connects ‘国内定向产业资金不明确’ to an incomplete evidence chain and the decision ‘观察 / 轻仓条件单；不升级为主线重仓’. The ledger records missing_axis=domestic_targeted_industry_capital and heavy_position_allowed=false, with clarification of domestic targeted capital as the first upgrade condition. This is a substantive permission cap caused by the missing confirmation."
+        },
+        {
+          "text": "国产软件的长线资金流出被当作反证而非中性",
+          "passed": true,
+          "evidence": "report.html says institutional marginal outflow means the capital side is unconfirmed and ‘甚至与政策、订单方向背离’; it labels the resonance ‘背离’ and requires the flow to reverse before upgrade. The ledger records institutional_fund_flow=marginal_outflow and makes it resonance.negative_axis, so it is treated negatively rather than neutrally."
+        },
+        {
+          "text": "报告明确说明多支柱是不同证伪职责而非简单利好相加",
+          "passed": true,
+          "evidence": "report.html has a dedicated section titled ‘为什么不能“政策 + 资金 + 景气”简单相加’. It explains non-independence/double counting, sequential responsibilities for overseas demand, domestic transmission, and valuation, different confirmation structures by pricing domain, valuation as a hard veto, and negative evidence that cannot be drowned out. This is a genuine falsification/gating explanation, not keyword-only compliance."
+        },
+        {
+          "text": "机器台账使用alpha.mainline_trend.v1结构，并与报告的海外开关、共振状态和权限一致",
+          "passed": false,
+          "evidence": "The ledger does not use the required alpha.mainline_trend.v1 structure: its root declares schema_version='1.0' and artifact_type='alpha_studio_mainline_ledger' rather than schema='alpha.mainline_trend.v1'. Its decisions broadly agree with the report, but the assertion is conjunctive, so failure of the required structure is decisive."
+        },
+        {
+          "text": "所有假设证据在报告和台账中标记为测试数据，且没有伪造外部引用",
+          "passed": true,
+          "evidence": "report.html declares all policy, loan, capex, flow, price, inventory, and order evidence to be test data and labels the evidence table accordingly. Every ledger test_evidence entry has provenance='test_data'; the run records external_sources_used=false, and inspection found no external URL in either artifact."
+        }
+      ],
+      "notes": []
+    }
+  ],
+  "run_summary": {
+    "with_skill": {
+      "pass_rate": {
+        "mean": 1,
+        "stddev": 0,
+        "min": 1,
+        "max": 1
+      },
+      "time_seconds": {
+        "mean": 0,
+        "stddev": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "mean": 34391,
+        "stddev": 15858.9909,
+        "min": 23177,
+        "max": 45605
+      }
+    },
+    "without_skill": {
+      "pass_rate": {
+        "mean": 0.6786,
+        "stddev": 0.2525,
+        "min": 0.5,
+        "max": 0.8571428571428571
+      },
+      "time_seconds": {
+        "mean": 0,
+        "stddev": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "mean": 25640,
+        "stddev": 15651.1015,
+        "min": 14573,
+        "max": 36707
+      }
+    },
+    "delta": {
+      "pass_rate": "+0.32",
+      "time_seconds": "n/a",
+      "tokens": "+8751"
+    }
+  },
+  "notes": [
+    "Across the two evals, with-skill passed 15/15 assertions; without-skill passed 10/15.",
+    "Eval 1 is strongly discriminating: the skill enforced the domestic overseas N/A rule, the single-factor-pulse label, alpha.mainline_trend.v1, and the no-heavy-permission rule for single-period institutional evidence.",
+    "Eval 2 decision logic was also handled well by the baseline; the skill added a stable machine schema and report-ledger consistency contract rather than uniquely enabling the qualitative reasoning.",
+    "Executor duration and model-token telemetry were unavailable in this runtime; output character counts are shown only as an artifact-size proxy."
+  ]
+}

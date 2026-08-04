@@ -1,0 +1,115 @@
+{
+  "schema_version": "1.0.0-test",
+  "ledger_type": "a_share_industrial_mainline_morning_brief",
+  "evaluation_id": "eval-1-domestic-false-theme-without-skill",
+  "snapshot": "T0_TEST_NON_MARKET_DATE",
+  "generated_on": "2026-08-04",
+  "language": "zh-CN",
+  "test_only": true,
+  "data_policy": {
+    "all_evidence_is_user_supplied_test_assumption": true,
+    "internet_used": false,
+    "external_citations_count": 0,
+    "external_fact_completion": false,
+    "warning": "全部行业证据均为测试假设数据，不代表真实世界事实，不得外推或作为投资建议。"
+  },
+  "model": {
+    "score_scale": {"min": 0, "max": 3, "unknown_allowed": true},
+    "unknown_scoring_rule": "unknown contributes zero to permission_index but is not treated as a negative fact",
+    "permission_index_formula": "sum((pillar_score / 3) * pillar_weight) * 100",
+    "pillars": [
+      {"id": "P1", "name": "政策硬度", "weight": 0.25, "hard_question": "是否为正式、可执行的政策或制度改善，而非泛化支持表述"},
+      {"id": "P2", "name": "产业落地/项目资金", "weight": 0.35, "hard_question": "是否存在项目贷款、付款、连续招标、订单、经营兑现或真实资本部署"},
+      {"id": "P3", "name": "长线机构资金", "weight": 0.25, "hard_question": "是否存在可比口径下的连续配置边际"},
+      {"id": "P4", "name": "市场结构", "weight": 0.15, "hard_question": "是否存在持续承接与健康扩散，而非单日价格脉冲"}
+    ],
+    "mainline_gates": {
+      "minimum_positive_independent_pillars": 2,
+      "P2_hard_evidence_required": true,
+      "heavy_permission_requires": "strong P2 plus at least one other positive pillar; missing institutional or market continuity makes permission conditional",
+      "false_theme_rule": "supportive wording plus limit-up surge without project finance, payment, orders or long-only continuity is observation-only"
+    },
+    "permission_levels": [
+      {"level": "L0", "name": "观察", "heavy_allowed": false},
+      {"level": "L1", "name": "试探", "heavy_allowed": false},
+      {"level": "L2", "name": "标准仓/候选", "heavy_allowed": false},
+      {"level": "L3", "name": "有条件重仓", "heavy_allowed": true}
+    ]
+  },
+  "evidence_registry": [
+    {"evidence_id": "TEST-E01", "theme_id": "grid_equipment", "claim": "存在正式设备更新政策", "pillar": "P1", "source_kind": "user_test_assumption", "test_data": true, "external_reference": null},
+    {"evidence_id": "TEST-E02", "theme_id": "grid_equipment", "claim": "存在政策性银行项目贷款", "pillar": "P2", "source_kind": "user_test_assumption", "test_data": true, "external_reference": null},
+    {"evidence_id": "TEST-E03", "theme_id": "grid_equipment", "claim": "存在连续招标", "pillar": "P2", "source_kind": "user_test_assumption", "test_data": true, "external_reference": null},
+    {"evidence_id": "TEST-E04", "theme_id": "grid_equipment", "claim": "公募持仓只看到单期数据", "pillar": "P3", "source_kind": "user_test_assumption", "test_data": true, "external_reference": null},
+    {"evidence_id": "TEST-E05", "theme_id": "low_altitude_economy", "claim": "只有部委支持表述", "pillar": "P1", "source_kind": "user_test_assumption", "test_data": true, "external_reference": null},
+    {"evidence_id": "TEST-E06", "theme_id": "low_altitude_economy", "claim": "存在涨停潮", "pillar": "P4", "source_kind": "user_test_assumption", "test_data": true, "external_reference": null},
+    {"evidence_id": "TEST-E07", "theme_id": "low_altitude_economy", "claim": "没有产业贷款或项目付款", "pillar": "P2", "source_kind": "user_test_assumption", "test_data": true, "external_reference": null},
+    {"evidence_id": "TEST-E08", "theme_id": "innovative_drugs", "claim": "医保政策改善", "pillar": "P1", "source_kind": "user_test_assumption", "test_data": true, "external_reference": null},
+    {"evidence_id": "TEST-E09", "theme_id": "innovative_drugs", "claim": "存在并购基金，且保险资金连续两个月增配", "pillar": "P2_P3", "source_kind": "user_test_assumption", "test_data": true, "external_reference": null}
+  ],
+  "themes": [
+    {
+      "theme_id": "grid_equipment",
+      "name": "电网设备",
+      "rank": 1,
+      "permission_index": 68.3,
+      "permission": {"level": "L3", "name": "有条件重仓", "heavy_allowed": true, "illustrative_theme_budget_cap_pct": 60},
+      "pillar_assessments": [
+        {"pillar": "P1", "score": 3.0, "direction": "strong_up", "status": "confirmed", "evidence_ids": ["TEST-E01"], "reason": "正式政策强于支持性表述"},
+        {"pillar": "P2", "score": 3.0, "direction": "strong_up", "status": "confirmed", "evidence_ids": ["TEST-E02", "TEST-E03"], "reason": "项目贷款与连续招标双确认"},
+        {"pillar": "P3", "score": 1.0, "direction": "unknown", "status": "single_period_only", "evidence_ids": ["TEST-E04"], "reason": "单期持仓不可推出边际增减"},
+        {"pillar": "P4", "score": null, "direction": "unknown", "status": "not_provided", "evidence_ids": [], "reason": "题设未给市场结构数据"}
+      ],
+      "false_theme_filter": {"passed": true, "risk": "low", "reason": "P2有项目贷款与连续招标硬证据"},
+      "largest_evidence_gap": "可比口径的公募持仓连续序列，以及持续市场承接结构",
+      "upgrade_trigger": "机构持仓连续增配且市场承接稳定",
+      "downgrade_trigger": "项目贷款或连续招标证据中断/撤销，或产业证据失去可比性"
+    },
+    {
+      "theme_id": "innovative_drugs",
+      "name": "创新药",
+      "rank": 2,
+      "permission_index": 59.2,
+      "permission": {"level": "L2", "name": "标准仓/主线候选", "heavy_allowed": false, "illustrative_theme_budget_cap_pct": 30},
+      "pillar_assessments": [
+        {"pillar": "P1", "score": 2.0, "direction": "up", "status": "confirmed", "evidence_ids": ["TEST-E08"], "reason": "医保环境改善但执行细节未提供"},
+        {"pillar": "P2", "score": 1.5, "direction": "up", "status": "capital_deployment_only", "evidence_ids": ["TEST-E09"], "reason": "并购基金是资本落地，不能替代经营现金流"},
+        {"pillar": "P3", "score": 3.0, "direction": "strong_up", "status": "confirmed_continuous", "evidence_ids": ["TEST-E09"], "reason": "保险资金连续两个月增配"},
+        {"pillar": "P4", "score": null, "direction": "unknown", "status": "not_provided", "evidence_ids": [], "reason": "题设未给市场结构数据"}
+      ],
+      "false_theme_filter": {"passed": true, "risk": "medium", "reason": "有医保改善、并购资本与长线连续增配，但产业经营链未闭合"},
+      "largest_evidence_gap": "资本投入向产品、收入、订单或经营现金流兑现的传导证据",
+      "upgrade_trigger": "出现可核验经营兑现或产业现金流，且长线配置连续性延续",
+      "downgrade_trigger": "医保改善未执行、基金未部署或保险资金连续增配中断"
+    },
+    {
+      "theme_id": "low_altitude_economy",
+      "name": "低空经济",
+      "rank": 3,
+      "permission_index": 18.3,
+      "permission": {"level": "L0", "name": "观察", "heavy_allowed": false, "illustrative_theme_budget_cap_pct": 0},
+      "pillar_assessments": [
+        {"pillar": "P1", "score": 1.0, "direction": "weak_up", "status": "soft_wording_only", "evidence_ids": ["TEST-E05"], "reason": "部委支持表述缺正式执行约束"},
+        {"pillar": "P2", "score": 0.0, "direction": "absent", "status": "explicitly_absent", "evidence_ids": ["TEST-E07"], "reason": "题设明确无产业贷款或项目付款"},
+        {"pillar": "P3", "score": 0.0, "direction": "absent", "status": "not_provided", "evidence_ids": [], "reason": "未给长线机构资金证据，权限上不计分"},
+        {"pillar": "P4", "score": 2.0, "direction": "short_term_up", "status": "price_surge_only", "evidence_ids": ["TEST-E06"], "reason": "涨停潮表明短线热度，但持续性未知"}
+      ],
+      "false_theme_filter": {"passed": false, "risk": "high", "reason": "支持表述加涨停潮，且P2产业硬门槛明确失败"},
+      "largest_evidence_gap": "产业侧真实资金流，包括项目贷款、实际付款、订单或连续招标",
+      "upgrade_trigger": "正式政策加至少一项独立产业硬证据，并获得长线资金或持续市场承接验证",
+      "downgrade_trigger": "not_applicable_at_L0"
+    }
+  ],
+  "portfolio_conclusion": {
+    "only_conditionally_heavy_theme": "grid_equipment",
+    "candidate_theme": "innovative_drugs",
+    "filtered_false_theme": "low_altitude_economy",
+    "global_largest_evidence_gap": "低空经济缺少产业侧真实资金流，这是P2硬门槛而非一般信息空白",
+    "investment_advice": false
+  },
+  "audit": {
+    "report_page_count": 8,
+    "required_output_files": ["outputs/report.html", "outputs/.alpha-studio-mainline.json", "outputs/metrics.json", "transcript.md"],
+    "fabricated_external_references": false
+  }
+}

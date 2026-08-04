@@ -1,0 +1,51 @@
+{
+  "evalId": 2,
+  "evalName": "global-cycle-and-valuation-gate",
+  "mode": "brief",
+  "pageCount": 2,
+  "generatedAt": "2026-08-04T00:25:05+08:00",
+  "networkUsed": false,
+  "screenshotsUsed": false,
+  "externalSourceCount": 0,
+  "htmlTestDataLabelCount": 14,
+  "scoreResults": {
+    "AI算力": {
+      "score": 79.0,
+      "grade": "A",
+      "resonanceState": "主升共振",
+      "permission": "共振成立，重仓权限待执行闸门确认",
+      "overseasGate": "on"
+    },
+    "国产软件": {
+      "score": 50.4,
+      "grade": "C",
+      "resonanceState": "部分共振",
+      "permission": "轻仓验证",
+      "overseasGate": "off"
+    },
+    "铜": {
+      "score": 19.8,
+      "grade": "C",
+      "resonanceState": "单因子脉冲",
+      "permission": "禁止重仓，仅观察脉冲",
+      "overseasGate": "on"
+    }
+  },
+  "assertions": {
+    "global_or_mixed_tracks_enable_overseas_gate": true,
+    "domestic_track_disables_overseas_gate_without_penalty": true,
+    "ai_valuation_fail_blocks_heavy_permission": true,
+    "copper_missing_directed_credit_caps_grade_and_permission": true,
+    "software_capital_outflow_is_negative_counterevidence": true,
+    "report_explains_non_additive_pillars": true,
+    "all_tracking_evidence_is_test_labeled": true,
+    "no_external_sources_or_links_fabricated": true
+  },
+  "validation": {
+    "scoreMainlinesExitCode": 0,
+    "trackingJsonParse": "passed",
+    "skillValidator": "passed",
+    "skillValidatorCommandMode": "--brief",
+    "semanticChecks": "12/12 passed"
+  }
+}

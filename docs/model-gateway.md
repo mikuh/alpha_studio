@@ -39,6 +39,7 @@ Codex CLI -> POST /v1/responses -> Alpha Studio adapter -> 上游模型服务
 - `authHeader`：鉴权 Header 或 Query 参数名，例如 `authorization`、`x-api-key`、`api-key`、`key`。
 - `customHeaders`：字符串到字符串的 JSON 对象。`Host`、`Content-Length`、`Transfer-Encoding`、`Connection` 不会向上游转发。
 - `queryParams`：字符串到字符串的 JSON 对象，适合 Azure 的 `api-version`。
+- 密钥、Token、密码等凭据只能填写在受 KMS 密文保护的 `API Key` 字段；后台会拒绝把它们放入明文 `customHeaders` 或 `queryParams`。
 - `requestTimeoutMs`：1 秒到 15 分钟。
 - `maxRetries`：0 到 5。只对连接/超时错误和 408、429、500、502、503、504 重试；POST 会携带稳定的 `idempotency-key`。
 
@@ -107,7 +108,7 @@ base_url = "https://YOUR_ALPHA_STUDIO_HOST/v1"
 wire_api = "responses"
 ```
 
-Run token 作为 Bearer API key 使用，并绑定客户、设备、运行、模型和预授权预算。创建运行时会原子冻结预算；`GET /v1/models` 只返回该 token 对应的模型，`POST /v1/responses` 不能借 token 切换到其他模型，而且同一个 token 只能真正发起一次上游推理。结算与余额更新在同一数据库事务内完成，未使用预算会返还。
+Run token 作为 Bearer API key 使用，并绑定客户、设备、运行、模型和预授权预算。创建运行时会原子冻结预算；`GET /v1/models` 只返回该 token 对应的模型，`POST /v1/responses` 不能借 token 切换到其他模型，而且同一个 token 只能真正发起一次上游推理。结算与余额更新在同一数据库事务内完成，未使用预算会作为账本结算差额释放；这不是支付或退款。
 
 若上游成功响应缺失 usage、流在发出后中断、请求超时，或上游在可能已产生推理成本后返回 5xx，网关会按预授权预算执行保守兜底结算并在 usage 记录中标记 `budget_fallback`，避免上游已收费而客户侧记为 0 元。启用按量模型前，输入与输出成本价必须为正数，所有价格与加价率必须为有限非负数；部署级 `MIN_GATEWAY_MARKUP_BPS`（默认 500，即 5%）还会阻止低于安全毛利线的路由启用或调用。
 

@@ -161,6 +161,43 @@ interface BillingLedgerPagination {
   hasNext: boolean;
 }
 
+interface OfflinePaymentRecord {
+  id: string;
+  recordType: 'offline_receipt' | 'correction';
+  amountYuan: number;
+  reference: string;
+  note: string;
+  receivedAt: string;
+  reversesRecordId?: string | null;
+  recordedBy: string;
+  createdAt: string;
+}
+
+interface BillingReconciliationTenant {
+  tenantId: string;
+  tenantName: string;
+  storedBalanceYuan: number;
+  ledgerBalanceYuan: number;
+  differenceYuan: number;
+  openRuns: number;
+  staleOpenRuns: number;
+  failedRuns24h: number;
+  usageEvents24h: number;
+  totalTokens24h: number;
+  fallbackMeteredEvents24h: number;
+  billableYuan24h: number;
+  balanced: boolean;
+  requiresReview: boolean;
+}
+
+interface BillingReconciliation {
+  balanced: boolean;
+  requiresReview: boolean;
+  generatedAt: string;
+  paymentCapability: 'offline-records-only';
+  tenants: BillingReconciliationTenant[];
+}
+
 interface TenantBillingSummary {
   tenant: Pick<Tenant, 'id' | 'name' | 'status' | 'billingMode' | 'balanceYuan' | 'subscriptionPlan' | 'subscriptionExpiresAt' | 'codexSubscriptionEnabled' | 'codexSubscriptionPlan' | 'codexSubscriptionExpiresAt'>;
   period: {
@@ -174,6 +211,7 @@ interface TenantBillingSummary {
     models: BillingModelUsage[];
     recentLedger: BillingLedgerEntry[];
     ledgerPagination: BillingLedgerPagination;
+    offlinePayments: OfflinePaymentRecord[];
   };
 }
 
@@ -201,7 +239,6 @@ const emptyTenantForm = {
   status: 'active',
   maxDevices: 3,
   billingMode: 'hybrid',
-  balanceYuan: 0,
   subscriptionPlan: '',
   subscriptionExpiresAt: '',
   codexSubscriptionEnabled: false,
@@ -335,6 +372,7 @@ function App() {
   const [token, setToken] = useState(() => localStorage.getItem('alpha-admin-token') || '');
   const [email, setEmail] = useState('admin@alpha-studio.local');
   const [password, setPassword] = useState('');
+  const [totpCode, setTotpCode] = useState('');
   const [activeTab, setActiveTab] = useState<Tab>(() => tabFromLocation());
   const [summary, setSummary] = useState<Summary>(defaultSummary);
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -350,6 +388,7 @@ function App() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [selectedUsageTenantId, setSelectedUsageTenantId] = useState('');
   const [tenantBilling, setTenantBilling] = useState<TenantBillingSummary | null>(null);
+  const [billingReconciliation, setBillingReconciliation] = useState<BillingReconciliation | null>(null);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageError, setUsageError] = useState('');
   const [tenantForm, setTenantForm] = useState(emptyTenantForm);
@@ -434,12 +473,13 @@ function App() {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, totpCode }),
       });
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
       localStorage.setItem('alpha-admin-token', data.token);
       setToken(data.token);
+      setTotpCode('');
     } catch (err) {
       setError(err instanceof Error ? err.message : '登录失败');
     } finally {
@@ -513,6 +553,14 @@ function App() {
     }
   };
 
+  const loadBillingReconciliation = async () => {
+    try {
+      setBillingReconciliation(await api<BillingReconciliation>('/api/admin/billing/reconciliation', token));
+    } catch (err) {
+      setUsageError(err instanceof Error ? err.message : '对账状态加载失败');
+    }
+  };
+
   useEffect(() => {
     if (token) void load();
   }, [token]);
@@ -520,8 +568,49 @@ function App() {
   useEffect(() => {
     if (token && activeTab === 'usage' && selectedUsageTenantId) {
       void loadTenantBilling(selectedUsageTenantId, 1);
+      void loadBillingReconciliation();
     }
   }, [token, activeTab, selectedUsageTenantId]);
+
+  const recordOfflinePayment = async (input: {
+    amountYuan: number;
+    reference: string;
+    note: string;
+    receivedAt: string;
+  }) => {
+    if (!selectedUsageTenantId) return;
+    await mutate(async () => {
+      await api(`/api/admin/tenants/${encodeURIComponent(selectedUsageTenantId)}/offline-payments`, token, {
+        method: 'POST',
+        body: JSON.stringify({
+          ...input,
+          receivedAt: toIsoOrNull(input.receivedAt),
+          operationKey: crypto.randomUUID(),
+        }),
+      });
+      setNotice('线下收款记录已登记；系统未发起任何支付');
+      await Promise.all([
+        loadTenantBilling(selectedUsageTenantId, tenantBilling?.usage.ledgerPagination.page ?? 1),
+        loadBillingReconciliation(),
+        load(),
+      ]);
+    });
+  };
+
+  const correctOfflinePayment = async (paymentId: string, note: string) => {
+    await mutate(async () => {
+      await api(`/api/admin/offline-payments/${encodeURIComponent(paymentId)}/correct`, token, {
+        method: 'POST',
+        body: JSON.stringify({ operationKey: crypto.randomUUID(), note }),
+      });
+      setNotice('线下收款登记已用更正流水冲销；系统未发起退款');
+      await Promise.all([
+        loadTenantBilling(selectedUsageTenantId, tenantBilling?.usage.ledgerPagination.page ?? 1),
+        loadBillingReconciliation(),
+        load(),
+      ]);
+    });
+  };
 
   const saveTenant = async (event: FormEvent) => {
     event.preventDefault();
@@ -978,14 +1067,26 @@ function App() {
           </div>
           <label>
             邮箱
-            <input value={email} onChange={(event) => setEmail(event.target.value)} />
+            <input autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} />
           </label>
           <label>
             密码
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+            <input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+          </label>
+          <label>
+            动态验证码
+            <input
+              autoComplete="one-time-code"
+              inputMode="numeric"
+              maxLength={6}
+              pattern="[0-9]{6}"
+              placeholder="认证器中的 6 位验证码"
+              value={totpCode}
+              onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+            />
           </label>
           {error && <div className="error">{error}</div>}
-          <button type="submit" disabled={loading}>{loading ? '登录中...' : '登录'}</button>
+          <button type="submit" disabled={loading || totpCode.length !== 6}>{loading ? '登录中...' : '登录'}</button>
         </form>
       </main>
     );
@@ -1102,10 +1203,14 @@ function App() {
             tenants={tenants}
             selectedTenantId={selectedUsageTenantId}
             summary={tenantBilling}
+            reconciliation={billingReconciliation}
             loading={usageLoading}
             error={usageError}
             onSelectTenant={setSelectedUsageTenantId}
             onPageChange={(page) => void loadTenantBilling(selectedUsageTenantId, page)}
+            onRecordOfflinePayment={recordOfflinePayment}
+            onCorrectOfflinePayment={correctOfflinePayment}
+            onRefreshReconciliation={() => void loadBillingReconciliation()}
           />
         )}
         {activeTab === 'gateway' && (
@@ -1284,7 +1389,7 @@ function TenantForm({ form, setForm, onSubmit, onCancel, loading }: {
         <Select label="状态" value={form.status} onChange={(status) => setForm({ ...form, status })} options={['active', 'suspended']} />
         <NumberField label="授权机器数" value={form.maxDevices} onChange={(maxDevices) => setForm({ ...form, maxDevices })} />
         <Select label="计费模式" value={form.billingMode} onChange={(billingMode) => setForm({ ...form, billingMode })} options={['hybrid', 'gateway_api', 'subscription']} />
-        <NumberField label="预付余额 元" value={form.balanceYuan} min={0} step="any" onChange={(balanceYuan) => setForm({ ...form, balanceYuan })} />
+        <div className="form-hint">余额不能直接编辑，请在“LLM 用量”中登记实际收到的线下款项。</div>
         <Field label="API 套餐" value={form.subscriptionPlan} onChange={(subscriptionPlan) => setForm({ ...form, subscriptionPlan })} />
         <Field label="API 到期时间" type="datetime-local" value={form.subscriptionExpiresAt} onChange={(subscriptionExpiresAt) => setForm({ ...form, subscriptionExpiresAt })} />
         <label className="check-row">
@@ -1738,7 +1843,10 @@ function SkillReleaseWorkspace({
   onPublish: (release: SkillRelease) => void;
   onDelete: (release: SkillRelease) => void;
 }) {
-  const published = releases.filter((release) => release.status === 'published');
+  const channelOrder = new Map([['stable', 0], ['beta', 1], ['dev', 2]]);
+  const published = releases
+    .filter((release) => release.status === 'published')
+    .sort((left, right) => (channelOrder.get(left.channel) ?? 99) - (channelOrder.get(right.channel) ?? 99));
   return (
     <div className="page-stack skill-release-workspace">
       <section className="panel skill-upload-panel">
@@ -1760,7 +1868,7 @@ function SkillReleaseWorkspace({
           </label>
           <div className="skill-upload-copy">
             <strong>{bundleFile?.name || '尚未选择发行包'}</strong>
-            <span>{bundleFile ? formatBytes(bundleFile.size) : '先运行 npm run skills:release -- --version=x.y.z'}</span>
+            <span>{bundleFile ? formatBytes(bundleFile.size) : '在 alpha_studio 仓库根目录运行：npm run skills:release -- --version=x.y.z（无需指定 skills/）'}</span>
           </div>
           <button type="submit" disabled={loading || !bundleFile}>上传为草稿</button>
         </form>
@@ -1768,6 +1876,48 @@ function SkillReleaseWorkspace({
           <strong>保护链路保持不变</strong>
           <span>后台拒绝明文或伪装文件；客户端只有在 SHA-256、.asx 认证、路径与受保护清单全部通过后才切换版本。</span>
         </div>
+      </section>
+      <section className="panel current-skill-releases" aria-label="当前已发布 Skills">
+        <div className="panel-head">
+          <div>
+            <h2>当前已发布内容</h2>
+            <span>官方 Skills 按渠道整包发布、整包更新和整包回滚</span>
+          </div>
+        </div>
+        {published.length === 0 ? (
+          <div className="empty compact-empty">
+            <strong>当前没有已发布的 Skill 版本</strong>
+            <span>草稿发布后，这里会按渠道列出完整 Skill 清单。</span>
+          </div>
+        ) : (
+          <div className="current-skill-release-grid">
+            {published.map((release) => {
+              const names = release.manifestSummary?.skills?.map((skill) => skill.skillName) || [];
+              return (
+                <article className="current-skill-release-card" key={release.id}>
+                  <div className="current-skill-release-head">
+                    <div>
+                      <strong>{release.channel}</strong>
+                      <span>当前版本 {release.version}</span>
+                    </div>
+                    <Status value={release.status} />
+                  </div>
+                  <div className="current-skill-release-meta">
+                    <strong>{release.skillCount} 个官方 Skills</strong>
+                    <span>{release.encodedFileCount} 个受保护文件 · 客户端 ≥ {release.minClientVersion}</span>
+                  </div>
+                  {names.length > 0 ? (
+                    <div className="current-skill-list" aria-label={`${release.channel} 当前 Skill 清单`}>
+                      {names.map((name) => <code key={name}>{name}</code>)}
+                    </div>
+                  ) : (
+                    <span className="current-skill-list-missing">该历史记录没有可展示的 Skill 清单</span>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
       <section className="panel management-list">
         <div className="panel-head">
@@ -2051,7 +2201,6 @@ function TenantTable({ tenants, onEdit, onDelete, onManageCodes, selectedTenantI
                     status: tenant.status,
                     maxDevices: tenant.maxDevices,
                     billingMode: tenant.billingMode,
-                    balanceYuan: tenant.balanceYuan,
                     subscriptionPlan: tenant.subscriptionPlan || '',
                     subscriptionExpiresAt: toLocalInput(tenant.subscriptionExpiresAt),
                     codexSubscriptionEnabled: tenant.codexSubscriptionEnabled,
@@ -2075,25 +2224,57 @@ function TenantUsageWorkspace({
   tenants,
   selectedTenantId,
   summary,
+  reconciliation,
   loading,
   error,
   onSelectTenant,
   onPageChange,
+  onRecordOfflinePayment,
+  onCorrectOfflinePayment,
+  onRefreshReconciliation,
 }: {
   tenants: Tenant[];
   selectedTenantId: string;
   summary: TenantBillingSummary | null;
+  reconciliation: BillingReconciliation | null;
   loading: boolean;
   error: string;
   onSelectTenant: (tenantId: string) => void;
   onPageChange: (page: number) => void;
+  onRecordOfflinePayment: (input: { amountYuan: number; reference: string; note: string; receivedAt: string }) => Promise<void>;
+  onCorrectOfflinePayment: (paymentId: string, note: string) => Promise<void>;
+  onRefreshReconciliation: () => void;
 }) {
   const currentMonth = summary?.usage.currentMonth;
   const allTime = summary?.usage.allTime;
   const models = summary?.usage.models ?? [];
   const ledger = summary?.usage.recentLedger ?? [];
+  const offlinePayments = summary?.usage.offlinePayments ?? [];
   const pagination = summary?.usage.ledgerPagination;
   const showingSelectedTenant = summary?.tenant.id === selectedTenantId;
+  const tenantReconciliation = reconciliation?.tenants.find((tenant) => tenant.tenantId === selectedTenantId);
+  const [paymentForm, setPaymentForm] = useState({ amountYuan: '', reference: '', note: '', receivedAt: '' });
+  const [correction, setCorrection] = useState({ paymentId: '', note: '' });
+
+  const submitOfflinePayment = async (event: FormEvent) => {
+    event.preventDefault();
+    const amountYuan = Number(paymentForm.amountYuan);
+    if (!Number.isFinite(amountYuan) || amountYuan <= 0 || !paymentForm.reference.trim()) return;
+    await onRecordOfflinePayment({
+      amountYuan,
+      reference: paymentForm.reference.trim(),
+      note: paymentForm.note.trim(),
+      receivedAt: paymentForm.receivedAt,
+    });
+    setPaymentForm({ amountYuan: '', reference: '', note: '', receivedAt: '' });
+  };
+
+  const submitCorrection = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!correction.paymentId || correction.note.trim().length < 3) return;
+    await onCorrectOfflinePayment(correction.paymentId, correction.note.trim());
+    setCorrection({ paymentId: '', note: '' });
+  };
 
   return (
     <div className="usage-workspace">
@@ -2137,6 +2318,55 @@ function TenantUsageWorkspace({
 
       {summary && showingSelectedTenant && (
         <>
+          <section className="panel offline-payment-panel">
+            <div className="panel-head">
+              <div><h2>线下收款登记</h2><span>这里只记录已经在线下收到的款项，不发起支付、扣款或退款</span></div>
+              <button className="secondary" type="button" onClick={onRefreshReconciliation}>刷新对账</button>
+            </div>
+            <div className={`reconciliation-strip ${tenantReconciliation?.requiresReview ? 'warning' : 'balanced'}`}>
+              <span><strong>对账状态</strong>{tenantReconciliation?.requiresReview ? '需要核对' : '一致'}</span>
+              <span><strong>当前余额</strong>{formatYuan(tenantReconciliation?.storedBalanceYuan ?? summary.tenant.balanceYuan)}</span>
+              <span><strong>账本余额</strong>{formatYuan(tenantReconciliation?.ledgerBalanceYuan ?? 0)}</span>
+              <span><strong>24h Tokens / 兜底计量</strong>{formatWholeNumber(tenantReconciliation?.totalTokens24h ?? 0)} / {formatWholeNumber(tenantReconciliation?.fallbackMeteredEvents24h ?? 0)}</span>
+            </div>
+            <form className="offline-payment-form" onSubmit={(event) => void submitOfflinePayment(event)}>
+              <NumberField label="实收金额 元" value={Number(paymentForm.amountYuan || 0)} min={0.000001} step={0.000001} onChange={(amountYuan) => setPaymentForm({ ...paymentForm, amountYuan: String(amountYuan) })} />
+              <Field label="线下凭证号" value={paymentForm.reference} onChange={(reference) => setPaymentForm({ ...paymentForm, reference })} placeholder="银行流水号/收据号/合同编号" required />
+              <Field label="收款时间" type="datetime-local" value={paymentForm.receivedAt} onChange={(receivedAt) => setPaymentForm({ ...paymentForm, receivedAt })} />
+              <Field label="备注" value={paymentForm.note} onChange={(note) => setPaymentForm({ ...paymentForm, note })} placeholder="可选" />
+              <button type="submit" disabled={loading || Number(paymentForm.amountYuan) <= 0 || !paymentForm.reference.trim()}>{loading ? '登记中…' : '登记已收款项'}</button>
+            </form>
+            {offlinePayments.length === 0 ? <div className="empty">暂无线下收款登记。</div> : (
+              <div className="table-wrap">
+                <table className="offline-payment-table">
+                  <thead><tr><th>时间</th><th>凭证</th><th>类型</th><th>金额</th><th>备注</th><th /></tr></thead>
+                  <tbody>{offlinePayments.map((record) => (
+                    <tr key={record.id}>
+                      <td className="nowrap">{formatDate(record.receivedAt)}</td>
+                      <td><strong>{record.reference}</strong><span>{record.recordedBy}</span></td>
+                      <td>{record.recordType === 'offline_receipt' ? '线下实收' : '差错更正'}</td>
+                      <td className={`nowrap usage-amount ${record.amountYuan < 0 ? 'charge' : 'credit'}`}>{formatSignedYuan(record.amountYuan)}</td>
+                      <td>{record.note || '-'}</td>
+                      <td className="col-actions">{record.recordType === 'offline_receipt' && !offlinePayments.some((item) => item.reversesRecordId === record.id) && (
+                        <button className="secondary" type="button" onClick={() => setCorrection({ paymentId: record.id, note: '' })}>更正</button>
+                      )}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )}
+            {correction.paymentId && (
+              <form className="offline-correction-form" onSubmit={(event) => void submitCorrection(event)}>
+                <Field label="更正原因" value={correction.note} onChange={(note) => setCorrection({ ...correction, note })} placeholder="说明为什么该登记需要冲销" required />
+                <div className="form-actions">
+                  <button className="secondary" type="button" onClick={() => setCorrection({ paymentId: '', note: '' })}>取消</button>
+                  <button className="danger" type="submit" disabled={loading || correction.note.trim().length < 3}>确认生成更正流水</button>
+                </div>
+                <small>该操作只冲销系统内登记，不会向客户发起退款。</small>
+              </form>
+            )}
+          </section>
+
           <section className="panel">
             <div className="panel-head">
               <div><h2>模型用量</h2><span>按本月应收费用从高到低排序</span></div>

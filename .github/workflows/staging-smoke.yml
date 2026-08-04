@@ -1,0 +1,19 @@
+name: Staging smoke test
+
+on:
+  workflow_dispatch:
+  deployment_status:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.event_name == 'workflow_dispatch' || (github.event.deployment_status.state == 'success' && github.event.deployment_status.deployment.environment == 'staging')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run public smoke checks
+        env:
+          BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+        run: bash scripts/smoke-test.sh

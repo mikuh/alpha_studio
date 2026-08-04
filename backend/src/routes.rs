@@ -13,6 +13,7 @@ use axum::{
 use bytes::Bytes;
 use chrono::{Datelike, TimeZone, Utc};
 use futures_util::StreamExt;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -20,11 +21,15 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::{
+    admin_auth::{
+        clear_login_failures, constant_time_eq, ensure_login_allowed, record_login_failure,
+        verify_totp,
+    },
     billing::{settle_usage_yuan, usage_from_openai_response, GatewayUsage, Pricing},
     error::{ApiError, ApiResult},
     gateway::{
         build_model_discovery_request, build_upstream_request, discover_models_from_body,
-        mask_secret, normalize_upstream_error_body, normalize_upstream_success_body_for_request,
+        normalize_upstream_error_body, normalize_upstream_success_body_for_request,
         ProviderApiFormat, ProviderAuthType, ProviderConfig, UpstreamRequest,
     },
     gateway_stream::{
@@ -36,9 +41,15 @@ use crate::{
         normalize_authorization_code, normalize_company_name, CLIENT_DEVICE_LEASE_DAYS,
     },
     market::{CapitalFlowSnapshot, MarketSnapshot},
+    money::{decimal_json, deserialize_decimal, has_supported_scale},
     state::AppState,
     tokens::{AdminTokenClaims, DeviceTokenClaims, RunTokenClaims},
 };
+
+const CURRENT_SERVICE_TERMS_VERSION: &str = "2026-08-04";
+const CURRENT_PRIVACY_POLICY_VERSION: &str = "2026-08-04";
+const CURRENT_THIRD_PARTY_MODEL_NOTICE_VERSION: &str = "2026-08-04";
+const CURRENT_RESEARCH_RISK_DISCLOSURE_VERSION: &str = "2026-08-04";
 
 pub async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
@@ -212,6 +223,7 @@ pub async fn readyz(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 pub struct LoginRequest {
     email: String,
     password: String,
+    totp_code: String,
 }
 
 #[derive(Serialize)]
@@ -232,24 +244,35 @@ pub async fn auth_login(
     State(state): State<AppState>,
     Json(request): Json<LoginRequest>,
 ) -> ApiResult<Json<LoginResponse>> {
-    if !constant_time_eq(
-        request.email.as_bytes(),
-        state.config.admin_email.as_bytes(),
-    ) || !constant_time_eq(
-        request.password.as_bytes(),
-        state.config.admin_password.as_bytes(),
-    ) {
+    let principal = state.config.admin_email.trim().to_ascii_lowercase();
+    ensure_login_allowed(&state.db, &principal).await?;
+    let supplied_email = request.email.trim().to_ascii_lowercase();
+    let credentials_match = constant_time_eq(supplied_email.as_bytes(), principal.as_bytes())
+        & constant_time_eq(
+            request.password.as_bytes(),
+            state.config.admin_password.as_bytes(),
+        );
+    let totp_matches = verify_totp(&state.config.admin_totp_secret, &request.totp_code);
+    if !(credentials_match & totp_matches) {
+        let locked = record_login_failure(&state.db, &principal).await?;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if locked {
+            return Err(ApiError::TooManyRequests(
+                "too many login attempts; try again later".to_string(),
+            ));
+        }
         return Err(ApiError::Unauthorized(
             "invalid admin credentials".to_string(),
         ));
     }
+    clear_login_failures(&state.db, &principal).await?;
     let token = state
         .admin_tokens
-        .issue(AdminTokenClaims::new(request.email.clone(), 8 * 60 * 60))?;
+        .issue(AdminTokenClaims::new(principal.clone(), 2 * 60 * 60))?;
     Ok(Json(LoginResponse {
         token,
         user: AdminUser {
-            email: request.email,
+            email: principal,
             role: "owner".to_string(),
         },
     }))
@@ -540,7 +563,7 @@ pub async fn client_billing_summary(
             "name": tenant_row.get::<String, _>("name"),
             "maxDevices": tenant_row.get::<i32, _>("max_devices"),
             "billingMode": tenant_row.get::<String, _>("billing_mode"),
-            "balanceYuan": tenant_row.get::<f64, _>("balance_yuan"),
+            "balanceYuan": decimal_json(tenant_row.get::<Decimal, _>("balance_yuan")),
             "subscriptionPlan": tenant_row.try_get::<Option<String>, _>("subscription_plan").unwrap_or(None),
             "subscriptionExpiresAt": tenant_row.try_get::<Option<chrono::DateTime<Utc>>, _>("subscription_expires_at").unwrap_or(None),
             "codexSubscriptionEnabled": subscription_enabled,
@@ -565,13 +588,374 @@ pub async fn client_billing_summary(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OfflinePaymentRequest {
+    #[serde(deserialize_with = "deserialize_decimal")]
+    amount_yuan: Decimal,
+    reference: String,
+    #[serde(default)]
+    note: String,
+    received_at: Option<chrono::DateTime<Utc>>,
+    operation_key: String,
+}
+
+pub async fn admin_record_offline_payment(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<OfflinePaymentRequest>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&state, &headers)?;
+    let tenant_id = id.trim();
+    validate_offline_payment_request(tenant_id, &request)?;
+    let received_at = request.received_at.unwrap_or_else(Utc::now);
+    let operation_key = format!(
+        "offline-receipt:{}:{}",
+        tenant_id,
+        request.operation_key.trim()
+    );
+    let mut tx = state.db.begin().await?;
+    let tenant_exists = sqlx::query("select 1 from tenants where id = $1 for update")
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some();
+    if !tenant_exists {
+        return Err(ApiError::NotFound("tenant was not found".to_string()));
+    }
+    let payment_id = format!("offline_{}", Uuid::new_v4().simple());
+    let inserted = sqlx::query(
+        r#"
+        insert into offline_payment_records (
+          id, tenant_id, record_type, amount_yuan, reference, note,
+          received_at, operation_key, recorded_by
+        )
+        values ($1, $2, 'offline_receipt', $3, $4, $5, $6, $7, $8)
+        on conflict (operation_key) do nothing
+        returning id
+        "#,
+    )
+    .bind(&payment_id)
+    .bind(tenant_id)
+    .bind(request.amount_yuan)
+    .bind(request.reference.trim())
+    .bind(request.note.trim())
+    .bind(received_at)
+    .bind(&operation_key)
+    .bind(&state.config.admin_email)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (actual_payment_id, idempotent) = if let Some(row) = inserted {
+        sqlx::query(
+            "update tenants set balance_yuan = balance_yuan + $2, updated_at = now() where id = $1",
+        )
+        .bind(tenant_id)
+        .bind(request.amount_yuan)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            insert into billing_ledger (
+              id, tenant_id, entry_type, amount_yuan, description, operation_key
+            )
+            values ($1, $2, 'offline_receipt', $3, $4, $5)
+            "#,
+        )
+        .bind(format!("ledger_{}", Uuid::new_v4().simple()))
+        .bind(tenant_id)
+        .bind(request.amount_yuan)
+        .bind(format!(
+            "Offline receipt recorded: {}",
+            request.reference.trim()
+        ))
+        .bind(format!("ledger:{operation_key}"))
+        .execute(&mut *tx)
+        .await?;
+        (row.get::<String, _>("id"), false)
+    } else {
+        let existing = sqlx::query(
+            "select id, amount_yuan, reference from offline_payment_records where operation_key = $1",
+        )
+            .bind(&operation_key)
+            .fetch_one(&mut *tx)
+            .await?;
+        if existing.get::<Decimal, _>("amount_yuan") != request.amount_yuan
+            || existing.get::<String, _>("reference") != request.reference.trim()
+        {
+            return Err(ApiError::Conflict(
+                "operationKey was already used with different receipt details".to_string(),
+            ));
+        }
+        (existing.get::<String, _>("id"), true)
+    };
+    let balance = sqlx::query("select balance_yuan from tenants where id = $1")
+        .bind(tenant_id)
+        .fetch_one(&mut *tx)
+        .await?
+        .get::<Decimal, _>("balance_yuan");
+    tx.commit().await?;
+    if !idempotent {
+        write_audit(
+            &state.db,
+            tenant_id,
+            "billing.offline_receipt.record",
+            json!({
+                "paymentId": actual_payment_id,
+                "amountYuan": decimal_json(request.amount_yuan),
+                "reference": request.reference.trim()
+            }),
+        )
+        .await?;
+    }
+    Ok(Json(json!({
+        "paymentId": actual_payment_id,
+        "balanceYuan": decimal_json(balance),
+        "paymentInitiated": false,
+        "idempotent": idempotent
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfflinePaymentCorrectionRequest {
+    operation_key: String,
+    note: String,
+}
+
+pub async fn admin_correct_offline_payment(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<OfflinePaymentCorrectionRequest>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&state, &headers)?;
+    if id.trim().is_empty()
+        || request.operation_key.trim().is_empty()
+        || request.note.trim().len() < 3
+        || request.note.trim().len() > 500
+    {
+        return Err(ApiError::BadRequest(
+            "payment id, operationKey, and a correction note are required".to_string(),
+        ));
+    }
+    let operation_key = format!(
+        "offline-correction:{}:{}",
+        id.trim(),
+        request.operation_key.trim()
+    );
+    let mut tx = state.db.begin().await?;
+    let original = sqlx::query(
+        r#"
+        select id, tenant_id, amount_yuan, reference
+        from offline_payment_records
+        where id = $1 and record_type = 'offline_receipt'
+        for update
+        "#,
+    )
+    .bind(id.trim())
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("offline receipt record was not found".to_string()))?;
+    if let Some(existing) = sqlx::query(
+        "select id, tenant_id from offline_payment_records where operation_key = $1 and record_type = 'correction'",
+    )
+    .bind(&operation_key)
+    .fetch_optional(&mut *tx)
+    .await?
+    {
+        let tenant_id = existing.get::<String, _>("tenant_id");
+        let correction_id = existing.get::<String, _>("id");
+        let balance = sqlx::query("select balance_yuan from tenants where id = $1")
+            .bind(&tenant_id)
+            .fetch_one(&mut *tx)
+            .await?
+            .get::<Decimal, _>("balance_yuan");
+        tx.commit().await?;
+        return Ok(Json(json!({
+            "correctionId": correction_id,
+            "balanceYuan": decimal_json(balance),
+            "refundInitiated": false,
+            "idempotent": true
+        })));
+    }
+    let already_corrected = sqlx::query(
+        "select 1 from offline_payment_records where reverses_record_id = $1 and record_type = 'correction'",
+    )
+    .bind(id.trim())
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some();
+    if already_corrected {
+        return Err(ApiError::Conflict(
+            "offline receipt record was already corrected".to_string(),
+        ));
+    }
+    let tenant_id = original.get::<String, _>("tenant_id");
+    let amount = -original.get::<Decimal, _>("amount_yuan");
+    let correction_id = format!("offline_{}", Uuid::new_v4().simple());
+    sqlx::query(
+        r#"
+        insert into offline_payment_records (
+          id, tenant_id, record_type, amount_yuan, reference, note, received_at,
+          reverses_record_id, operation_key, recorded_by
+        )
+        values ($1, $2, 'correction', $3, $4, $5, now(), $6, $7, $8)
+        "#,
+    )
+    .bind(&correction_id)
+    .bind(&tenant_id)
+    .bind(amount)
+    .bind(original.get::<String, _>("reference"))
+    .bind(request.note.trim())
+    .bind(id.trim())
+    .bind(&operation_key)
+    .bind(&state.config.admin_email)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "update tenants set balance_yuan = balance_yuan + $2, updated_at = now() where id = $1",
+    )
+    .bind(&tenant_id)
+    .bind(amount)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        insert into billing_ledger (
+          id, tenant_id, entry_type, amount_yuan, description, operation_key
+        ) values ($1, $2, 'offline_receipt_correction', $3, $4, $5)
+        "#,
+    )
+    .bind(format!("ledger_{}", Uuid::new_v4().simple()))
+    .bind(&tenant_id)
+    .bind(amount)
+    .bind(format!(
+        "Offline receipt record corrected: {}",
+        request.note.trim()
+    ))
+    .bind(format!("ledger:{operation_key}"))
+    .execute(&mut *tx)
+    .await?;
+    let balance = sqlx::query("select balance_yuan from tenants where id = $1")
+        .bind(&tenant_id)
+        .fetch_one(&mut *tx)
+        .await?
+        .get::<Decimal, _>("balance_yuan");
+    tx.commit().await?;
+    write_audit(
+        &state.db,
+        &tenant_id,
+        "billing.offline_receipt.correct",
+        json!({ "paymentId": id.trim(), "correctionId": correction_id, "note": request.note.trim() }),
+    )
+    .await?;
+    Ok(Json(json!({
+        "correctionId": correction_id,
+        "balanceYuan": decimal_json(balance),
+        "refundInitiated": false,
+        "idempotent": false
+    })))
+}
+
+pub async fn admin_billing_reconciliation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Value>> {
+    require_admin(&state, &headers)?;
+    let rows = sqlx::query(
+        r#"
+        select
+          t.id, t.name, t.balance_yuan,
+          coalesce(l.ledger_balance_yuan, 0::numeric) as ledger_balance_yuan,
+          coalesce(r.open_runs, 0)::bigint as open_runs,
+          coalesce(r.stale_open_runs, 0)::bigint as stale_open_runs,
+          coalesce(r.failed_runs_24h, 0)::bigint as failed_runs_24h,
+          coalesce(u.usage_events_24h, 0)::bigint as usage_events_24h,
+          coalesce(u.total_tokens_24h, 0)::bigint as total_tokens_24h,
+          coalesce(u.fallback_metered_events_24h, 0)::bigint as fallback_metered_events_24h,
+          coalesce(u.billable_yuan_24h, 0::numeric) as billable_yuan_24h
+        from tenants t
+        left join (
+          select tenant_id, sum(amount_yuan) as ledger_balance_yuan
+          from billing_ledger group by tenant_id
+        ) l on l.tenant_id = t.id
+        left join (
+          select tenant_id,
+            count(*) filter (where status in ('created', 'running'))::bigint as open_runs,
+            count(*) filter (
+              where status in ('created', 'running') and created_at < now() - interval '30 minutes'
+            )::bigint as stale_open_runs,
+            count(*) filter (
+              where status = 'failed' and completed_at >= now() - interval '24 hours'
+            )::bigint as failed_runs_24h
+          from model_runs group by tenant_id
+        ) r on r.tenant_id = t.id
+        left join (
+          select tenant_id,
+            count(*)::bigint as usage_events_24h,
+            coalesce(sum(input_tokens + output_tokens + reasoning_tokens + cached_tokens), 0)::bigint as total_tokens_24h,
+            count(*) filter (where metering_status = 'budget_fallback')::bigint as fallback_metered_events_24h,
+            coalesce(sum(billable_yuan), 0::numeric) as billable_yuan_24h
+          from usage_events
+          where created_at >= now() - interval '24 hours'
+          group by tenant_id
+        ) u on u.tenant_id = t.id
+        order by t.name
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let tenants = rows
+        .into_iter()
+        .map(|row| {
+            let stored = row.get::<Decimal, _>("balance_yuan");
+            let ledger = row.get::<Decimal, _>("ledger_balance_yuan");
+            let stale_open_runs = row.get::<i64, _>("stale_open_runs");
+            let fallback_events = row.get::<i64, _>("fallback_metered_events_24h");
+            json!({
+                "tenantId": row.get::<String, _>("id"),
+                "tenantName": row.get::<String, _>("name"),
+                "storedBalanceYuan": decimal_json(stored),
+                "ledgerBalanceYuan": decimal_json(ledger),
+                "differenceYuan": decimal_json(stored - ledger),
+                "openRuns": row.get::<i64, _>("open_runs"),
+                "staleOpenRuns": stale_open_runs,
+                "failedRuns24h": row.get::<i64, _>("failed_runs_24h"),
+                "usageEvents24h": row.get::<i64, _>("usage_events_24h"),
+                "totalTokens24h": row.get::<i64, _>("total_tokens_24h"),
+                "fallbackMeteredEvents24h": fallback_events,
+                "billableYuan24h": decimal_json(row.get::<Decimal, _>("billable_yuan_24h")),
+                "balanced": stored == ledger,
+                "requiresReview": stored != ledger || stale_open_runs > 0 || fallback_events > 0
+            })
+        })
+        .collect::<Vec<_>>();
+    let balanced = tenants
+        .iter()
+        .all(|tenant| tenant.get("balanced").and_then(Value::as_bool) == Some(true));
+    let requires_review = tenants
+        .iter()
+        .any(|tenant| tenant.get("requiresReview").and_then(Value::as_bool) == Some(true));
+    Ok(Json(json!({
+        "balanced": balanced,
+        "requiresReview": requires_review,
+        "generatedAt": Utc::now(),
+        "paymentCapability": "offline-records-only",
+        "tenants": tenants
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunCreateRequest {
     tenant_id: String,
     user_id: String,
     device_id: String,
     model_id: String,
-    #[serde(default = "default_budget_yuan")]
-    budget_yuan: f64,
+    #[serde(
+        default = "default_budget_yuan",
+        deserialize_with = "deserialize_decimal"
+    )]
+    budget_yuan: Decimal,
 }
 
 pub async fn run_create(
@@ -593,7 +977,7 @@ pub async fn run_create(
         state.config.min_gateway_markup_bps,
     )
     .await?;
-    load_provider_config(&state.db, &route).await?;
+    load_provider_config(&state, &route).await?;
     let run_id = format!("run_{}", Uuid::new_v4().simple());
     reserve_run_budget(&state.db, &run_id, &request).await?;
     let token = state.run_tokens.issue(RunTokenClaims::new(
@@ -624,21 +1008,21 @@ pub async fn admin_summary(
     )
     .await?;
     let runs = scalar_count(&state.db, "select count(*) from model_runs").await?;
-    let usage = scalar_f64(
+    let usage = scalar_decimal(
         &state.db,
-        "select coalesce(sum(billable_yuan), 0)::double precision from usage_events",
+        "select coalesce(sum(billable_yuan), 0::numeric) from usage_events",
     )
     .await?;
     let configured_providers = scalar_count(
         &state.db,
-        "select count(*) from provider_configs where enabled = true and (api_key <> '' or auth_type = 'none')",
+        "select count(*) from provider_configs where enabled = true and (api_key_ciphertext <> '' or api_key <> '' or auth_type = 'none')",
     )
     .await?;
     Ok(Json(json!({
         "tenants": tenants,
         "activeDevices": devices,
         "runs": runs,
-        "billableYuan": usage,
+        "billableYuan": decimal_json(usage),
         "configuredProviders": configured_providers
     })))
 }
@@ -685,7 +1069,7 @@ pub async fn admin_list_tenants(
           t.codex_subscription_enabled, t.codex_subscription_plan, t.codex_subscription_expires_at,
           t.created_at,
           (select count(*) from devices d where d.tenant_id = t.id and d.status = 'active')::bigint as active_devices,
-          (select coalesce(sum(u.billable_yuan), 0)::double precision from usage_events u where u.tenant_id = t.id) as billable_yuan
+          (select coalesce(sum(u.billable_yuan), 0::numeric) from usage_events u where u.tenant_id = t.id) as billable_yuan
         from tenants t
         order by t.created_at desc
         "#,
@@ -739,6 +1123,7 @@ pub async fn admin_tenant_billing(
     let ledger = billing_ledger_page(&state.db, tenant_id, page, page_size).await?;
     let ledger_pagination = ledger.pagination_json();
     let recent_ledger = ledger.entries;
+    let offline_payments = offline_payment_records(&state.db, tenant_id).await?;
 
     Ok(Json(json!({
         "tenant": {
@@ -746,7 +1131,7 @@ pub async fn admin_tenant_billing(
             "name": tenant.get::<String, _>("name"),
             "status": tenant.get::<String, _>("status"),
             "billingMode": tenant.get::<String, _>("billing_mode"),
-            "balanceYuan": tenant.get::<f64, _>("balance_yuan"),
+            "balanceYuan": decimal_json(tenant.get::<Decimal, _>("balance_yuan")),
             "subscriptionPlan": tenant.try_get::<Option<String>, _>("subscription_plan").unwrap_or(None),
             "subscriptionExpiresAt": tenant.try_get::<Option<chrono::DateTime<Utc>>, _>("subscription_expires_at").unwrap_or(None),
             "codexSubscriptionEnabled": tenant.get::<bool, _>("codex_subscription_enabled"),
@@ -763,7 +1148,8 @@ pub async fn admin_tenant_billing(
             "allTime": all_time,
             "models": model_usage,
             "recentLedger": recent_ledger,
-            "ledgerPagination": ledger_pagination
+            "ledgerPagination": ledger_pagination,
+            "offlinePayments": offline_payments
         }
     })))
 }
@@ -779,8 +1165,6 @@ pub struct TenantSaveRequest {
     max_devices: i32,
     #[serde(default = "default_billing_mode")]
     billing_mode: String,
-    #[serde(default)]
-    balance_yuan: f64,
     subscription_plan: Option<String>,
     subscription_expires_at: Option<chrono::DateTime<Utc>>,
     #[serde(default)]
@@ -818,7 +1202,6 @@ pub async fn admin_save_tenant(
           status = excluded.status,
           max_devices = excluded.max_devices,
           billing_mode = excluded.billing_mode,
-          balance_yuan = excluded.balance_yuan,
           subscription_plan = excluded.subscription_plan,
           subscription_expires_at = excluded.subscription_expires_at,
           codex_subscription_enabled = excluded.codex_subscription_enabled,
@@ -833,7 +1216,7 @@ pub async fn admin_save_tenant(
     .bind(&request.status)
     .bind(request.max_devices)
     .bind(&request.billing_mode)
-    .bind(request.balance_yuan)
+    .bind(Decimal::ZERO)
     .bind(&request.subscription_plan)
     .bind(request.subscription_expires_at)
     .bind(request.codex_subscription_enabled)
@@ -1117,7 +1500,7 @@ pub async fn admin_list_provider_configs(
     require_admin(&state, &headers)?;
     let rows = sqlx::query(
         r#"
-        select provider, label, base_url, endpoint_path, api_key, api_format, auth_type,
+        select provider, label, base_url, endpoint_path, api_key, api_key_ciphertext, api_format, auth_type,
           auth_header, custom_headers, query_params, request_timeout_ms, max_retries,
           enabled, updated_at
         from provider_configs
@@ -1151,7 +1534,8 @@ pub async fn admin_list_provider_configs(
     .await?;
     Ok(Json(json!({
         "providers": rows.into_iter().map(|row| {
-            let api_key = row.get::<String, _>("api_key");
+            let key_configured = !row.get::<String, _>("api_key_ciphertext").trim().is_empty()
+                || !row.get::<String, _>("api_key").trim().is_empty();
             json!({
                 "provider": row.get::<String, _>("provider"),
                 "label": row.get::<String, _>("label"),
@@ -1165,8 +1549,8 @@ pub async fn admin_list_provider_configs(
                 "requestTimeoutMs": row.get::<i32, _>("request_timeout_ms"),
                 "maxRetries": row.get::<i32, _>("max_retries"),
                 "enabled": row.get::<bool, _>("enabled"),
-                "keyConfigured": !api_key.trim().is_empty(),
-                "keyMask": if api_key.trim().is_empty() { Value::Null } else { Value::String(mask_secret(&api_key)) },
+                "keyConfigured": key_configured,
+                "keyMask": if key_configured { Value::String("••••••••".to_string()) } else { Value::Null },
                 "updatedAt": row.get::<chrono::DateTime<Utc>, _>("updated_at")
             })
         }).collect::<Vec<_>>()
@@ -1214,19 +1598,28 @@ pub async fn admin_save_provider_config(
     }
     validate_provider_fields(&request)?;
     let api_key = request.api_key.unwrap_or_default();
+    let api_key_ciphertext = if api_key.trim().is_empty() {
+        String::new()
+    } else {
+        state
+            .managed_secret_cipher
+            .encrypt_provider_api_key(api_key.trim())
+            .map_err(|_| ApiError::Internal("failed to protect provider credential".to_string()))?
+    };
     sqlx::query(
         r#"
         insert into provider_configs (
-          provider, label, base_url, endpoint_path, api_key, api_format, auth_type,
+          provider, label, base_url, endpoint_path, api_key, api_key_ciphertext, api_format, auth_type,
           auth_header, custom_headers, query_params, request_timeout_ms, max_retries,
           enabled, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
+        values ($1, $2, $3, $4, '', $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
         on conflict (provider) do update set
           label = excluded.label,
           base_url = excluded.base_url,
           endpoint_path = excluded.endpoint_path,
-          api_key = case when excluded.api_key = '' then provider_configs.api_key else excluded.api_key end,
+          api_key = '',
+          api_key_ciphertext = case when excluded.api_key_ciphertext = '' then provider_configs.api_key_ciphertext else excluded.api_key_ciphertext end,
           api_format = excluded.api_format,
           auth_type = excluded.auth_type,
           auth_header = excluded.auth_header,
@@ -1242,7 +1635,7 @@ pub async fn admin_save_provider_config(
     .bind(&request.label)
     .bind(request.base_url.trim())
     .bind(request.endpoint_path.trim())
-    .bind(api_key.trim())
+    .bind(api_key_ciphertext)
     .bind(request.api_format.as_str())
     .bind(request.auth_type.as_str())
     .bind(request.auth_header.trim())
@@ -1283,10 +1676,15 @@ pub async fn admin_discover_provider_models(
     validate_provider_fields(&request)?;
     let supplied_key = request.api_key.unwrap_or_default();
     let api_key = if supplied_key.trim().is_empty() {
-        sqlx::query_scalar::<_, String>("select api_key from provider_configs where provider = $1")
-            .bind(&provider_id)
-            .fetch_optional(&state.db)
-            .await?
+        let row = sqlx::query(
+            "select api_key, api_key_ciphertext from provider_configs where provider = $1",
+        )
+        .bind(&provider_id)
+        .fetch_optional(&state.db)
+        .await?;
+        row.as_ref()
+            .map(|row| provider_api_key_from_row(&state, row))
+            .transpose()?
             .unwrap_or_default()
     } else {
         supplied_key
@@ -1388,7 +1786,7 @@ pub async fn admin_list_model_routes(
           m.upstream_model, m.enabled, m.sort_order,
           m.input_yuan_per_million, m.output_yuan_per_million,
           m.reasoning_yuan_per_million, m.cached_input_yuan_per_million, m.markup_bps,
-          coalesce((p.api_key <> '' or p.auth_type = 'none') and p.enabled = true, false) as provider_ready,
+          coalesce((p.api_key_ciphertext <> '' or p.api_key <> '' or p.auth_type = 'none') and p.enabled = true, false) as provider_ready,
           m.created_at, m.updated_at
         from model_routes m
         left join provider_configs p on p.provider = m.provider
@@ -1419,14 +1817,14 @@ pub struct ModelRouteSaveRequest {
     enabled: bool,
     #[serde(default = "default_sort_order")]
     sort_order: i32,
-    #[serde(default)]
-    input_yuan_per_million: f64,
-    #[serde(default)]
-    output_yuan_per_million: f64,
-    #[serde(default)]
-    reasoning_yuan_per_million: f64,
-    #[serde(default)]
-    cached_input_yuan_per_million: f64,
+    #[serde(default, deserialize_with = "deserialize_decimal")]
+    input_yuan_per_million: Decimal,
+    #[serde(default, deserialize_with = "deserialize_decimal")]
+    output_yuan_per_million: Decimal,
+    #[serde(default, deserialize_with = "deserialize_decimal")]
+    reasoning_yuan_per_million: Decimal,
+    #[serde(default, deserialize_with = "deserialize_decimal")]
+    cached_input_yuan_per_million: Decimal,
     #[serde(default)]
     markup_bps: i64,
 }
@@ -1548,6 +1946,7 @@ pub async fn admin_list_codex_accounts(
     let rows = sqlx::query(
         r#"
         select c.id, c.tenant_id, t.name as tenant_name, c.email, c.login_secret,
+          c.login_secret_ciphertext,
           c.login_hint, c.plan, c.status, c.seat_limit, c.expires_at,
           c.assigned_at, c.created_at, c.updated_at,
           coalesce(assignments.tenant_ids, array[]::text[]) as tenant_ids,
@@ -1608,18 +2007,27 @@ pub async fn admin_save_codex_account(
     let tenant_ids = normalized_codex_tenant_ids(request.tenant_ids, request.tenant_id);
     let primary_tenant_id = tenant_ids.first().cloned();
     let login_secret = request.login_secret.unwrap_or_default();
+    let login_secret_ciphertext = if login_secret.trim().is_empty() {
+        String::new()
+    } else {
+        state
+            .managed_secret_cipher
+            .encrypt_codex_login_secret(login_secret.trim())
+            .map_err(|_| ApiError::Internal("failed to protect account credential".to_string()))?
+    };
     let mut transaction = state.db.begin().await?;
     sqlx::query(
         r#"
         insert into codex_accounts (
-          id, tenant_id, email, login_secret, login_hint, plan, status, seat_limit,
+          id, tenant_id, email, login_secret, login_secret_ciphertext, login_hint, plan, status, seat_limit,
           expires_at, assigned_at, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, case when $2::text is null then null else now() end, now())
+        values ($1, $2, $3, '', $4, $5, $6, $7, $8, $9, case when $2::text is null then null else now() end, now())
         on conflict (id) do update set
           tenant_id = excluded.tenant_id,
           email = excluded.email,
-          login_secret = case when excluded.login_secret = '' then codex_accounts.login_secret else excluded.login_secret end,
+          login_secret = '',
+          login_secret_ciphertext = case when excluded.login_secret_ciphertext = '' then codex_accounts.login_secret_ciphertext else excluded.login_secret_ciphertext end,
           login_hint = excluded.login_hint,
           plan = excluded.plan,
           status = excluded.status,
@@ -1632,7 +2040,7 @@ pub async fn admin_save_codex_account(
     .bind(&id)
     .bind(&primary_tenant_id)
     .bind(request.email.trim())
-    .bind(login_secret.trim())
+    .bind(login_secret_ciphertext)
     .bind(request.login_hint.trim())
     .bind(request.plan.trim())
     .bind(request.status.trim())
@@ -1696,6 +2104,19 @@ pub async fn admin_delete_codex_account(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ClientAgreementAcceptance {
+    service_terms_version: String,
+    service_terms_accepted: bool,
+    privacy_policy_version: String,
+    privacy_policy_accepted: bool,
+    third_party_model_notice_version: String,
+    third_party_model_notice_accepted: bool,
+    research_risk_disclosure_version: String,
+    research_risk_disclosure_accepted: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClientActivateRequest {
     company_name: String,
     authorization_code: String,
@@ -1705,12 +2126,14 @@ pub struct ClientActivateRequest {
     user_email: String,
     #[serde(default = "default_client_name")]
     user_name: String,
+    agreement_acceptance: ClientAgreementAcceptance,
 }
 
 pub async fn client_activate(
     State(state): State<AppState>,
     Json(request): Json<ClientActivateRequest>,
 ) -> ApiResult<Json<Value>> {
+    validate_client_agreement_acceptance(&request.agreement_acceptance)?;
     let company_key = normalize_company_name(&request.company_name);
     let authorization_code = normalize_authorization_code(&request.authorization_code);
     if company_key.is_empty() || authorization_code.is_empty() {
@@ -1767,6 +2190,14 @@ pub async fn client_activate(
         &request.device_name,
     )
     .await?;
+    record_client_agreement_acceptance(
+        &state.db,
+        &tenant_id,
+        &user_id,
+        &device_id,
+        &request.agreement_acceptance,
+    )
+    .await?;
     sqlx::query("update authorization_codes set last_used_at = now() where id = $1")
         .bind(row.get::<String, _>("authorization_id"))
         .execute(&state.db)
@@ -1775,7 +2206,16 @@ pub async fn client_activate(
         &state.db,
         &tenant_id,
         "client.activate",
-        json!({ "companyName": request.company_name, "deviceName": request.device_name }),
+        json!({
+            "companyName": request.company_name,
+            "deviceName": request.device_name,
+            "agreementVersions": {
+                "serviceTerms": request.agreement_acceptance.service_terms_version,
+                "privacyPolicy": request.agreement_acceptance.privacy_policy_version,
+                "thirdPartyModelNotice": request.agreement_acceptance.third_party_model_notice_version,
+                "researchRiskDisclosure": request.agreement_acceptance.research_risk_disclosure_version
+            }
+        }),
     )
     .await?;
     let models = load_models(&state.db).await?;
@@ -1856,7 +2296,7 @@ pub async fn gateway_responses(
         state.config.min_gateway_markup_bps,
     )
     .await?;
-    let provider = load_provider_config(&state.db, &route).await?;
+    let provider = load_provider_config(&state, &route).await?;
     enforce_request_budget(&mut body, claims.budget_yuan, &route.pricing)?;
     let original_body = body.clone();
     let upstream_request = build_upstream_request(&provider, &route.upstream_model, &mut body)
@@ -2012,7 +2452,7 @@ fn stream_upstream_response(
                     } else {
                         for frame in frames {
                             if let Some(data) = frame.data.as_deref() {
-                                match inspect_responses_stream_data(&data) {
+                                match inspect_responses_stream_data(data) {
                                     Some(NativeStreamEvent::Completed(value)) => usage = value,
                                     Some(NativeStreamEvent::Failed) => failed = true,
                                     None => {}
@@ -2051,7 +2491,7 @@ fn stream_upstream_response(
             if let Some(frame) = decoder.finish() {
                 if let Some(adapter) = adapter.as_mut() {
                     if let Some(data) = frame.data.as_deref() {
-                        match adapter.ingest(&data) {
+                        match adapter.ingest(data) {
                             Ok(output) => send_stream_bytes(&sender, output).await,
                             Err(error) => {
                                 failed = true;
@@ -2332,17 +2772,18 @@ async fn load_model_route(
     })
 }
 
-async fn load_provider_config(pool: &PgPool, route: &ModelRoute) -> ApiResult<ProviderConfig> {
+async fn load_provider_config(state: &AppState, route: &ModelRoute) -> ApiResult<ProviderConfig> {
     let row = sqlx::query(
         r#"
-        select provider, base_url, endpoint_path, api_key, api_format, auth_type,
+        select provider, base_url, endpoint_path, api_key, api_key_ciphertext, api_format, auth_type,
           auth_header, custom_headers, query_params, request_timeout_ms, max_retries
         from provider_configs
-        where provider = $1 and enabled = true and (api_key <> '' or auth_type = 'none')
+        where provider = $1 and enabled = true
+          and (api_key_ciphertext <> '' or api_key <> '' or auth_type = 'none')
         "#,
     )
     .bind(&route.provider)
-    .fetch_optional(pool)
+    .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| {
         ApiError::BadRequest(format!(
@@ -2362,7 +2803,7 @@ async fn load_provider_config(pool: &PgPool, route: &ModelRoute) -> ApiResult<Pr
         } else {
             route.endpoint_path.clone()
         },
-        api_key: row.get("api_key"),
+        api_key: provider_api_key_from_row(state, &row)?,
         api_format: ProviderApiFormat::parse(&row.get::<String, _>("api_format")),
         auth_type: ProviderAuthType::parse(&row.get::<String, _>("auth_type")),
         auth_header: row.get("auth_header"),
@@ -2371,6 +2812,19 @@ async fn load_provider_config(pool: &PgPool, route: &ModelRoute) -> ApiResult<Pr
         request_timeout_ms: row.get::<i32, _>("request_timeout_ms").max(1_000) as u64,
         max_retries: row.get::<i32, _>("max_retries").max(0) as u32,
     })
+}
+
+fn provider_api_key_from_row(state: &AppState, row: &sqlx::postgres::PgRow) -> ApiResult<String> {
+    let ciphertext = row.get::<String, _>("api_key_ciphertext");
+    if !ciphertext.trim().is_empty() {
+        return state
+            .managed_secret_cipher
+            .decrypt_provider_api_key(&ciphertext)
+            .map_err(|_| {
+                ApiError::Internal("provider credential is unavailable or corrupted".to_string())
+            });
+    }
+    Ok(row.get::<String, _>("api_key"))
 }
 
 fn json_value_to_string_map(value: Value) -> BTreeMap<String, String> {
@@ -2562,7 +3016,7 @@ async fn start_gateway_run(pool: &PgPool, claims: &RunTokenClaims) -> ApiResult<
         from tenants t, devices d
         where r.id = $1 and r.tenant_id = $2 and r.user_id = $3
           and r.device_id = $4 and r.model_id = $5
-          and abs(r.budget_yuan - $6) < 0.0000001
+          and r.budget_yuan = $6
           and r.status = 'created' and r.created_at > now() - interval '20 minutes'
           and t.id = r.tenant_id and t.status = 'active'
           and d.id = r.device_id and d.tenant_id = r.tenant_id
@@ -2595,7 +3049,7 @@ fn validate_run_claim_bindings(
         && row.get::<String, _>("user_id") == claims.user_id
         && row.get::<String, _>("device_id") == claims.device_id
         && row.get::<String, _>("model_id") == claims.model_id
-        && (row.get::<f64, _>("budget_yuan") - claims.budget_yuan).abs() < 0.0000001;
+        && row.get::<Decimal, _>("budget_yuan") == claims.budget_yuan;
     if matches {
         Ok(())
     } else {
@@ -2605,7 +3059,11 @@ fn validate_run_claim_bindings(
     }
 }
 
-fn enforce_request_budget(body: &mut Value, budget_yuan: f64, pricing: &Pricing) -> ApiResult<()> {
+fn enforce_request_budget(
+    body: &mut Value,
+    budget_yuan: Decimal,
+    pricing: &Pricing,
+) -> ApiResult<()> {
     validate_run_budget(budget_yuan)?;
     if !pricing.is_valid() {
         return Err(ApiError::BadRequest(
@@ -2708,7 +3166,7 @@ async fn fail_run_and_release_reservation(
     .await?;
     if release.rows_affected() == 1 {
         sqlx::query(
-            "update tenants set balance_yuan = round((balance_yuan + $2)::numeric, 6)::double precision, updated_at = now() where id = $1",
+            "update tenants set balance_yuan = balance_yuan + $2, updated_at = now() where id = $1",
         )
         .bind(&claims.tenant_id)
         .bind(claims.budget_yuan)
@@ -2726,10 +3184,13 @@ async fn fail_run_and_release_reservation(
     Ok(())
 }
 
-fn validate_run_budget(budget_yuan: f64) -> ApiResult<()> {
-    if !budget_yuan.is_finite() || !(0.01..=10_000.0).contains(&budget_yuan) {
+fn validate_run_budget(budget_yuan: Decimal) -> ApiResult<()> {
+    if !has_supported_scale(budget_yuan)
+        || budget_yuan < Decimal::new(1, 2)
+        || budget_yuan > Decimal::from(10_000_u64)
+    {
         return Err(ApiError::BadRequest(
-            "budgetYuan must be a finite amount between 0.01 and 10000".to_string(),
+            "budgetYuan must be between 0.01 and 10000 with at most 6 decimals".to_string(),
         ));
     }
     Ok(())
@@ -2745,7 +3206,7 @@ async fn reserve_run_budget(
     let reserved = sqlx::query(
         r#"
         update tenants
-        set balance_yuan = round((balance_yuan - $2)::numeric, 6)::double precision, updated_at = now()
+        set balance_yuan = balance_yuan - $2, updated_at = now()
         where id = $1 and status = 'active' and balance_yuan >= $2
         returning balance_yuan
         "#,
@@ -2816,7 +3277,7 @@ async fn release_expired_run_reservations(pool: &PgPool, tenant_id: &str) -> Api
     .await?;
     for row in expired {
         let run_id = row.get::<String, _>("id");
-        let budget_yuan = row.get::<f64, _>("budget_yuan");
+        let budget_yuan = row.get::<Decimal, _>("budget_yuan");
         let had_reservation = sqlx::query("select 1 from billing_ledger where operation_key = $1")
             .bind(format!("reservation:{run_id}"))
             .fetch_optional(&mut *tx)
@@ -2830,7 +3291,7 @@ async fn release_expired_run_reservations(pool: &PgPool, tenant_id: &str) -> Api
         .await?;
         if had_reservation {
             sqlx::query(
-                "update tenants set balance_yuan = round((balance_yuan + $2)::numeric, 6)::double precision, updated_at = now() where id = $1",
+                "update tenants set balance_yuan = balance_yuan + $2, updated_at = now() where id = $1",
             )
             .bind(tenant_id)
             .bind(budget_yuan)
@@ -2895,9 +3356,9 @@ async fn settle_and_record_usage(
             "",
         ),
         MeteringStatus::BudgetFallback(reason) => {
-            let multiplier = (10_000_u64.saturating_add(pricing.markup_bps)) as f64 / 10_000.0;
-            let estimated_cost = if multiplier.is_finite() && multiplier > 0.0 {
-                claims.budget_yuan / multiplier
+            let multiplier_bps = 10_000_u64.saturating_add(pricing.markup_bps);
+            let estimated_cost = if multiplier_bps > 0 {
+                claims.budget_yuan * Decimal::from(10_000_u64) / Decimal::from(multiplier_bps)
             } else {
                 claims.budget_yuan
             };
@@ -2975,9 +3436,9 @@ async fn settle_and_record_usage(
         .is_some();
     if had_reservation {
         let balance_adjustment = claims.budget_yuan - billable_yuan;
-        if balance_adjustment != 0.0 {
+        if balance_adjustment != Decimal::ZERO {
             sqlx::query(
-                "update tenants set balance_yuan = round((balance_yuan + $2)::numeric, 6)::double precision, status = case when round((balance_yuan + $2)::numeric, 6) < 0 then 'suspended' else status end, updated_at = now() where id = $1",
+                "update tenants set balance_yuan = balance_yuan + $2, status = case when balance_yuan + $2 < 0 then 'suspended' else status end, updated_at = now() where id = $1",
             )
             .bind(&claims.tenant_id)
             .bind(balance_adjustment)
@@ -2993,8 +3454,8 @@ async fn settle_and_record_usage(
             .bind(format!("ledger_{}", Uuid::new_v4().simple()))
             .bind(&claims.tenant_id)
             .bind(&claims.run_id)
-            .bind(if balance_adjustment > 0.0 {
-                "usage_refund"
+            .bind(if balance_adjustment > Decimal::ZERO {
+                "usage_settlement_credit"
             } else {
                 "usage_overage"
             })
@@ -3009,7 +3470,7 @@ async fn settle_and_record_usage(
         }
     } else {
         sqlx::query(
-            "update tenants set balance_yuan = round((balance_yuan - $2)::numeric, 6)::double precision, updated_at = now() where id = $1",
+            "update tenants set balance_yuan = balance_yuan - $2, updated_at = now() where id = $1",
         )
         .bind(&claims.tenant_id)
         .bind(billable_yuan)
@@ -3067,14 +3528,14 @@ fn tenant_json(row: sqlx::postgres::PgRow) -> Value {
         "status": row.get::<String, _>("status"),
         "maxDevices": row.get::<i32, _>("max_devices"),
         "billingMode": row.get::<String, _>("billing_mode"),
-        "balanceYuan": row.get::<f64, _>("balance_yuan"),
+        "balanceYuan": decimal_json(row.get::<Decimal, _>("balance_yuan")),
         "subscriptionPlan": row.try_get::<Option<String>, _>("subscription_plan").unwrap_or(None),
         "subscriptionExpiresAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("subscription_expires_at").unwrap_or(None),
         "codexSubscriptionEnabled": row.get::<bool, _>("codex_subscription_enabled"),
         "codexSubscriptionPlan": row.try_get::<Option<String>, _>("codex_subscription_plan").unwrap_or(None),
         "codexSubscriptionExpiresAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("codex_subscription_expires_at").unwrap_or(None),
         "activeDevices": row.get::<i64, _>("active_devices"),
-        "billableYuan": row.get::<f64, _>("billable_yuan"),
+        "billableYuan": decimal_json(row.get::<Decimal, _>("billable_yuan")),
         "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at")
     })
 }
@@ -3091,10 +3552,10 @@ fn model_route_json(row: sqlx::postgres::PgRow) -> Value {
         "upstreamModel": row.get::<String, _>("upstream_model"),
         "enabled": row.get::<bool, _>("enabled"),
         "sortOrder": row.get::<i32, _>("sort_order"),
-        "inputYuanPerMillion": row.get::<f64, _>("input_yuan_per_million"),
-        "outputYuanPerMillion": row.get::<f64, _>("output_yuan_per_million"),
-        "reasoningYuanPerMillion": row.get::<f64, _>("reasoning_yuan_per_million"),
-        "cachedInputYuanPerMillion": row.get::<f64, _>("cached_input_yuan_per_million"),
+        "inputYuanPerMillion": decimal_json(row.get::<Decimal, _>("input_yuan_per_million")),
+        "outputYuanPerMillion": decimal_json(row.get::<Decimal, _>("output_yuan_per_million")),
+        "reasoningYuanPerMillion": decimal_json(row.get::<Decimal, _>("reasoning_yuan_per_million")),
+        "cachedInputYuanPerMillion": decimal_json(row.get::<Decimal, _>("cached_input_yuan_per_million")),
         "markupBps": row.get::<i64, _>("markup_bps"),
         "providerReady": row.get::<bool, _>("provider_ready"),
         "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at"),
@@ -3103,7 +3564,11 @@ fn model_route_json(row: sqlx::postgres::PgRow) -> Value {
 }
 
 fn codex_account_json(row: sqlx::postgres::PgRow) -> Value {
-    let login_secret = row.get::<String, _>("login_secret");
+    let login_secret_configured = !row
+        .get::<String, _>("login_secret_ciphertext")
+        .trim()
+        .is_empty()
+        || !row.get::<String, _>("login_secret").trim().is_empty();
     let tenant_ids = row
         .try_get::<Vec<String>, _>("tenant_ids")
         .unwrap_or_default();
@@ -3117,8 +3582,8 @@ fn codex_account_json(row: sqlx::postgres::PgRow) -> Value {
         "tenantIds": tenant_ids,
         "tenantNames": tenant_names,
         "email": row.get::<String, _>("email"),
-        "loginSecretConfigured": !login_secret.trim().is_empty(),
-        "loginSecretMask": if login_secret.trim().is_empty() { Value::Null } else { Value::String(mask_secret(&login_secret)) },
+        "loginSecretConfigured": login_secret_configured,
+        "loginSecretMask": if login_secret_configured { Value::String("••••••••".to_string()) } else { Value::Null },
         "loginHint": row.get::<String, _>("login_hint"),
         "plan": row.get::<String, _>("plan"),
         "status": row.get::<String, _>("status"),
@@ -3188,6 +3653,36 @@ async fn upsert_device(
     ))
 }
 
+async fn record_client_agreement_acceptance(
+    pool: &PgPool,
+    tenant_id: &str,
+    user_id: &str,
+    device_id: &str,
+    acceptance: &ClientAgreementAcceptance,
+) -> ApiResult<()> {
+    sqlx::query(
+        r#"
+        insert into client_agreement_acceptances (
+          id, tenant_id, user_id, device_id, service_terms_version,
+          privacy_policy_version, third_party_model_notice_version,
+          research_risk_disclosure_version
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        "#,
+    )
+    .bind(format!("consent_{}", Uuid::new_v4().simple()))
+    .bind(tenant_id)
+    .bind(user_id)
+    .bind(device_id)
+    .bind(acceptance.service_terms_version.trim())
+    .bind(acceptance.privacy_policy_version.trim())
+    .bind(acceptance.third_party_model_notice_version.trim())
+    .bind(acceptance.research_risk_disclosure_version.trim())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn load_codex_accounts_for_client(pool: &PgPool, tenant_id: &str) -> ApiResult<Vec<Value>> {
     let rows = sqlx::query(
         r#"
@@ -3232,8 +3727,8 @@ async fn usage_totals_since(
           coalesce(sum(reasoning_tokens), 0)::bigint as reasoning_tokens,
           coalesce(sum(cached_tokens), 0)::bigint as cached_tokens,
           coalesce(sum(input_tokens + output_tokens + reasoning_tokens + cached_tokens), 0)::bigint as total_tokens,
-          coalesce(sum(cost_yuan), 0)::double precision as cost_yuan,
-          coalesce(sum(billable_yuan), 0)::double precision as billable_yuan,
+          coalesce(sum(cost_yuan), 0::numeric) as cost_yuan,
+          coalesce(sum(billable_yuan), 0::numeric) as billable_yuan,
           max(created_at) as last_used_at
         from usage_events
         where tenant_id = $1 and created_at >= $2
@@ -3256,8 +3751,8 @@ async fn usage_totals_all(pool: &PgPool, tenant_id: &str) -> ApiResult<Value> {
           coalesce(sum(reasoning_tokens), 0)::bigint as reasoning_tokens,
           coalesce(sum(cached_tokens), 0)::bigint as cached_tokens,
           coalesce(sum(input_tokens + output_tokens + reasoning_tokens + cached_tokens), 0)::bigint as total_tokens,
-          coalesce(sum(cost_yuan), 0)::double precision as cost_yuan,
-          coalesce(sum(billable_yuan), 0)::double precision as billable_yuan,
+          coalesce(sum(cost_yuan), 0::numeric) as cost_yuan,
+          coalesce(sum(billable_yuan), 0::numeric) as billable_yuan,
           max(created_at) as last_used_at
         from usage_events
         where tenant_id = $1
@@ -3286,8 +3781,8 @@ async fn model_usage_since(
           coalesce(sum(u.reasoning_tokens), 0)::bigint as reasoning_tokens,
           coalesce(sum(u.cached_tokens), 0)::bigint as cached_tokens,
           coalesce(sum(u.input_tokens + u.output_tokens + u.reasoning_tokens + u.cached_tokens), 0)::bigint as total_tokens,
-          coalesce(sum(u.cost_yuan), 0)::double precision as cost_yuan,
-          coalesce(sum(u.billable_yuan), 0)::double precision as billable_yuan,
+          coalesce(sum(u.cost_yuan), 0::numeric) as cost_yuan,
+          coalesce(sum(u.billable_yuan), 0::numeric) as billable_yuan,
           max(u.created_at) as last_used_at
         from usage_events u
         left join model_routes m on m.model_id = u.model_id
@@ -3382,7 +3877,7 @@ async fn billing_ledger_page(
                 "id": row.get::<String, _>("id"),
                 "runId": row.try_get::<Option<String>, _>("run_id").unwrap_or(None),
                 "entryType": row.get::<String, _>("entry_type"),
-                "amountYuan": row.get::<f64, _>("amount_yuan"),
+                "amountYuan": decimal_json(row.get::<Decimal, _>("amount_yuan")),
                 "description": row.get::<String, _>("description"),
                 "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at")
             })
@@ -3395,6 +3890,72 @@ async fn billing_ledger_page(
         total,
         total_pages,
     })
+}
+
+async fn offline_payment_records(pool: &PgPool, tenant_id: &str) -> ApiResult<Vec<Value>> {
+    let rows = sqlx::query(
+        r#"
+        select id, record_type, amount_yuan, reference, note, received_at,
+          reverses_record_id, recorded_by, created_at
+        from offline_payment_records
+        where tenant_id = $1
+        order by received_at desc, created_at desc
+        limit 100
+        "#,
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "id": row.get::<String, _>("id"),
+                "recordType": row.get::<String, _>("record_type"),
+                "amountYuan": decimal_json(row.get::<Decimal, _>("amount_yuan")),
+                "reference": row.get::<String, _>("reference"),
+                "note": row.get::<String, _>("note"),
+                "receivedAt": row.get::<chrono::DateTime<Utc>, _>("received_at"),
+                "reversesRecordId": row.try_get::<Option<String>, _>("reverses_record_id").unwrap_or(None),
+                "recordedBy": row.get::<String, _>("recorded_by"),
+                "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at")
+            })
+        })
+        .collect())
+}
+
+fn validate_offline_payment_request(
+    tenant_id: &str,
+    request: &OfflinePaymentRequest,
+) -> ApiResult<()> {
+    if tenant_id.is_empty() {
+        return Err(ApiError::BadRequest("tenant id is required".to_string()));
+    }
+    if request.amount_yuan <= Decimal::ZERO
+        || !has_supported_scale(request.amount_yuan)
+        || request.amount_yuan > Decimal::from(100_000_000_u64)
+    {
+        return Err(ApiError::BadRequest(
+            "amountYuan must be positive, no more than 100000000, and use at most 6 decimals"
+                .to_string(),
+        ));
+    }
+    if request.reference.trim().is_empty() || request.reference.trim().len() > 160 {
+        return Err(ApiError::BadRequest(
+            "reference is required and must not exceed 160 characters".to_string(),
+        ));
+    }
+    if request.note.trim().len() > 500 {
+        return Err(ApiError::BadRequest(
+            "note must not exceed 500 characters".to_string(),
+        ));
+    }
+    if request.operation_key.trim().is_empty() || request.operation_key.trim().len() > 100 {
+        return Err(ApiError::BadRequest(
+            "operationKey is required and must not exceed 100 characters".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn bounded_pagination(
@@ -3435,8 +3996,8 @@ fn usage_totals_json(row: &sqlx::postgres::PgRow) -> Value {
         "reasoningTokens": row.get::<i64, _>("reasoning_tokens"),
         "cachedTokens": row.get::<i64, _>("cached_tokens"),
         "totalTokens": row.get::<i64, _>("total_tokens"),
-        "costYuan": row.get::<f64, _>("cost_yuan"),
-        "billableYuan": row.get::<f64, _>("billable_yuan"),
+        "costYuan": decimal_json(row.get::<Decimal, _>("cost_yuan")),
+        "billableYuan": decimal_json(row.get::<Decimal, _>("billable_yuan")),
         "lastUsedAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("last_used_at").unwrap_or(None)
     })
 }
@@ -3448,18 +4009,6 @@ pub(crate) fn require_admin(state: &AppState, headers: &HeaderMap) -> ApiResult<
         .verify(token)
         .map(|_| ())
         .map_err(|_| ApiError::Unauthorized("invalid or expired admin token".to_string()))
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let max_len = left.len().max(right.len());
-    let mut difference = left.len() ^ right.len();
-    for index in 0..max_len {
-        difference |= usize::from(
-            left.get(index).copied().unwrap_or_default()
-                ^ right.get(index).copied().unwrap_or_default(),
-        );
-    }
-    difference == 0
 }
 
 fn generate_authorization_code() -> String {
@@ -3491,9 +4040,9 @@ async fn scalar_count(pool: &PgPool, sql: &str) -> Result<i64, sqlx::Error> {
     row.try_get::<i64, _>(0)
 }
 
-async fn scalar_f64(pool: &PgPool, sql: &str) -> Result<f64, sqlx::Error> {
+async fn scalar_decimal(pool: &PgPool, sql: &str) -> Result<Decimal, sqlx::Error> {
     let row = sqlx::query(sql).fetch_one(pool).await?;
-    row.try_get::<f64, _>(0)
+    row.try_get::<Decimal, _>(0)
 }
 
 fn bearer_token(headers: &HeaderMap) -> ApiResult<&str> {
@@ -3508,8 +4057,8 @@ fn bearer_token(headers: &HeaderMap) -> ApiResult<&str> {
         .ok_or_else(|| ApiError::Unauthorized("invalid bearer token".to_string()))
 }
 
-fn default_budget_yuan() -> f64 {
-    5.0
+fn default_budget_yuan() -> Decimal {
+    Decimal::from(5_u64)
 }
 
 fn default_status() -> String {
@@ -3541,11 +4090,6 @@ fn default_provider_max_retries() -> u32 {
 }
 
 fn validate_tenant_fields(request: &TenantSaveRequest) -> ApiResult<()> {
-    if !request.balance_yuan.is_finite() || request.balance_yuan < 0.0 {
-        return Err(ApiError::BadRequest(
-            "balanceYuan must be a finite non-negative amount".to_string(),
-        ));
-    }
     if !(1..=10_000).contains(&request.max_devices) {
         return Err(ApiError::BadRequest(
             "maxDevices must be between 1 and 10000".to_string(),
@@ -3580,10 +4124,10 @@ fn validate_model_route_fields(
     ];
     if prices
         .into_iter()
-        .any(|price| !price.is_finite() || price < 0.0)
+        .any(|price| !has_supported_scale(price) || price < Decimal::ZERO)
     {
         return Err(ApiError::BadRequest(
-            "model prices must be finite non-negative amounts".to_string(),
+            "model prices must be non-negative amounts with at most 6 decimals".to_string(),
         ));
     }
     if !(0..=100_000).contains(&request.markup_bps) {
@@ -3601,7 +4145,8 @@ fn validate_model_route_fields(
     }
     if request.enabled
         && request.mode.trim() == "gateway_api"
-        && (request.input_yuan_per_million <= 0.0 || request.output_yuan_per_million <= 0.0)
+        && (request.input_yuan_per_million <= Decimal::ZERO
+            || request.output_yuan_per_million <= Decimal::ZERO)
     {
         return Err(ApiError::BadRequest(
             "enabled pay-as-you-go models require positive input and output cost prices"
@@ -3644,8 +4189,31 @@ fn validate_provider_fields(request: &ProviderConfigSaveRequest) -> ApiResult<()
                     .to_string(),
             ));
         }
+        if looks_like_secret_field(name) {
+            return Err(ApiError::BadRequest(
+                "credentials must use the protected API Key field, not customHeaders or queryParams"
+                    .to_string(),
+            ));
+        }
     }
     Ok(())
+}
+
+fn looks_like_secret_field(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase().replace('-', "_");
+    matches!(
+        normalized.as_str(),
+        "authorization"
+            | "proxy_authorization"
+            | "api_key"
+            | "apikey"
+            | "x_api_key"
+            | "access_token"
+            | "token"
+            | "secret"
+            | "password"
+            | "key"
+    )
 }
 
 fn contains_header_control_chars(value: &str) -> bool {
@@ -3662,6 +4230,26 @@ fn default_client_email() -> String {
 
 fn default_client_name() -> String {
     "本机用户".to_string()
+}
+
+fn validate_client_agreement_acceptance(acceptance: &ClientAgreementAcceptance) -> ApiResult<()> {
+    let current_versions = acceptance.service_terms_version.trim() == CURRENT_SERVICE_TERMS_VERSION
+        && acceptance.privacy_policy_version.trim() == CURRENT_PRIVACY_POLICY_VERSION
+        && acceptance.third_party_model_notice_version.trim()
+            == CURRENT_THIRD_PARTY_MODEL_NOTICE_VERSION
+        && acceptance.research_risk_disclosure_version.trim()
+            == CURRENT_RESEARCH_RISK_DISCLOSURE_VERSION;
+    let all_accepted = acceptance.service_terms_accepted
+        && acceptance.privacy_policy_accepted
+        && acceptance.third_party_model_notice_accepted
+        && acceptance.research_risk_disclosure_accepted;
+    if !current_versions || !all_accepted {
+        return Err(ApiError::BadRequest(
+            "the current service terms, privacy policy, third-party model notice, and research risk disclosure must be accepted before activation"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn default_max_devices_i32() -> i32 {
@@ -3702,12 +4290,15 @@ mod tests {
     };
     use chrono::Utc;
     use futures_util::StreamExt;
+    use rust_decimal::Decimal;
     use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
 
     use super::{
-        bounded_pagination, enforce_request_budget, normalized_codex_tenant_ids,
-        stream_upstream_response,
+        bounded_pagination, enforce_request_budget, looks_like_secret_field,
+        normalized_codex_tenant_ids, stream_upstream_response,
+        validate_client_agreement_acceptance, validate_offline_payment_request,
+        ClientAgreementAcceptance, OfflinePaymentRequest,
     };
     use crate::{
         billing::Pricing,
@@ -3720,6 +4311,33 @@ mod tests {
         assert_eq!(bounded_pagination(None, None, 8), (1, 8));
         assert_eq!(bounded_pagination(Some(0), Some(0), 8), (1, 1));
         assert_eq!(bounded_pagination(Some(4), Some(500), 8), (4, 100));
+    }
+
+    #[test]
+    fn validates_exact_offline_receipt_records() {
+        let valid = OfflinePaymentRequest {
+            amount_yuan: Decimal::new(123_456_789, 6),
+            reference: "bank-transfer-001".to_string(),
+            note: "received outside Alpha Studio".to_string(),
+            received_at: None,
+            operation_key: "op-001".to_string(),
+        };
+        assert!(validate_offline_payment_request("tenant_alpha", &valid).is_ok());
+
+        let too_precise = OfflinePaymentRequest {
+            amount_yuan: Decimal::new(1, 7),
+            reference: valid.reference.clone(),
+            note: valid.note.clone(),
+            received_at: None,
+            operation_key: valid.operation_key.clone(),
+        };
+        assert!(validate_offline_payment_request("tenant_alpha", &too_precise).is_err());
+
+        let negative = OfflinePaymentRequest {
+            amount_yuan: Decimal::NEGATIVE_ONE,
+            ..valid
+        };
+        assert!(validate_offline_payment_request("tenant_alpha", &negative).is_err());
     }
 
     #[test]
@@ -3747,20 +4365,56 @@ mod tests {
     }
 
     #[test]
+    fn keeps_credentials_out_of_plain_custom_provider_fields() {
+        for field in ["Authorization", "x-api-key", "access_token", "key"] {
+            assert!(looks_like_secret_field(field), "{field}");
+        }
+        assert!(!looks_like_secret_field("api-version"));
+        assert!(!looks_like_secret_field("anthropic-version"));
+    }
+
+    fn current_agreement_acceptance() -> ClientAgreementAcceptance {
+        ClientAgreementAcceptance {
+            service_terms_version: "2026-08-04".to_string(),
+            service_terms_accepted: true,
+            privacy_policy_version: "2026-08-04".to_string(),
+            privacy_policy_accepted: true,
+            third_party_model_notice_version: "2026-08-04".to_string(),
+            third_party_model_notice_accepted: true,
+            research_risk_disclosure_version: "2026-08-04".to_string(),
+            research_risk_disclosure_accepted: true,
+        }
+    }
+
+    #[test]
+    fn requires_every_current_activation_agreement() {
+        let acceptance = current_agreement_acceptance();
+        assert!(validate_client_agreement_acceptance(&acceptance).is_ok());
+
+        let mut missing = current_agreement_acceptance();
+        missing.third_party_model_notice_accepted = false;
+        assert!(validate_client_agreement_acceptance(&missing).is_err());
+
+        let mut outdated = current_agreement_acceptance();
+        outdated.privacy_policy_version = "2026-01-01".to_string();
+        assert!(validate_client_agreement_acceptance(&outdated).is_err());
+    }
+
+    #[test]
     fn caps_output_tokens_to_the_preauthorized_budget() {
         let mut body = json!({
             "input": "hello",
             "max_output_tokens": 1_000_000
         });
         let pricing = Pricing {
-            input_yuan_per_million: 10.0,
-            output_yuan_per_million: 100.0,
-            reasoning_yuan_per_million: 100.0,
-            cached_input_yuan_per_million: 2.0,
+            input_yuan_per_million: Decimal::from(10_u64),
+            output_yuan_per_million: Decimal::from(100_u64),
+            reasoning_yuan_per_million: Decimal::from(100_u64),
+            cached_input_yuan_per_million: Decimal::from(2_u64),
             markup_bps: 2_500,
         };
 
-        enforce_request_budget(&mut body, 1.0, &pricing).unwrap();
+        enforce_request_budget(&mut body, Decimal::ONE, &pricing).unwrap();
 
         let capped = body["max_output_tokens"].as_u64().unwrap();
         assert!(capped > 0);
@@ -3771,14 +4425,14 @@ mod tests {
     fn rejects_a_budget_that_cannot_cover_the_request_input() {
         let mut body = json!({ "input": "x".repeat(50_000) });
         let pricing = Pricing {
-            input_yuan_per_million: 100.0,
-            output_yuan_per_million: 100.0,
-            reasoning_yuan_per_million: 100.0,
-            cached_input_yuan_per_million: 100.0,
+            input_yuan_per_million: Decimal::from(100_u64),
+            output_yuan_per_million: Decimal::from(100_u64),
+            reasoning_yuan_per_million: Decimal::from(100_u64),
+            cached_input_yuan_per_million: Decimal::from(100_u64),
             markup_bps: 0,
         };
 
-        assert!(enforce_request_budget(&mut body, 0.01, &pricing).is_err());
+        assert!(enforce_request_budget(&mut body, Decimal::new(1, 2), &pricing).is_err());
     }
 
     #[tokio::test]
@@ -3834,14 +4488,14 @@ mod tests {
                 "device_test".to_string(),
                 "run_test".to_string(),
                 "model_test".to_string(),
-                1.0,
+                Decimal::ONE,
                 60,
             ),
             Pricing {
-                input_yuan_per_million: 0.0,
-                output_yuan_per_million: 0.0,
-                reasoning_yuan_per_million: 0.0,
-                cached_input_yuan_per_million: 0.0,
+                input_yuan_per_million: Decimal::ZERO,
+                output_yuan_per_million: Decimal::ZERO,
+                reasoning_yuan_per_million: Decimal::ZERO,
+                cached_input_yuan_per_million: Decimal::ZERO,
                 markup_bps: 0,
             },
             Utc::now(),

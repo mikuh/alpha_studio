@@ -2,10 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for Alpha Studio",
-  "windows": ["main", "chat-*"],
+  "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:webview:allow-create-webview-window",
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-focus",
@@ -20,9 +19,6 @@
     "core:window:allow-set-theme",
     "core:window:allow-start-dragging",
     "dialog:allow-open",
-    "dialog:allow-ask",
-    "opener:allow-reveal-item-in-dir",
-    "opener:allow-open-path",
-    "opener:allow-open-url"
+    "dialog:allow-ask"
   ]
 }
