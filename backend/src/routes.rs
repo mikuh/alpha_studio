@@ -871,7 +871,7 @@ pub async fn admin_billing_reconciliation(
           coalesce(r.failed_runs_24h, 0)::bigint as failed_runs_24h,
           coalesce(u.usage_events_24h, 0)::bigint as usage_events_24h,
           coalesce(u.total_tokens_24h, 0)::bigint as total_tokens_24h,
-          coalesce(u.fallback_metered_events_24h, 0)::bigint as fallback_metered_events_24h,
+          coalesce(u.unverified_usage_events_24h, 0)::bigint as unverified_usage_events_24h,
           coalesce(u.billable_yuan_24h, 0::numeric) as billable_yuan_24h
         from tenants t
         left join (
@@ -893,7 +893,9 @@ pub async fn admin_billing_reconciliation(
           select tenant_id,
             count(*)::bigint as usage_events_24h,
             coalesce(sum(input_tokens + output_tokens + reasoning_tokens + cached_tokens), 0)::bigint as total_tokens_24h,
-            count(*) filter (where metering_status = 'budget_fallback')::bigint as fallback_metered_events_24h,
+            count(*) filter (
+              where metering_status in ('budget_fallback', 'usage_unavailable')
+            )::bigint as unverified_usage_events_24h,
             coalesce(sum(billable_yuan), 0::numeric) as billable_yuan_24h
           from usage_events
           where created_at >= now() - interval '24 hours'
@@ -910,7 +912,7 @@ pub async fn admin_billing_reconciliation(
             let stored = row.get::<Decimal, _>("balance_yuan");
             let ledger = row.get::<Decimal, _>("ledger_balance_yuan");
             let stale_open_runs = row.get::<i64, _>("stale_open_runs");
-            let fallback_events = row.get::<i64, _>("fallback_metered_events_24h");
+            let unverified_usage_events = row.get::<i64, _>("unverified_usage_events_24h");
             json!({
                 "tenantId": row.get::<String, _>("id"),
                 "tenantName": row.get::<String, _>("name"),
@@ -922,10 +924,10 @@ pub async fn admin_billing_reconciliation(
                 "failedRuns24h": row.get::<i64, _>("failed_runs_24h"),
                 "usageEvents24h": row.get::<i64, _>("usage_events_24h"),
                 "totalTokens24h": row.get::<i64, _>("total_tokens_24h"),
-                "fallbackMeteredEvents24h": fallback_events,
+                "unverifiedUsageEvents24h": unverified_usage_events,
                 "billableYuan24h": decimal_json(row.get::<Decimal, _>("billable_yuan_24h")),
                 "balanced": stored == ledger,
-                "requiresReview": stored != ledger || stale_open_runs > 0 || fallback_events > 0
+                "requiresReview": stored != ledger || stale_open_runs > 0 || unverified_usage_events > 0
             })
         })
         .collect::<Vec<_>>();
@@ -979,7 +981,7 @@ pub async fn run_create(
     .await?;
     load_provider_config(&state, &route).await?;
     let run_id = format!("run_{}", Uuid::new_v4().simple());
-    reserve_run_budget(&state.db, &run_id, &request).await?;
+    create_unreserved_run(&state.db, &run_id, &request).await?;
     let token = state.run_tokens.issue(RunTokenClaims::new(
         request.tenant_id,
         request.user_id,
@@ -2317,7 +2319,7 @@ pub async fn gateway_responses(
                         &GatewayUsage::default(),
                         0,
                         started,
-                        MeteringStatus::BudgetFallback("ambiguous upstream transport failure"),
+                        MeteringStatus::UsageUnavailable("ambiguous upstream transport failure"),
                     )
                     .await?;
                 } else {
@@ -2357,7 +2359,7 @@ pub async fn gateway_responses(
                     &GatewayUsage::default(),
                     status.as_u16(),
                     started,
-                    MeteringStatus::BudgetFallback(
+                    MeteringStatus::UsageUnavailable(
                         "successful upstream response could not be normalized",
                     ),
                 )
@@ -2387,7 +2389,7 @@ pub async fn gateway_responses(
                 &GatewayUsage::default(),
                 status.as_u16(),
                 started,
-                MeteringStatus::BudgetFallback(
+                MeteringStatus::UsageUnavailable(
                     "upstream may have incurred inference cost before returning an error",
                 ),
             )
@@ -2549,7 +2551,7 @@ fn stream_upstream_response(
                 &usage,
                 upstream_status,
                 started,
-                MeteringStatus::BudgetFallback("upstream stream failed after dispatch"),
+                MeteringStatus::UsageUnavailable("upstream stream failed after dispatch"),
             )
             .await
             {
@@ -2994,7 +2996,7 @@ async fn ensure_gateway_run_available(pool: &PgPool, claims: &RunTokenClaims) ->
         r#"
         select r.tenant_id, r.user_id, r.device_id, r.model_id, r.status, r.budget_yuan
         from model_runs r
-        join tenants t on t.id = r.tenant_id and t.status = 'active'
+        join tenants t on t.id = r.tenant_id and t.status = 'active' and t.balance_yuan > 0
         join devices d on d.id = r.device_id and d.tenant_id = r.tenant_id
           and d.status = 'active' and d.lease_expires_at > now()
         where r.id = $1
@@ -3018,7 +3020,7 @@ async fn start_gateway_run(pool: &PgPool, claims: &RunTokenClaims) -> ApiResult<
           and r.device_id = $4 and r.model_id = $5
           and r.budget_yuan = $6
           and r.status = 'created' and r.created_at > now() - interval '20 minutes'
-          and t.id = r.tenant_id and t.status = 'active'
+          and t.id = r.tenant_id and t.status = 'active' and t.balance_yuan > 0
           and d.id = r.device_id and d.tenant_id = r.tenant_id
           and d.status = 'active' and d.lease_expires_at > now()
         returning r.id
@@ -3094,7 +3096,7 @@ fn enforce_request_budget(
     };
     if charge_for(0) > budget_yuan {
         return Err(ApiError::Forbidden(
-            "run budget is too small for the request input".to_string(),
+            "per-run safety limit is too small for the request input".to_string(),
         ));
     }
     let mut low = 0_u64;
@@ -3109,7 +3111,7 @@ fn enforce_request_budget(
     }
     if low == 0 {
         return Err(ApiError::Forbidden(
-            "run budget cannot fund even one output token".to_string(),
+            "per-run safety limit cannot fund even one output token".to_string(),
         ));
     }
     let safe_max = requested_max.min(low);
@@ -3196,34 +3198,18 @@ fn validate_run_budget(budget_yuan: Decimal) -> ApiResult<()> {
     Ok(())
 }
 
-async fn reserve_run_budget(
+async fn create_unreserved_run(
     pool: &PgPool,
     run_id: &str,
     request: &RunCreateRequest,
 ) -> ApiResult<()> {
-    release_expired_run_reservations(pool, &request.tenant_id).await?;
-    let mut tx = pool.begin().await?;
-    let reserved = sqlx::query(
-        r#"
-        update tenants
-        set balance_yuan = balance_yuan - $2, updated_at = now()
-        where id = $1 and status = 'active' and balance_yuan >= $2
-        returning balance_yuan
-        "#,
-    )
-    .bind(&request.tenant_id)
-    .bind(request.budget_yuan)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if reserved.is_none() {
-        return Err(ApiError::Forbidden(
-            "prepaid balance is insufficient for this run budget".to_string(),
-        ));
-    }
-    sqlx::query(
+    let created = sqlx::query(
         r#"
         insert into model_runs (id, tenant_id, user_id, device_id, model_id, mode, status, budget_yuan)
-        values ($1, $2, $3, $4, $5, 'gateway_api', 'created', $6)
+        select $1, $2, $3, $4, $5, 'gateway_api', 'created', $6
+        from tenants
+        where id = $2 and status = 'active' and balance_yuan > 0
+        returning id
         "#,
     )
     .bind(run_id)
@@ -3232,25 +3218,13 @@ async fn reserve_run_budget(
     .bind(&request.device_id)
     .bind(&request.model_id)
     .bind(request.budget_yuan)
-    .execute(&mut *tx)
+    .fetch_optional(pool)
     .await?;
-    sqlx::query(
-        r#"
-        insert into billing_ledger
-          (id, tenant_id, run_id, entry_type, amount_yuan, description, operation_key)
-        values ($1, $2, $3, 'usage_reservation', $4, $5, $6)
-        "#,
-    )
-    .bind(format!("ledger_{}", Uuid::new_v4().simple()))
-    .bind(&request.tenant_id)
-    .bind(run_id)
-    .bind(-request.budget_yuan)
-    .bind(format!("{} run budget reservation", request.model_id))
-    .bind(format!("reservation:{run_id}"))
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(())
+    created.map(|_| ()).ok_or_else(|| {
+        ApiError::Forbidden(
+            "account balance must be greater than zero to start a model run".to_string(),
+        )
+    })
 }
 
 async fn release_expired_run_reservations(pool: &PgPool, tenant_id: &str) -> ApiResult<()> {
@@ -3325,16 +3299,38 @@ async fn release_expired_run_reservations(pool: &PgPool, tenant_id: &str) -> Api
 #[derive(Clone, Copy)]
 enum MeteringStatus<'a> {
     Reported,
-    BudgetFallback(&'a str),
+    UsageUnavailable(&'a str),
 }
 
 impl<'a> MeteringStatus<'a> {
     fn from_usage(usage: &GatewayUsage, fallback_reason: &'a str) -> Self {
         if usage.is_empty() {
-            Self::BudgetFallback(fallback_reason)
+            Self::UsageUnavailable(fallback_reason)
         } else {
             Self::Reported
         }
+    }
+}
+
+fn resolve_usage_charge<'a>(
+    pricing: &Pricing,
+    usage: &GatewayUsage,
+    metering_status: MeteringStatus<'a>,
+) -> (Decimal, Decimal, &'static str, &'a str) {
+    let measured_charge = settle_usage_yuan(usage, pricing);
+    match metering_status {
+        MeteringStatus::Reported => (
+            measured_charge.cost_yuan,
+            measured_charge.billable_yuan,
+            "reported",
+            "",
+        ),
+        MeteringStatus::UsageUnavailable(reason) => (
+            measured_charge.cost_yuan,
+            measured_charge.billable_yuan,
+            "usage_unavailable",
+            reason,
+        ),
     }
 }
 
@@ -3347,29 +3343,8 @@ async fn settle_and_record_usage(
     started: chrono::DateTime<Utc>,
     metering_status: MeteringStatus<'_>,
 ) -> ApiResult<()> {
-    let measured_charge = settle_usage_yuan(usage, pricing);
-    let (cost_yuan, billable_yuan, metering_label, billing_note) = match metering_status {
-        MeteringStatus::Reported => (
-            measured_charge.cost_yuan,
-            measured_charge.billable_yuan,
-            "reported",
-            "",
-        ),
-        MeteringStatus::BudgetFallback(reason) => {
-            let multiplier_bps = 10_000_u64.saturating_add(pricing.markup_bps);
-            let estimated_cost = if multiplier_bps > 0 {
-                claims.budget_yuan * Decimal::from(10_000_u64) / Decimal::from(multiplier_bps)
-            } else {
-                claims.budget_yuan
-            };
-            (
-                measured_charge.cost_yuan.max(estimated_cost),
-                claims.budget_yuan,
-                "budget_fallback",
-                reason,
-            )
-        }
-    };
+    let (cost_yuan, billable_yuan, metering_label, billing_note) =
+        resolve_usage_charge(pricing, usage, metering_status);
     let latency_ms = (Utc::now() - started).num_milliseconds().max(0);
     let input_tokens = i64::try_from(usage.input_tokens)
         .map_err(|_| ApiError::BadRequest("input token count is too large".to_string()))?;
@@ -3438,7 +3413,7 @@ async fn settle_and_record_usage(
         let balance_adjustment = claims.budget_yuan - billable_yuan;
         if balance_adjustment != Decimal::ZERO {
             sqlx::query(
-                "update tenants set balance_yuan = balance_yuan + $2, status = case when balance_yuan + $2 < 0 then 'suspended' else status end, updated_at = now() where id = $1",
+                "update tenants set balance_yuan = balance_yuan + $2, updated_at = now() where id = $1",
             )
             .bind(&claims.tenant_id)
             .bind(balance_adjustment)
@@ -3487,7 +3462,7 @@ async fn settle_and_record_usage(
         .bind(&claims.tenant_id)
         .bind(&claims.run_id)
         .bind(-billable_yuan)
-        .bind(format!("{} usage charge", claims.model_id))
+        .bind(format!("{} 实际用量扣费", claims.model_id))
         .bind(format!("charge:{}", claims.run_id))
         .execute(&mut *tx)
         .await?;
@@ -4296,12 +4271,12 @@ mod tests {
 
     use super::{
         bounded_pagination, enforce_request_budget, looks_like_secret_field,
-        normalized_codex_tenant_ids, stream_upstream_response,
+        normalized_codex_tenant_ids, resolve_usage_charge, stream_upstream_response,
         validate_client_agreement_acceptance, validate_offline_payment_request,
-        ClientAgreementAcceptance, OfflinePaymentRequest,
+        ClientAgreementAcceptance, MeteringStatus, OfflinePaymentRequest,
     };
     use crate::{
-        billing::Pricing,
+        billing::{GatewayUsage, Pricing},
         gateway::{UpstreamRequest, UpstreamResponseFormat},
         tokens::RunTokenClaims,
     };
@@ -4401,7 +4376,7 @@ mod tests {
     }
 
     #[test]
-    fn caps_output_tokens_to_the_preauthorized_budget() {
+    fn caps_output_tokens_to_the_per_run_safety_limit() {
         let mut body = json!({
             "input": "hello",
             "max_output_tokens": 1_000_000
@@ -4433,6 +4408,28 @@ mod tests {
         };
 
         assert!(enforce_request_budget(&mut body, Decimal::new(1, 2), &pricing).is_err());
+    }
+
+    #[test]
+    fn does_not_guess_a_charge_when_upstream_usage_is_unavailable() {
+        let pricing = Pricing {
+            input_yuan_per_million: Decimal::ONE,
+            output_yuan_per_million: Decimal::ONE,
+            reasoning_yuan_per_million: Decimal::ONE,
+            cached_input_yuan_per_million: Decimal::ONE,
+            markup_bps: 500,
+        };
+
+        let (cost, billable, label, note) = resolve_usage_charge(
+            &pricing,
+            &GatewayUsage::default(),
+            MeteringStatus::UsageUnavailable("missing usage"),
+        );
+
+        assert_eq!(cost, Decimal::ZERO);
+        assert_eq!(billable, Decimal::ZERO);
+        assert_eq!(label, "usage_unavailable");
+        assert_eq!(note, "missing usage");
     }
 
     #[tokio::test]

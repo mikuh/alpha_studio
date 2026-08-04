@@ -45,6 +45,7 @@ describe('archive semantics', () => {
     vi.useRealTimers();
     useChatStore.setState({
       conversations: [conversation('conv-1'), conversation('conv-2')],
+      subscriptionUsage: [],
       projects: [],
       currentConversationId: 'conv-1',
       selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
@@ -147,6 +148,59 @@ describe('archive semantics', () => {
     });
 
     expect(migrated.reasoningEffort).toBe(effort);
+  });
+
+  it('records subscription token usage once per GPT usage increment', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime('2026-08-05T08:00:00.000Z');
+    useChatStore.setState({
+      conversations: [conversation('conv-subscription', {
+        status: 'streaming',
+        runId: 'run-subscription',
+        activeModelProfileId: DEFAULT_MODEL_PROFILE_ID,
+      })],
+      subscriptionUsage: [],
+    });
+
+    const usageEvent = (totalTokens: number, inputTokens: number, outputTokens: number) => ({
+      type: 'token_usage' as const,
+      runId: 'run-subscription',
+      conversationId: 'conv-subscription',
+      raw: {
+        tokenUsage: {
+          total: {
+            totalTokens,
+            inputTokens,
+            cachedInputTokens: 20,
+            outputTokens,
+            reasoningOutputTokens: 10,
+          },
+          last: {
+            totalTokens: totalTokens === 100 ? 100 : 60,
+            inputTokens: totalTokens === 100 ? 80 : 50,
+            cachedInputTokens: totalTokens === 100 ? 20 : 0,
+            outputTokens: totalTokens === 100 ? 20 : 10,
+            reasoningOutputTokens: totalTokens === 100 ? 10 : 0,
+          },
+        },
+      },
+    });
+
+    useChatStore.getState().handleCodexEvent(usageEvent(100, 80, 20));
+    useChatStore.getState().handleCodexEvent(usageEvent(100, 80, 20));
+    useChatStore.getState().handleCodexEvent(usageEvent(160, 130, 30));
+
+    expect(useChatStore.getState().subscriptionUsage).toEqual([expect.objectContaining({
+      month: '2026-08',
+      modelId: 'gpt-5.5',
+      label: 'GPT-5.5',
+      runCount: 2,
+      inputTokens: 130,
+      outputTokens: 30,
+      reasoningTokens: 10,
+      cachedTokens: 20,
+      totalTokens: 160,
+    })]);
   });
 
   it('adds, updates, disables, and deletes custom model profiles', () => {

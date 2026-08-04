@@ -328,7 +328,7 @@ export async function revokeClientDevice(
   }, { retryLoopback: true });
 }
 
-export async function createGatewayRun(modelId: string, budgetYuan = 5): Promise<GatewayRunConfig> {
+export async function createGatewayRun(modelId: string, spendLimitYuan = 5): Promise<GatewayRunConfig> {
   const session = loadClientLicenseSession();
   if (!session) throw new Error('Alpha Studio 客户端尚未激活。');
   const data = await alphaFetch<{ runId: string; runToken: string }>(session.apiBaseUrl, '/api/runs/create', {
@@ -339,7 +339,9 @@ export async function createGatewayRun(modelId: string, budgetYuan = 5): Promise
       userId: session.user.id,
       deviceId: session.device.id,
       modelId,
-      budgetYuan,
+      // This limits one run's output exposure; the server does not reserve it
+      // from the account balance.
+      budgetYuan: spendLimitYuan,
     }),
   });
   return {

@@ -194,6 +194,19 @@ export interface CodexTokenUsage {
   updatedAt: number;
 }
 
+export interface SubscriptionModelUsage {
+  month: string;
+  modelId: string;
+  label: string;
+  runCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  lastUsedAt: number;
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -203,6 +216,7 @@ export interface Conversation {
   codexThreadId?: string;
   backgroundContext?: BackgroundContextSummary;
   codexTokenUsage?: CodexTokenUsage;
+  activeModelProfileId?: string;
   codexCompactedAt?: number;
   cwd: string;
   projectId?: string;

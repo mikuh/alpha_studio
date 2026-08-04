@@ -444,6 +444,7 @@ describe('right feature panel', () => {
     }));
     useChatStore.setState({
       conversations: [conversation()],
+      subscriptionUsage: [],
       projects: [],
       currentConversationId: 'conv-right-panel',
       selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
@@ -2274,6 +2275,20 @@ describe('right feature panel', () => {
   it('shows subscription and pay-as-you-go billing in usage settings', async () => {
     const user = userEvent.setup();
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    useChatStore.setState({
+      subscriptionUsage: [{
+        month: '2026-07',
+        modelId: 'gpt-5.6-sol',
+        label: 'GPT-5.6 Sol',
+        runCount: 3,
+        inputTokens: 32_000,
+        outputTokens: 2_400,
+        reasoningTokens: 800,
+        cachedTokens: 18_000,
+        totalTokens: 34_400,
+        lastUsedAt: Date.parse('2026-07-09T08:20:00.000Z'),
+      }],
+    });
     vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith('/api/client/billing-summary')) {
@@ -2374,6 +2389,9 @@ describe('right feature panel', () => {
     expect(within(settings).getByText('API 套餐')).toBeInTheDocument();
     expect(within(settings).getByText(/96\.75/)).toBeInTheDocument();
     expect(within(settings).getAllByText(/3\.25/).length).toBeGreaterThan(0);
+    expect(within(settings).getByText('GPT-5.6 Sol')).toBeInTheDocument();
+    expect(within(settings).getByText('Included')).toHaveAttribute('title', '费用已包含在 GPT 订阅中');
+    expect(within(settings).getByText('34,400')).toBeInTheDocument();
     expect(within(settings).getByText('GPT-5.5 API')).toBeInTheDocument();
     expect(within(settings).getByText('gpt-5.5 usage charge')).toBeInTheDocument();
     expect(within(settings).getByText('第 1 / 3 页')).toBeInTheDocument();

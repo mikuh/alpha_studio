@@ -1,0 +1,11 @@
+services:
+  api:
+    secrets:
+      - provider_kms_master_key
+      - admin_totp_secret
+
+secrets:
+  provider_kms_master_key:
+    file: ./secrets/provider_kms_master_key
+  admin_totp_secret:
+    file: ./secrets/admin_totp_secret

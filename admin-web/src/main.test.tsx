@@ -551,7 +551,7 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
       failedRuns24h: 0,
       usageEvents24h: 1,
       totalTokens24h: 21000,
-      fallbackMeteredEvents24h: 0,
+      unverifiedUsageEvents24h: 0,
       billableYuan24h: 3.25,
       balanced: true,
       requiresReview: false,

@@ -13226,6 +13226,7 @@ function KeyboardSettings() {
 
 function UsageSettings() {
   const session = useChatStore((state) => state.clientLicenseSession);
+  const subscriptionUsage = useChatStore((state) => state.subscriptionUsage);
   const [summary, setSummary] = useState<ClientBillingSummary | null>(null);
   const [codexUsage, setCodexUsage] = useState<CodexSubscriptionUsage | null>(null);
   const [loading, setLoading] = useState(false);
@@ -13283,6 +13284,21 @@ function UsageSettings() {
     : '当前账期';
   const codexSubscriptionEnabled = Boolean(tenant?.codexSubscriptionEnabled);
   const apiSubscriptionEnabled = Boolean(tenant?.subscriptionPlan);
+  const billingMonth = (summary?.period?.currentMonthStart || new Date().toISOString()).slice(0, 7);
+  const modelRows = useMemo<BillingModelTableRow[]>(() => [
+    ...subscriptionUsage
+      .filter((model) => model.month === billingMonth)
+      .sort((left, right) => right.lastUsedAt - left.lastUsedAt)
+      .map((model) => ({
+        ...model,
+        provider: `GPT 订阅 · ${model.modelId}`,
+        costYuan: 0,
+        billableYuan: 0,
+        lastUsedAt: new Date(model.lastUsedAt).toISOString(),
+        billingKind: 'included' as const,
+      })),
+    ...models.map((model) => ({ ...model, billingKind: 'metered' as const })),
+  ], [billingMonth, models, subscriptionUsage]);
 
   return (
     <>
@@ -13300,7 +13316,7 @@ function UsageSettings() {
         <div className="billing-metrics">
           <BillingMetric label="本月按量费用" value={formatYuan(currentMonth.billableYuan)} meta={`${formatWholeNumber(currentMonth.runCount)} 次调用`} />
           <BillingMetric label="账户余额" value={formatYuan(tenant?.balanceYuan ?? 0)} meta="API 网关预付余额" tone={(tenant?.balanceYuan ?? 0) <= 0 ? 'warning' : 'default'} />
-          <BillingMetric label="本月 Tokens" value={formatWholeNumber(currentMonth.totalTokens)} meta={formatUsageBreakdown(currentMonth)} />
+          <BillingMetric label="本月按量 Tokens" value={formatWholeNumber(currentMonth.totalTokens)} meta={formatUsageBreakdown(currentMonth)} />
         </div>
         {error && <div className="billing-alert"><AlertCircle size={14} />{error}</div>}
       </section>
@@ -13345,7 +13361,7 @@ function UsageSettings() {
         </SettingsRow>
       </SettingsGroup>
 
-      <BillingModelTable models={models} />
+      <BillingModelTable models={modelRows} />
       <BillingLedgerList
         entries={recentLedger}
         pagination={ledgerPagination}
@@ -13409,15 +13425,18 @@ function CodexSubscriptionUsageView({ usage, loading, error }: { usage: CodexSub
   );
 }
 
-function BillingModelTable({ models }: { models: BillingModelUsage[] }) {
+interface BillingModelTableRow extends BillingModelUsage {
+  billingKind: 'included' | 'metered';
+}
+
+function BillingModelTable({ models }: { models: BillingModelTableRow[] }) {
   return (
     <section className="billing-table-section" aria-label="模型用量">
       <div className="billing-section-title">
         <strong>模型用量</strong>
-        <span>按本月按量费用排序</span>
       </div>
       {models.length === 0 ? (
-        <div className="billing-empty">本月还没有按量 API 消耗。</div>
+        <div className="billing-empty">本月还没有可显示的模型消耗。</div>
       ) : (
         <div className="billing-table-wrap">
           <table className="billing-table">
@@ -13438,7 +13457,11 @@ function BillingModelTable({ models }: { models: BillingModelUsage[] }) {
                   </td>
                   <td>{formatWholeNumber(model.runCount)}</td>
                   <td title={formatUsageBreakdown(model)}>{formatWholeNumber(model.totalTokens)}</td>
-                  <td>{formatYuan(model.billableYuan)}</td>
+                  <td>
+                    {model.billingKind === 'included'
+                      ? <span className="billing-cost-included" title="费用已包含在 GPT 订阅中">Included</span>
+                      : formatYuan(model.billableYuan)}
+                  </td>
                 </tr>
               ))}
             </tbody>

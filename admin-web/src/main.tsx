@@ -184,7 +184,7 @@ interface BillingReconciliationTenant {
   failedRuns24h: number;
   usageEvents24h: number;
   totalTokens24h: number;
-  fallbackMeteredEvents24h: number;
+  unverifiedUsageEvents24h: number;
   billableYuan24h: number;
   balanced: boolean;
   requiresReview: boolean;
@@ -2327,7 +2327,7 @@ function TenantUsageWorkspace({
               <span><strong>对账状态</strong>{tenantReconciliation?.requiresReview ? '需要核对' : '一致'}</span>
               <span><strong>当前余额</strong>{formatYuan(tenantReconciliation?.storedBalanceYuan ?? summary.tenant.balanceYuan)}</span>
               <span><strong>账本余额</strong>{formatYuan(tenantReconciliation?.ledgerBalanceYuan ?? 0)}</span>
-              <span><strong>24h Tokens / 兜底计量</strong>{formatWholeNumber(tenantReconciliation?.totalTokens24h ?? 0)} / {formatWholeNumber(tenantReconciliation?.fallbackMeteredEvents24h ?? 0)}</span>
+              <span><strong>24h Tokens / 用量待核对</strong>{formatWholeNumber(tenantReconciliation?.totalTokens24h ?? 0)} / {formatWholeNumber(tenantReconciliation?.unverifiedUsageEvents24h ?? 0)}</span>
             </div>
             <form className="offline-payment-form" onSubmit={(event) => void submitOfflinePayment(event)}>
               <NumberField label="实收金额 元" value={Number(paymentForm.amountYuan || 0)} min={0.000001} step={0.000001} onChange={(amountYuan) => setPaymentForm({ ...paymentForm, amountYuan: String(amountYuan) })} />

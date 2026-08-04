@@ -164,7 +164,7 @@
 <body>
     <div class="container">
         <h1>Alpha Studio 模型网关 API</h1>
-        <p style="color: #6b7280; margin-bottom: 32px;">受鉴权、预算预授权和按量结算保护的 Responses API</p>
+        <p style="color: #6b7280; margin-bottom: 32px;">受鉴权、单次消费上限和按真实用量结算保护的 Responses API</p>
 
         <div class="info">
             <strong>🔐 所有模型请求都必须鉴权</strong><br>
@@ -177,7 +177,7 @@
         <ol>
             <li>使用公司名和授权码激活 Alpha Studio 桌面端，取得设备 token。</li>
             <li>客户端携带设备 token 调用 <code>POST /api/runs/create</code>。</li>
-            <li>服务端原子冻结预算并返回 20 分钟有效的 run token。</li>
+            <li>服务端确认账户余额大于 0 后创建运行，不冻结余额，并返回 20 分钟有效的 run token。</li>
             <li>run token 只能真正发起一次上游推理，且不能切换模型。</li>
         </ol>
 
@@ -197,7 +197,7 @@
         <h2>调用约束</h2>
         <ul>
             <li>请求体使用 OpenAI Responses 格式，不提供 <code>/v1/chat/completions</code> 或图像生成端点。</li>
-            <li>服务端会根据冻结预算收紧 <code>max_output_tokens</code>。</li>
+            <li>服务端会根据不占用余额的单次消费上限收紧 <code>max_output_tokens</code>。</li>
             <li>请求中的模型名不能覆盖 run token 已绑定的模型。</li>
         </ul>
 
@@ -249,7 +249,7 @@
                 <tr>
                     <td><code>/api/runs/create</code></td>
                     <td>POST</td>
-                    <td>使用设备 token 预授权预算并创建运行</td>
+                    <td>使用设备 token 检查正余额并创建单次运行</td>
                 </tr>
             </tbody>
         </table>
@@ -283,7 +283,7 @@
                     <td><code>max_output_tokens</code></td>
                     <td>int</td>
                     <td>否</td>
-                    <td>最大生成 token 数；服务端可能按预算下调</td>
+                    <td>最大生成 token 数；服务端可能按单次消费安全上限下调</td>
                 </tr>
                 <tr>
                     <td><code>stream</code></td>
@@ -323,7 +323,7 @@
                 <tr>
                     <td><code>502</code></td>
                     <td>上游模型服务失败</td>
-                    <td>检查供应商状态；账单中确认是否进入预算兜底</td>
+                    <td>检查供应商状态；账单中确认是否有用量待核对记录</td>
                 </tr>
             </tbody>
         </table>
@@ -334,7 +334,7 @@
             <li>不要将设备 token 或 run token 写入日志、仓库或分析系统。</li>
             <li>run token 是短期单次凭据，不要实现客户端复用。</li>
             <li>授权码只在创建时返回明文；数据库仅保存哈希和末四位提示。</li>
-            <li>上游缺失 usage、超时、流中断或可能已产生费用的错误会标记为 <code>budget_fallback</code> 并按预授权预算保守结算。</li>
+            <li>上游缺失 usage、超时、流中断或可能已产生费用的错误会标记为 <code>usage_unavailable</code>；系统只扣除已确认的 Token 用量，不使用单次上限猜测扣费。</li>
         </ul>
 
         <h2>相关资源</h2>

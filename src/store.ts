@@ -91,6 +91,8 @@ import type {
   AuthorizationRequest,
   ChatMessage,
   CodexChatEvent,
+  CodexTokenUsage,
+  CodexTokenUsageBreakdown,
   CodexStatus,
   CodexModelCatalogItem,
   Conversation,
@@ -104,6 +106,7 @@ import type {
   SandboxMode,
   SelectedTextContext,
   SkillSelection,
+  SubscriptionModelUsage,
 } from './types';
 
 const LEGACY_DEFAULT_CONVERSATION_TITLE = ['\u65b0\u7684', '\u5bf9\u8bdd'].join('\u6295\u7814');
@@ -119,6 +122,7 @@ let clientLicenseRefreshPromise: Promise<ClientLicenseSession | null> | null = n
 
 interface ChatState {
   conversations: Conversation[];
+  subscriptionUsage: SubscriptionModelUsage[];
   projects: Project[];
   currentConversationId: string | null;
   selectedModelProfileId: string;
@@ -192,6 +196,7 @@ interface ChatState {
 
 export interface PersistedChatState {
   conversations: Conversation[];
+  subscriptionUsage: SubscriptionModelUsage[];
   projects: Project[];
   currentConversationId: string | null;
   selectedModelProfileId: string;
@@ -211,6 +216,7 @@ function persistedChatState(state: ChatState): PersistedChatState {
     : activeConversations(conversations)[0]?.id ?? null;
   return {
     conversations,
+    subscriptionUsage: state.subscriptionUsage,
     projects: state.projects,
     currentConversationId,
     selectedModelProfileId: state.selectedModelProfileId,
@@ -236,6 +242,7 @@ const tauriNoopStorage: PersistStorage<PersistedChatState> = {
 
 const tauriNoopPersistedState: PersistedChatState = {
   conversations: [],
+  subscriptionUsage: [],
   projects: [],
   currentConversationId: null,
   selectedModelProfileId: '',
@@ -534,6 +541,11 @@ export const useChatStore = create<ChatState>()(
         try {
           const latest = get().conversations.find((item) => item.id === conversationId);
           const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+          set((state) => ({
+            conversations: state.conversations.map((item) => item.id === conversationId
+              ? { ...item, activeModelProfileId: modelProfile.id }
+              : item),
+          }));
           const domain = activeDomain(get().workModeId);
           const promptOptions = {
             selectedSkill: userMessage.selectedSkill,
@@ -581,6 +593,7 @@ export const useChatStore = create<ChatState>()(
 
       return {
         conversations: [createEmptyConversation()],
+        subscriptionUsage: [],
         projects: [],
         currentConversationId: null,
         selectedModelProfileId: DEFAULT_MODEL_PROFILE_ID,
@@ -1277,6 +1290,11 @@ export const useChatStore = create<ChatState>()(
 	        try {
 	          const latest = get().conversations.find((item) => item.id === conversationId);
 	          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+	          set((state) => ({
+	            conversations: state.conversations.map((item) => item.id === conversationId
+	              ? { ...item, activeModelProfileId: modelProfile.id }
+	              : item),
+	          }));
 	          // Reviews always run read-only so they can never touch the working tree,
 	          // matching Codex's dedicated reviewer (no approval prompt needed).
 	          const result = await startCodexChat({
@@ -1397,6 +1415,11 @@ export const useChatStore = create<ChatState>()(
         try {
           const latest = get().conversations.find((item) => item.id === conversationId);
           const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+          set((state) => ({
+            conversations: state.conversations.map((item) => item.id === conversationId
+              ? { ...item, activeModelProfileId: modelProfile.id }
+              : item),
+          }));
           const domain = activeDomain(get().workModeId);
           const promptOptions = {
             selectedSkill: original.selectedSkill,
@@ -1465,10 +1488,30 @@ export const useChatStore = create<ChatState>()(
       handleCodexEvent: (event: CodexChatEvent) => {
         const shouldStartQueuedMessage = event.type === 'completed' || event.type === 'stopped';
         const readyConversationIds: string[] = [];
-        set((state) => ({
-          conversations: state.conversations.map((conversation) => {
+        set((state) => {
+          let subscriptionUsage = state.subscriptionUsage;
+          const conversations = state.conversations.map((conversation) => {
             const wasStreaming = conversation.status === 'streaming';
             let next = applyCodexEventToConversation(conversation, event);
+            const ownsEvent = event.conversationId
+              ? event.conversationId === conversation.id
+              : Boolean(event.runId && event.runId === conversation.runId);
+            if (event.type === 'token_usage' && ownsEvent && next.codexTokenUsage) {
+              const profileId = conversation.activeModelProfileId || state.selectedModelProfileId;
+              const profile = state.modelProfiles.find((item) => item.id === profileId);
+              if (profile?.builtIn) {
+                const delta = subscriptionTokenDelta(next.codexTokenUsage, conversation.codexTokenUsage);
+                if (delta.totalTokens > 0) {
+                  subscriptionUsage = accumulateSubscriptionUsage(
+                    subscriptionUsage,
+                    profile.model,
+                    profile.label,
+                    delta,
+                    next.codexTokenUsage.updatedAt,
+                  );
+                }
+              }
+            }
             if (
               shouldStartQueuedMessage &&
               wasStreaming &&
@@ -1488,8 +1531,9 @@ export const useChatStore = create<ChatState>()(
               next = { ...next, unread: true };
             }
             return next;
-          }),
-        }));
+          });
+          return { conversations, subscriptionUsage };
+        });
         const completedConversation = event.type === 'completed' && event.conversationId
           ? get().conversations.find((item) => item.id === event.conversationId)
           : undefined;
@@ -1604,7 +1648,7 @@ export const useChatStore = create<ChatState>()(
     },
     {
       name: 'alpha-studio.chat.v2',
-      version: 7,
+      version: 8,
       // The native local-store subscriber below owns desktop persistence. Keep
       // the middleware's hot-path projection constant-time on streamed tokens.
       partialize: isTauriRuntime() ? () => tauriNoopPersistedState : persistedChatState,
@@ -2323,6 +2367,7 @@ export function migratePersistedState(persistedState: unknown): PersistedChatSta
         ...conversation,
         codexThreadId: undefined,
         codexTokenUsage: undefined,
+        activeModelProfileId: undefined,
         codexCompactedAt: undefined,
         title: conversation.title === LEGACY_DEFAULT_CONVERSATION_TITLE ? '新对话' : conversation.title,
       }))
@@ -2340,6 +2385,7 @@ export function migratePersistedState(persistedState: unknown): PersistedChatSta
 
 	  return {
 	    conversations,
+	    subscriptionUsage: normalizeSubscriptionUsage(source.subscriptionUsage),
 	    projects,
 	    currentConversationId,
 	    selectedModelProfileId,
@@ -2353,6 +2399,87 @@ export function migratePersistedState(persistedState: unknown): PersistedChatSta
     projectSort: isProjectSort(source.projectSort) ? source.projectSort : 'updated',
     conversationSort: isProjectSort(source.conversationSort) ? source.conversationSort : 'updated',
   };
+}
+
+function subscriptionTokenDelta(
+  current: CodexTokenUsage,
+  previous: CodexTokenUsage | undefined,
+): CodexTokenUsageBreakdown {
+  if (!previous || current.total.totalTokens < previous.total.totalTokens) {
+    return current.last;
+  }
+  return {
+    totalTokens: Math.max(0, current.total.totalTokens - previous.total.totalTokens),
+    inputTokens: Math.max(0, current.total.inputTokens - previous.total.inputTokens),
+    cachedInputTokens: Math.max(0, current.total.cachedInputTokens - previous.total.cachedInputTokens),
+    outputTokens: Math.max(0, current.total.outputTokens - previous.total.outputTokens),
+    reasoningOutputTokens: Math.max(0, current.total.reasoningOutputTokens - previous.total.reasoningOutputTokens),
+  };
+}
+
+function accumulateSubscriptionUsage(
+  usage: SubscriptionModelUsage[],
+  modelId: string,
+  label: string,
+  delta: CodexTokenUsageBreakdown,
+  usedAt: number,
+): SubscriptionModelUsage[] {
+  const month = new Date(usedAt).toISOString().slice(0, 7);
+  const index = usage.findIndex((item) => item.month === month && item.modelId === modelId);
+  if (index < 0) {
+    return [...usage, {
+      month,
+      modelId,
+      label,
+      runCount: 1,
+      inputTokens: delta.inputTokens,
+      outputTokens: delta.outputTokens,
+      reasoningTokens: delta.reasoningOutputTokens,
+      cachedTokens: delta.cachedInputTokens,
+      totalTokens: delta.totalTokens,
+      lastUsedAt: usedAt,
+    }];
+  }
+  return usage.map((item, itemIndex) => itemIndex === index ? {
+    ...item,
+    label,
+    runCount: item.runCount + 1,
+    inputTokens: item.inputTokens + delta.inputTokens,
+    outputTokens: item.outputTokens + delta.outputTokens,
+    reasoningTokens: item.reasoningTokens + delta.reasoningOutputTokens,
+    cachedTokens: item.cachedTokens + delta.cachedInputTokens,
+    totalTokens: item.totalTokens + delta.totalTokens,
+    lastUsedAt: Math.max(item.lastUsedAt, usedAt),
+  } : item);
+}
+
+function normalizeSubscriptionUsage(source: unknown): SubscriptionModelUsage[] {
+  if (!Array.isArray(source)) return [];
+  return source.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const value = item as Partial<SubscriptionModelUsage>;
+    if (
+      typeof value.month !== 'string'
+      || !/^\d{4}-\d{2}$/.test(value.month)
+      || typeof value.modelId !== 'string'
+      || !value.modelId.trim()
+    ) return [];
+    const nonNegative = (candidate: unknown) => typeof candidate === 'number' && Number.isFinite(candidate)
+      ? Math.max(0, Math.round(candidate))
+      : 0;
+    return [{
+      month: value.month,
+      modelId: value.modelId.trim(),
+      label: typeof value.label === 'string' && value.label.trim() ? value.label.trim() : value.modelId.trim(),
+      runCount: nonNegative(value.runCount),
+      inputTokens: nonNegative(value.inputTokens),
+      outputTokens: nonNegative(value.outputTokens),
+      reasoningTokens: nonNegative(value.reasoningTokens),
+      cachedTokens: nonNegative(value.cachedTokens),
+      totalTokens: nonNegative(value.totalTokens),
+      lastUsedAt: nonNegative(value.lastUsedAt),
+    }];
+  });
 }
 
 function isProjectSort(value: unknown): value is ProjectSort {

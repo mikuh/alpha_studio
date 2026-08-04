@@ -158,3 +158,10 @@ src-tauri/target/
 
 # Local database backup artifacts
 backups/
+
+# Private enrollment material and generated release packages
+artifacts/private/
+artifacts/releases/
+
+# Accidental browser screenshot flag output
+--full-page

@@ -1,0 +1,1200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Alpha Studio 客户使用手册</title>
+  <style>
+    :root {
+      --page-w: 1280px;
+      --page-h: 720px;
+      --paper: #0b1020;
+      --paper-2: #0e1529;
+      --panel: rgba(19, 29, 52, .88);
+      --panel-soft: rgba(28, 41, 71, .62);
+      --ink: #f2f6ff;
+      --muted: #9bacce;
+      --line: rgba(156, 177, 222, .18);
+      --blue: #6fa0ff;
+      --blue-2: #9ac0ff;
+      --cyan: #63d2e8;
+      --green: #48c89b;
+      --amber: #f3bb65;
+      --red: #ff7c83;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .34);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      padding: 64px 0 80px;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 10%, rgba(72, 108, 214, .16), transparent 28%),
+        radial-gradient(circle at 85% 0%, rgba(65, 188, 206, .08), transparent 24%),
+        #050914;
+      font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button, select { font: inherit; }
+
+    .viewer-bar {
+      position: fixed;
+      z-index: 100;
+      left: 50%;
+      top: 12px;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      color: #eaf1ff;
+      background: rgba(8, 13, 27, .92);
+      border: 1px solid rgba(141, 168, 225, .24);
+      border-radius: 14px;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, .28);
+      backdrop-filter: blur(16px);
+    }
+
+    .viewer-bar button,
+    .viewer-bar select {
+      min-height: 32px;
+      color: #eaf1ff;
+      background: rgba(126, 157, 224, .10);
+      border: 1px solid rgba(149, 176, 234, .22);
+      border-radius: 8px;
+      padding: 5px 11px;
+      cursor: pointer;
+    }
+
+    .viewer-bar button:hover { background: rgba(126, 157, 224, .20); }
+    .viewer-bar .viewer-title { padding: 0 8px 0 4px; color: var(--muted); font-size: 13px; }
+
+    main { width: var(--page-w); margin: 0 auto; }
+
+    .page {
+      position: relative;
+      width: var(--page-w);
+      height: var(--page-h);
+      margin: 0 auto 26px;
+      scroll-margin-top: 64px;
+      overflow: hidden;
+      background:
+        linear-gradient(135deg, rgba(95, 130, 220, .06), transparent 30%),
+        linear-gradient(180deg, var(--paper-2), var(--paper));
+      border: 1px solid rgba(151, 177, 229, .12);
+      box-shadow: var(--shadow);
+      break-after: page;
+      page-break-after: always;
+    }
+
+    .page::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(142, 166, 218, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(142, 166, 218, .035) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: linear-gradient(to bottom, rgba(0,0,0,.8), transparent 86%);
+    }
+
+    .page-body {
+      position: relative;
+      z-index: 1;
+      height: 100%;
+      padding: 38px 54px 42px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .page-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 28px;
+      padding-bottom: 16px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--blue-2);
+      font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p, ul, ol, figure { margin-top: 0; }
+    h1 { margin-bottom: 0; font-size: 34px; line-height: 1.18; letter-spacing: -.025em; }
+    h2 { margin-bottom: 10px; font-size: 22px; line-height: 1.3; }
+    h3 { margin-bottom: 7px; font-size: 17px; line-height: 1.35; }
+    p { margin-bottom: 12px; color: #d6def1; font-size: 16px; line-height: 1.62; }
+    ul, ol { margin-bottom: 0; padding-left: 1.25em; color: #d6def1; font-size: 15px; line-height: 1.58; }
+    li + li { margin-top: 5px; }
+    strong { color: #fff; }
+    code {
+      padding: 2px 6px;
+      color: #cfe0ff;
+      background: rgba(111, 160, 255, .10);
+      border: 1px solid rgba(111, 160, 255, .17);
+      border-radius: 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .88em;
+    }
+
+    .page-index {
+      flex: 0 0 auto;
+      min-width: 58px;
+      color: rgba(172, 192, 231, .72);
+      font: 600 14px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-align: right;
+    }
+
+    .page-foot {
+      position: absolute;
+      z-index: 3;
+      left: 54px;
+      right: 54px;
+      bottom: 17px;
+      display: flex;
+      justify-content: space-between;
+      color: rgba(162, 180, 217, .58);
+      font-size: 11px;
+      letter-spacing: .06em;
+    }
+
+    .content { flex: 1; min-height: 0; }
+    .grid { display: grid; gap: 18px; }
+    .grid.two { grid-template-columns: 1fr 1fr; }
+    .grid.three { grid-template-columns: repeat(3, 1fr); }
+    .grid.four { grid-template-columns: repeat(4, 1fr); }
+    .grid.wide-left { grid-template-columns: 1.25fr .75fr; }
+    .grid.wide-right { grid-template-columns: .78fr 1.22fr; }
+
+    .card {
+      padding: 18px 20px;
+      background: linear-gradient(180deg, rgba(28, 42, 74, .72), rgba(18, 28, 51, .78));
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+    .card.compact { padding: 14px 16px; }
+    .card p:last-child, .card ul:last-child, .card ol:last-child { margin-bottom: 0; }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 9px;
+      color: #dce8ff;
+      background: rgba(111, 160, 255, .11);
+      border: 1px solid rgba(111, 160, 255, .22);
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .tag.green { color: #bdf7de; background: rgba(72, 200, 155, .10); border-color: rgba(72, 200, 155, .22); }
+    .tag.amber { color: #ffe2ae; background: rgba(243, 187, 101, .10); border-color: rgba(243, 187, 101, .24); }
+    .tag.red { color: #ffd0d3; background: rgba(255, 124, 131, .10); border-color: rgba(255, 124, 131, .24); }
+
+    .lead {
+      color: #e8efff;
+      font-size: 20px;
+      line-height: 1.55;
+      letter-spacing: -.01em;
+    }
+
+    .muted { color: var(--muted); }
+    .small { font-size: 13px; line-height: 1.55; }
+    .tight p { margin-bottom: 8px; }
+
+    .note {
+      padding: 14px 16px;
+      color: #dce8ff;
+      background: rgba(88, 135, 232, .09);
+      border: 1px solid rgba(113, 158, 250, .24);
+      border-left: 4px solid var(--blue);
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+    .note.warning { background: rgba(243, 187, 101, .08); border-color: rgba(243, 187, 101, .23); border-left-color: var(--amber); }
+    .note.danger { background: rgba(255, 124, 131, .08); border-color: rgba(255, 124, 131, .23); border-left-color: var(--red); }
+    .note.success { background: rgba(72, 200, 155, .08); border-color: rgba(72, 200, 155, .22); border-left-color: var(--green); }
+
+    .number-list { list-style: none; padding: 0; }
+    .number-list li { position: relative; min-height: 34px; padding: 4px 0 4px 42px; }
+    .number-list li::before {
+      content: counter(list-item);
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 29px;
+      height: 29px;
+      display: grid;
+      place-items: center;
+      color: white;
+      background: linear-gradient(135deg, #416fd1, #6e9cff);
+      border-radius: 8px;
+      font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      box-shadow: 0 7px 20px rgba(67, 111, 211, .25);
+    }
+
+    .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; }
+    .step {
+      position: relative;
+      min-height: 116px;
+      padding: 16px 16px 14px;
+      background: rgba(25, 38, 67, .65);
+      border: 1px solid var(--line);
+      border-radius: 13px;
+    }
+    .step:not(:last-child)::after {
+      content: "›";
+      position: absolute;
+      right: -11px;
+      top: 42px;
+      z-index: 3;
+      width: 20px;
+      height: 28px;
+      color: var(--blue-2);
+      background: #0c1325;
+      text-align: center;
+      font-size: 24px;
+      line-height: 26px;
+    }
+    .step b { display: block; margin-bottom: 8px; color: var(--blue-2); font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .step strong { display: block; margin-bottom: 5px; font-size: 17px; }
+    .step span { display: block; color: var(--muted); font-size: 13px; line-height: 1.5; }
+
+    .shot {
+      position: relative;
+      margin: 0;
+      overflow: hidden;
+      background: #080d18;
+      border: 1px solid rgba(153, 181, 237, .24);
+      border-radius: 14px;
+      box-shadow: 0 18px 44px rgba(0, 0, 0, .34);
+    }
+    .shot img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .shot.contain img { object-fit: contain; }
+    .shot figcaption {
+      position: absolute;
+      left: 12px;
+      bottom: 10px;
+      max-width: calc(100% - 24px);
+      padding: 6px 9px;
+      color: #dce7fb;
+      background: rgba(4, 8, 17, .76);
+      border: 1px solid rgba(161, 184, 228, .18);
+      border-radius: 7px;
+      font-size: 11px;
+      line-height: 1.35;
+      backdrop-filter: blur(8px);
+    }
+    .shot .demo-label {
+      position: absolute;
+      left: 11px;
+      top: 10px;
+      padding: 5px 8px;
+      color: #d6e4ff;
+      background: rgba(8, 13, 26, .82);
+      border: 1px solid rgba(160, 184, 230, .18);
+      border-radius: 6px;
+      font-size: 10px;
+      letter-spacing: .06em;
+    }
+    .marker {
+      position: absolute;
+      z-index: 4;
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      background: #4a7ae0;
+      border: 2px solid #dce8ff;
+      border-radius: 50%;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, .45);
+      font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .legend { display: grid; gap: 8px; }
+    .legend-row { display: grid; grid-template-columns: 30px 1fr; gap: 9px; align-items: start; }
+    .legend-row b {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      color: white;
+      background: #4a7ae0;
+      border-radius: 50%;
+      font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .legend-row span { color: #d6def1; font-size: 13px; line-height: 1.45; }
+
+    .checklist { list-style: none; padding: 0; }
+    .checklist li { position: relative; padding-left: 27px; }
+    .checklist li::before {
+      content: "✓";
+      position: absolute;
+      left: 0;
+      top: 1px;
+      color: #c8f7e6;
+      font-weight: 800;
+    }
+    .checklist.empty li::before { content: "□"; color: var(--blue-2); font-size: 18px; top: -2px; }
+
+    .mini-table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.4; }
+    .mini-table th, .mini-table td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .mini-table th { color: var(--blue-2); background: rgba(111, 160, 255, .07); font-size: 12px; }
+    .mini-table td { color: #d7dff1; }
+    .mini-table tr:last-child td { border-bottom: 0; }
+
+    .metric-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .metric { padding: 14px 15px; background: rgba(23, 35, 63, .68); border: 1px solid var(--line); border-radius: 12px; }
+    .metric b { display: block; margin-bottom: 7px; color: var(--muted); font-size: 11px; letter-spacing: .05em; }
+    .metric strong { font-size: 20px; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr 44px 1fr 44px 1fr 44px 1fr;
+      align-items: stretch;
+      gap: 0;
+    }
+    .flow-node { padding: 18px; background: rgba(24, 38, 68, .72); border: 1px solid var(--line); border-radius: 14px; }
+    .flow-node b { display: block; margin-bottom: 7px; color: var(--blue-2); font-size: 12px; }
+    .flow-node strong { display: block; margin-bottom: 7px; font-size: 18px; }
+    .flow-node span { color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .flow-arrow { display: grid; place-items: center; color: #729df2; font-size: 26px; }
+
+    .kbd {
+      display: inline-block;
+      min-width: 27px;
+      padding: 2px 6px;
+      color: #e6edfb;
+      background: rgba(255, 255, 255, .06);
+      border: 1px solid rgba(255, 255, 255, .15);
+      border-bottom-color: rgba(255, 255, 255, .28);
+      border-radius: 5px;
+      font: 600 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-align: center;
+    }
+
+    .cover { background: #081020; }
+    .cover::before {
+      background:
+        radial-gradient(circle at 78% 24%, rgba(91, 138, 242, .25), transparent 22%),
+        radial-gradient(circle at 28% 100%, rgba(68, 206, 190, .10), transparent 28%),
+        linear-gradient(rgba(160, 180, 220, .045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(160, 180, 220, .045) 1px, transparent 1px);
+      background-size: auto, auto, 52px 52px, 52px 52px;
+      mask-image: none;
+    }
+    .cover .page-body { padding: 62px 70px 55px; justify-content: space-between; }
+    .brand-lockup { display: flex; align-items: center; gap: 13px; }
+    .brand-mark { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid rgba(153, 184, 246, .38); border-radius: 12px; color: #dce8ff; background: rgba(111,160,255,.10); font: 700 24px/1 Georgia, serif; }
+    .brand-lockup strong { display: block; font-size: 19px; letter-spacing: .01em; }
+    .brand-lockup span { color: var(--muted); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; }
+    .cover-copy { max-width: 820px; }
+    .cover h1 { margin: 0 0 18px; font-size: 60px; line-height: 1.05; letter-spacing: -.04em; }
+    .cover .subtitle { max-width: 760px; color: #bdcbe8; font-size: 22px; line-height: 1.5; }
+    .cover-meta { display: grid; grid-template-columns: repeat(3, auto); justify-content: start; gap: 46px; }
+    .cover-meta div { min-width: 150px; }
+    .cover-meta span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+    .cover-meta strong { font-size: 15px; }
+    .cover-orbit {
+      position: absolute;
+      right: 72px;
+      top: 112px;
+      width: 310px;
+      height: 310px;
+      border: 1px solid rgba(127, 161, 231, .15);
+      border-radius: 50%;
+    }
+    .cover-orbit::before, .cover-orbit::after { content: ""; position: absolute; border-radius: 50%; border: 1px solid rgba(127, 161, 231, .14); }
+    .cover-orbit::before { inset: 38px; }
+    .cover-orbit::after { inset: 86px; background: radial-gradient(circle, rgba(96, 146, 247, .35), rgba(77, 105, 182, .06) 45%, transparent 70%); box-shadow: 0 0 80px rgba(67, 112, 220, .24); }
+    .cover-orbit .dot { position: absolute; width: 10px; height: 10px; background: #7ea8ff; border-radius: 50%; box-shadow: 0 0 18px #6c99f7; }
+    .cover-orbit .dot.a { left: 20px; top: 94px; }
+    .cover-orbit .dot.b { right: 40px; bottom: 50px; background: #57d5be; }
+
+    @media screen and (max-width: 1320px) {
+      body { min-width: 1280px; }
+    }
+
+    @page { size: 13.333in 7.5in; margin: 0; }
+    @media print {
+      html, body { width: 13.333in; height: 7.5in; margin: 0; padding: 0; background: #081020; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      .viewer-bar { display: none !important; }
+      main { width: 13.333in; margin: 0; }
+      .page { width: 13.333in; height: 7.5in; margin: 0; border: 0; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="viewer-bar" aria-label="手册浏览工具">
+    <span class="viewer-title">Alpha Studio 客户使用手册</span>
+    <button type="button" id="prevPage" aria-label="上一页">上一页</button>
+    <select id="pageSelect" aria-label="跳转到页面"></select>
+    <button type="button" id="nextPage" aria-label="下一页">下一页</button>
+    <button type="button" onclick="window.print()">打印 / 导出 PDF</button>
+  </div>
+
+  <main>
+    <section class="page cover" id="p01" data-title="封面">
+      <div class="page-body">
+        <div class="brand-lockup">
+          <div class="brand-mark">α</div>
+          <div><strong>Alpha Studio</strong><span>Finance Research Edition</span></div>
+        </div>
+        <div class="cover-copy">
+          <span class="eyebrow">Customer User Manual · 2026</span>
+          <h1>客户使用手册</h1>
+          <p class="subtitle">面向金融投研团队的安装、激活、研究主题管理、AI 协作、自动化、行情与研究数据、风险控制及运维指南。</p>
+        </div>
+        <div class="cover-meta">
+          <div><span>适用版本</span><strong>Alpha Studio 0.1.x</strong></div>
+          <div><span>文档版本</span><strong>V1.0 · 2026-08-05</strong></div>
+          <div><span>页面规格</span><strong>16:9 宽屏 · 1280 × 720</strong></div>
+        </div>
+        <div class="cover-orbit" aria-hidden="true"><span class="dot a"></span><span class="dot b"></span></div>
+      </div>
+      <div class="page-foot"><span>ALPHA STUDIO · CUSTOMER DOCUMENTATION</span><span>01 / 26</span></div>
+    </section>
+
+    <section class="page" id="p02" data-title="手册说明">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">READ ME FIRST</span><h1>如何使用本手册</h1></div><span class="page-index">02</span></header>
+        <div class="content grid wide-left">
+          <div class="grid two">
+            <article class="card">
+              <span class="tag">适用对象</span>
+              <h2 style="margin-top:12px">研究员、基金经理、运营与管理员</h2>
+              <p>本手册覆盖客户从首次启动到日常投研、数据管理和故障报修的完整路径。管理员可重点阅读激活、设备、计费和备份章节。</p>
+            </article>
+            <article class="card">
+              <span class="tag green">截图说明</span>
+              <h2 style="margin-top:12px">界面可能因版本与权限不同</h2>
+              <p>截图来自 0.1.x 演示环境。模型列表、数据源、工作台标签和企业名称以实际授权及后台配置为准。</p>
+            </article>
+            <article class="card">
+              <span class="tag amber">操作约定</span>
+              <h2 style="margin-top:12px">路径使用“›”分隔</h2>
+              <p>例如 <strong>设置 › 账户与授权 › 设备管理</strong>。按钮名使用粗体；风险、数据时点和人工复核要求用提示框标出。</p>
+            </article>
+            <article class="card">
+              <span class="tag red">责任边界</span>
+              <h2 style="margin-top:12px">AI 输出不是投资承诺</h2>
+              <p>软件用于研究辅助，不替代投资决策、合规审查或真实交易授权；任何证券结论均须独立核验。</p>
+            </article>
+          </div>
+          <aside class="card tight">
+            <h2>打印或导出 PDF</h2>
+            <ol class="number-list">
+              <li>点击顶部<strong>打印 / 导出 PDF</strong>。</li>
+              <li>纸张选择自定义宽屏尺寸：13.333 × 7.5 英寸。</li>
+              <li>边距选“无”，缩放 100%，开启“背景图形”。</li>
+              <li>每个手册页面将对应一页 PPT 宽屏页面。</li>
+            </ol>
+            <div class="note" style="margin-top:14px">本 HTML 可离线查看。移动或发送时，请同时保留同目录下的 <code>customer-manual-assets</code> 图片文件夹。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>文档范围与约定</span><span>02 / 26</span></div>
+    </section>
+
+    <section class="page" id="p03" data-title="快速开始">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">QUICK START</span><h1>10 分钟完成首次配置</h1></div><span class="page-index">03</span></header>
+        <div class="content">
+          <div class="steps">
+            <div class="step"><b>01</b><strong>安装并启动</strong><span>从服务人员提供的正式渠道获取安装包，完成系统安装。</span></div>
+            <div class="step"><b>02</b><strong>阅读并激活</strong><span>阅读四份协议，输入公司名称与授权码，绑定当前设备。</span></div>
+            <div class="step"><b>03</b><strong>检查 AI 环境</strong><span>在账户与授权中确认本地 AI 运行环境和可用模型。</span></div>
+            <div class="step"><b>04</b><strong>创建研究主题</strong><span>为每个主题选择独立的本地资料目录并纳入备份。</span></div>
+          </div>
+          <div class="steps" style="margin-top:14px">
+            <div class="step"><b>05</b><strong>配置数据源</strong><span>按需启用聚宽数据；未配置时仍可使用样例或公开数据能力。</span></div>
+            <div class="step"><b>06</b><strong>发起首个任务</strong><span>选择目录、模型与批准方式，使用建议卡或直接输入问题。</span></div>
+            <div class="step"><b>07</b><strong>核验研究输出</strong><span>检查来源、数据时点、关键假设、反证条件和风险提示。</span></div>
+            <div class="step"><b>08</b><strong>建立日常流程</strong><span>将盘前、盘中和盘后任务固化为技能或自动化任务。</span></div>
+          </div>
+          <div class="grid two" style="margin-top:18px">
+            <div class="note success"><strong>完成标志：</strong>首页可选择模型、研究主题已绑定目录、发送按钮可用，右侧可打开投研工作台。</div>
+            <div class="note warning"><strong>开始前：</strong>确认重要目录已经纳入 Time Machine、企业备份或其他可靠备份方案。</div>
+          </div>
+        </div>
+      </div>
+      <div class="page-foot"><span>首次使用路径</span><span>03 / 26</span></div>
+    </section>
+
+    <section class="page" id="p04" data-title="安装与启动">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">INSTALLATION</span><h1>安装、更新与首次启动</h1></div><span class="page-index">04</span></header>
+        <div class="content grid wide-left">
+          <div>
+            <article class="card">
+              <h2>安装步骤</h2>
+              <ol class="number-list">
+                <li>确认安装包来自正式交付渠道，并核对版本说明。</li>
+                <li>打开安装包，将 Alpha Studio 安装到系统应用目录。</li>
+                <li>首次启动时，如系统提示来自已识别开发者，按企业 IT 规范放行。</li>
+                <li>不要使用来源不明的破解包、共享授权或第三方修改版。</li>
+              </ol>
+            </article>
+            <div class="note warning" style="margin-top:16px"><strong>升级前必须备份：</strong>应用升级通常保留本地数据，但重要项目、持仓、研究资料和会话历史仍应先完成备份。</div>
+          </div>
+          <div class="grid" style="grid-template-rows:auto auto">
+            <article class="card compact">
+              <h2>建议运行环境</h2>
+              <table class="mini-table">
+                <tr><th>项目</th><th>建议</th></tr>
+                <tr><td>设备</td><td>受支持的 macOS 客户端设备</td></tr>
+                <tr><td>网络</td><td>首次激活、授权续租、模型与行情服务需联网</td></tr>
+                <tr><td>磁盘</td><td>为项目资料、附件、日志及备份预留空间</td></tr>
+                <tr><td>权限</td><td>按需允许访问所选项目目录；不要授予无关目录</td></tr>
+              </table>
+            </article>
+            <article class="card compact">
+              <h2>短期离线</h2>
+              <p class="small">最近一次在线校验成功后的授权可在有效期内继续使用。超过五天通常需要重新联网校验；具体以客户授权策略为准。</p>
+            </article>
+          </div>
+        </div>
+      </div>
+      <div class="page-foot"><span>客户端部署</span><span>04 / 26</span></div>
+    </section>
+
+    <section class="page" id="p05" data-title="激活与协议">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">ACTIVATION</span><h1>激活客户与绑定设备</h1></div><span class="page-index">05</span></header>
+        <div class="content grid wide-left">
+          <figure class="shot" style="height:500px">
+            <img src="customer-manual-assets/01-activation.png" alt="Alpha Studio 激活界面，包含公司名称、授权码和四份协议确认" />
+            <span class="marker" style="left:32%;top:41%">1</span>
+            <span class="marker" style="left:32%;top:55%">2</span>
+            <span class="marker" style="left:33%;top:75%">3</span>
+            <figcaption>图 1 · 当前版本激活页实景；请滚动到底部完成全部协议确认与激活。</figcaption>
+          </figure>
+          <aside class="card">
+            <h2>操作说明</h2>
+            <div class="legend">
+              <div class="legend-row"><b>1</b><span>输入订单或授权通知中登记的<strong>公司名称</strong>。</span></div>
+              <div class="legend-row"><b>2</b><span>输入服务人员提供的<strong>授权码</strong>，注意区分大小写及空格。</span></div>
+              <div class="legend-row"><b>3</b><span>逐份点击“查看”，阅读并勾选软件许可、隐私政策、模型服务方数据传输告知及 AI 与投资研究风险揭示。</span></div>
+            </div>
+            <div class="note danger" style="margin-top:15px"><strong>不要分享：</strong>密码、动态验证码、Cookie、Session Token、恢复码或本地 <code>auth.json</code>。</div>
+            <div class="note success" style="margin-top:10px"><strong>激活成功：</strong>系统会占用一个设备名额并进入工作台；设备名称可在账户与授权中查看。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>客户授权与法律确认</span><span>05 / 26</span></div>
+    </section>
+
+    <section class="page" id="p06" data-title="数据与账号安全">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">DATA BOUNDARY</span><h1>本地数据、模型传输与账号安全</h1></div><span class="page-index">06</span></header>
+        <div class="content">
+          <div class="flow">
+            <div class="flow-node"><b>LOCAL</b><strong>本机资料</strong><span>项目目录、持仓、研究资料、会话历史与设置默认保存在当前设备。</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><b>USER ACTION</b><strong>发起模型调用</strong><span>只有在你主动发送任务时，所需对话、附件和上下文才会进入请求。</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><b>PROVIDER</b><strong>模型服务方</strong><span>请求发送给所选模型服务方，并按其协议处理或保留。</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><b>REVIEW</b><strong>人工复核</strong><span>核验输出、来源、时点和风险后，再用于研究流程。</span></div>
+          </div>
+          <div class="grid three" style="margin-top:22px">
+            <article class="card compact"><h2>发送前删除</h2><ul><li>不必要的个人信息</li><li>证券账户及交易凭证</li><li>商业秘密或未公开信息</li><li>无权向外部提供的材料</li></ul></article>
+            <article class="card compact"><h2>账号登录原则</h2><ul><li>使用本人或机构合规持有的账号</li><li>通过服务方官方页面登录</li><li>异常时退出并重新登录</li><li>不把验证码发给服务人员</li></ul></article>
+            <article class="card compact"><h2>最小权限原则</h2><ul><li>项目使用独立工作目录</li><li>仅挂载任务需要的资料</li><li>执行敏感命令前检查批准方式</li><li>定期撤销离职或遗失设备</li></ul></article>
+          </div>
+          <div class="note warning" style="margin-top:18px"><strong>重要：</strong>Alpha Studio 业务服务端不以项目资料库的方式保存上述本地内容；但模型服务方的数据处理规则与 Alpha Studio 不同，请按其协议及本机构制度执行。</div>
+        </div>
+      </div>
+      <div class="page-foot"><span>隐私与安全边界</span><span>06 / 26</span></div>
+    </section>
+
+    <section class="page" id="p07" data-title="界面总览">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">WORKSPACE OVERVIEW</span><h1>认识主界面</h1></div><span class="page-index">07</span></header>
+        <div class="content grid wide-left">
+          <figure class="shot" style="height:500px">
+            <img src="customer-manual-assets/03-workbench-dark.png" alt="Alpha Studio 深色主界面，左侧为导航，中间为对话，右侧为投研工作台" />
+            <span class="demo-label">演示环境 · 深色主题</span>
+            <span class="marker" style="left:2%;top:13%">1</span>
+            <span class="marker" style="left:6%;top:38%">2</span>
+            <span class="marker" style="left:47%;top:49%">3</span>
+            <span class="marker" style="left:55%;top:83%">4</span>
+            <span class="marker" style="left:82%;top:9%">5</span>
+            <figcaption>图 2 · 主界面由左侧导航、中央 AI 对话区和右侧投研侧栏组成。</figcaption>
+          </figure>
+          <aside class="card compact">
+            <div class="legend">
+              <div class="legend-row"><b>1</b><span><strong>主导航：</strong>新对话、搜索、技能、自动化与设置。</span></div>
+              <div class="legend-row"><b>2</b><span><strong>研究主题：</strong>归档同一课题的对话和资料目录。</span></div>
+              <div class="legend-row"><b>3</b><span><strong>对话区：</strong>提问、阅读模型回复和工具执行状态。</span></div>
+              <div class="legend-row"><b>4</b><span><strong>输入控制：</strong>目录、附件、批准方式、模型和推理强度。</span></div>
+              <div class="legend-row"><b>5</b><span><strong>投研侧栏：</strong>工作台、浏览器、文件、每日决策等标签页。</span></div>
+            </div>
+            <div class="note" style="margin-top:14px">右侧标签支持并行打开多个研究对象；点击“+”可新增侧栏标签。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>工作区导航</span><span>07 / 26</span></div>
+    </section>
+
+    <section class="page" id="p08" data-title="研究主题与目录">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">PROJECTS & FOLDERS</span><h1>创建研究主题并绑定资料目录</h1></div><span class="page-index">08</span></header>
+        <div class="content grid wide-left">
+          <div>
+            <div class="steps">
+              <div class="step"><b>01</b><strong>新建主题</strong><span>在左侧“研究主题”标题旁点击“+”。</span></div>
+              <div class="step"><b>02</b><strong>清晰命名</strong><span>使用“行业/公司 + 研究目标 + 日期”。</span></div>
+              <div class="step"><b>03</b><strong>设置目录</strong><span>在主题菜单中选择“设置资料目录”。</span></div>
+              <div class="step"><b>04</b><strong>确认备份</strong><span>将目录纳入机构或个人备份方案。</span></div>
+            </div>
+            <article class="card" style="margin-top:18px">
+              <h2>推荐目录结构</h2>
+              <table class="mini-table">
+                <tr><th>目录</th><th>内容</th><th>建议</th></tr>
+                <tr><td><code>00_研究计划</code></td><td>问题定义、假设、数据需求</td><td>先写研究边界</td></tr>
+                <tr><td><code>01_原始资料</code></td><td>公告、研报、表格、会议纪要</td><td>保留来源和日期</td></tr>
+                <tr><td><code>02_分析过程</code></td><td>中间表、脚本、笔记</td><td>不要覆盖原始数据</td></tr>
+                <tr><td><code>03_交付成果</code></td><td>最终报告、图表、归档包</td><td>区分草稿与发布版</td></tr>
+              </table>
+            </article>
+          </div>
+          <aside class="card">
+            <h2>主题管理操作</h2>
+            <ul class="checklist">
+              <li>在主题中新建对话</li>
+              <li>置顶高优先级研究</li>
+              <li>按名称或最近活动排序</li>
+              <li>重命名并保持统一命名规范</li>
+              <li>任务完成后归档，而非直接删除</li>
+            </ul>
+            <div class="note warning" style="margin-top:16px"><strong>目录不是云盘：</strong>绑定只让软件访问本机路径，不会自动生成远程备份。</div>
+            <div class="note" style="margin-top:10px"><strong>建议：</strong>一个研究主题对应一个独立目录，减少不同客户、项目或权限边界之间的资料串用。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>项目与资料组织</span><span>08 / 26</span></div>
+    </section>
+
+    <section class="page" id="p09" data-title="新对话与提问">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">CONVERSATION</span><h1>新建对话并提出高质量问题</h1></div><span class="page-index">09</span></header>
+        <div class="content grid wide-right">
+          <aside class="card">
+            <h2>发起任务</h2>
+            <ol class="number-list">
+              <li>点击左侧<strong>新对话</strong>或快捷键 <span class="kbd">⌘N</span>。</li>
+              <li>确认当前研究主题和资料目录。</li>
+              <li>选择技能、模型、推理强度与批准方式。</li>
+              <li>写清目标、范围、数据时点、输出形式和限制条件。</li>
+              <li>发送后观察工具调用、批准请求和最终交付。</li>
+            </ol>
+          </aside>
+          <div>
+            <article class="card">
+              <span class="tag">可复用提问模板</span>
+              <p class="lead" style="margin-top:14px">请在【数据时点】基础上，对【对象】完成【任务】，优先使用【资料/来源】，输出【格式】，并明确区分事实、推断与待核验项。</p>
+              <div class="grid two" style="margin-top:16px">
+                <div class="note"><strong>示例：</strong>基于 2026-08-04 收盘数据，复盘某行业的成交、主线地位和催化，输出结论、证据、证伪条件与下一交易日观察清单。</div>
+                <div class="note success"><strong>追加要求：</strong>所有关键数字标明单位和日期；若缺少数据，不得编造，列出补数清单。</div>
+              </div>
+            </article>
+            <div class="grid three" style="margin-top:16px">
+              <div class="card compact"><h3>先给结论</h3><p class="small">要求“结论—依据—风险—行动”结构，便于快速决策。</p></div>
+              <div class="card compact"><h3>锁定时点</h3><p class="small">行情、估值、政策与财务数据必须注明截至日期。</p></div>
+              <div class="card compact"><h3>要求反证</h3><p class="small">让模型给出失效条件，避免只收集支持性证据。</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="page-foot"><span>AI 对话最佳实践</span><span>09 / 26</span></div>
+    </section>
+
+    <section class="page" id="p10" data-title="输入框与批准方式">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">COMPOSER CONTROLS</span><h1>附件、目录、模型与批准方式</h1></div><span class="page-index">10</span></header>
+        <div class="content grid wide-left">
+          <figure class="shot" style="height:494px">
+            <img src="customer-manual-assets/02-home-dark.png" alt="Alpha Studio 首页输入框与建议任务卡" />
+            <span class="demo-label">演示环境</span>
+            <span class="marker" style="left:29%;top:49%">1</span>
+            <span class="marker" style="left:37%;top:51%">2</span>
+            <span class="marker" style="left:65%;top:51%">3</span>
+            <span class="marker" style="left:73%;top:51%">4</span>
+            <figcaption>图 3 · 输入框下方可选择目录；输入框底部可管理附件、批准方式、模型和推理强度。</figcaption>
+          </figure>
+          <aside class="card compact">
+            <div class="legend">
+              <div class="legend-row"><b>1</b><span><strong>添加上下文：</strong>附加文件、图片或其他任务资料。</span></div>
+              <div class="legend-row"><b>2</b><span><strong>批准方式：</strong>决定模型执行命令、写文件等操作时的确认策略。</span></div>
+              <div class="legend-row"><b>3</b><span><strong>模型：</strong>从授权的订阅模型或按量模型中选择。</span></div>
+              <div class="legend-row"><b>4</b><span><strong>推理强度：</strong>复杂研究可提高，简单整理可降低以节省时间和费用。</span></div>
+            </div>
+            <div class="note danger" style="margin-top:15px"><strong>敏感操作：</strong>请求修改文件、执行脚本或访问目录时，先核对目标路径与影响范围，再批准。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>任务输入与执行控制</span><span>10 / 26</span></div>
+    </section>
+
+    <section class="page" id="p11" data-title="技能库">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">SKILLS</span><h1>使用任务专用技能</h1></div><span class="page-index">11</span></header>
+        <div class="content">
+          <p class="lead">技能把研究方法、数据要求、输出结构和质检规则封装为可复用流程。进入左侧<strong>技能</strong>，搜索并查看详情；也可从首页任务卡直接启用。</p>
+          <div class="grid four" style="margin-top:10px">
+            <article class="card compact"><span class="tag">盘前</span><h3 style="margin-top:10px">每日主题研究</h3><p class="small">生成主题、标的、催化、触发和失效条件。</p></article>
+            <article class="card compact"><span class="tag">趋势</span><h3 style="margin-top:10px">产业主线早报</h3><p class="small">综合政策、产业投入、机构资金与海外景气。</p></article>
+            <article class="card compact"><span class="tag">盘中</span><h3 style="margin-top:10px">盘中监控</h3><p class="small">按规则检查触发、升级、失效和数据缺口。</p></article>
+            <article class="card compact"><span class="tag">盘后</span><h3 style="margin-top:10px">报告复盘</h3><p class="small">对照实际行情，记录误差、证据与次日调整。</p></article>
+          </div>
+          <div class="grid four" style="margin-top:13px">
+            <article class="card compact"><span class="tag green">证据</span><h3 style="margin-top:10px">研究证据核验</h3><p class="small">优先一手来源，分离事实与推断，保留冲突。</p></article>
+            <article class="card compact"><span class="tag green">公司</span><h3 style="margin-top:10px">Company Thesis</h3><p class="small">维护逻辑、指标、估值、催化、风险与失效版本。</p></article>
+            <article class="card compact"><span class="tag amber">校准</span><h3 style="margin-top:10px">研究概率校准</h3><p class="small">用 Brier 分数和可靠性分桶复盘预测偏差。</p></article>
+            <article class="card compact"><span class="tag amber">量化</span><h3 style="margin-top:10px">A 股因子挖掘</h3><p class="small">候选、批量计算、验证、去冗余与组合搜索。</p></article>
+          </div>
+          <div class="grid two" style="margin-top:17px">
+            <div class="note"><strong>使用原则：</strong>先阅读技能详情，确认所需数据、输出协议和适用场景，再开始任务。</div>
+            <div class="note warning"><strong>不要叠加过多技能：</strong>一次任务选择一个主技能；复杂工作可拆成多个可验证步骤。</div>
+          </div>
+        </div>
+      </div>
+      <div class="page-foot"><span>标准化研究流程</span><span>11 / 26</span></div>
+    </section>
+
+    <section class="page" id="p12" data-title="标准日常流程">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">DAILY ROUTINE</span><h1>盘前—盘中—盘后标准工作流</h1></div><span class="page-index">12</span></header>
+        <div class="content">
+          <div class="flow">
+            <div class="flow-node"><b>08:30 前</b><strong>盘前报告</strong><span>隔夜市场、政策与新闻映射；识别主题、催化、标的和证伪条件。</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><b>09:25–11:30</b><strong>盘中监控</strong><span>检查竞价、量价、资金和触发条件；记录数据缺口，不追认未知事实。</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><b>13:00–15:00</b><strong>持续跟踪</strong><span>更新触发、升级和失效状态；必要时召集联合研判与风险检查。</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><b>收盘后</b><strong>复盘与校准</strong><span>对照实际行情，复盘判断、归因偏差、更新台账和下一日清单。</span></div>
+          </div>
+          <div class="grid three" style="margin-top:24px">
+            <article class="card"><h2>每次都要记录</h2><ul class="checklist"><li>研究对象与数据时点</li><li>事实、推断与建议</li><li>支持证据与反证</li><li>触发、失效与复盘节点</li></ul></article>
+            <article class="card"><h2>联合研判时</h2><ul class="checklist"><li>明确参与角色与分工</li><li>保留分歧，不强行一致</li><li>风险结论独立呈现</li><li>最终形成行动优先级</li></ul></article>
+            <article class="card"><h2>归档前检查</h2><ul class="checklist"><li>关键数字有单位与日期</li><li>来源链接或文件可追溯</li><li>结论无确定性收益承诺</li><li>最终文件单独落盘</li></ul></article>
+          </div>
+        </div>
+      </div>
+      <div class="page-foot"><span>投研节奏与质量门</span><span>12 / 26</span></div>
+    </section>
+
+    <section class="page" id="p13" data-title="自动化">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">AUTOMATION</span><h1>创建定时研究任务</h1></div><span class="page-index">13</span></header>
+        <div class="content grid wide-left">
+          <figure class="shot" style="height:500px">
+            <img src="customer-manual-assets/04-automation.png" alt="Alpha Studio 自动化任务创建页与时间选择器" />
+            <span class="demo-label">演示租户</span>
+            <span class="marker" style="left:20%;top:12%">1</span>
+            <span class="marker" style="left:67%;top:7%">2</span>
+            <span class="marker" style="left:70%;top:27%">3</span>
+            <span class="marker" style="left:94%;top:60%">4</span>
+            <figcaption>图 4 · 可从模板开始，也可手动设置标题、任务内容、项目、模型、频率和时间。</figcaption>
+          </figure>
+          <aside class="card compact">
+            <div class="legend">
+              <div class="legend-row"><b>1</b><span>在“已安排”与“模板”之间切换。</span></div>
+              <div class="legend-row"><b>2</b><span>输入任务标题与清晰的执行说明。</span></div>
+              <div class="legend-row"><b>3</b><span>选择运行位置、项目、模型和推理强度。</span></div>
+              <div class="legend-row"><b>4</b><span>设置重复频率与时间；确保时区与交易日习惯一致。</span></div>
+            </div>
+            <div class="note warning" style="margin-top:14px"><strong>自动化不是无人值守交易：</strong>它只执行研究任务，不应被描述为自动下单或收益保证。</div>
+            <div class="note" style="margin-top:9px">定期检查任务状态、最近运行结果、数据源可用性和模型费用，失效任务及时停用。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>周期性任务</span><span>13 / 26</span></div>
+    </section>
+
+    <section class="page" id="p14" data-title="投研工作台">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">RESEARCH WORKBENCH</span><h1>投研工作台总览</h1></div><span class="page-index">14</span></header>
+        <div class="content grid wide-left">
+          <figure class="shot" style="height:500px">
+            <img src="customer-manual-assets/03-workbench-dark.png" alt="Alpha Studio 投研工作台总览，包含资产概览和多类研究标签" />
+            <span class="demo-label">模拟账户 · 演示数据</span>
+            <span class="marker" style="left:76%;top:10%">1</span>
+            <span class="marker" style="left:84%;top:19%">2</span>
+            <span class="marker" style="left:78%;top:33%">3</span>
+            <span class="marker" style="left:85%;top:86%">4</span>
+            <figcaption>图 5 · 工作台可在右侧展开，用于行情、自选、持仓、模拟交易、组合与研究数据。</figcaption>
+          </figure>
+          <aside class="card compact">
+            <div class="legend">
+              <div class="legend-row"><b>1</b><span><strong>工作台标签：</strong>右侧顶部标签可切换、关闭或新增。</span></div>
+              <div class="legend-row"><b>2</b><span><strong>账户概览：</strong>总资产、浮盈亏、累计收益、现金与仓位。</span></div>
+              <div class="legend-row"><b>3</b><span><strong>功能标签：</strong>市场、行情、自选、持仓、交易、组合、研究数据等。</span></div>
+              <div class="legend-row"><b>4</b><span><strong>研究动作：</strong>将持仓体检、组合比较、交易计划等问题交给 Agent。</span></div>
+            </div>
+            <div class="note danger" style="margin-top:14px"><strong>重要：</strong>截图中的账户与交易为模拟研究工作台，不代表券商实盘连接或真实成交。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>行情与组合研究</span><span>14 / 26</span></div>
+    </section>
+
+    <section class="page" id="p15" data-title="工作台标签与模拟交易">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">MARKET & PORTFOLIO</span><h1>市场、自选、持仓、交易与组合</h1></div><span class="page-index">15</span></header>
+        <div class="content">
+          <div class="grid four">
+            <article class="card compact"><span class="tag">市场</span><h3 style="margin-top:10px">市场概览</h3><p class="small">指数、板块、涨跌、成交活跃度、主题与事件入口。</p></article>
+            <article class="card compact"><span class="tag">行情</span><h3 style="margin-top:10px">证券详情</h3><p class="small">价格、K 线、成交、估值和公司信息；注意行情来源与时点。</p></article>
+            <article class="card compact"><span class="tag green">自选</span><h3 style="margin-top:10px">观察列表</h3><p class="small">按主题维护标的，支持将观察对象拖入对话发起研究。</p></article>
+            <article class="card compact"><span class="tag green">持仓</span><h3 style="margin-top:10px">组合暴露</h3><p class="small">查看仓位、成本、盈亏与集中度，作为组合研究上下文。</p></article>
+          </div>
+          <div class="grid three" style="margin-top:15px">
+            <article class="card"><span class="tag amber">交易</span><h2 style="margin-top:12px">模拟下单与流水</h2><ul><li>选择证券、买卖方向、价格和数量</li><li>可按 1/4、1/2、3/4 或全仓计算</li><li>生成持仓与交易流水供研究复盘</li></ul></article>
+            <article class="card"><span class="tag amber">组合</span><h2 style="margin-top:12px">主题与策略组合</h2><ul><li>维护观察组合和暴露结构</li><li>比较相关性、集中度与流动性</li><li>将组合问题直接交给 Agent</li></ul></article>
+            <article class="card"><span class="tag">研究数据</span><h2 style="margin-top:12px">财务与资金分析</h2><ul><li>基本面与估值快照</li><li>资金交易与行业成分</li><li>公司事件与多资产研究入口</li></ul></article>
+          </div>
+          <div class="note danger" style="margin-top:18px"><strong>交易边界：</strong>Alpha Studio 不会自动替你完成证券交易。模拟买卖仅用于研究和组合演练；真实交易必须在获准的交易系统中由有权限人员完成。</div>
+        </div>
+      </div>
+      <div class="page-foot"><span>研究工作台功能</span><span>15 / 26</span></div>
+    </section>
+
+    <section class="page" id="p16" data-title="研究数据">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">RESEARCH DATA</span><h1>查看基本面、资金与公司事件</h1></div><span class="page-index">16</span></header>
+        <div class="content grid wide-left">
+          <figure class="shot" style="height:500px">
+            <img src="customer-manual-assets/05-research-data.png" alt="研究数据页面，展示估值、财务、资金流和研究动作" />
+            <span class="demo-label">功能说明图 · 演示数据</span>
+            <span class="marker" style="left:18%;top:15%">1</span>
+            <span class="marker" style="left:34%;top:30%">2</span>
+            <span class="marker" style="left:64%;top:51%">3</span>
+            <span class="marker" style="left:83%;top:45%">4</span>
+            <figcaption>图 6 · 研究数据示例：证券与截止日、关键指标、资金走势和可调用研究动作。</figcaption>
+          </figure>
+          <aside class="card compact">
+            <div class="legend">
+              <div class="legend-row"><b>1</b><span>选择证券与截止日期；历史日期用于可复现研究。</span></div>
+              <div class="legend-row"><b>2</b><span>检查 PE、PB、ROE、增速与资产负债等关键指标。</span></div>
+              <div class="legend-row"><b>3</b><span>查看主力、北向、融资融券等资金维度，并核对口径。</span></div>
+              <div class="legend-row"><b>4</b><span>选择“同行比较、盈利质量、资金背离”等研究动作交给 Agent。</span></div>
+            </div>
+            <div class="note warning" style="margin-top:14px"><strong>数据口径：</strong>同一指标在不同供应商之间可能存在复权、币种、报告期、合并口径或更新时间差异。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>财务与资金研究</span><span>16 / 26</span></div>
+    </section>
+
+    <section class="page" id="p17" data-title="聚宽数据">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">JQDATA</span><h1>配置并使用聚宽数据</h1></div><span class="page-index">17</span></header>
+        <div class="content grid wide-left">
+          <figure class="shot" style="height:500px">
+            <img src="customer-manual-assets/06-jqdata-center.png" alt="聚宽数据中心说明图，展示接口状态、更新时间、权限和示例参数" />
+            <span class="demo-label">功能说明图 · 权限以实际账号为准</span>
+            <figcaption>图 7 · 聚宽数据能力说明：接口状态、权限、更新时间和调用示例。</figcaption>
+          </figure>
+          <aside class="card compact">
+            <h2>配置路径</h2>
+            <ol class="number-list">
+              <li>进入<strong>设置 › 聚宽数据</strong>。</li>
+              <li>启用数据源，输入本人合规持有的聚宽账号。</li>
+              <li>输入密码并保存；不要在聊天中粘贴凭证。</li>
+              <li>返回工作台刷新数据，核对数据时点与错误提示。</li>
+            </ol>
+            <div class="note danger" style="margin-top:13px"><strong>凭证安全：</strong>聚宽账号密码属于敏感认证信息。不得通过邮件、聊天或截图发送给服务人员。</div>
+            <div class="note" style="margin-top:9px"><strong>权限差异：</strong>可用接口、历史深度、资产范围和速率限制取决于聚宽账号授权。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>第三方数据服务</span><span>17 / 26</span></div>
+    </section>
+
+    <section class="page" id="p18" data-title="每日决策与跟踪验证">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">DAILY DECISION</span><h1>从报告到跟踪验证</h1></div><span class="page-index">18</span></header>
+        <div class="content">
+          <div class="flow">
+            <div class="flow-node"><b>REPORT</b><strong>导入日报</strong><span>选择当日结构化主题报告，确认交易日、来源对话和标的。</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><b>JOINT REVIEW</b><strong>联合研判</strong><span>主线、风险与基金经理副官分别给出判断、分歧和行动倾向。</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><b>ACTION CARD</b><strong>建议卡</strong><span>形成优先级、触发条件、失效条件和人工决策状态。</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><b>VALIDATION</b><strong>跟踪验证</strong><span>盘中触发、主题台账、收盘复盘、净值回测与概率校准。</span></div>
+          </div>
+          <div class="grid two" style="margin-top:22px">
+            <article class="card">
+              <h2>每日决策标签</h2>
+              <table class="mini-table">
+                <tr><th>标签</th><th>用途</th></tr>
+                <tr><td>今日摘要</td><td>汇总主题、建议、风险与待办</td></tr>
+                <tr><td>主题</td><td>选择主题与股票池，查看层级和条件</td></tr>
+                <tr><td>联合研判</td><td>多角色研究，保留分歧与数据缺口</td></tr>
+                <tr><td>建议卡</td><td>记录倾向、优先级、触发与失效条件</td></tr>
+                <tr><td>跟踪验证</td><td>进入今日作战、台账、复盘、回测和校准</td></tr>
+              </table>
+            </article>
+            <article class="card">
+              <h2>验证纪律</h2>
+              <ul class="checklist"><li>历史报告不使用当前行情补算盘中触发</li><li>缺数据时标记“待补数据”，不得猜测</li><li>人工覆盖触发状态时记录理由和时间</li><li>回测使用可获得的历史数据，避免未来函数</li><li>小样本校准只做诊断，不做过度结论</li></ul>
+              <div class="note warning" style="margin-top:14px">“建议卡”属于研究记录，不等同于正式投资指令、合规批准或真实交易委托。</div>
+            </article>
+          </div>
+        </div>
+      </div>
+      <div class="page-foot"><span>结构化决策闭环</span><span>18 / 26</span></div>
+    </section>
+
+    <section class="page" id="p19" data-title="文件与成果归档">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">FILES & OUTPUTS</span><h1>管理文件、预览成果与归档</h1></div><span class="page-index">19</span></header>
+        <div class="content grid two">
+          <div>
+            <article class="card">
+              <h2>文件侧栏</h2>
+              <ul class="checklist"><li>点击右侧“+”并选择文件标签</li><li>查看当前研究主题绑定的资料目录</li><li>筛选、展开目录和双击预览文件</li><li>将文件或文件夹拖入对话作为上下文</li><li>使用“在 Finder 中显示”检查实际路径</li></ul>
+            </article>
+            <article class="card" style="margin-top:16px">
+              <h2>支持的常见成果</h2>
+              <div class="grid three" style="gap:10px"><span class="tag">Markdown</span><span class="tag">HTML</span><span class="tag">PDF</span><span class="tag green">表格</span><span class="tag green">图像</span><span class="tag amber">代码/脚本</span></div>
+              <p class="small" style="margin-top:13px">HTML 可在内置浏览器预览；PDF 可在阅读器中查看。预览不代表最终发布审核已通过。</p>
+            </article>
+          </div>
+          <div>
+            <article class="card">
+              <h2>最终交付检查</h2>
+              <ul class="checklist empty"><li>文件名包含对象、用途、日期和版本</li><li>最终版与草稿分离，避免覆盖原始材料</li><li>关键结论可回溯到来源或证据 ID</li><li>报告中注明数据时点、单位和假设</li><li>删除不应进入交付包的临时文件与凭证</li><li>在独立设备或阅读器中完成一次打开测试</li></ul>
+            </article>
+            <div class="note danger" style="margin-top:16px"><strong>不要归档凭证：</strong>API Key、密码、Cookie、Token、恢复码和本地授权文件不得放入研究成果包。</div>
+            <div class="note" style="margin-top:10px"><strong>推荐：</strong>将最终结论另存为独立文件，不要把研究计划、合规备注或某一位协作者的草稿当作最终交付。</div>
+          </div>
+        </div>
+      </div>
+      <div class="page-foot"><span>成果管理</span><span>19 / 26</span></div>
+    </section>
+
+    <section class="page" id="p20" data-title="设置与账户">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">SETTINGS</span><h1>显示偏好、账户与数据设置</h1></div><span class="page-index">20</span></header>
+        <div class="content grid wide-left">
+          <div class="grid two">
+            <article class="card compact"><span class="tag">显示偏好</span><h2 style="margin-top:11px">主题与引导</h2><ul><li>切换浅色 / 深色界面</li><li>界面语言为简体中文</li><li>重新打开首次使用引导</li></ul></article>
+            <article class="card compact"><span class="tag green">账户与授权</span><h2 style="margin-top:11px">模型与设备</h2><ul><li>查看客户与授权状态</li><li>检查本地 AI 运行环境</li><li>管理可用模型与账号授权</li></ul></article>
+            <article class="card compact"><span class="tag amber">使用情况和计费</span><h2 style="margin-top:11px">额度与流水</h2><ul><li>查看余额和实际用量</li><li>按模型检查 Token 消耗</li><li>查询账本和 request_id</li></ul></article>
+            <article class="card compact"><span class="tag">聚宽数据</span><h2 style="margin-top:11px">第三方数据</h2><ul><li>启用或停用数据源</li><li>配置账号与密码</li><li>核对保存状态与错误</li></ul></article>
+          </div>
+          <aside class="card">
+            <h2>进入方式</h2>
+            <p class="lead">左下角<strong>设置</strong> → 在左侧选择目标章节 → 完成查看或修改 → 点击<strong>返回应用</strong>。</p>
+            <div class="note warning"><strong>设置变更原则：</strong>主题等显示偏好可随时调整；账号、数据源、设备和授权属于敏感配置，应由获准人员操作。</div>
+            <div class="note danger" style="margin-top:10px"><strong>退出模型账号：</strong>设备转让、人员离职或共享终端停止使用时，同时撤销客户端设备并退出模型服务账号。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>控制面板</span><span>20 / 26</span></div>
+    </section>
+
+    <section class="page" id="p21" data-title="计费与设备管理">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">BILLING & DEVICES</span><h1>使用情况、线下结算与设备管理</h1></div><span class="page-index">21</span></header>
+        <div class="content grid two">
+          <div>
+            <article class="card">
+              <h2>计费口径</h2>
+              <ul><li>客户端和后台不提供在线支付、自动扣款或在线退款。</li><li>一次性软件费与 Token 消耗费在线下结算。</li><li>后台只登记已经实际收到的款项和凭证号。</li><li>模型调用前只检查余额大于 0，不冻结或预扣；调用后按可确认的真实 Token 用量扣费。</li><li>余额小于等于 0 时不能继续调用按量模型。</li><li>登记错误通过更正流水处理，不会向客户账户发起在线退款。</li></ul>
+            </article>
+            <div class="note" style="margin-top:14px"><strong>对账材料：</strong>时间、模型、输入/输出 Token、金额、账本记录和 <code>request_id</code>。</div>
+          </div>
+          <div>
+            <article class="card">
+              <h2>设备生命周期</h2>
+              <table class="mini-table">
+                <tr><th>场景</th><th>动作</th></tr>
+                <tr><td>新设备</td><td>使用公司名称与授权码激活，占用一个设备名额</td></tr>
+                <tr><td>设备遗失</td><td>管理员立即撤销设备，并退出模型服务账号</td></tr>
+                <tr><td>人员离职</td><td>撤销设备、账号授权和数据目录访问权限</td></tr>
+                <tr><td>设备转让</td><td>备份后清理本地资料，再由管理员重新分配</td></tr>
+                <tr><td>授权失效</td><td>恢复网络、重启并重新校验；保留错误文字</td></tr>
+              </table>
+            </article>
+            <div class="note danger" style="margin-top:14px">报修时不要发送密码、动态验证码、Cookie、Token、恢复码或完整本地授权文件。</div>
+          </div>
+        </div>
+      </div>
+      <div class="page-foot"><span>费用与授权运维</span><span>21 / 26</span></div>
+    </section>
+
+    <section class="page" id="p22" data-title="备份与迁移">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">BACKUP & RECOVERY</span><h1>备份、升级与设备迁移</h1></div><span class="page-index">22</span></header>
+        <div class="content">
+          <div class="grid three">
+            <article class="card"><span class="tag green">日常</span><h2 style="margin-top:12px">持续备份</h2><ul><li>项目目录纳入 Time Machine 或企业备份</li><li>重要交付采用至少两份副本</li><li>定期抽查文件能否恢复</li></ul></article>
+            <article class="card"><span class="tag amber">升级前</span><h2 style="margin-top:12px">冻结与校验</h2><ul><li>结束正在运行的任务</li><li>备份项目、持仓、会话与设置</li><li>记录当前版本和授权状态</li></ul></article>
+            <article class="card"><span class="tag">迁移后</span><h2 style="margin-top:12px">重新绑定</h2><ul><li>在新设备完成正式激活</li><li>恢复或复制项目资料</li><li>重新选择目录并检查模型与数据源</li></ul></article>
+          </div>
+          <article class="card" style="margin-top:18px">
+            <h2>推荐恢复演练</h2>
+            <div class="steps">
+              <div class="step"><b>01</b><strong>选取样本</strong><span>选择一个非敏感的完整研究主题。</span></div>
+              <div class="step"><b>02</b><strong>恢复副本</strong><span>恢复到临时目录，不覆盖生产资料。</span></div>
+              <div class="step"><b>03</b><strong>打开核验</strong><span>检查报告、附件、表格和图片是否完整。</span></div>
+              <div class="step"><b>04</b><strong>记录结果</strong><span>记录时间、缺口和下一次改进动作。</span></div>
+            </div>
+          </article>
+          <div class="note danger" style="margin-top:16px"><strong>卸载不等于清除数据：</strong>卸载应用不一定删除所有本地项目与配置。处置设备前，按机构制度完成备份、撤权和安全清理。</div>
+        </div>
+      </div>
+      <div class="page-foot"><span>业务连续性</span><span>22 / 26</span></div>
+    </section>
+
+    <section class="page" id="p23" data-title="AI 与投资研究风险">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">RISK & COMPLIANCE</span><h1>AI 与投资研究风险控制</h1></div><span class="page-index">23</span></header>
+        <div class="content grid wide-left">
+          <div>
+            <article class="card">
+              <h2>四层复核</h2>
+              <div class="grid two">
+                <div class="note"><strong>事实核验</strong><br><span class="small">来源是否权威？数据是否最新？单位、币种、复权和报告期是否一致？</span></div>
+                <div class="note"><strong>逻辑核验</strong><br><span class="small">事实能否支持结论？是否混淆相关性与因果？是否存在遗漏变量？</span></div>
+                <div class="note warning"><strong>风险核验</strong><br><span class="small">是否覆盖流动性、集中度、政策、事件、估值和数据缺口？</span></div>
+                <div class="note warning"><strong>合规核验</strong><br><span class="small">是否构成确定性收益承诺、个性化建议或未授权信息传播？</span></div>
+              </div>
+            </article>
+            <div class="note danger" style="margin-top:16px"><strong>绝对禁止：</strong>把模型输出直接当作真实交易指令；把未公开重大信息、客户账户资料或无权外发材料发送给模型服务方。</div>
+          </div>
+          <aside class="card compact">
+            <h2>发布前检查</h2>
+            <ul class="checklist empty"><li>结论注明数据时点与关键假设</li><li>关键数字可回到原始来源</li><li>事实、推断和建议明确分开</li><li>列出反证、失效与风险条件</li><li>没有“必涨、稳赚、保证”等表述</li><li>已由具备职责权限的人完成复核</li><li>真实交易另走正式审批与交易系统</li></ul>
+            <p class="small muted" style="margin-top:14px">本手册不构成法律、合规或投资意见；以客户内部制度和适用法律法规为准。</p>
+          </aside>
+        </div>
+      </div>
+      <div class="page-foot"><span>人工复核与责任边界</span><span>23 / 26</span></div>
+    </section>
+
+    <section class="page" id="p24" data-title="故障排查">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">TROUBLESHOOTING</span><h1>常见故障排查</h1></div><span class="page-index">24</span></header>
+        <div class="content">
+          <table class="mini-table" style="font-size:14px">
+            <thead><tr><th style="width:19%">现象</th><th style="width:30%">先检查</th><th>处理建议</th></tr></thead>
+            <tbody>
+              <tr><td><strong>授权已失效</strong></td><td>网络、系统时间、设备是否被撤销</td><td>恢复网络并重新打开；仍失败时提供公司名、设备名、错误文字和 request_id。</td></tr>
+              <tr><td><strong>模型不可用</strong></td><td>本地 AI 环境、账号登录、模型授权和余额</td><td>进入账户与授权刷新状态；通过服务方官方页面重新登录，不向他人发送验证码。</td></tr>
+              <tr><td><strong>无法发送任务</strong></td><td>是否选择模型、目录是否可访问、输入是否为空</td><td>重新选择目录与模型；降低附件数量；确认批准对话框未被遮挡。</td></tr>
+              <tr><td><strong>行情或数据为空</strong></td><td>数据源状态、交易日、账号权限、网络</td><td>点击刷新；核对截止日期；检查聚宽配置及权限，保留原始错误。</td></tr>
+              <tr><td><strong>自动化未运行</strong></td><td>任务是否启用、时间/频率、项目和模型</td><td>检查最近运行记录；确认设备在线、应用环境可用且任务未被暂停。</td></tr>
+              <tr><td><strong>目录或文件打不开</strong></td><td>路径是否移动、磁盘是否挂载、访问权限</td><td>在 Finder 中确认路径；重新绑定目录；从备份恢复，不要直接覆盖唯一副本。</td></tr>
+              <tr><td><strong>计费对不上</strong></td><td>时间、模型、Token、实际用量与扣费流水</td><td>导出或记录账本条目及 request_id，联系服务人员核对更正流水。</td></tr>
+            </tbody>
+          </table>
+          <div class="grid two" style="margin-top:17px">
+            <div class="note success"><strong>先做：</strong>保存当前工作、记录复现步骤、截取错误界面、复制完整错误文字和 request_id。</div>
+            <div class="note danger"><strong>不要做：</strong>反复提交同一请求、删除本地数据、公开上传日志或把账号凭证发送给任何人。</div>
+          </div>
+        </div>
+      </div>
+      <div class="page-foot"><span>自助诊断</span><span>24 / 26</span></div>
+    </section>
+
+    <section class="page" id="p25" data-title="常见问题">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">FAQ</span><h1>常见问题</h1></div><span class="page-index">25</span></header>
+        <div class="content grid two">
+          <div class="grid">
+            <article class="card compact"><h3>Q1 · 软件会把我的项目全部上传到云端吗？</h3><p class="small"><strong>不会自动整体上传。</strong>项目和会话默认在本机；你主动发起模型调用时，完成请求所需的上下文会发送给所选模型服务方。</p></article>
+            <article class="card compact"><h3>Q2 · 可以把模型账号密码交给服务人员配置吗？</h3><p class="small"><strong>不可以。</strong>使用官方页面登录；不要提供密码、验证码、Cookie、Token、恢复码或本地授权文件。</p></article>
+            <article class="card compact"><h3>Q3 · 模拟交易会提交到券商吗？</h3><p class="small"><strong>不会。</strong>工作台交易用于模拟研究和复盘，不代表实盘连接或真实委托。</p></article>
+            <article class="card compact"><h3>Q4 · 聚宽数据不可用还能研究吗？</h3><p class="small">可以使用本地资料、公开来源和其他已授权能力；但依赖聚宽字段的功能会提示缺失或权限不足。</p></article>
+          </div>
+          <div class="grid">
+            <article class="card compact"><h3>Q5 · 升级会丢失本地数据吗？</h3><p class="small">常规升级通常保留数据，但任何升级前都应备份。卸载也不一定删除所有本地文件。</p></article>
+            <article class="card compact"><h3>Q6 · 设备丢失怎么办？</h3><p class="small">立即联系管理员撤销对应设备，同时退出模型服务账号并按机构流程处理本地数据风险。</p></article>
+            <article class="card compact"><h3>Q7 · 为什么同一任务费用不同？</h3><p class="small">模型、输入上下文、附件规模、输出长度和推理强度都会影响 Token 与费用。</p></article>
+            <article class="card compact"><h3>Q8 · AI 的建议可以直接写进投委会结论吗？</h3><p class="small">需先核验来源、时点、假设、反证和合规口径，再由有权限人员复核并承担最终责任。</p></article>
+          </div>
+        </div>
+      </div>
+      <div class="page-foot"><span>高频问题</span><span>25 / 26</span></div>
+    </section>
+
+    <section class="page" id="p26" data-title="报修与完成检查">
+      <div class="page-body">
+        <header class="page-head"><div><span class="eyebrow">SUPPORT CHECKLIST</span><h1>报修材料与上线完成检查</h1></div><span class="page-index">26</span></header>
+        <div class="content grid two">
+          <article class="card">
+            <span class="tag">联系服务人员时提供</span>
+            <ul class="checklist empty" style="margin-top:16px"><li>公司名称与设备名称</li><li>Alpha Studio 版本号与系统版本</li><li>发生时间、操作步骤和影响范围</li><li>完整错误文字或界面截图</li><li>相关模型、数据源与任务名称</li><li>账单或模型问题对应的 request_id</li><li>是否可以稳定复现，以及已经尝试的处理</li></ul>
+            <div class="note danger" style="margin-top:15px"><strong>切勿附带：</strong>密码、验证码、API Key、Cookie、Session Token、恢复码、完整账户资料或未脱敏客户文件。</div>
+          </article>
+          <article class="card">
+            <span class="tag green">首次上线完成标准</span>
+            <ul class="checklist empty" style="margin-top:16px"><li>已完成协议阅读、激活与设备登记</li><li>已确认本地数据和模型传输边界</li><li>已绑定研究主题目录并验证备份</li><li>已检查模型、批准方式和费用口径</li><li>按需完成聚宽数据配置</li><li>已成功执行一个非敏感的测试任务</li><li>已核验输出中的来源、时点和风险</li><li>已建立盘前、盘中、盘后工作规范</li></ul>
+            <p class="lead" style="margin-top:22px">从可追溯的证据开始，<br />以可验证的决策结束。</p>
+          </article>
+        </div>
+      </div>
+      <div class="page-foot"><span>ALPHA STUDIO · END OF MANUAL</span><span>26 / 26</span></div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const pages = Array.from(document.querySelectorAll('.page'));
+      const select = document.getElementById('pageSelect');
+      pages.forEach((page, index) => {
+        const option = document.createElement('option');
+        option.value = page.id;
+        option.textContent = `${String(index + 1).padStart(2, '0')} · ${page.dataset.title || ''}`;
+        select.appendChild(option);
+      });
+
+      const currentIndex = () => {
+        const anchor = window.location.hash.slice(1);
+        const index = pages.findIndex((page) => page.id === anchor);
+        return index >= 0 ? index : 0;
+      };
+      const go = (index) => {
+        const bounded = Math.max(0, Math.min(pages.length - 1, index));
+        pages[bounded].scrollIntoView({ behavior: 'smooth', block: 'start' });
+        history.replaceState(null, '', `#${pages[bounded].id}`);
+        select.value = pages[bounded].id;
+      };
+
+      document.getElementById('prevPage').addEventListener('click', () => go(currentIndex() - 1));
+      document.getElementById('nextPage').addEventListener('click', () => go(currentIndex() + 1));
+      select.addEventListener('change', () => go(pages.findIndex((page) => page.id === select.value)));
+      window.addEventListener('hashchange', () => { select.value = pages[currentIndex()].id; });
+      window.addEventListener('keydown', (event) => {
+        if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+        if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key.toLowerCase() === 'j') go(currentIndex() + 1);
+        if (event.key === 'ArrowLeft' || event.key === 'PageUp' || event.key.toLowerCase() === 'k') go(currentIndex() - 1);
+        if (event.key === 'Home') go(0);
+        if (event.key === 'End') go(pages.length - 1);
+      });
+      select.value = pages[currentIndex()].id;
+    })();
+  </script>
+</body>
+</html>
