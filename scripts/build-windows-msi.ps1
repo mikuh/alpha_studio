@@ -31,6 +31,92 @@ function Find-CommandPath {
     throw "Missing required command '$($Names[0])'. $InstallHint"
 }
 
+function Initialize-MsvcBuildEnvironment {
+    param([Parameter(Mandatory = $true)][string]$RustHost)
+
+    $existingCompiler = Get-Command "cl.exe" -ErrorAction SilentlyContinue
+    $existingResourceCompiler = Get-Command "rc.exe" -ErrorAction SilentlyContinue
+    if ($null -ne $existingCompiler -and $null -ne $existingResourceCompiler) {
+        Write-Host "MSVC: $($existingCompiler.Source)"
+        Write-Host "Windows SDK: $($existingResourceCompiler.Source)"
+        return
+    }
+
+    $rustTarget = $RustHost -replace "^host:\s*", ""
+    if ($rustTarget -like "x86_64-*") {
+        $targetArchitecture = "x64"
+        $hostArchitecture = "x64"
+        $toolsComponent = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+    }
+    elseif ($rustTarget -like "aarch64-*") {
+        $targetArchitecture = "arm64"
+        $hostArchitecture = "arm64"
+        $toolsComponent = "Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+    }
+    else {
+        throw "Unsupported Rust host '$rustTarget'. Use an x86_64 or ARM64 Windows MSVC toolchain."
+    }
+
+    $vswhere = Get-Command "vswhere.exe" -ErrorAction SilentlyContinue
+    if ($null -eq $vswhere) {
+        $vswhereCandidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"),
+            (Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe")
+        )
+        $vswherePath = $vswhereCandidates |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+    }
+    else {
+        $vswherePath = $vswhere.Source
+    }
+
+    if ([string]::IsNullOrWhiteSpace($vswherePath)) {
+        throw "Visual Studio Build Tools were not found. Install Visual Studio Build Tools 2022 with the 'Desktop development with C++' workload and a Windows 10/11 SDK."
+    }
+
+    $visualStudioPath = @(
+        & $vswherePath -latest -products * -requires $toolsComponent -property installationPath
+    ) | Select-Object -First 1
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($visualStudioPath)) {
+        throw "The Visual Studio C++ toolchain is incomplete. In Visual Studio Installer, add 'Desktop development with C++', MSVC build tools, and a Windows 10/11 SDK."
+    }
+
+    $developerCommand = Join-Path $visualStudioPath "Common7\Tools\VsDevCmd.bat"
+    if (-not (Test-Path -LiteralPath $developerCommand -PathType Leaf)) {
+        throw "Visual Studio developer environment script is missing: $developerCommand"
+    }
+
+    $developerArguments = @(
+        "/d",
+        "/s",
+        "/c",
+        "`"$developerCommand`" -no_logo -arch=$targetArchitecture -host_arch=$hostArchitecture && set"
+    )
+    $developerEnvironment = @(& $env:ComSpec @developerArguments 2>&1)
+    $developerExitCode = $LASTEXITCODE
+    if ($developerExitCode -ne 0) {
+        $details = ($developerEnvironment | ForEach-Object { "$_" }) -join [Environment]::NewLine
+        throw "Failed to initialize the Visual Studio build environment.$([Environment]::NewLine)$details"
+    }
+
+    foreach ($line in $developerEnvironment) {
+        if ("$line" -match "^([^=]+)=(.*)$") {
+            [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
+        }
+    }
+
+    $compiler = Get-Command "cl.exe" -ErrorAction SilentlyContinue
+    $linker = Get-Command "link.exe" -ErrorAction SilentlyContinue
+    $resourceCompiler = Get-Command "rc.exe" -ErrorAction SilentlyContinue
+    if ($null -eq $compiler -or $null -eq $linker -or $null -eq $resourceCompiler) {
+        throw "MSVC or the Windows SDK is still unavailable after loading Visual Studio. Repair the 'Desktop development with C++' workload and ensure a Windows 10/11 SDK is selected."
+    }
+
+    Write-Host "MSVC: $($compiler.Source)"
+    Write-Host "Windows SDK: $($resourceCompiler.Source)"
+}
+
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw "MSI packages must be built on Windows. Run build-windows-msi.cmd on a Windows 10/11 machine."
 }
@@ -71,6 +157,7 @@ try {
         throw "The active Rust toolchain is not the Windows MSVC toolchain. Run 'rustup default stable-x86_64-pc-windows-msvc' and try again."
     }
     Write-Host "Rust: $rustHostLine"
+    Initialize-MsvcBuildEnvironment -RustHost "$rustHostLine"
 
     if (-not $SkipInstall) {
         Write-Host ""
