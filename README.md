@@ -16,7 +16,7 @@ This is a source-available noncommercial project, not an OSI-approved open sourc
 
 - Node.js and npm
 - Rust toolchain for Tauri development
-- GPT engine installed; authorize it from Alpha Studio with the GPT device authorization button
+- GPT device authorization for subscription models; desktop builds bundle the pinned official Codex CLI automatically
 - Git for repository features
 
 ## Development
@@ -40,6 +40,12 @@ Production frontend builds, including the macOS DMG, load `.env.production`:
 npm run tauri:build:dmg
 ```
 
+Desktop builds stage the platform-specific Codex CLI from the locked
+`@openai/codex` dependency and include its complete native runtime in the
+installer. End users do not need Node.js, npm, Homebrew, or a separate Codex
+installation. Alpha Studio prefers this bundled runtime and falls back to a
+working system installation only if the bundled copy is unavailable.
+
 ### Windows MSI
 
 On a Windows 10/11 build machine, install Node.js LTS, Rust with the default
@@ -55,15 +61,16 @@ The equivalent terminal command is:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1
 ```
 
-Use `-SkipInstall` to reuse the current `node_modules`. The first build needs
-network access for npm, Cargo, and Tauri's WiX tooling. The generated MSI is
-unsigned unless Windows code-signing settings are configured separately.
+Use `-SkipInstall` to reuse the current `node_modules`; it must already contain
+the matching platform package for the pinned Codex version. The first build
+needs network access for npm, Cargo, and Tauri's WiX tooling. The generated MSI
+is unsigned unless Windows code-signing settings are configured separately.
 
 Useful checks:
 
 ```bash
 npm run test:run
-npm run build
+npm run build:desktop
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.alpha-studio.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run dev:desktop",
     "devUrl": "http://localhost:1421",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build:desktop",
     "frontendDist": "../dist"
   },
   "app": {
@@ -55,7 +55,8 @@
     "shortDescription": "Alpha Studio - noncommercial local coding workspace",
     "longDescription": "Alpha Studio wraps OpenAI Codex CLI with a source-available noncommercial coding workspace UI.",
     "resources": {
-      "../.alpha-encoded/": ".alpha-encoded/"
+      "../.alpha-encoded/": ".alpha-encoded/",
+      "../.alpha-codex/": ".alpha-codex/"
     },
     "macOS": {
       "minimumSystemVersion": "10.15"

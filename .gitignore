@@ -153,6 +153,9 @@ src-tauri/target/
 # Generated, encoded built-in Skill bundle
 .alpha-encoded/
 
+# Generated, platform-specific Codex CLI runtime bundled with desktop installers
+.alpha-codex/
+
 # Generated upload artifacts for the managed Skill registry
 .alpha-releases/
 

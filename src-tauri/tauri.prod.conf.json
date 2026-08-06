@@ -1,6 +1,6 @@
 {
   "build": {
-    "beforeDevCommand": "npm run dev:prod",
+    "beforeDevCommand": "npm run dev:desktop:prod",
     "devUrl": "http://127.0.0.1:1421"
   }
 }

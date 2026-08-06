@@ -31,6 +31,10 @@ const CODEX_CHAT_EVENT: &str = "codex-chat-event";
 const TERMINAL_EVENT: &str = "terminal-event";
 const BROWSER_WEBVIEW_EVENT: &str = "browser-webview-event";
 const CODEX_DEVICE_AUTHORIZATION_MARKER: &str = ".alpha-studio-device-authorized";
+#[cfg(target_os = "windows")]
+const CODEX_EXECUTABLE_NAME: &str = "codex.exe";
+#[cfg(not(target_os = "windows"))]
+const CODEX_EXECUTABLE_NAME: &str = "codex";
 const FALLBACK_REASONING_CONTENT: &str =
     "Reasoning content was not available in the persisted transcript.";
 
@@ -734,8 +738,9 @@ async fn codex_check(app: AppHandle) -> Result<CodexCheckResult, String> {
 
 #[tauri::command]
 async fn codex_login(app: AppHandle) -> Result<CodexLoginResult, String> {
-    let (path, _) = resolve_codex_binary().ok_or_else(|| {
-        "No working GPT engine was found. Install or repair GPT first.".to_string()
+    let (path, _) = resolve_codex_binary(Some(&app)).ok_or_else(|| {
+        "No working GPT engine was found. Reinstall Alpha Studio or install/repair Codex CLI."
+            .to_string()
     })?;
     let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
     mark_codex_device_authorized(&codex_home)?;
@@ -5532,7 +5537,7 @@ fn value_to_string(value: &Value) -> String {
 }
 
 fn check_codex(app: Option<&AppHandle>) -> CodexCheckResult {
-    match resolve_codex_binary() {
+    match resolve_codex_binary(app) {
         Some((path, version)) => {
             let codex_home = match prepare_alpha_studio_codex_home(app) {
                 Ok(path) => path,
@@ -5573,7 +5578,8 @@ fn check_codex(app: Option<&AppHandle>) -> CodexCheckResult {
             logged_in: false,
             account_email: None,
             error: Some(
-                "No working GPT engine was found. Install or repair GPT first.".to_string(),
+                "No working GPT engine was found. Reinstall Alpha Studio or install/repair Codex CLI."
+                    .to_string(),
             ),
         },
     }
@@ -5707,8 +5713,8 @@ async fn read_codex_models(
     request_result
 }
 
-fn resolve_codex_binary() -> Option<(String, String)> {
-    for candidate in codex_binary_candidates() {
+fn resolve_codex_binary(app: Option<&AppHandle>) -> Option<(String, String)> {
+    for candidate in codex_binary_candidates(app) {
         if let Some(version) = codex_version(&candidate) {
             return Some((candidate, version));
         }
@@ -5716,8 +5722,13 @@ fn resolve_codex_binary() -> Option<(String, String)> {
     None
 }
 
-fn codex_binary_candidates() -> Vec<String> {
+fn codex_binary_candidates(app: Option<&AppHandle>) -> Vec<String> {
     let mut candidates = Vec::new();
+    if let Some(app) = app {
+        if let Ok(resource_dir) = app.path().resource_dir() {
+            candidates.extend(codex_bundled_binary_candidates(&resource_dir));
+        }
+    }
     candidates.push("/Applications/ChatGPT.app/Contents/Resources/codex".to_string());
     candidates.push("/Applications/Codex.app/Contents/Resources/codex".to_string());
 
@@ -5738,6 +5749,20 @@ fn codex_binary_candidates() -> Vec<String> {
         }
     }
     deduped
+}
+
+fn codex_bundled_binary_candidates(resource_dir: &Path) -> Vec<String> {
+    [".alpha-codex", "_up_/.alpha-codex"]
+        .into_iter()
+        .map(|relative_path| {
+            resource_dir
+                .join(relative_path)
+                .join("bin")
+                .join(CODEX_EXECUTABLE_NAME)
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect()
 }
 
 fn home_dir() -> Option<String> {
@@ -7709,7 +7734,7 @@ mod tests {
 
     #[test]
     fn includes_current_chatgpt_bundled_codex_before_legacy_app_path() {
-        let candidates = codex_binary_candidates();
+        let candidates = codex_binary_candidates(None);
         let current = "/Applications/ChatGPT.app/Contents/Resources/codex";
         let legacy = "/Applications/Codex.app/Contents/Resources/codex";
 
@@ -7723,6 +7748,20 @@ mod tests {
             .expect("legacy Codex app candidate");
 
         assert!(current_index < legacy_index);
+    }
+
+    #[test]
+    fn alpha_studio_bundled_codex_is_the_first_runtime_candidate() {
+        let resource_dir = PathBuf::from("/Applications/Alpha Studio.app/Contents/Resources");
+        let candidates = codex_bundled_binary_candidates(&resource_dir);
+        let expected = resource_dir
+            .join(".alpha-codex")
+            .join("bin")
+            .join(CODEX_EXECUTABLE_NAME)
+            .to_string_lossy()
+            .to_string();
+
+        assert_eq!(candidates.first(), Some(&expected));
     }
 
     #[test]
