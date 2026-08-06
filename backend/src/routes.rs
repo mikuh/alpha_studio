@@ -50,6 +50,7 @@ const CURRENT_SERVICE_TERMS_VERSION: &str = "2026-08-04";
 const CURRENT_PRIVACY_POLICY_VERSION: &str = "2026-08-04";
 const CURRENT_THIRD_PARTY_MODEL_NOTICE_VERSION: &str = "2026-08-04";
 const CURRENT_RESEARCH_RISK_DISCLOSURE_VERSION: &str = "2026-08-04";
+const GATEWAY_RUN_TTL_SECONDS: i64 = 48 * 60 * 60;
 
 pub async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
@@ -882,7 +883,7 @@ pub async fn admin_billing_reconciliation(
           select tenant_id,
             count(*) filter (where status in ('created', 'running'))::bigint as open_runs,
             count(*) filter (
-              where status in ('created', 'running') and created_at < now() - interval '30 minutes'
+              where status in ('created', 'running') and created_at < now() - interval '49 hours'
             )::bigint as stale_open_runs,
             count(*) filter (
               where status = 'failed' and completed_at >= now() - interval '24 hours'
@@ -972,6 +973,7 @@ pub async fn run_create(
             "device token does not belong to the requested user".to_string(),
         ));
     }
+    release_expired_run_reservations(&state.db, &request.tenant_id).await?;
     validate_run_budget(request.budget_yuan)?;
     let route = load_model_route(
         &state.db,
@@ -989,7 +991,7 @@ pub async fn run_create(
         run_id.clone(),
         request.model_id,
         request.budget_yuan,
-        20 * 60,
+        GATEWAY_RUN_TTL_SECONDS,
     ))?;
     Ok(Json(json!({
         "runId": run_id,
@@ -2299,35 +2301,52 @@ pub async fn gateway_responses(
     )
     .await?;
     let provider = load_provider_config(&state, &route).await?;
-    enforce_request_budget(&mut body, claims.budget_yuan, &route.pricing)?;
+    let gateway_request_id = format!("gwreq_{}", Uuid::new_v4().simple());
+    let remaining_budget = start_gateway_request(&state.db, &claims, &gateway_request_id).await?;
+    if let Err(error) = enforce_request_budget(&mut body, remaining_budget, &route.pricing) {
+        release_gateway_request(&state.db, &claims, &gateway_request_id, None).await?;
+        return Err(error);
+    }
     let original_body = body.clone();
-    let upstream_request = build_upstream_request(&provider, &route.upstream_model, &mut body)
-        .map_err(ApiError::BadRequest)?;
+    let upstream_request = match build_upstream_request(&provider, &route.upstream_model, &mut body)
+    {
+        Ok(request) => request,
+        Err(error) => {
+            release_gateway_request(&state.db, &claims, &gateway_request_id, None).await?;
+            return Err(ApiError::BadRequest(error));
+        }
+    };
 
     let started = Utc::now();
-    start_gateway_run(&state.db, &claims).await?;
 
-    let upstream =
-        match send_upstream_post(&state.http, &upstream_request, &body, &claims.run_id).await {
-            Ok(response) => response,
-            Err(error) => {
-                if error.may_have_incurred_cost {
-                    settle_and_record_usage(
-                        &state.db,
-                        &claims,
-                        &route.pricing,
-                        &GatewayUsage::default(),
-                        0,
-                        started,
-                        MeteringStatus::UsageUnavailable("ambiguous upstream transport failure"),
-                    )
-                    .await?;
-                } else {
-                    fail_run_and_release_reservation(&state.db, &claims, None).await?;
-                }
-                return Err(ApiError::Upstream(error.message));
+    let upstream = match send_upstream_post(
+        &state.http,
+        &upstream_request,
+        &body,
+        &gateway_request_id,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            if error.may_have_incurred_cost {
+                settle_and_record_usage(
+                    &state.db,
+                    &claims,
+                    &gateway_request_id,
+                    &route.pricing,
+                    &GatewayUsage::default(),
+                    0,
+                    started,
+                    MeteringStatus::UsageUnavailable("ambiguous upstream transport failure"),
+                )
+                .await?;
+            } else {
+                release_gateway_request(&state.db, &claims, &gateway_request_id, None).await?;
             }
-        };
+            return Err(ApiError::Upstream(error.message));
+        }
+    };
     let status = upstream.status();
     if status.is_success() && upstream_request.stream_response {
         return Ok(stream_upstream_response(
@@ -2336,11 +2355,30 @@ pub async fn gateway_responses(
             original_body,
             state.db.clone(),
             claims,
+            gateway_request_id,
             route.pricing,
             started,
         ));
     }
-    let text = upstream.text().await?;
+    let text = match upstream.text().await {
+        Ok(text) => text,
+        Err(error) => {
+            settle_and_record_usage(
+                &state.db,
+                &claims,
+                &gateway_request_id,
+                &route.pricing,
+                &GatewayUsage::default(),
+                status.as_u16(),
+                started,
+                MeteringStatus::UsageUnavailable("upstream response body failed after dispatch"),
+            )
+            .await?;
+            return Err(ApiError::Upstream(format!(
+                "failed to read upstream response: {error}"
+            )));
+        }
+    };
     let upstream_body =
         serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({ "raw": text }));
 
@@ -2355,6 +2393,7 @@ pub async fn gateway_responses(
                 settle_and_record_usage(
                     &state.db,
                     &claims,
+                    &gateway_request_id,
                     &route.pricing,
                     &GatewayUsage::default(),
                     status.as_u16(),
@@ -2371,6 +2410,7 @@ pub async fn gateway_responses(
         settle_and_record_usage(
             &state.db,
             &claims,
+            &gateway_request_id,
             &route.pricing,
             &usage,
             status.as_u16(),
@@ -2385,6 +2425,7 @@ pub async fn gateway_responses(
             settle_and_record_usage(
                 &state.db,
                 &claims,
+                &gateway_request_id,
                 &route.pricing,
                 &GatewayUsage::default(),
                 status.as_u16(),
@@ -2395,7 +2436,13 @@ pub async fn gateway_responses(
             )
             .await?;
         } else {
-            fail_run_and_release_reservation(&state.db, &claims, Some(status.as_u16())).await?;
+            release_gateway_request(
+                &state.db,
+                &claims,
+                &gateway_request_id,
+                Some(status.as_u16()),
+            )
+            .await?;
         }
         Ok((
             StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
@@ -2415,6 +2462,7 @@ fn stream_upstream_response(
     original_body: Value,
     pool: PgPool,
     claims: RunTokenClaims,
+    gateway_request_id: String,
     pricing: Pricing,
     started: chrono::DateTime<Utc>,
 ) -> Response {
@@ -2525,14 +2573,11 @@ fn stream_upstream_response(
                 usage = adapter.usage();
             }
         }
-        // Close the client response before the database update below. Billing and
-        // failure recording continue in this task without extending the SSE lifetime.
-        drop(sender);
-
         if !failed {
             if let Err(error) = settle_and_record_usage(
                 &pool,
                 &claims,
+                &gateway_request_id,
                 &pricing,
                 &usage,
                 upstream_status,
@@ -2547,6 +2592,7 @@ fn stream_upstream_response(
             if let Err(error) = settle_and_record_usage(
                 &pool,
                 &claims,
+                &gateway_request_id,
                 &pricing,
                 &usage,
                 upstream_status,
@@ -2561,6 +2607,10 @@ fn stream_upstream_response(
                 tracing::warn!(run_id = %claims.run_id, %message, "upstream model stream failed");
             }
         }
+        // Settle and release the per-request lease before Codex sees EOF. Codex
+        // immediately follows tool results with another Responses call using the
+        // same task token, so releasing after EOF creates a false concurrency race.
+        drop(sender);
     });
 
     Response::builder()
@@ -3000,30 +3050,45 @@ async fn ensure_gateway_run_available(pool: &PgPool, claims: &RunTokenClaims) ->
         join devices d on d.id = r.device_id and d.tenant_id = r.tenant_id
           and d.status = 'active' and d.lease_expires_at > now()
         where r.id = $1
-          and (r.status = 'running' or (r.status = 'created' and r.created_at > now() - interval '20 minutes'))
+          and r.status in ('created', 'running')
+          and r.accumulated_billable_yuan < r.budget_yuan
         "#,
     )
     .bind(&claims.run_id)
     .fetch_optional(pool)
     .await?
-    .ok_or_else(|| ApiError::Unauthorized("run token is invalid, expired, or already used".to_string()))?;
+    .ok_or_else(|| {
+        ApiError::Unauthorized(
+            "run token is invalid, expired, revoked, or has exhausted its task budget".to_string(),
+        )
+    })?;
     validate_run_claim_bindings(&row, claims)
 }
 
-async fn start_gateway_run(pool: &PgPool, claims: &RunTokenClaims) -> ApiResult<()> {
+async fn start_gateway_request(
+    pool: &PgPool,
+    claims: &RunTokenClaims,
+    gateway_request_id: &str,
+) -> ApiResult<Decimal> {
     let row = sqlx::query(
         r#"
         update model_runs r
-        set status = 'running', started_at = now()
+        set status = 'running',
+            started_at = coalesce(r.started_at, now()),
+            active_request_id = $7,
+            request_count = r.request_count + 1,
+            last_activity_at = now()
         from tenants t, devices d
         where r.id = $1 and r.tenant_id = $2 and r.user_id = $3
           and r.device_id = $4 and r.model_id = $5
           and r.budget_yuan = $6
-          and r.status = 'created' and r.created_at > now() - interval '20 minutes'
+          and r.status in ('created', 'running')
+          and r.active_request_id is null
+          and r.accumulated_billable_yuan < r.budget_yuan
           and t.id = r.tenant_id and t.status = 'active' and t.balance_yuan > 0
           and d.id = r.device_id and d.tenant_id = r.tenant_id
           and d.status = 'active' and d.lease_expires_at > now()
-        returning r.id
+        returning r.budget_yuan - r.accumulated_billable_yuan as remaining_budget_yuan
         "#,
     )
     .bind(&claims.run_id)
@@ -3032,13 +3097,50 @@ async fn start_gateway_run(pool: &PgPool, claims: &RunTokenClaims) -> ApiResult<
     .bind(&claims.device_id)
     .bind(&claims.model_id)
     .bind(claims.budget_yuan)
+    .bind(gateway_request_id)
     .fetch_optional(pool)
     .await?;
-    if row.is_some() {
+    row.map(|row| row.get::<Decimal, _>("remaining_budget_yuan"))
+        .ok_or_else(|| {
+            ApiError::TooManyRequests(
+                "this task already has an in-flight model request or its budget is exhausted"
+                    .to_string(),
+            )
+        })
+}
+
+async fn release_gateway_request(
+    pool: &PgPool,
+    claims: &RunTokenClaims,
+    gateway_request_id: &str,
+    upstream_status: Option<u16>,
+) -> ApiResult<()> {
+    let released = sqlx::query(
+        r#"
+        update model_runs
+        set active_request_id = null,
+            last_activity_at = now(),
+            upstream_status = coalesce($8, upstream_status)
+        where id = $1 and tenant_id = $2 and user_id = $3 and device_id = $4
+          and model_id = $5 and budget_yuan = $6 and active_request_id = $7
+          and status = 'running'
+        "#,
+    )
+    .bind(&claims.run_id)
+    .bind(&claims.tenant_id)
+    .bind(&claims.user_id)
+    .bind(&claims.device_id)
+    .bind(&claims.model_id)
+    .bind(claims.budget_yuan)
+    .bind(gateway_request_id)
+    .bind(upstream_status.map(i32::from))
+    .execute(pool)
+    .await?;
+    if released.rows_affected() == 1 {
         Ok(())
     } else {
-        Err(ApiError::Forbidden(
-            "run token has expired or has already been consumed".to_string(),
+        Err(ApiError::Unauthorized(
+            "run token does not own the active model request".to_string(),
         ))
     }
 }
@@ -3121,71 +3223,6 @@ fn enforce_request_budget(
     Ok(())
 }
 
-async fn fail_run_and_release_reservation(
-    pool: &PgPool,
-    claims: &RunTokenClaims,
-    upstream_status: Option<u16>,
-) -> ApiResult<()> {
-    let mut tx = pool.begin().await?;
-    let run = sqlx::query(
-        r#"
-        select tenant_id, user_id, device_id, model_id, status, budget_yuan
-        from model_runs where id = $1 for update
-        "#,
-    )
-    .bind(&claims.run_id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| {
-        ApiError::Unauthorized("run token does not reference a valid run".to_string())
-    })?;
-    validate_run_claim_bindings(&run, claims)?;
-    let status = run.get::<String, _>("status");
-    if matches!(status.as_str(), "completed" | "failed" | "expired") {
-        tx.rollback().await?;
-        return Ok(());
-    }
-    let release = sqlx::query(
-        r#"
-        insert into billing_ledger
-          (id, tenant_id, run_id, entry_type, amount_yuan, description, operation_key)
-        select $1, $2, $3, 'reservation_release', $4, $5, $6
-        where exists (select 1 from billing_ledger where operation_key = $7)
-        on conflict (operation_key) where operation_key is not null do nothing
-        "#,
-    )
-    .bind(format!("ledger_{}", Uuid::new_v4().simple()))
-    .bind(&claims.tenant_id)
-    .bind(&claims.run_id)
-    .bind(claims.budget_yuan)
-    .bind(format!(
-        "{} run failed before billable completion",
-        claims.model_id
-    ))
-    .bind(format!("release:{}", claims.run_id))
-    .bind(format!("reservation:{}", claims.run_id))
-    .execute(&mut *tx)
-    .await?;
-    if release.rows_affected() == 1 {
-        sqlx::query(
-            "update tenants set balance_yuan = balance_yuan + $2, updated_at = now() where id = $1",
-        )
-        .bind(&claims.tenant_id)
-        .bind(claims.budget_yuan)
-        .execute(&mut *tx)
-        .await?;
-    }
-    sqlx::query(
-        "update model_runs set status = 'failed', completed_at = now(), upstream_status = $2 where id = $1",
-    )
-    .bind(&claims.run_id)
-    .bind(upstream_status.map(i32::from))
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(())
-}
-
 fn validate_run_budget(budget_yuan: Decimal) -> ApiResult<()> {
     if !has_supported_scale(budget_yuan)
         || budget_yuan < Decimal::new(1, 2)
@@ -3241,12 +3278,14 @@ async fn release_expired_run_reservations(pool: &PgPool, tenant_id: &str) -> Api
         r#"
         select r.id, r.model_id, r.budget_yuan
         from model_runs r
-        where r.tenant_id = $1 and r.status = 'created'
-          and r.created_at <= now() - interval '20 minutes'
+        where r.tenant_id = $1 and r.status in ('created', 'running')
+          and r.active_request_id is null
+          and r.created_at <= now() - ($2::double precision * interval '1 second')
         for update
         "#,
     )
     .bind(tenant_id)
+    .bind(GATEWAY_RUN_TTL_SECONDS)
     .fetch_all(&mut *tx)
     .await?;
     for row in expired {
@@ -3258,7 +3297,7 @@ async fn release_expired_run_reservations(pool: &PgPool, tenant_id: &str) -> Api
             .await?
             .is_some();
         sqlx::query(
-            "update model_runs set status = 'expired', completed_at = now() where id = $1 and status = 'created'",
+            "update model_runs set status = 'expired', completed_at = now() where id = $1 and status in ('created', 'running') and active_request_id is null",
         )
         .bind(&run_id)
         .execute(&mut *tx)
@@ -3337,6 +3376,7 @@ fn resolve_usage_charge<'a>(
 async fn settle_and_record_usage(
     pool: &PgPool,
     claims: &RunTokenClaims,
+    gateway_request_id: &str,
     pricing: &Pricing,
     usage: &GatewayUsage,
     upstream_status: u16,
@@ -3357,7 +3397,8 @@ async fn settle_and_record_usage(
     let mut tx = pool.begin().await?;
     let run = sqlx::query(
         r#"
-        select tenant_id, user_id, device_id, model_id, status, budget_yuan
+        select tenant_id, user_id, device_id, model_id, status, budget_yuan,
+          active_request_id, accumulated_billable_yuan
         from model_runs where id = $1 for update
         "#,
     )
@@ -3368,15 +3409,21 @@ async fn settle_and_record_usage(
         ApiError::Unauthorized("run token does not reference a valid run".to_string())
     })?;
     validate_run_claim_bindings(&run, claims)?;
-    if run.get::<String, _>("status") == "completed" {
-        tx.rollback().await?;
-        return Ok(());
-    }
     if run.get::<String, _>("status") != "running" {
         return Err(ApiError::Forbidden(
             "run is not in a billable state".to_string(),
         ));
     }
+    if run
+        .try_get::<Option<String>, _>("active_request_id")?
+        .as_deref()
+        != Some(gateway_request_id)
+    {
+        return Err(ApiError::Forbidden(
+            "model request lease does not match this settlement".to_string(),
+        ));
+    }
+    let settlement_key = format!("settlement:{}:{}", claims.run_id, gateway_request_id);
     sqlx::query(
         r#"
         insert into usage_events (
@@ -3399,16 +3446,27 @@ async fn settle_and_record_usage(
     .bind(billable_yuan)
     .bind(upstream_status as i32)
     .bind(latency_ms)
-    .bind(format!("settlement:{}", claims.run_id))
+    .bind(&settlement_key)
     .bind(metering_label)
     .bind(billing_note)
     .execute(&mut *tx)
     .await?;
-    let had_reservation = sqlx::query("select 1 from billing_ledger where operation_key = $1")
-        .bind(format!("reservation:{}", claims.run_id))
-        .fetch_optional(&mut *tx)
-        .await?
-        .is_some();
+    let had_reservation = sqlx::query(
+        r#"
+        select 1 from billing_ledger
+        where operation_key = $1
+          and not exists (
+            select 1 from billing_ledger
+            where operation_key in ($2, $3)
+          )
+        "#,
+    )
+    .bind(format!("reservation:{}", claims.run_id))
+    .bind(format!("adjustment:{}", claims.run_id))
+    .bind(format!("release:{}", claims.run_id))
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some();
     if had_reservation {
         let balance_adjustment = claims.budget_yuan - billable_yuan;
         if balance_adjustment != Decimal::ZERO {
@@ -3436,7 +3494,7 @@ async fn settle_and_record_usage(
             })
             .bind(balance_adjustment)
             .bind(format!(
-                "{} run budget settlement adjustment",
+                "{} legacy run budget settlement adjustment",
                 claims.model_id
             ))
             .bind(format!("adjustment:{}", claims.run_id))
@@ -3462,16 +3520,27 @@ async fn settle_and_record_usage(
         .bind(&claims.tenant_id)
         .bind(&claims.run_id)
         .bind(-billable_yuan)
-        .bind(format!("{} 实际用量扣费", claims.model_id))
-        .bind(format!("charge:{}", claims.run_id))
+        .bind(format!("{} 请求实际用量扣费", claims.model_id))
+        .bind(format!("charge:{}:{}", claims.run_id, gateway_request_id))
         .execute(&mut *tx)
         .await?;
     }
+    let accumulated_billable_yuan =
+        run.get::<Decimal, _>("accumulated_billable_yuan") + billable_yuan;
     sqlx::query(
-        "update model_runs set status = 'completed', completed_at = now(), upstream_status = $2 where id = $1",
+        r#"
+        update model_runs
+        set accumulated_billable_yuan = $2,
+            active_request_id = null,
+            last_activity_at = now(),
+            upstream_status = $3
+        where id = $1 and active_request_id = $4
+        "#,
     )
     .bind(&claims.run_id)
+    .bind(accumulated_billable_yuan)
     .bind(upstream_status as i32)
+    .bind(gateway_request_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -4267,13 +4336,14 @@ mod tests {
     use futures_util::StreamExt;
     use rust_decimal::Decimal;
     use serde_json::json;
-    use sqlx::postgres::PgPoolOptions;
+    use sqlx::{postgres::PgPoolOptions, Row};
 
     use super::{
-        bounded_pagination, enforce_request_budget, looks_like_secret_field,
-        normalized_codex_tenant_ids, resolve_usage_charge, stream_upstream_response,
+        bounded_pagination, enforce_request_budget, ensure_gateway_run_available,
+        looks_like_secret_field, normalized_codex_tenant_ids, resolve_usage_charge,
+        settle_and_record_usage, start_gateway_request, stream_upstream_response,
         validate_client_agreement_acceptance, validate_offline_payment_request,
-        ClientAgreementAcceptance, MeteringStatus, OfflinePaymentRequest,
+        ClientAgreementAcceptance, MeteringStatus, OfflinePaymentRequest, GATEWAY_RUN_TTL_SECONDS,
     };
     use crate::{
         billing::{GatewayUsage, Pricing},
@@ -4432,6 +4502,151 @@ mod tests {
         assert_eq!(note, "missing usage");
     }
 
+    #[test]
+    fn task_run_tokens_cover_a_full_day_with_safety_margin() {
+        assert_eq!(GATEWAY_RUN_TTL_SECONDS, 48 * 60 * 60);
+    }
+
+    #[tokio::test]
+    async fn one_task_run_settles_multiple_sequential_model_requests() {
+        let Ok(database_url) = std::env::var("ALPHA_STUDIO_TEST_DATABASE_URL") else {
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("connect gateway regression database");
+        sqlx::migrate!("../migrations")
+            .run(&pool)
+            .await
+            .expect("migrate gateway regression database");
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let tenant_id = format!("tenant_multistep_{suffix}");
+        let user_id = format!("user_multistep_{suffix}");
+        let device_id = format!("device_multistep_{suffix}");
+        let run_id = format!("run_multistep_{suffix}");
+        let model_id = format!("model_multistep_{suffix}");
+        sqlx::query(
+            "insert into tenants (id, name, company_key, balance_yuan) values ($1, $2, $3, 100)",
+        )
+        .bind(&tenant_id)
+        .bind(format!("Multistep {suffix}"))
+        .bind(format!("multistep-{suffix}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into users (id, tenant_id, email, name) values ($1, $2, $3, 'Test')")
+            .bind(&user_id)
+            .bind(&tenant_id)
+            .bind(format!("{suffix}@example.test"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            insert into devices
+              (id, tenant_id, user_id, fingerprint, name, lease_expires_at)
+            values ($1, $2, $3, $4, 'Test', now() + interval '1 day')
+            "#,
+        )
+        .bind(&device_id)
+        .bind(&tenant_id)
+        .bind(&user_id)
+        .bind(format!("fingerprint-{suffix}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            insert into model_runs
+              (id, tenant_id, user_id, device_id, model_id, mode, status, budget_yuan)
+            values ($1, $2, $3, $4, $5, 'gateway_api', 'created', 5)
+            "#,
+        )
+        .bind(&run_id)
+        .bind(&tenant_id)
+        .bind(&user_id)
+        .bind(&device_id)
+        .bind(&model_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let claims = RunTokenClaims::new(
+            tenant_id.clone(),
+            user_id,
+            device_id,
+            run_id.clone(),
+            model_id,
+            Decimal::from(5_u64),
+            GATEWAY_RUN_TTL_SECONDS,
+        );
+        let pricing = Pricing {
+            input_yuan_per_million: Decimal::ONE,
+            output_yuan_per_million: Decimal::ONE,
+            reasoning_yuan_per_million: Decimal::ONE,
+            cached_input_yuan_per_million: Decimal::ONE,
+            markup_bps: 0,
+        };
+        let usage = GatewayUsage {
+            input_tokens: 1_000,
+            output_tokens: 1_000,
+            reasoning_tokens: 0,
+            cached_tokens: 0,
+        };
+
+        for request_id in ["gwreq_tool_choice", "gwreq_after_tool"] {
+            let remaining = start_gateway_request(&pool, &claims, request_id)
+                .await
+                .unwrap();
+            assert!(remaining > Decimal::ZERO);
+            settle_and_record_usage(
+                &pool,
+                &claims,
+                request_id,
+                &pricing,
+                &usage,
+                200,
+                Utc::now(),
+                MeteringStatus::Reported,
+            )
+            .await
+            .unwrap();
+            ensure_gateway_run_available(&pool, &claims).await.unwrap();
+        }
+
+        let run = sqlx::query(
+            r#"
+            select status, active_request_id, request_count, accumulated_billable_yuan
+            from model_runs where id = $1
+            "#,
+        )
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(run.get::<String, _>("status"), "running");
+        assert_eq!(run.get::<Option<String>, _>("active_request_id"), None);
+        assert_eq!(run.get::<i64, _>("request_count"), 2);
+        assert!(run.get::<Decimal, _>("accumulated_billable_yuan") > Decimal::ZERO);
+        let settlement_count = sqlx::query_scalar::<_, i64>(
+            "select count(*)::bigint from usage_events where run_id = $1",
+        )
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(settlement_count, 2);
+
+        sqlx::query("delete from tenants where id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn forwards_the_first_upstream_delta_before_the_stream_finishes() {
         let app = Router::new().route(
@@ -4488,6 +4703,7 @@ mod tests {
                 Decimal::ONE,
                 60,
             ),
+            "gwreq_test".to_string(),
             Pricing {
                 input_yuan_per_million: Decimal::ZERO,
                 output_yuan_per_million: Decimal::ZERO,

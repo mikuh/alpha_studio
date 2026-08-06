@@ -117,7 +117,9 @@ The backend fails closed when those secrets are missing, weak, still use the
 example placeholders, or when the JWT and run-token secrets are identical.
 Protected client routes require the signed device Bearer token returned by
 activation; admin routes require an expiring signed admin JWT; model gateway
-routes require a short-lived, model-bound, single-use run token. Existing
+routes require a 48-hour, task-scoped, model-bound run token. The token supports
+the multiple sequential Responses calls required by agent tool loops while each
+call is metered independently against one cumulative task budget. Existing
 desktop activation sessions created before this authentication hardening must
 be activated once again to receive a device token.
 Browser cross-origin access is restricted to the explicit
