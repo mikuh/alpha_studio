@@ -57,6 +57,7 @@ function Initialize-MsvcBuildEnvironment {
         throw "Unsupported Rust host '$rustTarget'. Use an x86_64 or ARM64 Windows MSVC toolchain."
     }
 
+    $visualStudioPath = $null
     $vswhere = Get-Command "vswhere.exe" -ErrorAction SilentlyContinue
     if ($null -eq $vswhere) {
         $vswhereCandidates = @(
@@ -71,14 +72,55 @@ function Initialize-MsvcBuildEnvironment {
         $vswherePath = $vswhere.Source
     }
 
-    if ([string]::IsNullOrWhiteSpace($vswherePath)) {
-        throw "Visual Studio Build Tools were not found. Install Visual Studio Build Tools 2022 with the 'Desktop development with C++' workload and a Windows 10/11 SDK."
+    if (-not [string]::IsNullOrWhiteSpace($vswherePath)) {
+        $visualStudioPath = @(
+            & $vswherePath -latest -products * -requires $toolsComponent -property installationPath 2>$null
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
     }
 
-    $visualStudioPath = @(
-        & $vswherePath -latest -products * -requires $toolsComponent -property installationPath
-    ) | Select-Object -First 1
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($visualStudioPath)) {
+    # vswhere's instance catalog can be missing/corrupt while Build Tools remain on disk.
+    if ([string]::IsNullOrWhiteSpace($visualStudioPath)) {
+        $hostBin = if ($hostArchitecture -eq "arm64") { "Hostarm64" } else { "Hostx64" }
+        $targetBin = $targetArchitecture
+        $fallbackRoots = @(
+            (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\BuildTools"),
+            (Join-Path $env:ProgramFiles "Microsoft Visual Studio\2022\BuildTools"),
+            (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\Community"),
+            (Join-Path $env:ProgramFiles "Microsoft Visual Studio\2022\Community"),
+            (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\Professional"),
+            (Join-Path $env:ProgramFiles "Microsoft Visual Studio\2022\Professional"),
+            (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\Enterprise"),
+            (Join-Path $env:ProgramFiles "Microsoft Visual Studio\2022\Enterprise"),
+            (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\18\BuildTools"),
+            (Join-Path $env:ProgramFiles "Microsoft Visual Studio\18\BuildTools")
+        )
+
+        foreach ($root in $fallbackRoots) {
+            $devCmd = Join-Path $root "Common7\Tools\VsDevCmd.bat"
+            $msvcRoot = Join-Path $root "VC\Tools\MSVC"
+            if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) {
+                continue
+            }
+            if (-not (Test-Path -LiteralPath $msvcRoot -PathType Container)) {
+                continue
+            }
+
+            $hasCompiler = Get-ChildItem -LiteralPath $msvcRoot -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                    Join-Path $_.FullName "bin\$hostBin\$targetBin\cl.exe"
+                } |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                Select-Object -First 1
+
+            if ($null -ne $hasCompiler) {
+                $visualStudioPath = $root
+                Write-Host "MSVC: using fallback Visual Studio path (vswhere unavailable): $visualStudioPath"
+                break
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($visualStudioPath)) {
         throw "The Visual Studio C++ toolchain is incomplete. In Visual Studio Installer, add 'Desktop development with C++', MSVC build tools, and a Windows 10/11 SDK."
     }
 
