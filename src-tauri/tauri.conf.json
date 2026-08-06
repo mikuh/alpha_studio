@@ -59,6 +59,11 @@
     },
     "macOS": {
       "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "wix": {
+        "upgradeCode": "d2d86e80-53b9-52ed-af35-b1903aeaa9f7"
+      }
     }
   }
 }

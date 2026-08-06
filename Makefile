@@ -3,12 +3,13 @@ DMG_SIGNING_IDENTITY ?= -
 
 .DEFAULT_GOAL := help
 
-.PHONY: help verify-release dmg deploy-production deploy-production-dry-run production-status production-logs production-backup sync-production-models
+.PHONY: help verify-release dmg msi deploy-production deploy-production-dry-run production-status production-logs production-backup sync-production-models
 
 help:
 	@printf '%s\n' \
 	  'make verify-release              Run frontend, backend, and desktop tests/builds' \
 	  'make dmg                         Build the production macOS DMG (ad-hoc signed by default)' \
+	  'make msi                         Build the Windows MSI (must run on Windows)' \
 	  'make deploy-production           Backup, migrate, deploy, and smoke-test production' \
 	  'make deploy-production-dry-run   Resolve and validate a production release without changing it' \
 	  'make production-status           Show production containers and deployed Git revision' \
@@ -27,6 +28,9 @@ verify-release:
 dmg:
 	npm ci
 	npx tauri build --bundles dmg --config '{"bundle":{"macOS":{"signingIdentity":"$(DMG_SIGNING_IDENTITY)"}}}'
+
+msi:
+	powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1
 
 deploy-production:
 	bash scripts/deploy-production.sh

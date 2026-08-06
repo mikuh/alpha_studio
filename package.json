@@ -23,6 +23,7 @@
     "tauri:dev:prod": "tauri dev --config src-tauri/tauri.prod.conf.json",
     "tauri:build": "tauri build",
     "tauri:build:dmg": "tauri build --bundles dmg",
+    "tauri:build:msi": "tauri build --bundles msi",
     "ops:db-backup": "bash scripts/db-backup.sh",
     "ops:db-restore-drill": "bash scripts/db-restore-drill.sh",
     "smoke:staging": "bash scripts/smoke-test.sh",

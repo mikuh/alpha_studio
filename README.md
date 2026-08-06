@@ -40,6 +40,25 @@ Production frontend builds, including the macOS DMG, load `.env.production`:
 npm run tauri:build:dmg
 ```
 
+### Windows MSI
+
+On a Windows 10/11 build machine, install Node.js LTS, Rust with the default
+MSVC toolchain, and Visual Studio Build Tools with the C++ workload. Then
+double-click [`build-windows-msi.cmd`](./build-windows-msi.cmd). The script
+installs the locked dependencies, builds only the MSI bundle, copies it to
+`artifacts/releases/windows/`, prints its SHA-256 checksum, and opens the output
+folder.
+
+The equivalent terminal command is:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1
+```
+
+Use `-SkipInstall` to reuse the current `node_modules`. The first build needs
+network access for npm, Cargo, and Tauri's WiX tooling. The generated MSI is
+unsigned unless Windows code-signing settings are configured separately.
+
 Useful checks:
 
 ```bash
