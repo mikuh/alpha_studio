@@ -5765,10 +5765,18 @@ fn codex_bundled_binary_candidates(resource_dir: &Path) -> Vec<String> {
         .collect()
 }
 
-fn home_dir() -> Option<String> {
+pub(crate) fn home_dir() -> Option<String> {
+    // Unix shells typically set HOME; Windows installed apps usually only have USERPROFILE.
     std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
         .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            let drive = std::env::var("HOMEDRIVE").ok()?;
+            let path = std::env::var("HOMEPATH").ok()?;
+            let combined = format!("{drive}{path}");
+            (!combined.trim().is_empty()).then_some(combined)
+        })
 }
 
 fn prepare_alpha_studio_codex_home(app: Option<&AppHandle>) -> Result<PathBuf, String> {

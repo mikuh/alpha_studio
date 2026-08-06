@@ -656,12 +656,6 @@ pub(crate) fn install_builtin_skills(
             .into_iter()
             .map(|skill| skill.name)
             .collect::<Vec<_>>();
-        eprintln!(
-            "[Alpha Studio] Decoded and validated {} built-in Skill(s), {} file(s), into {}",
-            skill_names.len(),
-            manifest.encoded_file_count,
-            runtime_skills_root.display()
-        );
         Ok(InstalledBuiltinSkills {
             skill_names,
             encoded_file_count: manifest.encoded_file_count,
