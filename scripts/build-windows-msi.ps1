@@ -54,11 +54,23 @@ try {
     Write-Host "Alpha Studio Windows MSI build" -ForegroundColor Cyan
     Write-Host "Project: $repositoryRoot"
 
-    $rustHostLine = & $rustc -vV | Where-Object { $_ -like "host:*" } | Select-Object -First 1
-    Assert-LastExitCode "Reading the Rust toolchain"
+    $rustVersionOutput = @(& $rustc -vV 2>&1)
+    $rustExitCode = $LASTEXITCODE
+    if ($rustExitCode -ne 0) {
+        $rustDetails = ($rustVersionOutput | ForEach-Object { "$_" }) -join [Environment]::NewLine
+        if ([string]::IsNullOrWhiteSpace($rustDetails)) {
+            $rustDetails = "rustc returned no diagnostic output."
+        }
+        throw "Reading the Rust toolchain failed with exit code $rustExitCode.$([Environment]::NewLine)$rustDetails"
+    }
+
+    $rustHostLine = $rustVersionOutput |
+        Where-Object { "$_" -like "host:*" } |
+        Select-Object -First 1
     if ($null -eq $rustHostLine -or $rustHostLine -notmatch "pc-windows-msvc") {
         throw "The active Rust toolchain is not the Windows MSVC toolchain. Run 'rustup default stable-x86_64-pc-windows-msvc' and try again."
     }
+    Write-Host "Rust: $rustHostLine"
 
     if (-not $SkipInstall) {
         Write-Host ""

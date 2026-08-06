@@ -1,4 +1,9 @@
+ifeq ($(OS),Windows_NT)
+SHELL := cmd.exe
+.SHELLFLAGS := /d /s /c
+else
 SHELL := /usr/bin/env bash
+endif
 DMG_SIGNING_IDENTITY ?= -
 
 .DEFAULT_GOAL := help
