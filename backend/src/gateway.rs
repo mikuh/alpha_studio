@@ -341,6 +341,11 @@ fn normalize_volcengine_responses_request(body: &mut Value) {
     {
         body["max_output_tokens"] = json!(VOLCENGINE_RESPONSES_MAX_OUTPUT_TOKENS);
     }
+    if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input {
+            ensure_volcengine_history_item_status(item);
+        }
+    }
     let (by_upstream, by_original) = namespace_tool_mappings(body);
     if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
         let original_tools = std::mem::take(tools);
@@ -409,6 +414,30 @@ fn normalize_volcengine_responses_request(body: &mut Value) {
     }
     if let Some(tool_choice) = body.get_mut("tool_choice") {
         flatten_namespaced_call(tool_choice, &by_original);
+    }
+}
+
+/// Codex replays completed output items without `status` on later turns. OpenAI
+/// accepts that abbreviated input, while Ark requires the field on output-item
+/// variants such as reasoning, assistant messages, and tool calls.
+fn ensure_volcengine_history_item_status(item: &mut Value) {
+    let Some(object) = item.as_object_mut() else {
+        return;
+    };
+    let requires_status = match object.get("type").and_then(Value::as_str) {
+        Some("message") => object.get("role").and_then(Value::as_str) == Some("assistant"),
+        Some(
+            "reasoning"
+            | "function_call"
+            | "web_search_call"
+            | "image_process"
+            | "knowledge_search_call"
+            | "doubao_app_call",
+        ) => true,
+        _ => false,
+    };
+    if requires_status && object.get("status").map_or(true, Value::is_null) {
+        object.insert("status".to_string(), json!("completed"));
     }
 }
 

@@ -123,6 +123,61 @@ fn strips_codex_extensions_unsupported_by_volcengine_responses() {
 }
 
 #[test]
+fn fills_missing_status_for_volcengine_multiturn_output_history() {
+    let provider = ProviderConfig {
+        provider: "volcengine-ark-responses".to_string(),
+        base_url: "https://ark.cn-beijing.volces.com/api/v3".to_string(),
+        endpoint_path: "/responses".to_string(),
+        api_key: "test-key".to_string(),
+        api_format: ProviderApiFormat::Responses,
+        ..ProviderConfig::default()
+    };
+    let mut body = serde_json::json!({
+        "model": "alpha-alias",
+        "input": [
+            { "type": "message", "role": "user", "content": "hi" },
+            {
+                "type": "reasoning",
+                "summary": [{ "type": "summary_text", "text": "Respond to the greeting" }]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "Hello!" }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": "{}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "done"
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "incomplete",
+                "content": [{ "type": "output_text", "text": "Partial" }]
+            },
+            { "type": "message", "role": "user", "content": "hello" }
+        ]
+    });
+
+    build_upstream_request(&provider, "deepseek-v4-flash-260425", &mut body).unwrap();
+
+    assert!(body["input"][0].get("status").is_none());
+    assert_eq!(body["input"][1]["status"], "completed");
+    assert_eq!(body["input"][2]["status"], "completed");
+    assert_eq!(body["input"][3]["status"], "completed");
+    assert!(body["input"][4].get("status").is_none());
+    assert_eq!(body["input"][5]["status"], "incomplete");
+    assert!(body["input"][6].get("status").is_none());
+}
+
+#[test]
 fn restores_volcengine_namespace_calls_in_body_and_stream() {
     let provider = ProviderConfig {
         provider: "volcengine-ark-responses".to_string(),
