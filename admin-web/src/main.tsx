@@ -74,6 +74,7 @@ interface ModelRoute {
   endpointPath: string;
   upstreamModel: string;
   contextWindowTokens: number;
+  maxOutputTokens: number;
   supportedReasoningEfforts: string[];
   defaultReasoningEffort: string;
   fastModeSupported: boolean;
@@ -289,7 +290,16 @@ const providerPresets: Array<{ id: string; label: string; config: Omit<typeof em
   { id: 'cli-proxy', label: 'CLIProxyAPI · Responses', config: { provider: 'cli-proxy', label: 'CLIProxyAPI', baseUrl: 'https://gpt.yuanliu.cloud/v1', endpointPath: '/responses', apiFormat: 'responses', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
 ];
 
-const reasoningEffortOptions = ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const reasoningEffortOptions = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const reasoningEffortLabels: Record<string, string> = {
+  none: '关闭',
+  minimal: '极低',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '超高',
+  max: '最大',
+};
 
 const emptyModelForm = {
   id: '',
@@ -301,8 +311,9 @@ const emptyModelForm = {
   endpointPath: '/responses',
   upstreamModel: '',
   contextWindowTokens: 64_000,
-  supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'] as string[],
-  defaultReasoningEffort: 'medium',
+  maxOutputTokens: 32_000,
+  supportedReasoningEfforts: ['none'] as string[],
+  defaultReasoningEffort: 'none',
   fastModeSupported: false,
   enabled: true,
   sortOrder: 100,
@@ -693,7 +704,7 @@ function App() {
       const discovered = data.models || [];
       setDiscoveredModels(discovered);
       if (discovered.length === 1) {
-        setModelForm((form) => ({
+        setModelForm((form) => applyVerifiedModelCapabilities({
           ...form,
           modelId: form.modelId || discovered[0].id,
           upstreamModel: discovered[0].id,
@@ -757,12 +768,15 @@ function App() {
   const changeModelProvider = (providerId: string) => {
     const provider = providers.find((candidate) => candidate.provider === providerId);
     setSelectedProviderId(providerId);
-    setModelForm((form) => ({
+    setModelForm((form) => applyVerifiedModelCapabilities({
       ...form,
       provider: providerId,
       baseUrl: provider?.baseUrl || form.baseUrl,
       endpointPath: provider?.endpointPath || form.endpointPath,
       contextWindowTokens: defaultContextWindowTokens(providerId),
+      maxOutputTokens: emptyModelForm.maxOutputTokens,
+      supportedReasoningEfforts: emptyModelForm.supportedReasoningEfforts,
+      defaultReasoningEffort: emptyModelForm.defaultReasoningEffort,
     }));
   };
 
@@ -1603,6 +1617,188 @@ function defaultContextWindowTokens(provider: string | undefined) {
   return provider === 'openai' || provider === 'cli-proxy' ? 258_000 : 64_000;
 }
 
+function verifiedModelLimits(...identifiers: string[]) {
+  const identity = identifiers.join(' ').trim().toLowerCase();
+  if (/glm-5[.-]2(?:-|\b)/.test(identity)) {
+    return { contextWindowTokens: 1_048_576, maxOutputTokens: 131_072 };
+  }
+  if (/deepseek-v4-(?:pro|flash)(?:-|\b)/.test(identity)) {
+    return { contextWindowTokens: 1_048_576, maxOutputTokens: 393_216 };
+  }
+  return null;
+}
+
+type VerifiedReasoningCapability = {
+  supportedReasoningEfforts: string[];
+  defaultReasoningEffort: string;
+  description: string;
+};
+
+function verifiedReasoningCapability(
+  provider: string,
+  baseUrl: string,
+  ...identifiers: string[]
+): VerifiedReasoningCapability | null {
+  const identity = identifiers.join(' ').trim().toLowerCase();
+  const providerId = provider.trim().toLowerCase();
+  const ark = providerId.startsWith('volcengine-ark') || baseUrl.toLowerCase().includes('ark.cn-beijing.volces.com');
+  const capability = (supportedReasoningEfforts: string[], defaultReasoningEffort: string, description: string) => ({
+    supportedReasoningEfforts,
+    defaultReasoningEffort,
+    description,
+  });
+
+  if (/deepseek-v4-(?:pro|flash)(?:-|\b)/.test(identity)) {
+    if (ark) return capability(['low', 'medium', 'high'], 'high', '火山方舟公开推理强度契约');
+    if (/deepseek-v4-flash(?:-|\b)/.test(identity)) {
+      return capability(['none', 'low', 'high', 'max'], 'high', 'DeepSeek V4 Flash 原生有效强度');
+    }
+    return capability(['none', 'high', 'max'], 'high', 'DeepSeek V4 Pro 原生有效强度');
+  }
+  if (/glm-5[.-]2(?:-|\b)/.test(identity)) {
+    if (ark) return capability(['low', 'medium', 'high'], 'high', '火山方舟公开推理强度契约');
+    return capability(['none', 'high', 'max'], providerId === 'zhipu' ? 'max' : 'high', 'GLM-5.2 原生有效语义');
+  }
+
+  if (/gpt-5[.-]6(?:-(?:sol|terra|luna))?(?:-|\b)/.test(identity)) {
+    return capability(['none', 'low', 'medium', 'high', 'xhigh', 'max'], 'medium', 'OpenAI GPT-5.6 官方模型能力');
+  }
+  if (/gpt-5[.-]5-pro(?:-|\b)/.test(identity)) {
+    return capability(['medium', 'high', 'xhigh'], 'high', 'OpenAI GPT-5.5 Pro 官方模型能力');
+  }
+  if (/gpt-5[.-]4-pro(?:-|\b)/.test(identity)) {
+    return capability(['medium', 'high', 'xhigh'], 'medium', 'OpenAI GPT-5.4 Pro 官方模型能力');
+  }
+  if (/gpt-5[.-]2-pro(?:-|\b)/.test(identity)) {
+    return capability(['medium', 'high', 'xhigh'], 'medium', 'OpenAI GPT-5.2 Pro 官方模型能力');
+  }
+  if (/(?:^|\s)gpt-5-pro(?:-|\s|$)/.test(identity)) {
+    return capability(['high'], 'high', 'OpenAI GPT-5 Pro 固定 high');
+  }
+  if (/gpt-5[.-][23]-codex(?:-|\b)/.test(identity)) {
+    return capability(['low', 'medium', 'high', 'xhigh'], 'medium', 'OpenAI Codex 模型能力');
+  }
+  if (/gpt-5[.-]5(?:-|\b)/.test(identity)) {
+    return capability(['none', 'low', 'medium', 'high', 'xhigh'], 'medium', 'OpenAI GPT-5.5 官方模型能力');
+  }
+  if (/gpt-5[.-](?:4|2)(?:-(?:mini|nano))?(?:-|\b)/.test(identity)) {
+    return capability(['none', 'low', 'medium', 'high', 'xhigh'], 'none', 'OpenAI GPT-5.4/5.2 官方模型能力');
+  }
+  if (/gpt-5[.-]1(?:-|\b)/.test(identity)) {
+    return capability(['none', 'low', 'medium', 'high'], 'none', 'OpenAI GPT-5.1 官方模型能力');
+  }
+  if (/(?:^|\s)gpt-5(?:-\d{4}-\d{2}-\d{2})?(?:\s|$)/.test(identity)) {
+    return capability(['minimal', 'low', 'medium', 'high'], 'medium', 'OpenAI GPT-5 官方模型能力');
+  }
+  if (/(?:^|\s)(?:o1|o3|o4-mini)(?:-|\s|$)/.test(identity)) {
+    return capability(['low', 'medium', 'high'], 'medium', 'OpenAI o 系列推理模型');
+  }
+  if (/gpt-(?:4[.-]1|4o)(?:-|\b)/.test(identity)) {
+    return capability(['none'], 'none', '非推理模型，不发送 reasoning.effort');
+  }
+
+  if (/claude-(?:fable|mythos)-5(?:-|\b)|claude-(?:opus|sonnet)-5(?:-|\b)|claude-opus-4[.-](?:7|8)(?:-|\b)/.test(identity)) {
+    const canDisable = !/claude-(?:fable|mythos)-5(?:-|\b)/.test(identity);
+    return capability(
+      [...(canDisable ? ['none'] : []), 'low', 'medium', 'high', 'xhigh', 'max'],
+      'high',
+      'Claude adaptive thinking + output_config.effort',
+    );
+  }
+  if (/claude-mythos-preview(?:-|\b)|claude-(?:opus|sonnet)-4[.-]6(?:-|\b)/.test(identity)) {
+    const canDisable = !/claude-mythos-preview(?:-|\b)/.test(identity);
+    return capability(
+      [...(canDisable ? ['none'] : []), 'low', 'medium', 'high', 'max'],
+      'high',
+      'Claude adaptive thinking + output_config.effort',
+    );
+  }
+  if (/claude-opus-4[.-]5(?:-|\b)/.test(identity)) {
+    return capability(['none', 'low', 'medium', 'high'], 'high', 'Claude 4.5 manual thinking 兼容映射');
+  }
+  if (/claude-(?:sonnet|haiku)-4[.-]5(?:-|\b)|claude-3[.-]7-sonnet(?:-|\b)/.test(identity)) {
+    return capability(['none', 'high'], 'none', 'Claude manual thinking 开关');
+  }
+  if (/claude-3(?:-|\b)/.test(identity)) {
+    return capability(['none'], 'none', 'Claude 非思考模型');
+  }
+
+  if (/gemini-3[.-]1-pro(?:-|\b)/.test(identity)) {
+    return capability(['low', 'medium', 'high'], 'high', 'Gemini 3.1 Pro thinkingLevel');
+  }
+  if (/gemini-3-pro(?:-|\b)/.test(identity)) {
+    return capability(['low', 'high'], 'high', 'Gemini 3 Pro thinkingLevel');
+  }
+  if (/gemini-3[.-]1-flash-lite-image(?:-|\b)/.test(identity)) {
+    return capability(['minimal', 'high'], 'minimal', 'Gemini Flash-Lite Image thinkingLevel');
+  }
+  if (/gemini-3(?:[.-]\d+)?-(?:flash|flash-lite)(?:-|\b)/.test(identity)) {
+    return capability(['minimal', 'low', 'medium', 'high'], /flash-lite/.test(identity) ? 'minimal' : 'medium', 'Gemini 3.x thinkingLevel');
+  }
+  if (/gemini-2[.-]5-pro(?:-|\b)/.test(identity)) {
+    return capability(['minimal', 'low', 'medium', 'high'], 'medium', 'Gemini 2.5 Pro thinkingBudget 映射');
+  }
+  if (/gemini-2[.-]5-flash(?:-lite)?(?:-|\b)/.test(identity)) {
+    return capability(['none', 'minimal', 'low', 'medium', 'high'], /flash-lite/.test(identity) ? 'none' : 'medium', 'Gemini 2.5 Flash thinkingBudget 映射');
+  }
+
+  if (/qwen3[.-]8-max(?:-|\b)/.test(identity)) {
+    return capability(['none', 'low', 'medium', 'xhigh'], 'xhigh', 'Qwen3.8 Max 原生强度');
+  }
+  if (/qwq(?:-|\b)|qwen[^\s]*thinking/.test(identity)) {
+    return capability(['high'], 'high', 'Qwen 固定思考模型');
+  }
+  if (/qwen3[.-](?:7|6|5)(?:-|\b)/.test(identity)) {
+    return capability(['none', 'high'], 'high', 'Qwen 混合思考开关');
+  }
+  if (/qwen3(?:-|\b)/.test(identity)) {
+    return capability(['none', 'high'], /qwen3-(?:max|plus|flash|turbo)/.test(identity) ? 'none' : 'high', 'Qwen 混合思考开关');
+  }
+
+  if (/kimi(?:\/|-)?kimi-k3(?:-|\b)|kimi-k3(?:-|\b)/.test(identity)) {
+    return capability(['max'], 'max', 'Kimi K3 固定 max');
+  }
+  if (/kimi-k2[.-]7-code(?:-|\b)|kimi[^\s]*thinking/.test(identity)) {
+    return capability(['high'], 'high', 'Kimi 固定思考模型');
+  }
+  if (/kimi-k2[.-](?:5|6)(?:-|\b)/.test(identity)) {
+    return capability(['none', 'high'], providerId === 'moonshot' ? 'high' : 'none', 'Kimi 混合思考开关');
+  }
+
+  if (/doubao[^\s]*thinking/.test(identity)) {
+    return capability(['high'], 'high', 'Doubao 固定思考模型');
+  }
+  if (/doubao-seed-1[.-]6-flash(?:-|\b)/.test(identity)) {
+    return capability(['none', 'high'], 'high', 'Doubao 思考开关');
+  }
+  if (/doubao-seed-1[.-]6(?:-|\b)/.test(identity)) {
+    return capability(['none', 'medium', 'high'], 'high', 'Doubao 关闭 / 自动 / 开启');
+  }
+  if (/doubao-seed(?:-|\b)/.test(identity)) {
+    return capability(['none', 'high'], 'high', 'Doubao 保守思考开关');
+  }
+
+  return null;
+}
+
+function applyVerifiedModelCapabilities(form: typeof emptyModelForm): typeof emptyModelForm {
+  const limits = verifiedModelLimits(form.modelId, form.upstreamModel);
+  const reasoning = verifiedReasoningCapability(
+    form.provider,
+    form.baseUrl,
+    form.modelId,
+    form.upstreamModel,
+  );
+  return {
+    ...form,
+    ...(limits || {}),
+    ...(reasoning ? {
+      supportedReasoningEfforts: reasoning.supportedReasoningEfforts,
+      defaultReasoningEffort: reasoning.defaultReasoningEffort,
+    } : {}),
+  };
+}
+
 function modelFormForProvider(provider?: Pick<ProviderConfig, 'provider' | 'baseUrl' | 'endpointPath'> | null): typeof emptyModelForm {
   return {
     ...emptyModelForm,
@@ -1614,7 +1810,7 @@ function modelFormForProvider(provider?: Pick<ProviderConfig, 'provider' | 'base
 }
 
 function modelFormFromRoute(model: ModelRoute): typeof emptyModelForm {
-  return {
+  return applyVerifiedModelCapabilities({
     id: model.id,
     modelId: model.modelId,
     label: model.label,
@@ -1624,6 +1820,7 @@ function modelFormFromRoute(model: ModelRoute): typeof emptyModelForm {
     endpointPath: model.endpointPath,
     upstreamModel: model.upstreamModel,
     contextWindowTokens: model.contextWindowTokens,
+    maxOutputTokens: model.maxOutputTokens,
     supportedReasoningEfforts: model.supportedReasoningEfforts,
     defaultReasoningEffort: model.defaultReasoningEffort,
     fastModeSupported: model.fastModeSupported,
@@ -1634,7 +1831,7 @@ function modelFormFromRoute(model: ModelRoute): typeof emptyModelForm {
     reasoningYuanPerMillion: model.reasoningYuanPerMillion,
     cachedInputYuanPerMillion: model.cachedInputYuanPerMillion,
     priceMultiplier: priceMultiplierFromMarkupBps(model.markupBps),
-  };
+  });
 }
 
 function codexFormFromAccount(account: CodexAccount): typeof emptyCodexForm {
@@ -2055,6 +2252,13 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, disco
   const providerOptions = providers.some((provider) => provider.provider === form.provider)
     ? providers.map((provider) => provider.provider)
     : [form.provider, ...providers.map((provider) => provider.provider)].filter(Boolean);
+  const verifiedReasoning = verifiedReasoningCapability(
+    form.provider,
+    form.baseUrl,
+    form.modelId,
+    form.upstreamModel,
+  );
+  const availableReasoningEfforts = verifiedReasoning?.supportedReasoningEfforts || reasoningEffortOptions;
 
   return (
     <form className="form-panel modal-form" onSubmit={onSubmit}>
@@ -2066,7 +2270,7 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, disco
               value=""
               onChange={(event) => {
                 const model = discoveredModels.find((item) => item.id === event.target.value);
-                if (model) setForm({ ...form, modelId: model.id, upstreamModel: model.id, label: model.label });
+                if (model) setForm(applyVerifiedModelCapabilities({ ...form, modelId: model.id, upstreamModel: model.id, label: model.label }));
               }}
             >
               <option value="">选择模型并自动填充</option>
@@ -2074,22 +2278,24 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, disco
             </select>
           </label>
         )}
-        <Field label="模型 ID" value={form.modelId} onChange={(modelId) => setForm({ ...form, modelId })} required />
+        <Field label="模型 ID" value={form.modelId} onChange={(modelId) => setForm(applyVerifiedModelCapabilities({ ...form, modelId }))} required />
         <Field label="显示名称" value={form.label} onChange={(label) => setForm({ ...form, label })} required />
         <Select label="供应商" value={form.provider} onChange={onProviderChange} options={providerOptions} />
-        <Field label="上游模型名" value={form.upstreamModel} onChange={(upstreamModel) => setForm({ ...form, upstreamModel })} required />
+        <Field label="上游模型名" value={form.upstreamModel} onChange={(upstreamModel) => setForm(applyVerifiedModelCapabilities({ ...form, upstreamModel }))} required />
         <Field label="Base URL" value={form.baseUrl} onChange={(baseUrl) => setForm({ ...form, baseUrl })} />
         <Field label="Endpoint Path" value={form.endpointPath} onChange={(endpointPath) => setForm({ ...form, endpointPath })} />
-        <NumberField label="上下文窗口 tokens" value={form.contextWindowTokens} min={16_000} max={2_000_000} step={1_000} title="桌面端会根据该窗口管理上下文；自定义上游约在 75% 时提前压缩历史" onChange={(contextWindowTokens) => setForm({ ...form, contextWindowTokens })} />
+        <NumberField label="上下文窗口 tokens" value={form.contextWindowTokens} min={16_000} max={2_000_000} step={1} title="桌面端会根据该窗口管理上下文；自定义上游约在 90% 时提前压缩历史" onChange={(contextWindowTokens) => setForm({ ...form, contextWindowTokens })} />
+        <NumberField label="最大回答 tokens" value={form.maxOutputTokens} min={1_000} max={1_000_000} step={1} title="用于限制上游回答并计算足以容纳完整请求的单次任务安全预算" onChange={(maxOutputTokens) => setForm({ ...form, maxOutputTokens })} />
         <div className="field-wide capability-field">
           <span>支持思考强度</span>
           <div className="capability-checks">
-            {reasoningEffortOptions.map((effort) => (
+            {availableReasoningEfforts.map((effort) => (
               <label key={effort}>
                 <input
                   type="checkbox"
                   aria-label={`思考强度 ${effort}`}
                   checked={form.supportedReasoningEfforts.includes(effort)}
+                  disabled={Boolean(verifiedReasoning)}
                   onChange={(event) => {
                     const supportedReasoningEfforts = event.target.checked
                       ? [...form.supportedReasoningEfforts, effort]
@@ -2100,12 +2306,17 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, disco
                     setForm({ ...form, supportedReasoningEfforts, defaultReasoningEffort });
                   }}
                 />
-                {effort}
+                {reasoningEffortLabels[effort] || effort} <small>{effort}</small>
               </label>
             ))}
           </div>
+          <small>
+            {verifiedReasoning
+              ? `已按${verifiedReasoning.description}锁定；网关会转换成该供应商的真实参数。`
+              : '未识别的自定义模型可手动配置；只选择上游官方明确支持的值。'}
+          </small>
         </div>
-        <Select label="默认思考强度" value={form.defaultReasoningEffort} onChange={(defaultReasoningEffort) => setForm({ ...form, defaultReasoningEffort })} options={form.supportedReasoningEfforts} />
+        <Select label="默认思考强度" value={form.defaultReasoningEffort} onChange={(defaultReasoningEffort) => setForm({ ...form, defaultReasoningEffort })} options={form.supportedReasoningEfforts} optionLabels={reasoningEffortLabels} />
         <NumberField label="排序" value={form.sortOrder} onChange={(sortOrder) => setForm({ ...form, sortOrder })} />
         <NumberField label="输入 元/百万" value={form.inputYuanPerMillion} min={0} step="any" onChange={(inputYuanPerMillion) => setForm({ ...form, inputYuanPerMillion })} />
         <NumberField label="输出 元/百万" value={form.outputYuanPerMillion} min={0} step="any" onChange={(outputYuanPerMillion) => setForm({ ...form, outputYuanPerMillion })} />
@@ -2573,7 +2784,7 @@ function ModelTable({ models, onEdit, onDelete }: {
           {models.map((model) => (
             <tr key={model.id}>
               <td><strong>{model.label}</strong><span>{model.modelId}</span></td>
-              <td><strong>{model.upstreamModel}</strong><span>{model.endpointPath} · 上下文 {formatWholeNumber(model.contextWindowTokens)} tokens · 思考 {model.supportedReasoningEfforts.join('/')} · {model.fastModeSupported ? 'Fast' : '标准速度'}</span></td>
+              <td><strong>{model.upstreamModel}</strong><span>{model.endpointPath} · 上下文 {formatWholeNumber(model.contextWindowTokens)} / 回答 {formatWholeNumber(model.maxOutputTokens)} tokens · 思考 {model.supportedReasoningEfforts.join('/')} · {model.fastModeSupported ? 'Fast' : '标准速度'}</span></td>
               <td>
                 <strong>成本 {formatYuanPerMillion(model.inputYuanPerMillion)} / {formatYuanPerMillion(model.outputYuanPerMillion)}</strong>
                 <span>用户 {formatYuanPerMillion(userPrice(model.inputYuanPerMillion, priceMultiplierFromMarkupBps(model.markupBps)))} / {formatYuanPerMillion(userPrice(model.outputYuanPerMillion, priceMultiplierFromMarkupBps(model.markupBps)))} · ×{formatPriceMultiplier(priceMultiplierFromMarkupBps(model.markupBps))}</span>

@@ -20,6 +20,15 @@ const providers = [
     keyConfigured: false,
     keyMask: null,
   },
+  {
+    provider: 'volcengine-ark-responses',
+    label: '火山方舟 Responses',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    endpointPath: '/responses',
+    enabled: true,
+    keyConfigured: true,
+    keyMask: 'ark-****test',
+  },
 ];
 
 const models = [
@@ -33,7 +42,8 @@ const models = [
     endpointPath: '/responses',
     upstreamModel: 'gpt-5.5',
     contextWindowTokens: 258_000,
-    supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    maxOutputTokens: 32_000,
+    supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh'],
     defaultReasoningEffort: 'medium',
     fastModeSupported: true,
     enabled: true,
@@ -55,6 +65,7 @@ const models = [
     endpointPath: '/chat/completions',
     upstreamModel: 'deepseek-chat',
     contextWindowTokens: 64_000,
+    maxOutputTokens: 32_000,
     supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
     defaultReasoningEffort: 'medium',
     fastModeSupported: false,
@@ -218,11 +229,16 @@ describe('admin model gateway', () => {
     fireEvent.click(await screen.findByRole('button', { name: '新增模型' }));
     const modelForm = (await screen.findByRole('dialog', { name: '新增模型路由' })) as HTMLElement;
 
-    fireEvent.change(within(modelForm).getByLabelText('模型 ID'), { target: { value: 'deepseek-v4-flash' } });
-    fireEvent.change(within(modelForm).getByLabelText('显示名称'), { target: { value: 'DeepSeek V4 Flash' } });
-    fireEvent.change(within(modelForm).getByLabelText('上游模型名'), { target: { value: 'deepseek-v4-flash' } });
+    fireEvent.change(within(modelForm).getByLabelText('模型 ID'), { target: { value: 'deepseek-v4-pro-260425' } });
+    fireEvent.change(within(modelForm).getByLabelText('显示名称'), { target: { value: 'DeepSeek V4 Pro' } });
+    fireEvent.change(within(modelForm).getByLabelText('上游模型名'), { target: { value: 'deepseek-v4-pro-260425' } });
+    expect(within(modelForm).getByLabelText('上下文窗口 tokens')).toHaveValue(1_048_576);
+    expect(within(modelForm).getByLabelText('最大回答 tokens')).toHaveValue(393_216);
     fireEvent.change(within(modelForm).getByLabelText('上下文窗口 tokens'), { target: { value: '128000' } });
-    fireEvent.click(within(modelForm).getByLabelText('思考强度 max'));
+    expect(within(modelForm).queryByLabelText('思考强度 low')).toBeNull();
+    expect(within(modelForm).getByLabelText('思考强度 none')).toBeDisabled();
+    expect(within(modelForm).getByLabelText('思考强度 high')).toBeDisabled();
+    expect(within(modelForm).getByLabelText('思考强度 max')).toBeDisabled();
     fireEvent.change(within(modelForm).getByLabelText('默认思考强度'), { target: { value: 'max' } });
     fireEvent.click(within(modelForm).getByLabelText('支持 Fast 模式'));
     fireEvent.change(within(modelForm).getByLabelText('输入 元/百万'), { target: { value: '1.25' } });
@@ -237,15 +253,16 @@ describe('admin model gateway', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
-          modelId: 'deepseek-v4-flash',
-          label: 'DeepSeek V4 Flash',
+          modelId: 'deepseek-v4-pro-260425',
+          label: 'DeepSeek V4 Pro',
           provider: 'openai',
           mode: 'gateway_api',
           baseUrl: 'https://api.openai.com/v1',
           endpointPath: '/responses',
-          upstreamModel: 'deepseek-v4-flash',
+          upstreamModel: 'deepseek-v4-pro-260425',
           contextWindowTokens: 128000,
-          supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          maxOutputTokens: 393216,
+          supportedReasoningEfforts: ['none', 'high', 'max'],
           defaultReasoningEffort: 'max',
           fastModeSupported: true,
           enabled: true,
@@ -258,6 +275,27 @@ describe('admin model gateway', () => {
         }),
       }),
     ));
+  });
+
+  it('uses verified Ark limits and Ark reasoning choices for DeepSeek V4 Pro', async () => {
+    await import('./main');
+
+    fireEvent.click(await screen.findByRole('button', { name: '模型网关' }));
+    fireEvent.click(await screen.findByRole('button', { name: /火山方舟 Responses/ }));
+    fireEvent.click(await screen.findByRole('button', { name: '新增模型' }));
+    const modelForm = await screen.findByRole('dialog', { name: '新增模型路由' });
+
+    fireEvent.change(within(modelForm).getByLabelText('模型 ID'), { target: { value: 'deepseek-v4-pro-260425' } });
+    fireEvent.change(within(modelForm).getByLabelText('上游模型名'), { target: { value: 'deepseek-v4-pro-260425' } });
+
+    expect(within(modelForm).getByLabelText('上下文窗口 tokens')).toHaveValue(1_048_576);
+    expect(within(modelForm).getByLabelText('最大回答 tokens')).toHaveValue(393_216);
+    expect(within(modelForm).getByLabelText('思考强度 low')).toBeDisabled();
+    expect(within(modelForm).getByLabelText('思考强度 medium')).toBeDisabled();
+    expect(within(modelForm).getByLabelText('思考强度 high')).toBeDisabled();
+    expect(within(modelForm).queryByLabelText('思考强度 none')).toBeNull();
+    expect(within(modelForm).queryByLabelText('思考强度 max')).toBeNull();
+    expect(within(modelForm).getByLabelText('默认思考强度')).toHaveValue('high');
   });
 
   it('discovers provider models and fills a model route', async () => {

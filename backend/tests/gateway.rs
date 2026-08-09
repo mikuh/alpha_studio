@@ -469,10 +469,11 @@ fn translates_responses_tools_for_anthropic_messages() {
             { "type": "function_call_output", "call_id": "call_1", "output": "contents" }
         ],
         "tools": [{ "type": "function", "name": "read_file", "parameters": { "type": "object" } }],
+        "reasoning": { "effort": "medium" },
         "stream": true
     });
 
-    let request = build_upstream_request(&provider, "claude-sonnet", &mut body).unwrap();
+    let request = build_upstream_request(&provider, "claude-sonnet-4-6", &mut body).unwrap();
 
     assert_eq!(
         request.response_format,
@@ -489,7 +490,71 @@ fn translates_responses_tools_for_anthropic_messages() {
     assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
     assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
     assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+    assert_eq!(body["thinking"]["type"], "adaptive");
+    assert_eq!(body["thinking"]["display"], "summarized");
+    assert_eq!(body["output_config"]["effort"], "medium");
     assert_eq!(body["stream"], true);
+}
+
+#[test]
+fn translates_deepseek_v4_reasoning_to_native_chat_controls() {
+    let provider = ProviderConfig {
+        provider: "deepseek".to_string(),
+        base_url: "https://api.deepseek.com/v1".to_string(),
+        endpoint_path: "/chat/completions".to_string(),
+        api_format: ProviderApiFormat::ChatCompletions,
+        ..ProviderConfig::default()
+    };
+    let mut body = serde_json::json!({
+        "input": "solve",
+        "reasoning": { "effort": "max" },
+        "stream": true
+    });
+
+    build_upstream_request(&provider, "deepseek-v4-pro", &mut body).unwrap();
+
+    assert_eq!(body["thinking"]["type"], "enabled");
+    assert_eq!(body["reasoning_effort"], "max");
+}
+
+#[test]
+fn disables_deepseek_v4_thinking_for_none() {
+    let provider = ProviderConfig {
+        provider: "deepseek".to_string(),
+        base_url: "https://api.deepseek.com/v1".to_string(),
+        endpoint_path: "/chat/completions".to_string(),
+        api_format: ProviderApiFormat::ChatCompletions,
+        ..ProviderConfig::default()
+    };
+    let mut body = serde_json::json!({
+        "input": "answer directly",
+        "reasoning": { "effort": "none" }
+    });
+
+    build_upstream_request(&provider, "deepseek-v4-flash", &mut body).unwrap();
+
+    assert_eq!(body["thinking"]["type"], "disabled");
+    assert!(body.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn preserves_deepseek_v4_flash_native_low_effort() {
+    let provider = ProviderConfig {
+        provider: "deepseek".to_string(),
+        base_url: "https://api.deepseek.com/v1".to_string(),
+        endpoint_path: "/chat/completions".to_string(),
+        api_format: ProviderApiFormat::ChatCompletions,
+        ..ProviderConfig::default()
+    };
+    let mut body = serde_json::json!({
+        "input": "solve briefly",
+        "reasoning": { "effort": "low" }
+    });
+
+    build_upstream_request(&provider, "deepseek-v4-flash", &mut body).unwrap();
+
+    assert_eq!(body["thinking"]["type"], "enabled");
+    assert_eq!(body["reasoning_effort"], "low");
 }
 
 #[test]
@@ -538,7 +603,8 @@ fn translates_responses_for_native_gemini_with_query_auth() {
         "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hello" }] }],
         "tools": [{ "type": "function", "name": "search", "parameters": { "type": "object" } }],
         "tool_choice": "required",
-        "max_output_tokens": 100
+        "max_output_tokens": 100,
+        "reasoning": { "effort": "high" }
     });
 
     let request = build_upstream_request(&provider, "gemini-2.5-pro", &mut body).unwrap();
@@ -562,6 +628,32 @@ fn translates_responses_for_native_gemini_with_query_auth() {
     );
     assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
     assert_eq!(body["generationConfig"]["maxOutputTokens"], 100);
+    assert_eq!(
+        body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+        24_576
+    );
+}
+
+#[test]
+fn translates_gemini_3_effort_to_thinking_level() {
+    let provider = ProviderConfig {
+        provider: "google".to_string(),
+        base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+        endpoint_path: "/models/{model}:generateContent".to_string(),
+        api_format: ProviderApiFormat::GeminiGenerateContent,
+        ..ProviderConfig::default()
+    };
+    let mut body = serde_json::json!({
+        "input": "analyze",
+        "reasoning": { "effort": "minimal" }
+    });
+
+    build_upstream_request(&provider, "gemini-3.6-flash", &mut body).unwrap();
+
+    assert_eq!(
+        body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+        "minimal"
+    );
 }
 
 #[test]

@@ -167,8 +167,8 @@ describe('context window management', () => {
           reasoningOutputTokens: 0,
         },
         last: {
-          totalTokens: 54_000,
-          inputTokens: 53_000,
+          totalTokens: 60_000,
+          inputTokens: 59_000,
           cachedInputTokens: 0,
           outputTokens: 1_000,
           reasoningOutputTokens: 0,
@@ -196,8 +196,8 @@ describe('context window management', () => {
     ], {
       codexThreadId: 'thread-with-one-large-exchange',
       codexTokenUsage: {
-        total: { totalTokens: 52_000, inputTokens: 51_000, cachedInputTokens: 0, outputTokens: 1_000, reasoningOutputTokens: 0 },
-        last: { totalTokens: 52_000, inputTokens: 51_000, cachedInputTokens: 0, outputTokens: 1_000, reasoningOutputTokens: 0 },
+        total: { totalTokens: 60_000, inputTokens: 59_000, cachedInputTokens: 0, outputTokens: 1_000, reasoningOutputTokens: 0 },
+        last: { totalTokens: 60_000, inputTokens: 59_000, cachedInputTokens: 0, outputTokens: 1_000, reasoningOutputTokens: 0 },
         modelContextWindow: 258_000,
         updatedAt: 1,
       },
@@ -211,6 +211,30 @@ describe('context window management', () => {
     expect(prepared.compacted).toBe(true);
     expect(prepared.conversation.backgroundContext?.sourceMessageCount).toBe(1);
     expect(prepared.conversation.codexThreadId).toBeUndefined();
+  });
+
+  it('does not compact a verified 1024k model at the old 64k fallback boundary', () => {
+    const current = conversation([
+      message(1, 'user', '分析长资料。'),
+      message(2, 'assistant', '正在分析。'),
+      message(3, 'user', '继续。'),
+    ], {
+      codexThreadId: 'deepseek-v4-flash-thread',
+      codexTokenUsage: {
+        total: { totalTokens: 60_000, inputTokens: 59_000, cachedInputTokens: 0, outputTokens: 1_000, reasoningOutputTokens: 0 },
+        last: { totalTokens: 60_000, inputTokens: 59_000, cachedInputTokens: 0, outputTokens: 1_000, reasoningOutputTokens: 0 },
+        modelContextWindow: 1_048_576,
+        updatedAt: 1,
+      },
+    });
+
+    const prepared = prepareConversationForOutgoingTurn(current, {
+      contextWindowTokens: 1_048_576,
+      compactResumableThread: true,
+    });
+
+    expect(prepared.compacted).toBe(false);
+    expect(prepared.conversation.codexThreadId).toBe('deepseek-v4-flash-thread');
   });
 
   it('formats token counts like the Codex context tooltip', () => {

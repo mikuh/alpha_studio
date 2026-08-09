@@ -1737,7 +1737,7 @@ fn sanitize_catalog_reasoning_effort(value: Option<&str>) -> Option<String> {
     sanitize_reasoning_effort(value).filter(|effort| {
         matches!(
             effort.as_str(),
-            "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+            "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
         )
     })
 }
@@ -4347,7 +4347,7 @@ fn codex_app_server_args(
             "model_context_window",
             &context_window_tokens.to_string(),
         );
-        let compact_token_limit = context_window_tokens.saturating_mul(3) / 4;
+        let compact_token_limit = context_window_tokens.saturating_mul(9) / 10;
         push_raw_config_arg(
             &mut args,
             "model_auto_compact_token_limit",
@@ -7535,7 +7535,7 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_reasoning_effort_accepts_max_and_ultra() {
+    fn sanitize_reasoning_effort_accepts_standard_and_codex_efforts() {
         assert_eq!(
             sanitize_reasoning_effort(Some("max")).as_deref(),
             Some("max")
@@ -7549,7 +7549,10 @@ mod tests {
             Some("minimal")
         );
         assert_eq!(sanitize_reasoning_effort(Some("future")), None);
-        assert_eq!(sanitize_catalog_reasoning_effort(Some("minimal")), None);
+        assert_eq!(
+            sanitize_catalog_reasoning_effort(Some("minimal")).as_deref(),
+            Some("minimal")
+        );
         assert_eq!(
             sanitize_catalog_reasoning_effort(Some("ultra")).as_deref(),
             Some("ultra")
@@ -8352,7 +8355,7 @@ mod tests {
                 "--config",
                 "model_context_window=64000",
                 "--config",
-                "model_auto_compact_token_limit=48000",
+                "model_auto_compact_token_limit=57600",
             ]
         );
     }

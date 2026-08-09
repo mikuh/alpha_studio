@@ -964,7 +964,7 @@ pub struct RunCreateRequest {
 pub async fn run_create(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(request): Json<RunCreateRequest>,
+    Json(mut request): Json<RunCreateRequest>,
 ) -> ApiResult<Json<Value>> {
     let device_claims =
         require_device(&state, &headers, &request.tenant_id, &request.device_id).await?;
@@ -982,6 +982,8 @@ pub async fn run_create(
     )
     .await?;
     load_provider_config(&state, &route).await?;
+    request.budget_yuan = request.budget_yuan.max(recommended_run_budget_yuan(&route));
+    validate_run_budget(request.budget_yuan)?;
     let run_id = format!("run_{}", Uuid::new_v4().simple());
     create_unreserved_run(&state.db, &run_id, &request).await?;
     let token = state.run_tokens.issue(RunTokenClaims::new(
@@ -996,7 +998,8 @@ pub async fn run_create(
     Ok(Json(json!({
         "runId": run_id,
         "runToken": token,
-        "gatewayUrl": format!("{}/v1/responses", state.config.app_base_url)
+        "gatewayUrl": format!("{}/v1/responses", state.config.app_base_url),
+        "budgetYuan": decimal_json(request.budget_yuan)
     })))
 }
 
@@ -1787,7 +1790,8 @@ pub async fn admin_list_model_routes(
     let rows = sqlx::query(
         r#"
         select m.id, m.model_id, m.label, m.provider, m.mode, m.base_url, m.endpoint_path,
-          m.upstream_model, m.context_window_tokens, m.supported_reasoning_efforts,
+          m.upstream_model, m.context_window_tokens, m.max_output_tokens,
+          m.supported_reasoning_efforts,
           m.default_reasoning_effort, m.fast_mode_supported, m.enabled, m.sort_order,
           m.input_yuan_per_million, m.output_yuan_per_million,
           m.reasoning_yuan_per_million, m.cached_input_yuan_per_million, m.markup_bps,
@@ -1820,6 +1824,8 @@ pub struct ModelRouteSaveRequest {
     upstream_model: String,
     #[serde(default = "default_model_context_window_tokens")]
     context_window_tokens: i32,
+    #[serde(default = "default_model_max_output_tokens")]
+    max_output_tokens: i32,
     #[serde(default = "default_supported_reasoning_efforts")]
     supported_reasoning_efforts: Vec<String>,
     #[serde(default = "default_reasoning_effort")]
@@ -1874,12 +1880,13 @@ pub async fn admin_save_model_route(
         r#"
         insert into model_routes (
           id, model_id, label, provider, mode, base_url, endpoint_path, upstream_model,
-          context_window_tokens, supported_reasoning_efforts, default_reasoning_effort,
+          context_window_tokens, max_output_tokens, supported_reasoning_efforts,
+          default_reasoning_effort,
           fast_mode_supported, enabled,
           sort_order, input_yuan_per_million, output_yuan_per_million,
           reasoning_yuan_per_million, cached_input_yuan_per_million, markup_bps, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, now())
         on conflict (model_id) do update set
           label = excluded.label,
           provider = excluded.provider,
@@ -1888,6 +1895,7 @@ pub async fn admin_save_model_route(
           endpoint_path = excluded.endpoint_path,
           upstream_model = excluded.upstream_model,
           context_window_tokens = excluded.context_window_tokens,
+          max_output_tokens = excluded.max_output_tokens,
           supported_reasoning_efforts = excluded.supported_reasoning_efforts,
           default_reasoning_effort = excluded.default_reasoning_effort,
           fast_mode_supported = excluded.fast_mode_supported,
@@ -1910,6 +1918,7 @@ pub async fn admin_save_model_route(
     .bind(request.endpoint_path.trim())
     .bind(request.upstream_model.trim())
     .bind(request.context_window_tokens)
+    .bind(request.max_output_tokens)
     .bind(&request.supported_reasoning_efforts)
     .bind(request.default_reasoning_effort.trim())
     .bind(request.fast_mode_supported)
@@ -2322,7 +2331,7 @@ pub async fn gateway_responses(
     let provider = load_provider_config(&state, &route).await?;
     let gateway_request_id = format!("gwreq_{}", Uuid::new_v4().simple());
     let remaining_budget = start_gateway_request(&state.db, &claims, &gateway_request_id).await?;
-    if let Err(error) = enforce_request_budget(&mut body, remaining_budget, &route.pricing) {
+    if let Err(error) = enforce_request_budget(&mut body, remaining_budget, &route) {
         release_gateway_request(&state.db, &claims, &gateway_request_id, None).await?;
         return Err(error);
     }
@@ -2771,13 +2780,15 @@ struct ModelRoute {
     base_url: String,
     endpoint_path: String,
     upstream_model: String,
+    context_window_tokens: u64,
+    max_output_tokens: u64,
     pricing: Pricing,
 }
 
 async fn load_models(pool: &PgPool) -> Result<Vec<Value>, sqlx::Error> {
     let rows = sqlx::query(
         r#"
-        select model_id, label, provider, mode, context_window_tokens,
+        select model_id, label, provider, mode, context_window_tokens, max_output_tokens,
           supported_reasoning_efforts, default_reasoning_effort, fast_mode_supported, enabled
         from model_routes
         where enabled = true
@@ -2795,6 +2806,7 @@ async fn load_models(pool: &PgPool) -> Result<Vec<Value>, sqlx::Error> {
                 "provider": row.get::<String, _>("provider"),
                 "mode": row.get::<String, _>("mode"),
                 "contextWindowTokens": row.get::<i32, _>("context_window_tokens"),
+                "maxOutputTokens": row.get::<i32, _>("max_output_tokens"),
                 "supportedReasoningEfforts": row.get::<Vec<String>, _>("supported_reasoning_efforts"),
                 "defaultReasoningEffort": row.get::<String, _>("default_reasoning_effort"),
                 "fastModeSupported": row.get::<bool, _>("fast_mode_supported"),
@@ -2811,7 +2823,8 @@ async fn load_model_route(
 ) -> ApiResult<ModelRoute> {
     let row = sqlx::query(
         r#"
-        select provider, base_url, endpoint_path, upstream_model, input_yuan_per_million,
+        select provider, base_url, endpoint_path, upstream_model, context_window_tokens,
+            max_output_tokens, input_yuan_per_million,
             output_yuan_per_million, reasoning_yuan_per_million,
             cached_input_yuan_per_million, markup_bps
         from model_routes
@@ -2844,6 +2857,8 @@ async fn load_model_route(
         base_url: row.get("base_url"),
         endpoint_path: row.get("endpoint_path"),
         upstream_model: row.get("upstream_model"),
+        context_window_tokens: row.get::<i32, _>("context_window_tokens") as u64,
+        max_output_tokens: row.get::<i32, _>("max_output_tokens") as u64,
         pricing,
     })
 }
@@ -3190,10 +3205,10 @@ fn validate_run_claim_bindings(
 fn enforce_request_budget(
     body: &mut Value,
     budget_yuan: Decimal,
-    pricing: &Pricing,
+    route: &ModelRoute,
 ) -> ApiResult<()> {
     validate_run_budget(budget_yuan)?;
-    if !pricing.is_valid() {
+    if !route.pricing.is_valid() {
         return Err(ApiError::BadRequest(
             "model pricing is unsafe or incomplete".to_string(),
         ));
@@ -3202,23 +3217,13 @@ fn enforce_request_budget(
         Some(value) => value.as_u64().filter(|value| *value > 0).ok_or_else(|| {
             ApiError::BadRequest("max_output_tokens must be a positive integer".to_string())
         })?,
-        None => 1_000_000,
+        None => route
+            .max_output_tokens
+            .min(default_model_max_output_tokens() as u64),
     };
-    let request_bytes = serde_json::to_vec(body)
-        .map_err(|_| ApiError::BadRequest("request body cannot be metered".to_string()))?
-        .len()
-        .saturating_add(1_024) as u64;
+    let estimated_input_tokens = estimate_request_input_tokens(body, route.context_window_tokens)?;
     let charge_for = |output_tokens| {
-        settle_usage_yuan(
-            &GatewayUsage {
-                input_tokens: request_bytes,
-                output_tokens,
-                reasoning_tokens: output_tokens,
-                cached_tokens: request_bytes,
-            },
-            pricing,
-        )
-        .billable_yuan
+        request_safety_charge_yuan(estimated_input_tokens, output_tokens, &route.pricing)
     };
     if charge_for(0) > budget_yuan {
         return Err(ApiError::Forbidden(
@@ -3226,7 +3231,7 @@ fn enforce_request_budget(
         ));
     }
     let mut low = 0_u64;
-    let mut high = 1_000_000_u64;
+    let mut high = route.max_output_tokens;
     while low < high {
         let middle = low + (high - low).div_ceil(2);
         if charge_for(middle) <= budget_yuan {
@@ -3245,6 +3250,66 @@ fn enforce_request_budget(
         .ok_or_else(|| ApiError::BadRequest("request body must be a JSON object".to_string()))?
         .insert("max_output_tokens".to_string(), json!(safe_max));
     Ok(())
+}
+
+fn estimate_request_input_tokens(body: &Value, context_window_tokens: u64) -> ApiResult<u64> {
+    let serialized = serde_json::to_string(body)
+        .map_err(|_| ApiError::BadRequest("request body cannot be metered".to_string()))?;
+    let mut ascii = 0_u64;
+    let mut non_ascii = 0_u64;
+    let mut whitespace = 0_u64;
+    for character in serialized.chars() {
+        if character.is_whitespace() {
+            whitespace = whitespace.saturating_add(1);
+        } else if character.is_ascii() {
+            ascii = ascii.saturating_add(1);
+        } else {
+            non_ascii = non_ascii.saturating_add(1);
+        }
+    }
+    // This is deliberately conservative across tokenizer families, without
+    // confusing UTF-8 byte length with token count. Clamp to the route's
+    // verified input capacity so a valid full-window request can always be
+    // funded by the server-calculated safety budget.
+    let estimate = ascii
+        .div_ceil(3)
+        .saturating_add(non_ascii.saturating_mul(3).div_ceil(2))
+        .saturating_add(whitespace.div_ceil(8))
+        .saturating_add(1_024);
+    Ok(estimate.min(context_window_tokens))
+}
+
+fn request_safety_charge_yuan(input_tokens: u64, output_tokens: u64, pricing: &Pricing) -> Decimal {
+    let output_price = pricing
+        .output_yuan_per_million
+        .max(pricing.reasoning_yuan_per_million);
+    let safety_pricing = Pricing {
+        input_yuan_per_million: pricing.input_yuan_per_million,
+        output_yuan_per_million: output_price,
+        reasoning_yuan_per_million: Decimal::ZERO,
+        // Cached input is a subset of total input, never a second copy of it.
+        cached_input_yuan_per_million: Decimal::ZERO,
+        markup_bps: pricing.markup_bps,
+    };
+    settle_usage_yuan(
+        &GatewayUsage {
+            input_tokens,
+            output_tokens,
+            reasoning_tokens: 0,
+            cached_tokens: 0,
+        },
+        &safety_pricing,
+    )
+    .billable_yuan
+}
+
+fn recommended_run_budget_yuan(route: &ModelRoute) -> Decimal {
+    request_safety_charge_yuan(
+        route.context_window_tokens,
+        route.max_output_tokens,
+        &route.pricing,
+    )
+    .max(default_budget_yuan())
 }
 
 fn validate_run_budget(budget_yuan: Decimal) -> ApiResult<()> {
@@ -3619,6 +3684,7 @@ fn model_route_json(row: sqlx::postgres::PgRow) -> Value {
         "endpointPath": row.get::<String, _>("endpoint_path"),
         "upstreamModel": row.get::<String, _>("upstream_model"),
         "contextWindowTokens": row.get::<i32, _>("context_window_tokens"),
+        "maxOutputTokens": row.get::<i32, _>("max_output_tokens"),
         "supportedReasoningEfforts": row.get::<Vec<String>, _>("supported_reasoning_efforts"),
         "defaultReasoningEffort": row.get::<String, _>("default_reasoning_effort"),
         "fastModeSupported": row.get::<bool, _>("fast_mode_supported"),
@@ -4153,15 +4219,16 @@ fn default_model_context_window_tokens() -> i32 {
     64_000
 }
 
+fn default_model_max_output_tokens() -> i32 {
+    32_000
+}
+
 fn default_supported_reasoning_efforts() -> Vec<String> {
-    ["low", "medium", "high", "xhigh"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+    vec!["none".to_string()]
 }
 
 fn default_reasoning_effort() -> String {
-    "medium".to_string()
+    "none".to_string()
 }
 
 fn default_provider_auth_header() -> String {
@@ -4208,8 +4275,13 @@ fn validate_model_route_fields(
             "contextWindowTokens must be between 16000 and 2000000".to_string(),
         ));
     }
+    if !(1_000..=1_000_000).contains(&request.max_output_tokens) {
+        return Err(ApiError::BadRequest(
+            "maxOutputTokens must be between 1000 and 1000000".to_string(),
+        ));
+    }
     const ALLOWED_REASONING_EFFORTS: &[&str] =
-        &["none", "low", "medium", "high", "xhigh", "max", "ultra"];
+        &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
     if request.supported_reasoning_efforts.is_empty()
         || request
             .supported_reasoning_efforts
@@ -4405,10 +4477,12 @@ mod tests {
 
     use super::{
         bounded_pagination, enforce_request_budget, ensure_gateway_run_available,
-        looks_like_secret_field, normalized_codex_tenant_ids, resolve_usage_charge,
+        estimate_request_input_tokens, looks_like_secret_field, normalized_codex_tenant_ids,
+        recommended_run_budget_yuan, request_safety_charge_yuan, resolve_usage_charge,
         settle_and_record_usage, start_gateway_request, stream_upstream_response,
         validate_client_agreement_acceptance, validate_offline_payment_request,
-        ClientAgreementAcceptance, MeteringStatus, OfflinePaymentRequest, GATEWAY_RUN_TTL_SECONDS,
+        ClientAgreementAcceptance, MeteringStatus, ModelRoute, OfflinePaymentRequest,
+        GATEWAY_RUN_TTL_SECONDS,
     };
     use crate::{
         billing::{GatewayUsage, Pricing},
@@ -4483,6 +4557,22 @@ mod tests {
         assert!(!looks_like_secret_field("anthropic-version"));
     }
 
+    fn test_model_route(
+        pricing: Pricing,
+        context_window_tokens: u64,
+        max_output_tokens: u64,
+    ) -> ModelRoute {
+        ModelRoute {
+            provider: "volcengine-ark".to_string(),
+            base_url: "https://ark.cn-beijing.volces.com/api/v3".to_string(),
+            endpoint_path: "/responses".to_string(),
+            upstream_model: "test-model".to_string(),
+            context_window_tokens,
+            max_output_tokens,
+            pricing,
+        }
+    }
+
     fn current_agreement_acceptance() -> ClientAgreementAcceptance {
         ClientAgreementAcceptance {
             service_terms_version: "2026-08-04".to_string(),
@@ -4516,15 +4606,19 @@ mod tests {
             "input": "hello",
             "max_output_tokens": 1_000_000
         });
-        let pricing = Pricing {
-            input_yuan_per_million: Decimal::from(10_u64),
-            output_yuan_per_million: Decimal::from(100_u64),
-            reasoning_yuan_per_million: Decimal::from(100_u64),
-            cached_input_yuan_per_million: Decimal::from(2_u64),
-            markup_bps: 2_500,
-        };
+        let route = test_model_route(
+            Pricing {
+                input_yuan_per_million: Decimal::from(10_u64),
+                output_yuan_per_million: Decimal::from(100_u64),
+                reasoning_yuan_per_million: Decimal::from(100_u64),
+                cached_input_yuan_per_million: Decimal::from(2_u64),
+                markup_bps: 2_500,
+            },
+            1_048_576,
+            393_216,
+        );
 
-        enforce_request_budget(&mut body, Decimal::ONE, &pricing).unwrap();
+        enforce_request_budget(&mut body, Decimal::ONE, &route).unwrap();
 
         let capped = body["max_output_tokens"].as_u64().unwrap();
         assert!(capped > 0);
@@ -4534,15 +4628,52 @@ mod tests {
     #[test]
     fn rejects_a_budget_that_cannot_cover_the_request_input() {
         let mut body = json!({ "input": "x".repeat(50_000) });
-        let pricing = Pricing {
-            input_yuan_per_million: Decimal::from(100_u64),
-            output_yuan_per_million: Decimal::from(100_u64),
-            reasoning_yuan_per_million: Decimal::from(100_u64),
-            cached_input_yuan_per_million: Decimal::from(100_u64),
-            markup_bps: 0,
-        };
+        let route = test_model_route(
+            Pricing {
+                input_yuan_per_million: Decimal::from(100_u64),
+                output_yuan_per_million: Decimal::from(100_u64),
+                reasoning_yuan_per_million: Decimal::from(100_u64),
+                cached_input_yuan_per_million: Decimal::from(100_u64),
+                markup_bps: 0,
+            },
+            1_048_576,
+            131_072,
+        );
 
-        assert!(enforce_request_budget(&mut body, Decimal::new(1, 2), &pricing).is_err());
+        assert!(enforce_request_budget(&mut body, Decimal::new(1, 2), &route).is_err());
+    }
+
+    #[test]
+    fn ark_glm_budget_funds_the_verified_full_model_window() {
+        let route = test_model_route(
+            Pricing {
+                input_yuan_per_million: Decimal::from(8_u64),
+                output_yuan_per_million: Decimal::from(28_u64),
+                reasoning_yuan_per_million: Decimal::from(28_u64),
+                cached_input_yuan_per_million: Decimal::from(2_u64),
+                markup_bps: 2_500,
+            },
+            1_048_576,
+            131_072,
+        );
+        let budget = recommended_run_budget_yuan(&route);
+
+        assert!(budget > Decimal::from(5_u64));
+        assert_eq!(budget, Decimal::new(15_073_280, 6));
+        assert_eq!(
+            budget,
+            request_safety_charge_yuan(1_048_576, 131_072, &route.pricing)
+        );
+    }
+
+    #[test]
+    fn request_estimate_counts_tokens_instead_of_utf8_bytes() {
+        let body = json!({ "input": "研究".repeat(10_000) });
+        let estimated = estimate_request_input_tokens(&body, 1_048_576).unwrap();
+        let serialized_bytes = serde_json::to_vec(&body).unwrap().len() as u64;
+
+        assert!(estimated < serialized_bytes);
+        assert!(estimated > 20_000);
     }
 
     #[test]

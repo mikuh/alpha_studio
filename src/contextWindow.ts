@@ -2,7 +2,7 @@ import type { ChatMessage, Conversation, MessageAttachment, MessageBlock } from 
 
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 258_000;
 export const CONTEXT_COMPACT_THRESHOLD_RATIO = 0.82;
-export const CUSTOM_MODEL_COMPACT_THRESHOLD_RATIO = 0.75;
+export const CUSTOM_MODEL_COMPACT_THRESHOLD_RATIO = 0.90;
 
 const CONTEXT_RECENT_MESSAGE_KEEP_COUNT = 8;
 const CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT = 2;

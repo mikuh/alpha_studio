@@ -241,7 +241,7 @@ pub fn build_upstream_request(
             UpstreamResponseFormat::AnthropicMessages
         }
         ProviderApiFormat::GeminiGenerateContent => {
-            *body = build_gemini_request(body)?;
+            *body = build_gemini_request(body, upstream_model)?;
             UpstreamResponseFormat::GeminiGenerateContent
         }
         ProviderApiFormat::Auto | ProviderApiFormat::Responses => {
@@ -250,6 +250,15 @@ pub fn build_upstream_request(
             // unknown top-level fields instead of ignoring them.
             if let Some(object) = body.as_object_mut() {
                 object.remove("client_metadata");
+                if object
+                    .get("reasoning")
+                    .and_then(Value::as_object)
+                    .and_then(|reasoning| reasoning.get("effort"))
+                    .and_then(Value::as_str)
+                    == Some("ultra")
+                {
+                    object.remove("reasoning");
+                }
             }
             // Ark supports `reasoning.effort`, but its Responses schema does not
             // support OpenAI's `reasoning.summary` request option. Keep this
@@ -1030,7 +1039,7 @@ fn build_chat_completion_request(
         body.insert("max_tokens".to_string(), max_tokens.clone());
     }
 
-    apply_chat_reasoning_options(provider, request, &mut body);
+    apply_chat_reasoning_options(provider, upstream_model, request, &mut body);
 
     Ok(Value::Object(body))
 }
@@ -1164,29 +1173,110 @@ fn response_tool_choice_to_chat_tool_choice(choice: &Value) -> Value {
 
 fn apply_chat_reasoning_options(
     provider: &ProviderConfig,
+    upstream_model: &str,
     request: &Value,
     body: &mut Map<String, Value>,
 ) {
     let Some(reasoning) = request.get("reasoning") else {
         return;
     };
-    let effort = reasoning
-        .get("effort")
-        .and_then(Value::as_str)
-        .filter(|value| *value != "none");
+    let Some(effort) = reasoning.get("effort").and_then(Value::as_str) else {
+        return;
+    };
     let provider_id = provider.provider.to_ascii_lowercase();
+    let model_id = upstream_model.to_ascii_lowercase();
+
+    if model_id.contains("deepseek-v4-") {
+        if is_volcengine_ark(provider) {
+            if matches!(effort, "low" | "medium" | "high") {
+                body.insert("reasoning_effort".to_string(), json!(effort));
+            }
+            return;
+        }
+        if matches!(effort, "none" | "minimal") {
+            body.insert("thinking".to_string(), json!({ "type": "disabled" }));
+        } else {
+            let normalized = if model_id.contains("deepseek-v4-flash") {
+                match effort {
+                    "low" => "low",
+                    "max" => "max",
+                    _ => "high",
+                }
+            } else if matches!(effort, "xhigh" | "max") {
+                "max"
+            } else {
+                "high"
+            };
+            body.insert("thinking".to_string(), json!({ "type": "enabled" }));
+            body.insert("reasoning_effort".to_string(), json!(normalized));
+        }
+        return;
+    }
+
+    if is_glm_5_2(&model_id) {
+        if is_volcengine_ark(provider) {
+            if matches!(effort, "low" | "medium" | "high") {
+                body.insert("reasoning_effort".to_string(), json!(effort));
+            }
+            return;
+        }
+        if matches!(effort, "none" | "minimal") {
+            body.insert("thinking".to_string(), json!({ "type": "disabled" }));
+        } else {
+            let normalized = if matches!(effort, "xhigh" | "max") {
+                "max"
+            } else {
+                "high"
+            };
+            body.insert("thinking".to_string(), json!({ "type": "enabled" }));
+            body.insert("reasoning_effort".to_string(), json!(normalized));
+        }
+        return;
+    }
+
+    if model_id.contains("doubao") {
+        let thinking_type = match effort {
+            "none" | "minimal" => "disabled",
+            "medium" => "auto",
+            _ => "enabled",
+        };
+        body.insert("thinking".to_string(), json!({ "type": thinking_type }));
+        return;
+    }
+
+    if (provider_id == "dashscope" && (model_id.contains("qwen") || model_id.contains("kimi")))
+        || (provider_id == "moonshot" && model_id.contains("kimi"))
+    {
+        let enabled = !matches!(effort, "none" | "minimal");
+        body.insert("enable_thinking".to_string(), json!(enabled));
+        if enabled && model_id.contains("qwen3.8-max") {
+            let normalized = match effort {
+                "low" => "low",
+                "medium" => "medium",
+                _ => "xhigh",
+            };
+            body.insert("reasoning_effort".to_string(), json!(normalized));
+        } else if enabled && model_id.contains("kimi-k3") {
+            body.insert("reasoning_effort".to_string(), json!("max"));
+        }
+        return;
+    }
+
     if provider_id == "openrouter" {
-        if let Some(effort) = effort {
+        if effort != "ultra" {
             body.insert("reasoning".to_string(), json!({ "effort": effort }));
         }
     } else if matches!(
         provider_id.as_str(),
         "openai" | "azure-openai" | "xai" | "groq"
-    ) {
-        if let Some(effort) = effort {
-            body.insert("reasoning_effort".to_string(), json!(effort));
-        }
+    ) && effort != "ultra"
+    {
+        body.insert("reasoning_effort".to_string(), json!(effort));
     }
+}
+
+fn is_glm_5_2(model_id: &str) -> bool {
+    model_id.contains("glm-5.2") || model_id.contains("glm-5-2")
 }
 
 fn response_tool_to_chat_tool(tool: &Value) -> Option<Value> {
@@ -1375,7 +1465,87 @@ fn build_anthropic_request(request: &Value, upstream_model: &str) -> Result<Valu
             body.insert(key.to_string(), value.clone());
         }
     }
+    apply_anthropic_reasoning_options(request, upstream_model, &mut body);
     Ok(Value::Object(body))
+}
+
+fn apply_anthropic_reasoning_options(
+    request: &Value,
+    upstream_model: &str,
+    body: &mut Map<String, Value>,
+) {
+    let Some(effort) = request
+        .get("reasoning")
+        .and_then(|reasoning| reasoning.get("effort"))
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    let model_id = upstream_model.to_ascii_lowercase();
+    let cannot_disable = model_id.contains("claude-fable-5")
+        || model_id.contains("claude-mythos-5")
+        || model_id.contains("claude-mythos-preview");
+    if matches!(effort, "none" | "minimal") {
+        if !cannot_disable {
+            body.insert("thinking".to_string(), json!({ "type": "disabled" }));
+        }
+        return;
+    }
+    if !matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") {
+        return;
+    }
+
+    let adaptive = model_id.contains("claude-opus-4-6")
+        || model_id.contains("claude-opus-4.6")
+        || model_id.contains("claude-sonnet-4-6")
+        || model_id.contains("claude-sonnet-4.6")
+        || model_id.contains("claude-opus-4-7")
+        || model_id.contains("claude-opus-4.7")
+        || model_id.contains("claude-opus-4-8")
+        || model_id.contains("claude-opus-4.8")
+        || model_id.contains("claude-opus-5")
+        || model_id.contains("claude-sonnet-5")
+        || model_id.contains("claude-fable-5")
+        || model_id.contains("claude-mythos");
+    let manual = model_id.contains("claude-opus-4-5")
+        || model_id.contains("claude-opus-4.5")
+        || model_id.contains("claude-sonnet-4-5")
+        || model_id.contains("claude-sonnet-4.5")
+        || model_id.contains("claude-haiku-4-5")
+        || model_id.contains("claude-haiku-4.5")
+        || model_id.contains("claude-3-7-sonnet")
+        || model_id.contains("claude-3.7-sonnet");
+    if !adaptive && !manual {
+        return;
+    }
+    if adaptive {
+        body.insert(
+            "thinking".to_string(),
+            json!({ "type": "adaptive", "display": "summarized" }),
+        );
+    } else {
+        let max_tokens = body
+            .get("max_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(8192);
+        if max_tokens > 1024 {
+            let requested_budget = match effort {
+                "low" => 1024,
+                "medium" => 4096,
+                _ => 8192,
+            };
+            let budget_tokens = requested_budget.min(max_tokens.saturating_sub(1)).max(1024);
+            body.insert(
+                "thinking".to_string(),
+                json!({ "type": "enabled", "budget_tokens": budget_tokens }),
+            );
+        }
+    }
+    if adaptive || model_id.contains("claude-opus-4-5") || model_id.contains("claude-opus-4.5") {
+        body.insert("output_config".to_string(), json!({ "effort": effort }));
+    }
+    body.remove("temperature");
+    body.remove("top_p");
 }
 
 fn response_content_to_anthropic_content(content: &Value) -> Vec<Value> {
@@ -1471,7 +1641,7 @@ fn response_tool_choice_to_anthropic_tool_choice(choice: &Value) -> Option<Value
     }
 }
 
-fn build_gemini_request(request: &Value) -> Result<Value, String> {
+fn build_gemini_request(request: &Value, upstream_model: &str) -> Result<Value, String> {
     let mut system_parts = Vec::new();
     if let Some(instructions) = request
         .get("instructions")
@@ -1611,10 +1781,49 @@ fn build_gemini_request(request: &Value) -> Result<Value, String> {
             generation.insert(target.to_string(), value.clone());
         }
     }
+    apply_gemini_reasoning_options(request, upstream_model, &mut generation);
     if !generation.is_empty() {
         body.insert("generationConfig".to_string(), Value::Object(generation));
     }
     Ok(Value::Object(body))
+}
+
+fn apply_gemini_reasoning_options(
+    request: &Value,
+    upstream_model: &str,
+    generation: &mut Map<String, Value>,
+) {
+    let Some(effort) = request
+        .get("reasoning")
+        .and_then(|reasoning| reasoning.get("effort"))
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    let model_id = upstream_model.to_ascii_lowercase();
+    if model_id.contains("gemini-2.5") || model_id.contains("gemini-2-5") {
+        let is_flash = model_id.contains("flash");
+        let budget = match effort {
+            "none" if is_flash => Some(0),
+            "minimal" | "low" => Some(1024),
+            "medium" => Some(8192),
+            "high" => Some(24_576),
+            _ => None,
+        };
+        if let Some(budget) = budget {
+            generation.insert(
+                "thinkingConfig".to_string(),
+                json!({ "thinkingBudget": budget }),
+            );
+        }
+        return;
+    }
+    if model_id.contains("gemini-3") && matches!(effort, "minimal" | "low" | "medium" | "high") {
+        generation.insert(
+            "thinkingConfig".to_string(),
+            json!({ "thinkingLevel": effort }),
+        );
+    }
 }
 
 fn response_content_to_gemini_parts(content: &Value) -> Vec<Value> {

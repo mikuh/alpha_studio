@@ -293,6 +293,7 @@ export const EFFORT_OPTIONS: EffortOption[] = [
 
 export const ALL_EFFORT_OPTIONS: EffortOption[] = [
   { id: 'none', label: '无' },
+  { id: 'minimal', label: '极低' },
   ...EFFORT_OPTIONS,
   { id: 'max', label: 'Max' },
   { id: 'ultra', label: 'Ultra' },

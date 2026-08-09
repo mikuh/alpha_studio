@@ -42,9 +42,25 @@ Codex CLI -> POST /v1/responses -> Alpha Studio adapter -> 上游模型服务
 - 密钥、Token、密码等凭据只能填写在受 KMS 密文保护的 `API Key` 字段；后台会拒绝把它们放入明文 `customHeaders` 或 `queryParams`。
 - `requestTimeoutMs`：1 秒到 15 分钟。
 - `maxRetries`：0 到 5。只对连接/超时错误和 408、429、500、502、503、504 重试；POST 会携带稳定的 `idempotency-key`。
-- `contextWindowTokens`：模型的总上下文窗口。桌面端会将非 OpenAI 模型的窗口传给 Codex，并在约 75% 时提前压缩历史；未配置的非 OpenAI 路由按 64k 保守迁移。
-- `supportedReasoningEfforts` / `defaultReasoningEffort`：管理后台按模型配置可选思考强度与默认值。Responses 上游会收到对应的 `reasoning.effort`；当前可配置 `none`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`。
+- `contextWindowTokens`：模型的总上下文窗口。桌面端会将非 OpenAI 模型的窗口传给 Codex，并在约 90% 时提前压缩历史；未配置的非 OpenAI 路由按 64k 保守迁移。火山方舟 GLM-5.2、DeepSeek V4 Pro 与 Flash 按官方 1024k 窗口配置。
+- `maxOutputTokens`：模型最大回答长度。网关结合上下文窗口、最大回答和定价自动抬高内部任务安全预算，避免固定 5 元上限先于模型窗口拒绝合法输入。
+- `supportedReasoningEfforts` / `defaultReasoningEffort`：管理后台会优先按已核验的具体模型锁定真实选项；未知自定义模型才允许手动配置。网关模型可使用的标准超集是 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。`ultra` 是 Codex 编排模式，不是标准模型 effort，不能配置到网关路由。
 - `fastModeSupported`：控制桌面端是否显示 Fast 选项。选中后 Codex 使用 `service_tier = "fast"`，并把请求映射成上游的 `service_tier: "priority"`。
+
+### 思考参数转译
+
+| 模型/协议 | 管理端真实选项示例 | 上游参数 |
+| --- | --- | --- |
+| OpenAI Responses | 按 GPT 具体版本过滤 | `reasoning.effort` |
+| DeepSeek V4 Pro / GLM-5.2 原生 | `none / high / max` | `thinking` + `reasoning_effort` |
+| DeepSeek V4 Flash 原生 | `none / low / high / max` | `thinking` + `reasoning_effort` |
+| 火山方舟 Chat | `low / medium / high` | `reasoning_effort`（采用方舟公开契约） |
+| Claude 4.6+ Messages | 按具体 Claude 型号过滤 | `thinking.type=adaptive` + `output_config.effort` |
+| Gemini 3.x GenerateContent | 模型相关的 `minimal / low / medium / high` 子集 | `generationConfig.thinkingConfig.thinkingLevel` |
+| Gemini 2.5 GenerateContent | `none / minimal / low / medium / high` 的模型相关子集 | 官方兼容映射后的 `thinkingBudget` |
+| Qwen / Kimi 混合思考 | 通常为 `none / high`；Qwen3.8 Max 为多档例外 | `enable_thinking`，必要时附 `reasoning_effort` |
+
+未知模型不会再默认宣称支持 `low / medium / high / xhigh`。如果未识别，管理员必须依据该上游的官方文档手动选择；服务端仍会拒绝非标准网关值。
 
 ## 常见配置
 
@@ -127,4 +143,9 @@ Run token 作为 Bearer API key 使用，并绑定客户、设备、任务、模
 - [Codex custom model providers](https://developers.openai.com/codex/config-advanced/#custom-model-providers)
 - [CC Switch provider presets, model discovery and local routing](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/en/2-providers/2.1-add.md)
 - [Anthropic Messages API](https://docs.anthropic.com/en/api/messages)
+- [Anthropic effort and adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/effort)
 - [Gemini API](https://ai.google.dev/gemini-api/docs)
+- [Gemini thinking controls](https://ai.google.dev/gemini-api/docs/generate-content/thinking)
+- [OpenAI reasoning models](https://developers.openai.com/api/docs/guides/reasoning)
+- [DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode)
+- [GLM reasoning effort](https://docs.bigmodel.cn/cn/guide/capabilities/thinking)

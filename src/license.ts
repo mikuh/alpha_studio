@@ -416,7 +416,7 @@ export function modelProfilesFromClientLicense(
             ? normalizeCustomModelContextWindowTokens(model.contextWindowTokens)
             : DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS,
         enabled: true,
-        supportsReasoningEffort: supportedReasoningEfforts.length > 0,
+        supportsReasoningEffort: supportedReasoningEfforts.some(({ reasoningEffort }) => reasoningEffort !== 'none'),
         supportedReasoningEfforts,
         defaultReasoningEffort,
         supportsFastMode: model.fastModeSupported !== false,
