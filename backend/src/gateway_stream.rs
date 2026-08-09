@@ -936,20 +936,24 @@ fn number(value: &Value, key: &str) -> u64 {
 }
 
 fn chat_usage(usage: &Value) -> GatewayUsage {
+    let input_tokens = number(usage, "prompt_tokens").max(number(usage, "input_tokens"));
+    let output_tokens = number(usage, "completion_tokens").max(number(usage, "output_tokens"));
+    let reasoning_tokens = usage
+        .get("completion_tokens_details")
+        .map(|details| number(details, "reasoning_tokens"))
+        .unwrap_or(0)
+        .max(number(usage, "reasoning_tokens"));
+    let cached_tokens = usage
+        .get("prompt_tokens_details")
+        .map(|details| number(details, "cached_tokens"))
+        .unwrap_or(0)
+        .max(number(usage, "prompt_cache_hit_tokens"))
+        .max(number(usage, "cached_tokens"));
     GatewayUsage {
-        input_tokens: number(usage, "prompt_tokens").max(number(usage, "input_tokens")),
-        output_tokens: number(usage, "completion_tokens").max(number(usage, "output_tokens")),
-        reasoning_tokens: usage
-            .get("completion_tokens_details")
-            .map(|details| number(details, "reasoning_tokens"))
-            .unwrap_or(0)
-            .max(number(usage, "reasoning_tokens")),
-        cached_tokens: usage
-            .get("prompt_tokens_details")
-            .map(|details| number(details, "cached_tokens"))
-            .unwrap_or(0)
-            .max(number(usage, "prompt_cache_hit_tokens"))
-            .max(number(usage, "cached_tokens")),
+        input_tokens: input_tokens.saturating_sub(cached_tokens),
+        output_tokens: output_tokens.saturating_sub(reasoning_tokens),
+        reasoning_tokens,
+        cached_tokens,
     }
 }
 
@@ -971,10 +975,12 @@ fn gemini_usage(usage: &Value) -> GatewayUsage {
 }
 
 fn usage_json(usage: &GatewayUsage) -> Value {
+    let input_tokens = usage.input_tokens.saturating_add(usage.cached_tokens);
+    let output_tokens = usage.output_tokens.saturating_add(usage.reasoning_tokens);
     json!({
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "total_tokens": usage.input_tokens + usage.output_tokens,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens.saturating_add(output_tokens),
         "input_tokens_details": { "cached_tokens": usage.cached_tokens },
         "output_tokens_details": { "reasoning_tokens": usage.reasoning_tokens }
     })
@@ -1051,8 +1057,8 @@ mod tests {
         assert_eq!(
             event,
             Some(NativeStreamEvent::Completed(GatewayUsage {
-                input_tokens: 8,
-                output_tokens: 3,
+                input_tokens: 6,
+                output_tokens: 2,
                 cached_tokens: 2,
                 reasoning_tokens: 1,
             }))

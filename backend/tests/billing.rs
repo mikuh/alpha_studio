@@ -1,5 +1,8 @@
-use alpha_studio_backend::billing::{settle_usage_yuan, GatewayUsage, Pricing};
+use alpha_studio_backend::billing::{
+    settle_usage_yuan, usage_from_openai_response, GatewayUsage, Pricing,
+};
 use rust_decimal::Decimal;
+use serde_json::json;
 
 fn dec(mantissa: i64, scale: u32) -> Decimal {
     Decimal::new(mantissa, scale)
@@ -82,4 +85,26 @@ fn rejects_incomplete_or_loss_making_pricing() {
     };
 
     assert!(!pricing.is_valid());
+}
+
+#[test]
+fn separates_openai_cached_and_reasoning_subtotals_for_billing() {
+    let usage = usage_from_openai_response(&json!({
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "input_tokens_details": { "cached_tokens": 25 },
+            "output_tokens_details": { "reasoning_tokens": 10 }
+        }
+    }));
+
+    assert_eq!(
+        usage,
+        GatewayUsage {
+            input_tokens: 75,
+            output_tokens: 30,
+            reasoning_tokens: 10,
+            cached_tokens: 25,
+        }
+    );
 }

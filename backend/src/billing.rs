@@ -81,17 +81,22 @@ fn yuan_for_tokens(tokens: u64, yuan_per_million: Decimal) -> Decimal {
 
 pub fn usage_from_openai_response(value: &serde_json::Value) -> GatewayUsage {
     let usage = value.get("usage").unwrap_or(&serde_json::Value::Null);
+    let cached_tokens = usage
+        .get("input_tokens_details")
+        .map(|details| number(details, "cached_tokens"))
+        .unwrap_or(0);
+    let reasoning_tokens = usage
+        .get("output_tokens_details")
+        .map(|details| number(details, "reasoning_tokens"))
+        .unwrap_or(0);
     GatewayUsage {
-        input_tokens: number(usage, "input_tokens"),
-        output_tokens: number(usage, "output_tokens"),
-        reasoning_tokens: usage
-            .get("output_tokens_details")
-            .map(|details| number(details, "reasoning_tokens"))
-            .unwrap_or(0),
-        cached_tokens: usage
-            .get("input_tokens_details")
-            .map(|details| number(details, "cached_tokens"))
-            .unwrap_or(0),
+        // OpenAI reports cached input as a subset of input_tokens and reasoning
+        // as a subset of output_tokens. Store mutually exclusive billing
+        // buckets so the detailed categories are not charged twice.
+        input_tokens: number(usage, "input_tokens").saturating_sub(cached_tokens),
+        output_tokens: number(usage, "output_tokens").saturating_sub(reasoning_tokens),
+        reasoning_tokens,
+        cached_tokens,
     }
 }
 
