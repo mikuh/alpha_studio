@@ -240,7 +240,7 @@ export const JQDATA_CATALOG: readonly JqDataCatalogItem[] = [
 
 export function emptyJqDataConfig(): JqDataConfig {
   return {
-    version: 1,
+    version: 2,
     enabled: false,
     username: '',
     passwordConfigured: false,

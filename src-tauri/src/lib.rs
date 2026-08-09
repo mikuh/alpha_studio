@@ -263,6 +263,8 @@ pub struct JqDataConfigFile {
     #[serde(default)]
     #[serde(skip_serializing)]
     password: String,
+    #[serde(default)]
+    password_configured: bool,
     #[serde(default = "default_jqdata_api_url")]
     api_url: String,
     #[serde(default)]
@@ -943,7 +945,17 @@ async fn jqdata_config_load() -> Result<JqDataConfigLoadResult, String> {
         return Ok(jqdata_config_load_result(JqDataConfigFile::default(), path));
     }
 
-    let config = read_jqdata_config_secure(&path).await?;
+    let mut config = read_jqdata_config_file(&path)?;
+    let legacy_password = config.password.trim().to_string();
+    let migrated_legacy_password = !legacy_password.is_empty();
+    let upgraded = upgrade_jqdata_config_metadata(&mut config);
+    if migrated_legacy_password {
+        keychain::set_secret(keychain::JQDATA_PASSWORD_ACCOUNT, legacy_password).await?;
+        config.password.clear();
+    }
+    if upgraded || migrated_legacy_password {
+        write_jqdata_config_file(&path, &config)?;
+    }
     Ok(jqdata_config_load_result(config, path))
 }
 
@@ -953,19 +965,19 @@ async fn jqdata_config_save(
     request: JqDataConfigSaveRequest,
 ) -> Result<JqDataConfigSaveResult, String> {
     let path = jqdata_config_path()?;
-    let existing = if path.exists() {
-        read_jqdata_config_secure(&path).await?
+    let mut existing = if path.exists() {
+        read_jqdata_config_file(&path)?
     } else {
         JqDataConfigFile::default()
     };
+    upgrade_jqdata_config_metadata(&mut existing);
     let password = request
         .password
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or(existing.password);
-    if !password.trim().is_empty() {
+        .map(str::to_string);
+    if let Some(password) = &password {
         keychain::set_secret(keychain::JQDATA_PASSWORD_ACCOUNT, password.clone()).await?;
     }
     let api_url = request
@@ -984,10 +996,11 @@ async fn jqdata_config_save(
         })
         .unwrap_or_else(default_jqdata_api_url);
     let config = JqDataConfigFile {
-        version: 1,
+        version: default_jqdata_config_version(),
         enabled: request.enabled,
         username: request.username.trim().to_string(),
-        password,
+        password: String::new(),
+        password_configured: password.is_some() || existing.password_configured,
         api_url,
         updated_at: unix_millis_string(),
     };
@@ -1003,8 +1016,9 @@ async fn jqdata_test_connection(
     state: State<'_, JqDataQueryState>,
 ) -> Result<JqDataProbeResult, String> {
     let path = jqdata_config_path()?;
-    let config = read_jqdata_config_secure(&path).await?;
-    if !config.enabled {
+    let mut metadata = read_jqdata_config_file(&path)?;
+    upgrade_jqdata_config_metadata(&mut metadata);
+    if !metadata.enabled {
         return Ok(JqDataProbeResult {
             ok: false,
             message: "JQData 数据源尚未启用。".to_string(),
@@ -1012,7 +1026,7 @@ async fn jqdata_test_connection(
             sample: None,
         });
     }
-    if config.username.trim().is_empty() || config.password.trim().is_empty() {
+    if metadata.username.trim().is_empty() || !metadata.password_configured {
         return Ok(JqDataProbeResult {
             ok: false,
             message: "请先配置聚宽账号和密码。".to_string(),
@@ -1021,6 +1035,15 @@ async fn jqdata_test_connection(
         });
     }
 
+    let config = read_jqdata_config_secure(&path).await?;
+    if config.password.trim().is_empty() {
+        return Ok(JqDataProbeResult {
+            ok: false,
+            message: "请先配置聚宽账号和密码。".to_string(),
+            query_count: None,
+            sample: None,
+        });
+    }
     run_jqdata_probe(config, &state).await
 }
 
@@ -1030,8 +1053,17 @@ async fn jqdata_query(
     request: JqDataQueryRequest,
 ) -> Result<JqDataQueryResult, String> {
     let path = jqdata_config_path()?;
+    let mut metadata = read_jqdata_config_file(&path).unwrap_or_default();
+    upgrade_jqdata_config_metadata(&mut metadata);
+    if !metadata.enabled || metadata.username.trim().is_empty() || !metadata.password_configured {
+        return Ok(JqDataQueryResult {
+            ok: false,
+            message: Some("JQData 数据源尚未配置或未启用。".to_string()),
+            rows: None,
+        });
+    }
     let config: JqDataConfigFile = read_jqdata_config_secure(&path).await.unwrap_or_default();
-    if !config.enabled || config.username.trim().is_empty() || config.password.trim().is_empty() {
+    if config.password.trim().is_empty() {
         return Ok(JqDataQueryResult {
             ok: false,
             message: Some("JQData 数据源尚未配置或未启用。".to_string()),
@@ -3832,7 +3864,7 @@ fn default_model_config_version() -> u32 {
 }
 
 fn default_jqdata_config_version() -> u32 {
-    1
+    2
 }
 
 fn default_jqdata_api_url() -> String {
@@ -3967,6 +3999,7 @@ impl Default for JqDataConfigFile {
             enabled: false,
             username: String::new(),
             password: String::new(),
+            password_configured: false,
             api_url: default_jqdata_api_url(),
             updated_at: String::new(),
         }
@@ -4015,16 +4048,39 @@ fn read_jqdata_config_file(path: &Path) -> Result<JqDataConfigFile, String> {
 async fn read_jqdata_config_secure(path: &Path) -> Result<JqDataConfigFile, String> {
     let mut config = read_jqdata_config_file(path)?;
     let legacy_password = config.password.trim().to_string();
-    if !legacy_password.is_empty() {
+    let migrated_legacy_password = !legacy_password.is_empty();
+    let upgraded = upgrade_jqdata_config_metadata(&mut config);
+    if migrated_legacy_password {
         keychain::set_secret(keychain::JQDATA_PASSWORD_ACCOUNT, legacy_password.clone()).await?;
         config.password = legacy_password;
-        write_jqdata_config_file(path, &config)?;
-    } else {
+    } else if config.password_configured {
         config.password = keychain::get_secret(keychain::JQDATA_PASSWORD_ACCOUNT)
             .await?
             .unwrap_or_default();
     }
+    if upgraded || migrated_legacy_password {
+        write_jqdata_config_file(path, &config)?;
+    }
     Ok(config)
+}
+
+fn upgrade_jqdata_config_metadata(config: &mut JqDataConfigFile) -> bool {
+    let mut changed = false;
+    if config.version < default_jqdata_config_version() {
+        if !config.password.trim().is_empty()
+            || (config.enabled
+                && !config.username.trim().is_empty()
+                && !config.updated_at.trim().is_empty())
+        {
+            config.password_configured = true;
+        }
+        config.version = default_jqdata_config_version();
+        changed = true;
+    } else if !config.password.trim().is_empty() && !config.password_configured {
+        config.password_configured = true;
+        changed = true;
+    }
+    changed
 }
 
 fn write_jqdata_config_file(path: &Path, config: &JqDataConfigFile) -> Result<(), String> {
@@ -4042,7 +4098,7 @@ fn jqdata_config_load_result(config: JqDataConfigFile, path: PathBuf) -> JqDataC
         version: config.version,
         enabled: config.enabled,
         username: config.username,
-        password_configured: !config.password.trim().is_empty(),
+        password_configured: config.password_configured || !config.password.trim().is_empty(),
         api_url: upgrade_legacy_jqdata_api_url(&config.api_url),
         updated_at: config.updated_at,
         path: path.to_string_lossy().to_string(),
@@ -7432,6 +7488,28 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jqdata_metadata_upgrade_avoids_loading_the_saved_password_for_display() {
+        let mut config = JqDataConfigFile {
+            version: 1,
+            enabled: true,
+            username: "research-user".to_string(),
+            password: String::new(),
+            password_configured: false,
+            api_url: default_jqdata_api_url(),
+            updated_at: "1785557678921".to_string(),
+        };
+
+        assert!(upgrade_jqdata_config_metadata(&mut config));
+        assert_eq!(config.version, 2);
+        assert!(config.password_configured);
+        assert!(config.password.is_empty());
+
+        let encoded = serde_json::to_string(&config).unwrap();
+        assert!(encoded.contains(r#""passwordConfigured":true"#));
+        assert!(!encoded.contains(r#""password":"#));
+    }
 
     #[test]
     fn codex_model_catalog_preserves_renderer_safe_fields() {

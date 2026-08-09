@@ -8,7 +8,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import { ChartCandlestick } from 'lucide-react';
+import { ChartCandlestick, Database, Loader2 } from 'lucide-react';
 import { fetchJqDailyBars, fetchJqHistoricalBars, type JqDailyBar, type JqHistoricalBar } from './jqdata';
 import { changeTone, formatPercent, sampleBars, type ResearchQuote } from './research';
 
@@ -209,14 +209,24 @@ export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
   const [interval, setInterval] = useState<KlineInterval>('1d');
   const [isInteractive, setIsInteractive] = useState(false);
   const fallback = useMemo(() => snapshotCandles(quote, interval), [interval, quote]);
+  const fallbackRef = useRef(fallback);
+  fallbackRef.current = fallback;
   const [candles, setCandles] = useState<CandlestickData<Time>[]>(fallback);
-  const [source, setSource] = useState<ChartSource>('loading');
+  const [source, setSource] = useState<ChartSource>('snapshot');
+  const [historyRequest, setHistoryRequest] = useState(0);
   const [inspected, setInspected] = useState<InspectedCandle | null>(null);
 
   useEffect(() => {
-    let active = true;
+    if (historyRequest > 0) return;
     setInspected(null);
     setCandles(fallback);
+    setSource('snapshot');
+  }, [fallback, historyRequest]);
+
+  useEffect(() => {
+    if (historyRequest === 0) return;
+    let active = true;
+    setInspected(null);
     setSource('loading');
     void loadHistoricalCandles(quote.code, interval).then((historical) => {
       if (!active) return;
@@ -224,13 +234,17 @@ export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
         setCandles(historical);
         setSource('jqdata');
       } else {
+        setCandles(fallbackRef.current);
         setSource('snapshot');
       }
     }).catch(() => {
-      if (active) setSource('snapshot');
+      if (active) {
+        setCandles(fallbackRef.current);
+        setSource('snapshot');
+      }
     });
     return () => { active = false; };
-  }, [fallback, interval, quote.code]);
+  }, [historyRequest, interval, quote.code]);
 
   useEffect(() => {
     if (!isInteractive) return;
@@ -340,13 +354,25 @@ export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
     ? '聚宽历史行情 · 前复权'
     : source === 'loading'
       ? '正在加载历史行情…'
-      : '实时快照 · 模拟历史';
+      : '云端快照 · 本地走势预览';
 
   return (
     <section className="market-card stock-kline-card" aria-label={`${quote.name} K线图`}>
       <header className="stock-kline-heading">
         <span><strong>K 线行情</strong><em>{sourceLabel}</em></span>
-        <span className="stock-kline-brand"><ChartCandlestick size={13} /> TradingView</span>
+        <span className="stock-kline-actions">
+          <button
+            type="button"
+            className="stock-kline-history-btn"
+            aria-label={source === 'jqdata' ? '刷新聚宽历史行情' : '加载聚宽历史行情'}
+            disabled={source === 'loading'}
+            onClick={() => setHistoryRequest((current) => current + 1)}
+          >
+            {source === 'loading' ? <Loader2 size={11} className="spin" /> : <Database size={11} />}
+            <span>{source === 'jqdata' ? '刷新聚宽' : '加载聚宽'}</span>
+          </button>
+          <span className="stock-kline-brand"><ChartCandlestick size={13} /> TradingView</span>
+        </span>
       </header>
       <div className="stock-kline-intervals" role="tablist" aria-label="K线周期">
         {INTERVALS.map((item) => (

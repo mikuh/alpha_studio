@@ -750,6 +750,7 @@ describe('right feature panel', () => {
 
   it('renders mentioned stocks as cards and opens the matching workbench detail', async () => {
     const user = userEvent.setup();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
     useChatStore.setState({
       conversations: [conversation({
         messages: [
@@ -777,10 +778,16 @@ describe('right feature panel', () => {
     expect(within(assistantMessage).getByRole('button', { name: '打开中文在线投研详情' }))
       .toHaveTextContent('中文在线300364');
 
+    vi.mocked(invoke).mockClear();
     await user.click(inlineStock);
 
     const workbench = await screen.findByLabelText('投研工作台');
     await waitFor(() => expect(within(workbench).getByRole('heading', { name: '贵州茅台' })).toBeInTheDocument());
+    const kline = within(workbench).getByLabelText('贵州茅台 K线图');
+    expect(await within(kline).findByText('云端快照 · 本地走势预览')).toBeInTheDocument();
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'jqdata_query')).toBe(false);
+    await user.click(within(kline).getByRole('button', { name: '加载聚宽历史行情' }));
+    await waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'jqdata_query')).toBe(true));
     expect(within(container.querySelector('.right-dock-workspace') as HTMLElement).getByRole('tab', { name: '投研工作台' }))
       .toHaveAttribute('aria-selected', 'true');
   });
