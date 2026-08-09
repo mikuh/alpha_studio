@@ -5,6 +5,7 @@ import {
   addBackgroundContextToPrompt,
   messagesForActiveBackground,
   prepareConversationForOutgoingTurn,
+  type PrepareConversationContextOptions,
 } from './contextWindow';
 import {
   applyCodexEventToConversation,
@@ -503,7 +504,11 @@ export const useChatStore = create<ChatState>()(
           return;
         }
 
-        const preparedContext = prepareConversationForOutgoingTurn(conversation);
+        const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+        const preparedContext = prepareConversationForOutgoingTurn(
+          conversation,
+          modelContextPreparationOptions(modelProfile),
+        );
         const baseConversation = removeQueuedMessageFromConversation(preparedContext.conversation, queuedMessageId);
 
         set((state) => ({
@@ -540,7 +545,6 @@ export const useChatStore = create<ChatState>()(
 
         try {
           const latest = get().conversations.find((item) => item.id === conversationId);
-          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
           set((state) => ({
             conversations: state.conversations.map((item) => item.id === conversationId
               ? { ...item, activeModelProfileId: modelProfile.id }
@@ -569,7 +573,7 @@ export const useChatStore = create<ChatState>()(
             attachments: attachmentList,
             codexThreadId: latest?.codexThreadId,
             cwd: latest?.cwd || undefined,
-            ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
+            ...(await codexModelRequest(modelProfile, get().reasoningEffort, get().speed)),
             sandboxMode,
           });
           if (!get().conversations.some((item) => item.id === conversationId)) {
@@ -1264,7 +1268,11 @@ export const useChatStore = create<ChatState>()(
         };
         const nextTitle = conversation.messages.length === 0 ? request.label : conversation.title;
 
-        const preparedContext = prepareConversationForOutgoingTurn(conversation);
+        const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+        const preparedContext = prepareConversationForOutgoingTurn(
+          conversation,
+          modelContextPreparationOptions(modelProfile),
+        );
 
         set((state) => ({
           conversations: state.conversations.map((item) =>
@@ -1289,7 +1297,6 @@ export const useChatStore = create<ChatState>()(
 
 	        try {
 	          const latest = get().conversations.find((item) => item.id === conversationId);
-	          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
 	          set((state) => ({
 	            conversations: state.conversations.map((item) => item.id === conversationId
 	              ? { ...item, activeModelProfileId: modelProfile.id }
@@ -1302,7 +1309,7 @@ export const useChatStore = create<ChatState>()(
 	            prompt: addBackgroundContextToPrompt(buildReviewPrompt(request), preparedContext.promptContext),
 	            codexThreadId: latest?.codexThreadId,
 	            cwd: latest?.cwd || undefined,
-	            ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
+	            ...(await codexModelRequest(modelProfile, get().reasoningEffort, get().speed)),
 	            sandboxMode: 'read-only',
 	          });
           set((state) => ({
@@ -1352,16 +1359,20 @@ export const useChatStore = create<ChatState>()(
           conversation.backgroundContext && messageIndex >= conversation.backgroundContext.sourceMessageCount
             ? conversation.backgroundContext
             : undefined;
-        const preparedContext = prepareConversationForOutgoingTurn({
-          ...conversation,
-          messages: previousMessages,
-          status: 'idle',
-          runId: undefined,
-          codexThreadId: undefined,
-          codexTokenUsage: undefined,
-          codexCompactedAt: undefined,
-          backgroundContext: retainedBackgroundContext,
-        });
+        const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+        const preparedContext = prepareConversationForOutgoingTurn(
+          {
+            ...conversation,
+            messages: previousMessages,
+            status: 'idle',
+            runId: undefined,
+            codexThreadId: undefined,
+            codexTokenUsage: undefined,
+            codexCompactedAt: undefined,
+            backgroundContext: retainedBackgroundContext,
+          },
+          modelContextPreparationOptions(modelProfile),
+        );
         const activePreviousMessages = messagesForActiveBackground(preparedContext.conversation);
         const editedUserMessage: ChatMessage = {
           ...original,
@@ -1414,7 +1425,6 @@ export const useChatStore = create<ChatState>()(
 
         try {
           const latest = get().conversations.find((item) => item.id === conversationId);
-          const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
           set((state) => ({
             conversations: state.conversations.map((item) => item.id === conversationId
               ? { ...item, activeModelProfileId: modelProfile.id }
@@ -1438,7 +1448,7 @@ export const useChatStore = create<ChatState>()(
             selectedSkill: original.selectedSkill,
             attachments: nextAttachments,
             cwd: latest?.cwd || undefined,
-            ...(await codexModelRequest(modelProfile, get().reasoningEffort)),
+            ...(await codexModelRequest(modelProfile, get().reasoningEffort, get().speed)),
             sandboxMode,
           });
           set((state) => ({
@@ -2020,8 +2030,9 @@ function mergeUniqueModelProfiles(baseProfiles: ModelProfile[], extraProfiles: M
   return merged;
 }
 
-async function codexModelRequest(profile: ModelProfile, reasoningEffort: ReasoningEffort) {
+async function codexModelRequest(profile: ModelProfile, reasoningEffort: ReasoningEffort, speed: Speed) {
   const validatedEffort = resolveReasoningEffortForProfile(profile, reasoningEffort);
+  const serviceTier = profile.supportsFastMode && speed === 'fast' ? 'fast' as const : undefined;
   if (profile.providerId === ALPHA_GATEWAY_PROVIDER_ID) {
     const gateway = await createGatewayRun(profile.model);
     return {
@@ -2030,7 +2041,9 @@ async function codexModelRequest(profile: ModelProfile, reasoningEffort: Reasoni
       providerBaseUrl: gateway.providerBaseUrl,
       providerApiKey: gateway.providerApiKey,
       providerWireApi: gateway.providerWireApi,
+      providerContextWindowTokens: profile.contextWindowTokens,
       reasoningEffort: profile.supportsReasoningEffort ? validatedEffort : undefined,
+      serviceTier,
     };
   }
   return {
@@ -2039,8 +2052,18 @@ async function codexModelRequest(profile: ModelProfile, reasoningEffort: Reasoni
     providerBaseUrl: profile.baseUrl,
     providerApiKey: profile.apiKey,
     providerWireApi: profile.wireApi,
+    providerContextWindowTokens: profile.providerId === 'openai' ? undefined : profile.contextWindowTokens,
     providerThinkingEnabled: profile.wireApi === 'chat' ? profile.supportsReasoningEffort : undefined,
     reasoningEffort: profile.supportsReasoningEffort ? validatedEffort : undefined,
+    serviceTier,
+  };
+}
+
+function modelContextPreparationOptions(profile: ModelProfile): PrepareConversationContextOptions {
+  if (profile.providerId === 'openai' || !profile.contextWindowTokens) return {};
+  return {
+    contextWindowTokens: profile.contextWindowTokens,
+    compactResumableThread: true,
   };
 }
 

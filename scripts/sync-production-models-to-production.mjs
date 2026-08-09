@@ -131,7 +131,8 @@ const modelSql = `
 select row_to_json(row_data)::text
 from (
   select id, model_id, label, provider, mode, base_url, endpoint_path,
-    upstream_model, enabled, sort_order,
+    upstream_model, context_window_tokens, supported_reasoning_efforts,
+    default_reasoning_effort, fast_mode_supported, enabled, sort_order,
     input_yuan_per_million::text as input_yuan_per_million,
     output_yuan_per_million::text as output_yuan_per_million,
     reasoning_yuan_per_million::text as reasoning_yuan_per_million,
@@ -224,18 +225,23 @@ with payload as (
 )
 insert into model_routes (
   id, model_id, label, provider, mode, base_url, endpoint_path, upstream_model,
-  enabled, sort_order, input_yuan_per_million, output_yuan_per_million,
+  context_window_tokens, supported_reasoning_efforts, default_reasoning_effort,
+  fast_mode_supported, enabled, sort_order, input_yuan_per_million, output_yuan_per_million,
   reasoning_yuan_per_million, cached_input_yuan_per_million, markup_bps, updated_at
 )
 select m.id, m.model_id, m.label, m.provider, m.mode, m.base_url,
-  m.endpoint_path, m.upstream_model, m.enabled, m.sort_order,
+  m.endpoint_path, m.upstream_model, m.context_window_tokens,
+  m.supported_reasoning_efforts, m.default_reasoning_effort,
+  m.fast_mode_supported, m.enabled, m.sort_order,
   m.input_yuan_per_million, m.output_yuan_per_million,
   m.reasoning_yuan_per_million, m.cached_input_yuan_per_million,
   m.markup_bps, now()
 from payload,
 jsonb_to_recordset(payload.data->'models') as m(
   id text, model_id text, label text, provider text, mode text, base_url text,
-  endpoint_path text, upstream_model text, enabled boolean, sort_order integer,
+  endpoint_path text, upstream_model text, context_window_tokens integer,
+  supported_reasoning_efforts text[], default_reasoning_effort text,
+  fast_mode_supported boolean, enabled boolean, sort_order integer,
   input_yuan_per_million numeric, output_yuan_per_million numeric,
   reasoning_yuan_per_million numeric, cached_input_yuan_per_million numeric,
   markup_bps bigint
@@ -247,6 +253,10 @@ on conflict (model_id) do update set
   base_url = excluded.base_url,
   endpoint_path = excluded.endpoint_path,
   upstream_model = excluded.upstream_model,
+  context_window_tokens = excluded.context_window_tokens,
+  supported_reasoning_efforts = excluded.supported_reasoning_efforts,
+  default_reasoning_effort = excluded.default_reasoning_effort,
+  fast_mode_supported = excluded.fast_mode_supported,
   enabled = excluded.enabled,
   sort_order = excluded.sort_order,
   input_yuan_per_million = excluded.input_yuan_per_million,
@@ -326,6 +336,10 @@ for (const source of localModels) {
     "base_url",
     "endpoint_path",
     "upstream_model",
+    "context_window_tokens",
+    "supported_reasoning_efforts",
+    "default_reasoning_effort",
+    "fast_mode_supported",
     "enabled",
     "sort_order",
     "input_yuan_per_million",

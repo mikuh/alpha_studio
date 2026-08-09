@@ -1787,7 +1787,8 @@ pub async fn admin_list_model_routes(
     let rows = sqlx::query(
         r#"
         select m.id, m.model_id, m.label, m.provider, m.mode, m.base_url, m.endpoint_path,
-          m.upstream_model, m.enabled, m.sort_order,
+          m.upstream_model, m.context_window_tokens, m.supported_reasoning_efforts,
+          m.default_reasoning_effort, m.fast_mode_supported, m.enabled, m.sort_order,
           m.input_yuan_per_million, m.output_yuan_per_million,
           m.reasoning_yuan_per_million, m.cached_input_yuan_per_million, m.markup_bps,
           coalesce((p.api_key_ciphertext <> '' or p.api_key <> '' or p.auth_type = 'none') and p.enabled = true, false) as provider_ready,
@@ -1817,6 +1818,14 @@ pub struct ModelRouteSaveRequest {
     #[serde(default = "default_endpoint_path")]
     endpoint_path: String,
     upstream_model: String,
+    #[serde(default = "default_model_context_window_tokens")]
+    context_window_tokens: i32,
+    #[serde(default = "default_supported_reasoning_efforts")]
+    supported_reasoning_efforts: Vec<String>,
+    #[serde(default = "default_reasoning_effort")]
+    default_reasoning_effort: String,
+    #[serde(default)]
+    fast_mode_supported: bool,
     #[serde(default)]
     enabled: bool,
     #[serde(default = "default_sort_order")]
@@ -1864,11 +1873,13 @@ pub async fn admin_save_model_route(
     sqlx::query(
         r#"
         insert into model_routes (
-          id, model_id, label, provider, mode, base_url, endpoint_path, upstream_model, enabled,
+          id, model_id, label, provider, mode, base_url, endpoint_path, upstream_model,
+          context_window_tokens, supported_reasoning_efforts, default_reasoning_effort,
+          fast_mode_supported, enabled,
           sort_order, input_yuan_per_million, output_yuan_per_million,
           reasoning_yuan_per_million, cached_input_yuan_per_million, markup_bps, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
         on conflict (model_id) do update set
           label = excluded.label,
           provider = excluded.provider,
@@ -1876,6 +1887,10 @@ pub async fn admin_save_model_route(
           base_url = excluded.base_url,
           endpoint_path = excluded.endpoint_path,
           upstream_model = excluded.upstream_model,
+          context_window_tokens = excluded.context_window_tokens,
+          supported_reasoning_efforts = excluded.supported_reasoning_efforts,
+          default_reasoning_effort = excluded.default_reasoning_effort,
+          fast_mode_supported = excluded.fast_mode_supported,
           enabled = excluded.enabled,
           sort_order = excluded.sort_order,
           input_yuan_per_million = excluded.input_yuan_per_million,
@@ -1894,6 +1909,10 @@ pub async fn admin_save_model_route(
     .bind(base_url.trim())
     .bind(request.endpoint_path.trim())
     .bind(request.upstream_model.trim())
+    .bind(request.context_window_tokens)
+    .bind(&request.supported_reasoning_efforts)
+    .bind(request.default_reasoning_effort.trim())
+    .bind(request.fast_mode_supported)
     .bind(request.enabled)
     .bind(request.sort_order)
     .bind(request.input_yuan_per_million)
@@ -2758,7 +2777,8 @@ struct ModelRoute {
 async fn load_models(pool: &PgPool) -> Result<Vec<Value>, sqlx::Error> {
     let rows = sqlx::query(
         r#"
-        select model_id, label, provider, mode, enabled
+        select model_id, label, provider, mode, context_window_tokens,
+          supported_reasoning_efforts, default_reasoning_effort, fast_mode_supported, enabled
         from model_routes
         where enabled = true
         order by sort_order, label
@@ -2774,6 +2794,10 @@ async fn load_models(pool: &PgPool) -> Result<Vec<Value>, sqlx::Error> {
                 "label": row.get::<String, _>("label"),
                 "provider": row.get::<String, _>("provider"),
                 "mode": row.get::<String, _>("mode"),
+                "contextWindowTokens": row.get::<i32, _>("context_window_tokens"),
+                "supportedReasoningEfforts": row.get::<Vec<String>, _>("supported_reasoning_efforts"),
+                "defaultReasoningEffort": row.get::<String, _>("default_reasoning_effort"),
+                "fastModeSupported": row.get::<bool, _>("fast_mode_supported"),
                 "enabled": row.get::<bool, _>("enabled")
             })
         })
@@ -3594,6 +3618,10 @@ fn model_route_json(row: sqlx::postgres::PgRow) -> Value {
         "baseUrl": row.get::<String, _>("base_url"),
         "endpointPath": row.get::<String, _>("endpoint_path"),
         "upstreamModel": row.get::<String, _>("upstream_model"),
+        "contextWindowTokens": row.get::<i32, _>("context_window_tokens"),
+        "supportedReasoningEfforts": row.get::<Vec<String>, _>("supported_reasoning_efforts"),
+        "defaultReasoningEffort": row.get::<String, _>("default_reasoning_effort"),
+        "fastModeSupported": row.get::<bool, _>("fast_mode_supported"),
         "enabled": row.get::<bool, _>("enabled"),
         "sortOrder": row.get::<i32, _>("sort_order"),
         "inputYuanPerMillion": decimal_json(row.get::<Decimal, _>("input_yuan_per_million")),
@@ -4121,6 +4149,21 @@ fn default_endpoint_path() -> String {
     "/responses".to_string()
 }
 
+fn default_model_context_window_tokens() -> i32 {
+    64_000
+}
+
+fn default_supported_reasoning_efforts() -> Vec<String> {
+    ["low", "medium", "high", "xhigh"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn default_reasoning_effort() -> String {
+    "medium".to_string()
+}
+
 fn default_provider_auth_header() -> String {
     "authorization".to_string()
 }
@@ -4158,6 +4201,28 @@ fn validate_model_route_fields(
     if request.label.trim().is_empty() || request.provider.trim().is_empty() {
         return Err(ApiError::BadRequest(
             "label and provider are required".to_string(),
+        ));
+    }
+    if !(16_000..=2_000_000).contains(&request.context_window_tokens) {
+        return Err(ApiError::BadRequest(
+            "contextWindowTokens must be between 16000 and 2000000".to_string(),
+        ));
+    }
+    const ALLOWED_REASONING_EFFORTS: &[&str] =
+        &["none", "low", "medium", "high", "xhigh", "max", "ultra"];
+    if request.supported_reasoning_efforts.is_empty()
+        || request
+            .supported_reasoning_efforts
+            .iter()
+            .any(|effort| !ALLOWED_REASONING_EFFORTS.contains(&effort.trim()))
+        || !request
+            .supported_reasoning_efforts
+            .iter()
+            .any(|effort| effort.trim() == request.default_reasoning_effort.trim())
+    {
+        return Err(ApiError::BadRequest(
+            "supportedReasoningEfforts must contain valid values and include defaultReasoningEffort"
+                .to_string(),
         ));
     }
     let prices = [

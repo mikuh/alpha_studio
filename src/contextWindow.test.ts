@@ -152,6 +152,67 @@ describe('context window management', () => {
     expect(prepared.promptContext).toBeUndefined();
   });
 
+  it('compacts a resumable custom-model thread against its smaller configured window', () => {
+    const messages = Array.from({ length: 12 }, (_, index) =>
+      message(index + 1, index % 2 === 0 ? 'user' : 'assistant', `消息-${index + 1} ${'较长上下文。'.repeat(400)}`),
+    );
+    const current = conversation(messages, {
+      codexThreadId: 'thread-created-with-a-larger-model',
+      codexTokenUsage: {
+        total: {
+          totalTokens: 58_000,
+          inputTokens: 56_000,
+          cachedInputTokens: 0,
+          outputTokens: 2_000,
+          reasoningOutputTokens: 0,
+        },
+        last: {
+          totalTokens: 54_000,
+          inputTokens: 53_000,
+          cachedInputTokens: 0,
+          outputTokens: 1_000,
+          reasoningOutputTokens: 0,
+        },
+        modelContextWindow: 258_000,
+        updatedAt: 1,
+      },
+    });
+
+    const prepared = prepareConversationForOutgoingTurn(current, {
+      contextWindowTokens: 64_000,
+      compactResumableThread: true,
+    });
+
+    expect(prepared.compacted).toBe(true);
+    expect(prepared.conversation.codexThreadId).toBeUndefined();
+    expect(prepared.conversation.codexTokenUsage).toBeUndefined();
+    expect(prepared.promptContext).toContain('压缩背景摘要');
+  });
+
+  it('can roll over a custom-model thread after one oversized exchange', () => {
+    const current = conversation([
+      message(1, 'user', '分析这个超长资料。'),
+      message(2, 'assistant', '已完成第一轮分析。'),
+    ], {
+      codexThreadId: 'thread-with-one-large-exchange',
+      codexTokenUsage: {
+        total: { totalTokens: 52_000, inputTokens: 51_000, cachedInputTokens: 0, outputTokens: 1_000, reasoningOutputTokens: 0 },
+        last: { totalTokens: 52_000, inputTokens: 51_000, cachedInputTokens: 0, outputTokens: 1_000, reasoningOutputTokens: 0 },
+        modelContextWindow: 258_000,
+        updatedAt: 1,
+      },
+    });
+
+    const prepared = prepareConversationForOutgoingTurn(current, {
+      contextWindowTokens: 64_000,
+      compactResumableThread: true,
+    });
+
+    expect(prepared.compacted).toBe(true);
+    expect(prepared.conversation.backgroundContext?.sourceMessageCount).toBe(1);
+    expect(prepared.conversation.codexThreadId).toBeUndefined();
+  });
+
   it('formats token counts like the Codex context tooltip', () => {
     expect(formatTokenCount(16_200)).toBe('16k');
     expect(formatTokenCount(258_000)).toBe('258k');

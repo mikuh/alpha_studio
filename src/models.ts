@@ -14,6 +14,10 @@ export interface ModelOption {
 
 export type ModelWireApi = 'chat' | 'responses';
 
+export const DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS = 64_000;
+export const MIN_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS = 16_000;
+export const MAX_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS = 2_000_000;
+
 export interface ModelProfile {
   id: string;
   label: string;
@@ -22,8 +26,10 @@ export interface ModelProfile {
   wireApi: ModelWireApi;
   baseUrl?: string;
   apiKey?: string;
+  contextWindowTokens?: number;
   enabled: boolean;
   supportsReasoningEffort: boolean;
+  supportsFastMode?: boolean;
   builtIn?: boolean;
   isDefault?: boolean;
   defaultReasoningEffort?: ReasoningEffort;
@@ -36,12 +42,12 @@ export type ModelProfileDraft = Omit<
 >;
 
 export const BUILTIN_MODEL_PROFILES: ModelProfile[] = [
-  { id: 'gpt-5.5', label: 'GPT-5.5', providerId: 'openai', model: 'gpt-5.5', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
-  { id: 'gpt-5.4', label: 'GPT-5.4', providerId: 'openai', model: 'gpt-5.4', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
-  { id: 'gpt-5.4-mini', label: 'GPT-5.4-Mini', providerId: 'openai', model: 'gpt-5.4-mini', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
-  { id: 'gpt-5.3-codex', label: 'GPT-5.3', providerId: 'openai', model: 'gpt-5.3-codex', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
-  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Spark', providerId: 'openai', model: 'gpt-5.3-codex-spark', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
-  { id: 'gpt-5.2', label: 'GPT-5.2', providerId: 'openai', model: 'gpt-5.2', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, builtIn: true },
+  { id: 'gpt-5.5', label: 'GPT-5.5', providerId: 'openai', model: 'gpt-5.5', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, supportsFastMode: true, builtIn: true },
+  { id: 'gpt-5.4', label: 'GPT-5.4', providerId: 'openai', model: 'gpt-5.4', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, supportsFastMode: true, builtIn: true },
+  { id: 'gpt-5.4-mini', label: 'GPT-5.4-Mini', providerId: 'openai', model: 'gpt-5.4-mini', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, supportsFastMode: true, builtIn: true },
+  { id: 'gpt-5.3-codex', label: 'GPT-5.3', providerId: 'openai', model: 'gpt-5.3-codex', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, supportsFastMode: true, builtIn: true },
+  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Spark', providerId: 'openai', model: 'gpt-5.3-codex-spark', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, supportsFastMode: true, builtIn: true },
+  { id: 'gpt-5.2', label: 'GPT-5.2', providerId: 'openai', model: 'gpt-5.2', wireApi: 'responses', enabled: true, supportsReasoningEffort: true, supportsFastMode: true, builtIn: true },
 ];
 
 export const MODEL_OPTIONS: ModelOption[] = BUILTIN_MODEL_PROFILES.map(({ id, label }) => ({ id, label }));
@@ -66,6 +72,7 @@ export function modelProfilesFromCodexCatalog(
       wireApi: 'responses' as const,
       enabled: true,
       supportsReasoningEffort: item.supportedReasoningEfforts.length > 0,
+      supportsFastMode: true,
       builtIn: true,
       isDefault: item.isDefault,
       defaultReasoningEffort: item.defaultReasoningEffort,
@@ -196,8 +203,10 @@ export function normalizeModelProfile(value: unknown): ModelProfile | null {
     wireApi: builtIn ? 'responses' : wireApi,
     baseUrl: builtIn ? undefined : baseUrl,
     apiKey: builtIn ? undefined : apiKey,
+    contextWindowTokens: builtIn ? undefined : normalizeCustomModelContextWindowTokens(source.contextWindowTokens),
     enabled: source.enabled !== false,
     supportsReasoningEffort: source.supportsReasoningEffort === true,
+    supportsFastMode: source.supportsFastMode === true,
     builtIn: builtIn || undefined,
   };
 }
@@ -211,8 +220,10 @@ export function normalizeModelProfileDraft(value: ModelProfileDraft): ModelProfi
     wireApi: value.wireApi === 'chat' ? 'chat' : 'responses',
     baseUrl: optionalTrimmedString(value.baseUrl),
     apiKey: optionalTrimmedString(value.apiKey),
+    contextWindowTokens: normalizeCustomModelContextWindowTokens(value.contextWindowTokens),
     enabled: value.enabled !== false,
     supportsReasoningEffort: value.supportsReasoningEffort === true,
+    supportsFastMode: value.supportsFastMode === true,
   };
 }
 
@@ -227,6 +238,19 @@ export function normalizeProviderId(value: unknown): string {
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+export function normalizeCustomModelContextWindowTokens(value: unknown): number {
+  const numeric = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value.trim())
+      : Number.NaN;
+  if (!Number.isFinite(numeric) || numeric <= 0) return DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS;
+  return Math.min(
+    MAX_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS,
+    Math.max(MIN_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS, Math.round(numeric)),
+  );
 }
 
 function optionalTrimmedString(value: unknown): string | undefined {
@@ -268,6 +292,7 @@ export const EFFORT_OPTIONS: EffortOption[] = [
 ];
 
 export const ALL_EFFORT_OPTIONS: EffortOption[] = [
+  { id: 'none', label: '无' },
   ...EFFORT_OPTIONS,
   { id: 'max', label: 'Max' },
   { id: 'ultra', label: 'Ultra' },

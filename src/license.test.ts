@@ -45,6 +45,9 @@ const activationResponse = {
       provider: 'openai',
       mode: 'gateway_api',
       enabled: true,
+      supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      defaultReasoningEffort: 'medium',
+      fastModeSupported: true,
     },
   ],
   codexAccounts: [],
@@ -173,6 +176,35 @@ describe('client license session', () => {
       providerId: 'alpha-gateway',
       model: 'gpt-5.5',
       wireApi: 'responses',
+      supportsReasoningEffort: true,
+      defaultReasoningEffort: 'medium',
+      supportsFastMode: true,
+    });
+    expect(profiles[0].supportedReasoningEfforts?.map((item) => item.reasoningEffort)).toEqual([
+      'none', 'low', 'medium', 'high', 'xhigh', 'max',
+    ]);
+    expect(profiles[0].contextWindowTokens).toBeUndefined();
+  });
+
+  it('propagates each gateway model context window to the desktop profile', () => {
+    const profiles = modelProfilesFromClientLicense({
+      apiBaseUrl: defaultAlphaApiBaseUrl(),
+      activatedAt: 1,
+      ...activationResponse,
+      models: [{
+        id: 'claude-route',
+        label: 'Claude Route',
+        provider: 'anthropic',
+        mode: 'gateway_api',
+        enabled: true,
+        contextWindowTokens: 200_000,
+      }],
+    });
+
+    expect(profiles[0]).toMatchObject({
+      id: 'claude-route',
+      providerId: ALPHA_GATEWAY_PROVIDER_ID,
+      contextWindowTokens: 200_000,
     });
   });
 

@@ -32,6 +32,10 @@ const models = [
     baseUrl: 'https://api.openai.com/v1',
     endpointPath: '/responses',
     upstreamModel: 'gpt-5.5',
+    contextWindowTokens: 258_000,
+    supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    defaultReasoningEffort: 'medium',
+    fastModeSupported: true,
     enabled: true,
     sortOrder: 10,
     inputYuanPerMillion: 1.2,
@@ -50,6 +54,10 @@ const models = [
     baseUrl: 'https://api.deepseek.com/v1',
     endpointPath: '/chat/completions',
     upstreamModel: 'deepseek-chat',
+    contextWindowTokens: 64_000,
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'medium',
+    fastModeSupported: false,
     enabled: true,
     sortOrder: 20,
     inputYuanPerMillion: 0.14,
@@ -213,6 +221,10 @@ describe('admin model gateway', () => {
     fireEvent.change(within(modelForm).getByLabelText('模型 ID'), { target: { value: 'deepseek-v4-flash' } });
     fireEvent.change(within(modelForm).getByLabelText('显示名称'), { target: { value: 'DeepSeek V4 Flash' } });
     fireEvent.change(within(modelForm).getByLabelText('上游模型名'), { target: { value: 'deepseek-v4-flash' } });
+    fireEvent.change(within(modelForm).getByLabelText('上下文窗口 tokens'), { target: { value: '128000' } });
+    fireEvent.click(within(modelForm).getByLabelText('思考强度 max'));
+    fireEvent.change(within(modelForm).getByLabelText('默认思考强度'), { target: { value: 'max' } });
+    fireEvent.click(within(modelForm).getByLabelText('支持 Fast 模式'));
     fireEvent.change(within(modelForm).getByLabelText('输入 元/百万'), { target: { value: '1.25' } });
     fireEvent.change(within(modelForm).getByLabelText('输出 元/百万'), { target: { value: '2.5' } });
     fireEvent.change(within(modelForm).getByLabelText('缓存输入 元/百万'), { target: { value: '0.02' } });
@@ -232,6 +244,10 @@ describe('admin model gateway', () => {
           baseUrl: 'https://api.openai.com/v1',
           endpointPath: '/responses',
           upstreamModel: 'deepseek-v4-flash',
+          contextWindowTokens: 128000,
+          supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          defaultReasoningEffort: 'max',
+          fastModeSupported: true,
           enabled: true,
           sortOrder: 100,
           inputYuanPerMillion: 1.25,

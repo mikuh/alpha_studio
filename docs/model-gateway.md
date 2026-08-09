@@ -42,6 +42,9 @@ Codex CLI -> POST /v1/responses -> Alpha Studio adapter -> 上游模型服务
 - 密钥、Token、密码等凭据只能填写在受 KMS 密文保护的 `API Key` 字段；后台会拒绝把它们放入明文 `customHeaders` 或 `queryParams`。
 - `requestTimeoutMs`：1 秒到 15 分钟。
 - `maxRetries`：0 到 5。只对连接/超时错误和 408、429、500、502、503、504 重试；POST 会携带稳定的 `idempotency-key`。
+- `contextWindowTokens`：模型的总上下文窗口。桌面端会将非 OpenAI 模型的窗口传给 Codex，并在约 75% 时提前压缩历史；未配置的非 OpenAI 路由按 64k 保守迁移。
+- `supportedReasoningEfforts` / `defaultReasoningEffort`：管理后台按模型配置可选思考强度与默认值。Responses 上游会收到对应的 `reasoning.effort`；当前可配置 `none`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`。
+- `fastModeSupported`：控制桌面端是否显示 Fast 选项。选中后 Codex 使用 `service_tier = "fast"`，并把请求映射成上游的 `service_tier: "priority"`。
 
 ## 常见配置
 

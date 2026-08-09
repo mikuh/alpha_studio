@@ -10368,6 +10368,9 @@ function ModelPicker() {
     () => reasoningEffortOptionsForProfile(editingProfile ?? selectedModelProfile),
     [editingProfile, selectedModelProfile],
   );
+  const speedOptions = editingProfile?.supportsFastMode
+    ? SPEED_OPTIONS
+    : SPEED_OPTIONS.filter((option) => option.id === 'standard');
   const selectedEffortOptions = useMemo(
     () => reasoningEffortOptionsForProfile(selectedModelProfile),
     [selectedModelProfile],
@@ -10399,7 +10402,7 @@ function ModelPicker() {
     const parts = supportedEfforts.length > 0
       ? [effortLabel(resolveReasoningEffortForProfile(profile, reasoningEffort))]
       : [];
-    if (speed === 'fast') parts.push('快速');
+    if (profile.supportsFastMode && speed === 'fast') parts.push('快速');
     return parts.join(' · ');
   };
   useLayoutEffect(() => {
@@ -10557,7 +10560,7 @@ function ModelPicker() {
             )) : <div className="model-options-empty">此模型不提供思考强度设置</div>}
             <div className="model-menu-divider" />
             <div className="model-menu-label">速度</div>
-            {SPEED_OPTIONS.map((option) => (
+            {speedOptions.map((option) => (
               <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === speed} className="model-menu-item speed-item" onClick={() => setSpeed(option.id as Speed)}>
                 <span className="speed-main">
                   {option.fast && <Zap size={13} className="speed-icon" />}
@@ -10582,7 +10585,7 @@ function ModelPicker() {
         aria-label={`选择模型，当前为 ${selectedModelProfile.label}`}
         title="选择模型与推理强度"
       >
-        {speed === 'fast' && <Zap size={12} className="model-pill-fast" />}
+        {selectedModelProfile.supportsFastMode && speed === 'fast' && <Zap size={12} className="model-pill-fast" />}
         <span className="model-pill-label">{shortModelProfileLabel([selectedModelProfile], selectedModelProfile.id)}</span>
         {selectedEffortOptions.length > 0 && <span className="model-pill-effort">{effortLabel(reasoningEffort)}</span>}
         <ChevronDown size={12} />

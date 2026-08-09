@@ -121,8 +121,10 @@ pub struct CodexChatRequest {
     provider_base_url: Option<String>,
     provider_api_key: Option<String>,
     provider_wire_api: Option<String>,
+    provider_context_window_tokens: Option<u32>,
     provider_thinking_enabled: Option<bool>,
     reasoning_effort: Option<String>,
+    service_tier: Option<String>,
     sandbox_mode: Option<String>,
 }
 
@@ -157,6 +159,7 @@ struct ModelProviderConfig {
     wire_api: Option<String>,
     adapter: Option<ModelProviderAdapter>,
     show_raw_reasoning: bool,
+    context_window_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -189,6 +192,8 @@ pub struct ModelProfileConfig {
     base_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_window_tokens: Option<u32>,
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default)]
@@ -1084,7 +1089,8 @@ async fn codex_chat_start(
     // `item/agentMessage/delta` notifications token-by-token, which is what
     // gives the UI a live, incremental response.
     let mut command = Command::new(&check.path);
-    for arg in codex_app_server_args(provider_config.as_ref()) {
+    let service_tier = sanitize_service_tier(request.service_tier.as_deref());
+    for arg in codex_app_server_args(provider_config.as_ref(), service_tier.as_deref()) {
         command.arg(arg);
     }
     if let Some(provider) = &provider_config {
@@ -4199,6 +4205,7 @@ fn sanitize_sandbox_mode(value: Option<&str>) -> String {
 
 fn sanitize_reasoning_effort(value: Option<&str>) -> Option<String> {
     match value.map(str::trim).unwrap_or_default() {
+        "none" => Some("none".to_string()),
         "minimal" => Some("minimal".to_string()),
         "low" => Some("low".to_string()),
         "medium" => Some("medium".to_string()),
@@ -4206,6 +4213,13 @@ fn sanitize_reasoning_effort(value: Option<&str>) -> Option<String> {
         "xhigh" => Some("xhigh".to_string()),
         "max" => Some("max".to_string()),
         "ultra" => Some("ultra".to_string()),
+        _ => None,
+    }
+}
+
+fn sanitize_service_tier(value: Option<&str>) -> Option<String> {
+    match value.map(str::trim).unwrap_or_default() {
+        "fast" => Some("fast".to_string()),
         _ => None,
     }
 }
@@ -4275,11 +4289,26 @@ fn sanitize_model_provider(
         adapter,
         show_raw_reasoning: request.provider_thinking_enabled.unwrap_or(false)
             && sanitize_reasoning_effort(request.reasoning_effort.as_deref()).is_some(),
+        context_window_tokens: request
+            .provider_context_window_tokens
+            .map(sanitize_custom_model_context_window),
     }))
 }
 
-fn codex_app_server_args(provider: Option<&ModelProviderConfig>) -> Vec<String> {
+fn sanitize_custom_model_context_window(value: u32) -> u32 {
+    const MIN_TOKENS: u32 = 16_000;
+    const MAX_TOKENS: u32 = 2_000_000;
+    value.clamp(MIN_TOKENS, MAX_TOKENS)
+}
+
+fn codex_app_server_args(
+    provider: Option<&ModelProviderConfig>,
+    service_tier: Option<&str>,
+) -> Vec<String> {
     let mut args = vec!["app-server".to_string()];
+    if service_tier == Some("fast") {
+        push_config_arg(&mut args, "service_tier", "fast");
+    }
     let Some(provider) = provider else {
         return args;
     };
@@ -4311,6 +4340,19 @@ fn codex_app_server_args(provider: Option<&ModelProviderConfig>) -> Vec<String> 
     }
     if provider.show_raw_reasoning {
         push_raw_config_arg(&mut args, "show_raw_agent_reasoning", "true");
+    }
+    if let Some(context_window_tokens) = provider.context_window_tokens {
+        push_raw_config_arg(
+            &mut args,
+            "model_context_window",
+            &context_window_tokens.to_string(),
+        );
+        let compact_token_limit = context_window_tokens.saturating_mul(3) / 4;
+        push_raw_config_arg(
+            &mut args,
+            "model_auto_compact_token_limit",
+            &compact_token_limit.to_string(),
+        );
     }
     args
 }
@@ -5587,7 +5629,7 @@ fn check_codex(app: Option<&AppHandle>) -> CodexCheckResult {
 
 async fn read_codex_account_rate_limits(path: &str, codex_home: &Path) -> Result<Value, String> {
     let mut command = Command::new(path);
-    for arg in codex_app_server_args(None) {
+    for arg in codex_app_server_args(None, None) {
         command.arg(arg);
     }
     command
@@ -5672,7 +5714,7 @@ async fn read_codex_models(
     force_refetch: bool,
 ) -> Result<Vec<CodexModelCatalogItem>, String> {
     let mut command = Command::new(path);
-    for arg in codex_app_server_args(None) {
+    for arg in codex_app_server_args(None, None) {
         command.arg(arg);
     }
     command
@@ -8284,14 +8326,17 @@ mod tests {
             wire_api: Some("responses".to_string()),
             adapter: None,
             show_raw_reasoning: true,
+            context_window_tokens: Some(64_000),
         };
 
-        let args = codex_app_server_args(Some(&provider));
+        let args = codex_app_server_args(Some(&provider), Some("fast"));
 
         assert_eq!(
             args,
             vec![
                 "app-server",
+                "--config",
+                "service_tier=\"fast\"",
                 "--config",
                 "model_provider=\"deepseek\"",
                 "--config",
@@ -8304,13 +8349,28 @@ mod tests {
                 "model_providers.deepseek.wire_api=\"responses\"",
                 "--config",
                 "show_raw_agent_reasoning=true",
+                "--config",
+                "model_context_window=64000",
+                "--config",
+                "model_auto_compact_token_limit=48000",
             ]
         );
     }
 
     #[test]
     fn app_server_args_fall_back_to_openai_without_provider_config() {
-        assert_eq!(codex_app_server_args(None), vec!["app-server".to_string()]);
+        assert_eq!(
+            codex_app_server_args(None, None),
+            vec!["app-server".to_string()]
+        );
+        assert_eq!(
+            codex_app_server_args(None, Some("fast")),
+            vec![
+                "app-server".to_string(),
+                "--config".to_string(),
+                "service_tier=\"fast\"".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -9256,8 +9316,10 @@ mod tests {
             provider_base_url: provider_base_url.map(str::to_string),
             provider_api_key: provider_api_key.map(str::to_string),
             provider_wire_api: provider_wire_api.map(str::to_string),
+            provider_context_window_tokens: Some(64_000),
             provider_thinking_enabled: Some(provider_wire_api == Some("chat")),
             reasoning_effort: None,
+            service_tier: None,
             sandbox_mode: None,
             developer_instructions: None,
             selected_skill: None,

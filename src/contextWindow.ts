@@ -2,6 +2,7 @@ import type { ChatMessage, Conversation, MessageAttachment, MessageBlock } from 
 
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 258_000;
 export const CONTEXT_COMPACT_THRESHOLD_RATIO = 0.82;
+export const CUSTOM_MODEL_COMPACT_THRESHOLD_RATIO = 0.75;
 
 const CONTEXT_RECENT_MESSAGE_KEEP_COUNT = 8;
 const CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT = 2;
@@ -28,6 +29,11 @@ export interface PreparedConversationContext {
   compacted: boolean;
 }
 
+export interface PrepareConversationContextOptions {
+  contextWindowTokens?: number;
+  compactResumableThread?: boolean;
+}
+
 export function contextWindowUsage(conversation: Conversation): ContextWindowUsage {
   const codexUsage = codexContextWindowUsage(conversation);
   const source = codexUsage ? 'codex' : 'local-estimate';
@@ -52,10 +58,27 @@ export function contextWindowUsage(conversation: Conversation): ContextWindowUsa
   };
 }
 
-export function prepareConversationForOutgoingTurn(conversation: Conversation): PreparedConversationContext {
-  const shouldUseLocalCompaction = !conversation.codexThreadId && shouldCompactConversation(conversation);
+export function prepareConversationForOutgoingTurn(
+  conversation: Conversation,
+  options: PrepareConversationContextOptions = {},
+): PreparedConversationContext {
+  const contextWindowTokens = finitePositiveNumber(options.contextWindowTokens) ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+  const compactThresholdRatio = options.compactResumableThread
+    ? CUSTOM_MODEL_COMPACT_THRESHOLD_RATIO
+    : CONTEXT_COMPACT_THRESHOLD_RATIO;
+  const minimumRecentMessageCount = options.compactResumableThread
+    ? 1
+    : CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT;
+  const canUseLocalCompaction = !conversation.codexThreadId || options.compactResumableThread === true;
+  const shouldUseLocalCompaction = canUseLocalCompaction
+    && shouldCompactConversation(
+      conversation,
+      contextWindowTokens,
+      compactThresholdRatio,
+      minimumRecentMessageCount,
+    );
   const compactedConversation = shouldUseLocalCompaction
-    ? compactConversation(conversation)
+    ? compactConversation(conversation, contextWindowTokens, minimumRecentMessageCount)
     : conversation;
   const compacted = compactedConversation !== conversation;
   const needsPromptContext = compacted || !compactedConversation.codexThreadId;
@@ -145,22 +168,36 @@ export function buildBackgroundPromptContext(conversation: Conversation): string
   ].join('\n\n');
 }
 
-function shouldCompactConversation(conversation: Conversation): boolean {
+function shouldCompactConversation(
+  conversation: Conversation,
+  contextWindowTokens = DEFAULT_CONTEXT_WINDOW_TOKENS,
+  compactThresholdRatio = CONTEXT_COMPACT_THRESHOLD_RATIO,
+  minimumRecentMessageCount = CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT,
+): boolean {
   if (conversation.status === 'streaming') return false;
   const activeMessages = messagesForActiveBackground(conversation);
-  if (activeMessages.length <= CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT) return false;
-  const usage = estimateConversationBackgroundTokens(conversation);
-  return usage >= DEFAULT_CONTEXT_WINDOW_TOKENS * CONTEXT_COMPACT_THRESHOLD_RATIO;
+  if (activeMessages.length <= minimumRecentMessageCount) return false;
+  const measuredTokens = finitePositiveNumber(conversation.codexTokenUsage?.last?.totalTokens) ?? 0;
+  const usage = Math.max(measuredTokens, estimateConversationBackgroundTokens(conversation));
+  return usage >= contextWindowTokens * compactThresholdRatio;
 }
 
-function compactConversation(conversation: Conversation): Conversation {
-  const cutIndex = compactCutIndex(conversation);
+function compactConversation(
+  conversation: Conversation,
+  contextWindowTokens: number,
+  minimumRecentMessageCount: number,
+): Conversation {
+  const cutIndex = compactCutIndex(conversation, minimumRecentMessageCount);
   if (cutIndex <= (conversation.backgroundContext?.sourceMessageCount ?? 0)) return conversation;
   const sourceMessages = conversation.messages.slice(
     conversation.backgroundContext?.sourceMessageCount ?? 0,
     cutIndex,
   );
-  const summary = summarizeBackgroundContext(conversation.backgroundContext?.summary, sourceMessages);
+  const summary = summarizeBackgroundContext(
+    conversation.backgroundContext?.summary,
+    sourceMessages,
+    summaryTokenTarget(contextWindowTokens),
+  );
   const now = Date.now();
   return {
     ...conversation,
@@ -179,11 +216,17 @@ function compactConversation(conversation: Conversation): Conversation {
   };
 }
 
-function compactCutIndex(conversation: Conversation): number {
+function compactCutIndex(
+  conversation: Conversation,
+  minimumRecentMessageCount = CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT,
+): number {
   const start = conversation.backgroundContext?.sourceMessageCount ?? 0;
   const activeCount = conversation.messages.length - start;
-  if (activeCount <= CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT) return start;
-  const keep = Math.min(CONTEXT_RECENT_MESSAGE_KEEP_COUNT, Math.max(CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT, activeCount - 1));
+  if (activeCount <= minimumRecentMessageCount) return start;
+  const keep = Math.min(
+    CONTEXT_RECENT_MESSAGE_KEEP_COUNT,
+    Math.max(minimumRecentMessageCount, activeCount - 1),
+  );
   return Math.max(start + 1, conversation.messages.length - keep);
 }
 
@@ -219,7 +262,11 @@ function estimateAttachmentsTokens(attachments?: MessageAttachment[]): number {
   }, 0);
 }
 
-function summarizeBackgroundContext(existingSummary: string | undefined, messages: ChatMessage[]): string {
+function summarizeBackgroundContext(
+  existingSummary: string | undefined,
+  messages: ChatMessage[],
+  tokenTarget = SUMMARY_TOKEN_TARGET,
+): string {
   const sections: string[] = [];
   if (existingSummary?.trim()) {
     sections.push(`既有压缩摘要：\n${clampText(existingSummary.trim(), 5_000)}`);
@@ -232,7 +279,7 @@ function summarizeBackgroundContext(existingSummary: string | undefined, message
     sections.push(['本次新增压缩的可见对话：', ...messageLines].join('\n'));
   }
 
-  return clampSummary(sections.join('\n\n').trim());
+  return clampSummary(sections.join('\n\n').trim(), tokenTarget);
 }
 
 function summarizeMessage(message: ChatMessage, index: number): string {
@@ -294,15 +341,19 @@ function firstLines(text: string, count: number): string {
     .join('\n');
 }
 
-function clampSummary(summary: string): string {
+function clampSummary(summary: string, tokenTarget = SUMMARY_TOKEN_TARGET): string {
   let next = summary;
-  while (estimateTextTokens(next) > SUMMARY_TOKEN_TARGET && next.length > 1_000) {
+  while (estimateTextTokens(next) > tokenTarget && next.length > 1_000) {
     next = next.slice(Math.floor(next.length * 0.12));
     const lineStart = next.indexOf('\n');
     if (lineStart > 0) next = next.slice(lineStart + 1);
     next = `（前序压缩摘要过长，已继续保留最近关键内容。）\n${next.trim()}`;
   }
   return next;
+}
+
+function summaryTokenTarget(contextWindowTokens: number): number {
+  return Math.min(SUMMARY_TOKEN_TARGET, Math.max(2_000, Math.floor(contextWindowTokens * 0.08)));
 }
 
 function clampText(text: string, maxLength: number): string {

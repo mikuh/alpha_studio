@@ -1,4 +1,11 @@
-import { defaultModelProfiles, publicModelLabel, type ModelProfile } from './models';
+import {
+  DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS,
+  defaultModelProfiles,
+  isReasoningEffort,
+  normalizeCustomModelContextWindowTokens,
+  publicModelLabel,
+  type ModelProfile,
+} from './models';
 import type { ClientAgreementAcceptance } from './legal';
 
 const SESSION_KEY = 'alpha:client-license-session';
@@ -56,6 +63,10 @@ export interface ClientModel {
   provider: string;
   mode: string;
   enabled: boolean;
+  contextWindowTokens?: number;
+  supportedReasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+  fastModeSupported?: boolean;
 }
 
 export interface ClientCodexAccount {
@@ -386,14 +397,29 @@ export function modelProfilesFromClientLicense(
     .map((model) => {
       const id = occupied.has(model.id) ? `gateway:${model.id}` : model.id;
       occupied.add(id);
+      const supportedReasoningEfforts = (model.supportedReasoningEfforts ?? ['low', 'medium', 'high', 'xhigh'])
+        .filter(isReasoningEffort)
+        .map((reasoningEffort) => ({ reasoningEffort, description: '' }));
+      const defaultReasoningEffort = isReasoningEffort(model.defaultReasoningEffort)
+        && supportedReasoningEfforts.some((item) => item.reasoningEffort === model.defaultReasoningEffort)
+        ? model.defaultReasoningEffort
+        : supportedReasoningEfforts[0]?.reasoningEffort;
       return {
         id,
         label: publicModelLabel(model.label),
         providerId: ALPHA_GATEWAY_PROVIDER_ID,
         model: model.id,
         wireApi: 'responses' as const,
+        contextWindowTokens: model.provider.trim().toLowerCase() === 'openai'
+          ? undefined
+          : model.contextWindowTokens
+            ? normalizeCustomModelContextWindowTokens(model.contextWindowTokens)
+            : DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS,
         enabled: true,
-        supportsReasoningEffort: true,
+        supportsReasoningEffort: supportedReasoningEfforts.length > 0,
+        supportedReasoningEfforts,
+        defaultReasoningEffort,
+        supportsFastMode: model.fastModeSupported !== false,
       };
     });
   return [...subscriptionProfiles, ...gatewayProfiles];

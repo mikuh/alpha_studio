@@ -73,6 +73,10 @@ interface ModelRoute {
   baseUrl: string;
   endpointPath: string;
   upstreamModel: string;
+  contextWindowTokens: number;
+  supportedReasoningEfforts: string[];
+  defaultReasoningEffort: string;
+  fastModeSupported: boolean;
   enabled: boolean;
   sortOrder: number;
   inputYuanPerMillion: number;
@@ -282,7 +286,10 @@ const providerPresets: Array<{ id: string; label: string; config: Omit<typeof em
   { id: 'siliconflow', label: 'SiliconFlow · Chat', config: { provider: 'siliconflow', label: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', endpointPath: '/chat/completions', apiFormat: 'chat_completions', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
   { id: 'zhipu', label: '智谱 GLM · Chat', config: { provider: 'zhipu', label: 'Zhipu AI / GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', endpointPath: '/chat/completions', apiFormat: 'chat_completions', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
   { id: 'volcengine-ark', label: '火山方舟 · Chat', config: { provider: 'volcengine-ark', label: 'Volcengine Ark', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', endpointPath: '/chat/completions', apiFormat: 'chat_completions', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
+  { id: 'cli-proxy', label: 'CLIProxyAPI · Responses', config: { provider: 'cli-proxy', label: 'CLIProxyAPI', baseUrl: 'https://gpt.yuanliu.cloud/v1', endpointPath: '/responses', apiFormat: 'responses', authType: 'bearer', authHeader: 'authorization', customHeaders: '{}', queryParams: '{}', requestTimeoutMs: 300000, maxRetries: 2 } },
 ];
+
+const reasoningEffortOptions = ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 const emptyModelForm = {
   id: '',
@@ -293,6 +300,10 @@ const emptyModelForm = {
   baseUrl: 'https://api.openai.com/v1',
   endpointPath: '/responses',
   upstreamModel: '',
+  contextWindowTokens: 64_000,
+  supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'] as string[],
+  defaultReasoningEffort: 'medium',
+  fastModeSupported: false,
   enabled: true,
   sortOrder: 100,
   inputYuanPerMillion: 0,
@@ -751,6 +762,7 @@ function App() {
       provider: providerId,
       baseUrl: provider?.baseUrl || form.baseUrl,
       endpointPath: provider?.endpointPath || form.endpointPath,
+      contextWindowTokens: defaultContextWindowTokens(providerId),
     }));
   };
 
@@ -1587,12 +1599,17 @@ function inferApiFormat(provider: string, endpointPath: string) {
   return 'responses';
 }
 
+function defaultContextWindowTokens(provider: string | undefined) {
+  return provider === 'openai' || provider === 'cli-proxy' ? 258_000 : 64_000;
+}
+
 function modelFormForProvider(provider?: Pick<ProviderConfig, 'provider' | 'baseUrl' | 'endpointPath'> | null): typeof emptyModelForm {
   return {
     ...emptyModelForm,
     provider: provider?.provider || '',
     baseUrl: provider?.baseUrl || '',
     endpointPath: provider?.endpointPath || emptyModelForm.endpointPath,
+    contextWindowTokens: defaultContextWindowTokens(provider?.provider),
   };
 }
 
@@ -1606,6 +1623,10 @@ function modelFormFromRoute(model: ModelRoute): typeof emptyModelForm {
     baseUrl: model.baseUrl,
     endpointPath: model.endpointPath,
     upstreamModel: model.upstreamModel,
+    contextWindowTokens: model.contextWindowTokens,
+    supportedReasoningEfforts: model.supportedReasoningEfforts,
+    defaultReasoningEffort: model.defaultReasoningEffort,
+    fastModeSupported: model.fastModeSupported,
     enabled: model.enabled,
     sortOrder: model.sortOrder,
     inputYuanPerMillion: model.inputYuanPerMillion,
@@ -2059,6 +2080,32 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, disco
         <Field label="上游模型名" value={form.upstreamModel} onChange={(upstreamModel) => setForm({ ...form, upstreamModel })} required />
         <Field label="Base URL" value={form.baseUrl} onChange={(baseUrl) => setForm({ ...form, baseUrl })} />
         <Field label="Endpoint Path" value={form.endpointPath} onChange={(endpointPath) => setForm({ ...form, endpointPath })} />
+        <NumberField label="上下文窗口 tokens" value={form.contextWindowTokens} min={16_000} max={2_000_000} step={1_000} title="桌面端会根据该窗口管理上下文；自定义上游约在 75% 时提前压缩历史" onChange={(contextWindowTokens) => setForm({ ...form, contextWindowTokens })} />
+        <div className="field-wide capability-field">
+          <span>支持思考强度</span>
+          <div className="capability-checks">
+            {reasoningEffortOptions.map((effort) => (
+              <label key={effort}>
+                <input
+                  type="checkbox"
+                  aria-label={`思考强度 ${effort}`}
+                  checked={form.supportedReasoningEfforts.includes(effort)}
+                  onChange={(event) => {
+                    const supportedReasoningEfforts = event.target.checked
+                      ? [...form.supportedReasoningEfforts, effort]
+                      : form.supportedReasoningEfforts.filter((item) => item !== effort);
+                    const defaultReasoningEffort = supportedReasoningEfforts.includes(form.defaultReasoningEffort)
+                      ? form.defaultReasoningEffort
+                      : supportedReasoningEfforts[0] || '';
+                    setForm({ ...form, supportedReasoningEfforts, defaultReasoningEffort });
+                  }}
+                />
+                {effort}
+              </label>
+            ))}
+          </div>
+        </div>
+        <Select label="默认思考强度" value={form.defaultReasoningEffort} onChange={(defaultReasoningEffort) => setForm({ ...form, defaultReasoningEffort })} options={form.supportedReasoningEfforts} />
         <NumberField label="排序" value={form.sortOrder} onChange={(sortOrder) => setForm({ ...form, sortOrder })} />
         <NumberField label="输入 元/百万" value={form.inputYuanPerMillion} min={0} step="any" onChange={(inputYuanPerMillion) => setForm({ ...form, inputYuanPerMillion })} />
         <NumberField label="输出 元/百万" value={form.outputYuanPerMillion} min={0} step="any" onChange={(outputYuanPerMillion) => setForm({ ...form, outputYuanPerMillion })} />
@@ -2078,10 +2125,14 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, disco
           <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
           启用模型
         </label>
+        <label className="check-row">
+          <input type="checkbox" checked={form.fastModeSupported} onChange={(event) => setForm({ ...form, fastModeSupported: event.target.checked })} />
+          支持 Fast 模式
+        </label>
       </div>
       <div className="form-actions">
         <button type="button" className="secondary" onClick={onCancel} disabled={loading}>取消</button>
-        <button type="submit" disabled={loading || providers.length === 0}>保存模型</button>
+        <button type="submit" disabled={loading || providers.length === 0 || form.supportedReasoningEfforts.length === 0}>保存模型</button>
       </div>
     </form>
   );
@@ -2522,7 +2573,7 @@ function ModelTable({ models, onEdit, onDelete }: {
           {models.map((model) => (
             <tr key={model.id}>
               <td><strong>{model.label}</strong><span>{model.modelId}</span></td>
-              <td><strong>{model.upstreamModel}</strong><span>{model.endpointPath}</span></td>
+              <td><strong>{model.upstreamModel}</strong><span>{model.endpointPath} · 上下文 {formatWholeNumber(model.contextWindowTokens)} tokens · 思考 {model.supportedReasoningEfforts.join('/')} · {model.fastModeSupported ? 'Fast' : '标准速度'}</span></td>
               <td>
                 <strong>成本 {formatYuanPerMillion(model.inputYuanPerMillion)} / {formatYuanPerMillion(model.outputYuanPerMillion)}</strong>
                 <span>用户 {formatYuanPerMillion(userPrice(model.inputYuanPerMillion, priceMultiplierFromMarkupBps(model.markupBps)))} / {formatYuanPerMillion(userPrice(model.outputYuanPerMillion, priceMultiplierFromMarkupBps(model.markupBps)))} · ×{formatPriceMultiplier(priceMultiplierFromMarkupBps(model.markupBps))}</span>
@@ -2757,11 +2808,12 @@ function TextArea({ label, value, onChange, placeholder = '' }: {
   );
 }
 
-function NumberField({ label, value, onChange, min, step = 1, title }: {
+function NumberField({ label, value, onChange, min, max, step = 1, title }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
   min?: number;
+  max?: number;
   step?: number | 'any';
   title?: string;
 }) {
@@ -2772,6 +2824,7 @@ function NumberField({ label, value, onChange, min, step = 1, title }: {
         type="number"
         value={value}
         min={min}
+        max={max}
         step={step}
         title={title}
         onChange={(event) => onChange(Number(event.target.value || 0))}

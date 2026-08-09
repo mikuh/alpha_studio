@@ -2023,6 +2023,43 @@ code {
   grid-column: 1 / -1;
 }
 
+.capability-field {
+  display: grid;
+  gap: 8px;
+}
+
+.capability-field > span {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.capability-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.capability-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 7px 9px;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.capability-checks input {
+  width: 15px;
+  min-height: 15px;
+  box-shadow: none;
+  accent-color: var(--primary);
+}
+
 .price-multiplier-preview {
   display: grid;
   gap: 5px;

@@ -34,8 +34,10 @@ export interface CodexChatStartRequest {
   providerBaseUrl?: string;
   providerApiKey?: string;
   providerWireApi?: string;
+  providerContextWindowTokens?: number;
   providerThinkingEnabled?: boolean;
   reasoningEffort?: string;
+  serviceTier?: 'fast';
   sandboxMode?: SandboxMode;
   developerInstructions?: string;
   selectedSkill?: SkillSelection;

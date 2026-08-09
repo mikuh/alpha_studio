@@ -3,6 +3,7 @@ import {
   EFFORT_OPTIONS,
   effortLabel,
   modelProfilesFromCodexCatalog,
+  normalizeModelProfile,
   publicModelLabel,
   reasoningEffortOptionsForProfile,
   reconcileModelSelection,
@@ -118,7 +119,7 @@ describe('Codex model catalog domain', () => {
     }, 'ultra')).toBe('low');
   });
 
-  it('keeps low through xhigh for legacy profiles and labels max and ultra', () => {
+  it('keeps low through xhigh for legacy profiles and labels none, max and ultra', () => {
     const legacy: ModelProfile = {
       id: 'gateway',
       label: 'Gateway',
@@ -134,6 +135,19 @@ describe('Codex model catalog domain', () => {
       'low', 'medium', 'high', 'xhigh',
     ]);
     expect(effortLabel('max')).toBe('Max');
+    expect(effortLabel('none')).toBe('无');
     expect(effortLabel('ultra')).toBe('Ultra');
+  });
+
+  it('gives existing custom providers a conservative context window default', () => {
+    expect(normalizeModelProfile({
+      id: 'deepseek',
+      label: 'DeepSeek',
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+      wireApi: 'chat',
+      enabled: true,
+      supportsReasoningEffort: false,
+    })).toMatchObject({ contextWindowTokens: 64_000 });
   });
 });

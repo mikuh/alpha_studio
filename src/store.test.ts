@@ -141,7 +141,7 @@ describe('archive semantics', () => {
     });
   });
 
-  it.each(['max', 'ultra'] as const)('preserves dynamic reasoning effort %s during migration', (effort) => {
+  it.each(['none', 'max', 'ultra'] as const)('preserves dynamic reasoning effort %s during migration', (effort) => {
     const migrated = migratePersistedState({
       conversations: [conversation('dynamic')],
       reasoningEffort: effort,

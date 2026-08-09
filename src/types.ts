@@ -255,7 +255,7 @@ export interface CodexStatus {
   error?: string;
 }
 
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
 export interface CodexModelReasoningEffort {
   reasoningEffort: ReasoningEffort;
