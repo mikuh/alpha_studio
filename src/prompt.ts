@@ -104,6 +104,10 @@ export function buildCodingInstructions(
     '- 不要声称可以调用 `automation_update`，也不要自行通过 shell、crontab、launchd、osascript、本地文件、后台脚本或系统通知来实现自动化；除非用户明确要求本机系统级方案。',
     '- 对复杂自动化，请用简短中文列出建议配置（标题、频率、任务内容、运行环境）并请用户到左侧「自动化」页创建或补充缺失信息。',
     '',
+    '工具输出与上下文容量：',
+    '- 抓取网页、行情 API 或大型 JSON/HTML 时，将原始内容保存到工作区文件，终端只输出必要的字段、统计和错误摘要。',
+    '- 主动使用 `jq`、字段选择、行数/字符数限制等方式控制单次工具输出；不要把整页 HTML、完整行情池或 base64 内容打印到对话中。',
+    '',
     '回答要求：',
     ...domain.prompt.responseGuidance.map((line) => `- ${line}`),
   ].join('\n');

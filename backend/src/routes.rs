@@ -51,6 +51,11 @@ const CURRENT_PRIVACY_POLICY_VERSION: &str = "2026-08-04";
 const CURRENT_THIRD_PARTY_MODEL_NOTICE_VERSION: &str = "2026-08-04";
 const CURRENT_RESEARCH_RISK_DISCLOSURE_VERSION: &str = "2026-08-04";
 const GATEWAY_RUN_TTL_SECONDS: i64 = 48 * 60 * 60;
+// A Codex turn can issue a new model request after every tool result. Size the
+// task guard for a bounded agent loop, while tenant balance remains the actual
+// real-time spending gate before each request.
+const GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP: u64 = 64;
+const MAX_GATEWAY_TASK_BUDGET_YUAN: u64 = 10_000;
 
 pub async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
@@ -3304,12 +3309,14 @@ fn request_safety_charge_yuan(input_tokens: u64, output_tokens: u64, pricing: &P
 }
 
 fn recommended_run_budget_yuan(route: &ModelRoute) -> Decimal {
-    request_safety_charge_yuan(
+    let full_window_request = request_safety_charge_yuan(
         route.context_window_tokens,
         route.max_output_tokens,
         &route.pricing,
-    )
-    .max(default_budget_yuan())
+    );
+    (full_window_request * Decimal::from(GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP))
+        .min(Decimal::from(MAX_GATEWAY_TASK_BUDGET_YUAN))
+        .max(default_budget_yuan())
 }
 
 fn validate_run_budget(budget_yuan: Decimal) -> ApiResult<()> {
@@ -4482,7 +4489,7 @@ mod tests {
         settle_and_record_usage, start_gateway_request, stream_upstream_response,
         validate_client_agreement_acceptance, validate_offline_payment_request,
         ClientAgreementAcceptance, MeteringStatus, ModelRoute, OfflinePaymentRequest,
-        GATEWAY_RUN_TTL_SECONDS,
+        GATEWAY_RUN_TTL_SECONDS, GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP,
     };
     use crate::{
         billing::{GatewayUsage, Pricing},
@@ -4659,10 +4666,11 @@ mod tests {
         let budget = recommended_run_budget_yuan(&route);
 
         assert!(budget > Decimal::from(5_u64));
-        assert_eq!(budget, Decimal::new(15_073_280, 6));
+        assert_eq!(budget, Decimal::new(964_689_920, 6));
         assert_eq!(
             budget,
             request_safety_charge_yuan(1_048_576, 131_072, &route.pricing)
+                * Decimal::from(GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP)
         );
     }
 

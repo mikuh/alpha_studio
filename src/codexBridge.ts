@@ -35,6 +35,7 @@ export interface CodexChatStartRequest {
   providerApiKey?: string;
   providerWireApi?: string;
   providerContextWindowTokens?: number;
+  providerMaxOutputTokens?: number;
   providerThinkingEnabled?: boolean;
   reasoningEffort?: string;
   serviceTier?: 'fast';

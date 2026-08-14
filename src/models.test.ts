@@ -148,6 +148,20 @@ describe('Codex model catalog domain', () => {
       wireApi: 'chat',
       enabled: true,
       supportsReasoningEffort: false,
-    })).toMatchObject({ contextWindowTokens: 64_000 });
+    })).toMatchObject({ contextWindowTokens: 64_000, maxOutputTokens: 32_000 });
+  });
+
+  it('clamps a custom model output allowance to its context window', () => {
+    expect(normalizeModelProfile({
+      id: 'small-model',
+      label: 'Small Model',
+      providerId: 'custom',
+      model: 'small-model',
+      wireApi: 'responses',
+      contextWindowTokens: 16_000,
+      maxOutputTokens: 100_000,
+      enabled: true,
+      supportsReasoningEffort: false,
+    })).toMatchObject({ contextWindowTokens: 16_000, maxOutputTokens: 16_000 });
   });
 });

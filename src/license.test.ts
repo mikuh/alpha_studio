@@ -198,6 +198,7 @@ describe('client license session', () => {
         mode: 'gateway_api',
         enabled: true,
         contextWindowTokens: 200_000,
+        maxOutputTokens: 40_000,
       }],
     });
 
@@ -205,6 +206,7 @@ describe('client license session', () => {
       id: 'claude-route',
       providerId: ALPHA_GATEWAY_PROVIDER_ID,
       contextWindowTokens: 200_000,
+      maxOutputTokens: 40_000,
     });
   });
 
@@ -376,7 +378,7 @@ describe('client license session', () => {
       gatewayUrl: 'http://localhost:18080/v1/responses',
     }));
 
-    const run = await createGatewayRun('gpt-5.5', 5);
+    const run = await createGatewayRun('gpt-5.5');
 
     expect(run.providerBaseUrl).toBe('http://localhost:18080/v1');
     expect(run.providerApiKey).toBe('run-token');
@@ -390,7 +392,7 @@ describe('client license session', () => {
     expect(fetch).toHaveBeenCalledWith(
       'http://localhost:18080/api/runs/create',
       expect.objectContaining({
-        body: expect.stringContaining('"budgetYuan":5'),
+        body: expect.stringContaining('"budgetYuan":20'),
       }),
     );
   });

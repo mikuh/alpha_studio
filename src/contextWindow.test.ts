@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addBackgroundContextToPrompt,
   contextWindowUsage,
+  customModelInputBudgetTokens,
   formatTokenCount,
   prepareConversationForOutgoingTurn,
 } from './contextWindow';
@@ -30,6 +31,12 @@ function conversation(messages: ChatMessage[], patch: Partial<Conversation> = {}
 }
 
 describe('context window management', () => {
+  it('reserves output and tool headroom for custom-model input', () => {
+    expect(customModelInputBudgetTokens(64_000, 32_000)).toBe(28_800);
+    expect(customModelInputBudgetTokens(1_048_576, 131_072)).toBe(838_860);
+    expect(customModelInputBudgetTokens(1_048_576, 393_216)).toBe(639_360);
+  });
+
   it('keeps a normal resumed thread untouched below the compact threshold', () => {
     const current = conversation(
       [message(1, 'user', '分析一下今天的市场主线。')],
@@ -187,6 +194,48 @@ describe('context window management', () => {
     expect(prepared.conversation.codexThreadId).toBeUndefined();
     expect(prepared.conversation.codexTokenUsage).toBeUndefined();
     expect(prepared.promptContext).toContain('压缩背景摘要');
+  });
+
+  it('includes the pending prompt when deciding whether to roll over a custom-model thread', () => {
+    const current = conversation([
+      message(1, 'user', '第一轮问题。'),
+      message(2, 'assistant', '第一轮回答。'),
+      message(3, 'user', '第二轮问题。'),
+    ], {
+      codexThreadId: 'thread-near-custom-budget',
+      codexTokenUsage: {
+        total: { totalTokens: 20_000, inputTokens: 19_000, cachedInputTokens: 0, outputTokens: 1_000, reasoningOutputTokens: 0 },
+        last: { totalTokens: 20_000, inputTokens: 19_000, cachedInputTokens: 0, outputTokens: 1_000, reasoningOutputTokens: 0 },
+        modelContextWindow: 64_000,
+        updatedAt: 1,
+      },
+    });
+
+    const prepared = prepareConversationForOutgoingTurn(current, {
+      contextWindowTokens: 64_000,
+      maxOutputTokens: 32_000,
+      pendingInputTokens: 10_000,
+      compactResumableThread: true,
+    });
+
+    expect(prepared.compacted).toBe(true);
+    expect(prepared.conversation.codexThreadId).toBeUndefined();
+  });
+
+  it('keeps compacting old messages until the rebuilt prompt is inside the custom input budget', () => {
+    const longText = '需要保留的上下文证据。'.repeat(2_000);
+    const current = conversation(Array.from({ length: 12 }, (_, index) =>
+      message(index + 1, index % 2 === 0 ? 'user' : 'assistant', `${index + 1} ${longText}`),
+    ));
+
+    const prepared = prepareConversationForOutgoingTurn(current, {
+      contextWindowTokens: 16_000,
+      maxOutputTokens: 8_000,
+      compactResumableThread: true,
+    });
+
+    expect(prepared.compacted).toBe(true);
+    expect(prepared.conversation.backgroundContext?.sourceMessageCount).toBeGreaterThan(4);
   });
 
   it('can roll over a custom-model thread after one oversized exchange', () => {

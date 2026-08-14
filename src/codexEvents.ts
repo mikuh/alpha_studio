@@ -224,7 +224,7 @@ function appendToolStart(conversation: Conversation, now: number, event: CodexCh
           title: event.title || 'tool',
           status: 'in_progress',
           ...(target ? { target } : {}),
-          input: event.text,
+          input: clampToolLog(event.text),
         },
       ],
     };
@@ -240,7 +240,11 @@ function appendToolDelta(conversation: Conversation, now: number, event: CodexCh
       ...message,
       blocks: blocks.map((block) => {
         if (block.type !== 'tool' || block.id !== toolId) return block;
-        return { ...block, target: block.target || target, output: `${block.output || ''}${event.text || ''}` };
+        return {
+          ...block,
+          target: block.target || target,
+          output: clampToolLog(`${block.output || ''}${event.text || ''}`),
+        };
       }),
     };
   });
@@ -263,7 +267,7 @@ function completeTool(conversation: Conversation, now: number, event: CodexChatE
         // Image generation can return a multi-megabyte data URL nested inside a
         // generic `wait` result. Keep the image in a dedicated renderable block
         // instead of duplicating that payload inside the collapsed tool log.
-        output: hasImageResult ? '图片已生成，结果见下方。' : event.text || block.output,
+        output: hasImageResult ? '图片已生成，结果见下方。' : clampToolLog(event.text || block.output),
       };
     });
     const resultBlocks: MessageBlock[] = [...completedBlocks];
@@ -293,7 +297,7 @@ function failTool(conversation: Conversation, now: number, event: CodexChatEvent
           ...block,
           status: 'failed',
           target: block.target || target,
-          output: event.message || event.text || block.output,
+          output: clampToolLog(event.message || event.text || block.output),
         };
       }),
     };
@@ -545,19 +549,31 @@ const ABSOLUTE_FILE_PATH_PATTERN = new RegExp('(?:^|[\\s"\'(])((?:~|\\/)[^\\s"\'
 const GENERATED_FILE_HINT_PATTERN = /\b(?:generated|created|saved|wrote|written|exported|downloaded)\b|\boutput\s*(?:(?:file|document|report|artifact|path)\s*)?[:=]|(?:已生成|已创建|已保存|已导出|已下载|生成文件|创建文件|保存文件|导出文件|下载文件|交付文件|文件已生成|文件已保存|保存位置|输出(?:文件|路径)?\s*[:：=])/i;
 const GENERATED_REMOTE_FILE_HINT_PATTERN = /\b(?:(?:generated|created|saved|exported|downloaded)\s+(?:file|document|report|artifact|output)|(?:file|document|report|artifact|output)\s+(?:generated|created|saved|exported))\b|(?:已生成|已创建|已保存|已导出|生成文件|创建文件|保存文件|导出文件|交付文件|下载文件|文件已生成|文件已保存|保存位置)/i;
 
+// Tool logs are useful for diagnosis, but raw HTML and quote payloads can be
+// hundreds of kilobytes. Keeping them unbounded makes the transcript sluggish,
+// bloats copied conversations, and amplifies the next context-window estimate.
+// Preserve enough of the beginning and the latest tail to diagnose failures.
+export const TOOL_LOG_MAX_CHARACTERS = 48_000;
+const TOOL_LOG_HEAD_CHARACTERS = 36_000;
+const TOOL_LOG_TRUNCATION_MARKER = '\n\n…… Alpha Studio 已折叠过长的工具日志 ……\n\n';
+
+function clampToolLog(value: string | undefined): string | undefined {
+  if (!value || value.length <= TOOL_LOG_MAX_CHARACTERS) return value;
+  const tailCharacters = TOOL_LOG_MAX_CHARACTERS - TOOL_LOG_HEAD_CHARACTERS - TOOL_LOG_TRUNCATION_MARKER.length;
+  return `${value.slice(0, TOOL_LOG_HEAD_CHARACTERS)}${TOOL_LOG_TRUNCATION_MARKER}${value.slice(-tailCharacters)}`;
+}
+
 function imageResultFromToolEvent(event: CodexChatEvent, toolId: string): ImageResultBlock | null {
-  const candidates = [
-    ...extractImageCandidatesFromText(event.text || ''),
-    ...extractImageGenerationCandidates(event.raw),
-    ...extractImageCandidatesFromUnknown(event.raw),
-  ];
+  const imageGenerationTool = isImageGenerationTool(event);
+  const candidates = imageGenerationTool
+    ? [
+        ...extractImageCandidatesFromText(event.text || ''),
+        ...extractImageGenerationCandidates(event.raw),
+        ...extractImageCandidatesFromUnknown(event.raw),
+      ]
+    : extractExplicitInlineImageCandidatesFromEvent(event);
   const unique = uniqueImageCandidates(candidates);
   if (unique.length === 0) return null;
-  // The image tool is invoked through the generic orchestration layer. When it
-  // runs longer than one yield, the final bitmap arrives on a `wait` tool as an
-  // `input_image` data URL, so title-based detection alone drops a valid image.
-  const hasInlineImage = unique.some((candidate) => /^data:image\//i.test(candidate.src));
-  if (!isImageGenerationTool(event) && !hasInlineImage) return null;
   return {
     type: 'image_result',
     id: `${toolId}-result`,
@@ -572,6 +588,46 @@ function imageResultFromToolEvent(event: CodexChatEvent, toolId: string): ImageR
       };
     }),
   };
+}
+
+// Long-running image generation may finish through a generic `wait` tool. Only
+// accept its explicitly typed input_image/output_image payload. A data URL or
+// .png URL appearing inside shell/web output is source content, not a generated
+// artifact, and must never create an image card by itself.
+function extractExplicitInlineImageCandidatesFromEvent(event: CodexChatEvent): ImageCandidate[] {
+  const candidates = extractTypedInlineImageCandidates(event.raw);
+  const parsedText = parseJsonUnknown(event.text || '');
+  if (parsedText !== undefined) {
+    candidates.push(...extractTypedInlineImageCandidates(parsedText));
+  }
+  return candidates;
+}
+
+function extractTypedInlineImageCandidates(value: unknown): ImageCandidate[] {
+  if (!value || typeof value !== 'object') return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => extractTypedInlineImageCandidates(item));
+  }
+
+  const record = value as Record<string, unknown>;
+  const type = typeof record.type === 'string'
+    ? record.type.replace(/[\s_-]/g, '').toLowerCase()
+    : '';
+  const candidates: ImageCandidate[] = [];
+  if (type === 'inputimage' || type === 'outputimage') {
+    for (const key of ['image_url', 'imageUrl', 'url', 'src', 'path']) {
+      const source = record[key];
+      if (typeof source === 'string' && isImageSrc(source)) {
+        candidates.push({ src: source });
+      }
+    }
+  }
+  for (const entry of Object.values(record)) {
+    if (entry && typeof entry === 'object') {
+      candidates.push(...extractTypedInlineImageCandidates(entry));
+    }
+  }
+  return candidates;
 }
 
 function extractImageGenerationCandidates(value: unknown): ImageCandidate[] {

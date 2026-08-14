@@ -3,6 +3,7 @@ import {
   defaultModelProfiles,
   isReasoningEffort,
   normalizeCustomModelContextWindowTokens,
+  normalizeCustomModelMaxOutputTokens,
   publicModelLabel,
   type ModelProfile,
 } from './models';
@@ -64,6 +65,7 @@ export interface ClientModel {
   mode: string;
   enabled: boolean;
   contextWindowTokens?: number;
+  maxOutputTokens?: number;
   supportedReasoningEfforts?: string[];
   defaultReasoningEffort?: string;
   fastModeSupported?: boolean;
@@ -339,7 +341,15 @@ export async function revokeClientDevice(
   }, { retryLoopback: true });
 }
 
-export async function createGatewayRun(modelId: string, spendLimitYuan = 5): Promise<GatewayRunConfig> {
+// One Codex task can make many sequential model requests while it researches,
+// calls tools, and writes a final answer. Five yuan was too small for legitimate
+// long-form tasks because every repeated input is counted cumulatively.
+export const DEFAULT_GATEWAY_TASK_SPEND_LIMIT_YUAN = 20;
+
+export async function createGatewayRun(
+  modelId: string,
+  spendLimitYuan = DEFAULT_GATEWAY_TASK_SPEND_LIMIT_YUAN,
+): Promise<GatewayRunConfig> {
   const session = loadClientLicenseSession();
   if (!session) throw new Error('Alpha Studio 客户端尚未激活。');
   const data = await alphaFetch<{ runId: string; runToken: string }>(session.apiBaseUrl, '/api/runs/create', {
@@ -350,8 +360,8 @@ export async function createGatewayRun(modelId: string, spendLimitYuan = 5): Pro
       userId: session.user.id,
       deviceId: session.device.id,
       modelId,
-      // This limits one run's output exposure; the server does not reserve it
-      // from the account balance.
+      // This caps cumulative exposure for the whole multi-request task; the
+      // server does not reserve it from the account balance.
       budgetYuan: spendLimitYuan,
     }),
   });
@@ -415,6 +425,12 @@ export function modelProfilesFromClientLicense(
           : model.contextWindowTokens
             ? normalizeCustomModelContextWindowTokens(model.contextWindowTokens)
             : DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS,
+        maxOutputTokens: model.provider.trim().toLowerCase() === 'openai'
+          ? undefined
+          : normalizeCustomModelMaxOutputTokens(
+              model.maxOutputTokens,
+              model.contextWindowTokens ?? DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS,
+            ),
         enabled: true,
         supportsReasoningEffort: supportedReasoningEfforts.some(({ reasoningEffort }) => reasoningEffort !== 'none'),
         supportedReasoningEfforts,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyCodexEventToConversation } from './codexEvents';
+import { applyCodexEventToConversation, TOOL_LOG_MAX_CHARACTERS } from './codexEvents';
 import type { Conversation } from './types';
 
 function baseConversation(): Conversation {
@@ -334,6 +334,57 @@ describe('applyCodexEventToConversation', () => {
         ],
       },
     ]);
+  });
+
+  it('does not mistake images embedded in command output for generated results', () => {
+    const output = [
+      '<html><body>search result</body></html>',
+      'data:image/png;base64,iVBORw0KGgo=',
+      'https://www.bing.com/sa/simg/facebook_sharing_5.png',
+      '/rp/unrelated-page-asset.png',
+    ].join('\n');
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'exec-web-1',
+      title: 'command_execution',
+      text: output,
+      raw: {
+        item: {
+          type: 'commandExecution',
+          aggregatedOutput: output,
+        },
+      },
+    });
+
+    expect(completed.messages[0].blocks).toEqual([{
+      type: 'tool',
+      id: 'exec-web-1',
+      title: 'command_execution',
+      status: 'completed',
+      output,
+    }]);
+  });
+
+  it('bounds oversized tool logs while preserving the beginning and latest tail', () => {
+    const output = `BEGIN\n${'x'.repeat(80_000)}\nEND`;
+    const completed = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'large-tool-1',
+      title: 'command_execution',
+      text: output,
+    });
+    const tool = completed.messages[0].blocks[0];
+
+    expect(tool.type).toBe('tool');
+    if (tool.type !== 'tool') throw new Error('expected a tool block');
+    expect(tool.output?.length).toBe(TOOL_LOG_MAX_CHARACTERS);
+    expect(tool.output).toContain('BEGIN');
+    expect(tool.output).toContain('Alpha Studio 已折叠过长的工具日志');
+    expect(tool.output).toContain('END');
   });
 
   it('surfaces native app-server imageGeneration results', () => {

@@ -3263,6 +3263,50 @@ describe('right feature panel', () => {
     expect(screen.getByRole('dialog', { name: '猫图预览' })).toBeInTheDocument();
   });
 
+  it('hides persisted image cards that came from ordinary command output', () => {
+    useChatStore.setState({
+      conversations: [
+        conversation({
+          messages: [
+            {
+              id: 'assistant-false-image',
+              role: 'assistant',
+              timestamp: 1,
+              blocks: [
+                {
+                  type: 'tool',
+                  id: 'exec-web-1',
+                  title: 'command_execution',
+                  status: 'completed',
+                  output: 'curl search page',
+                },
+                {
+                  type: 'image_result',
+                  id: 'exec-web-1-result',
+                  title: '生成结果',
+                  images: [
+                    {
+                      id: 'bing-icon',
+                      src: 'https://www.bing.com/sa/simg/facebook_sharing_5.png',
+                      alt: 'facebook_sharing_5.png',
+                      name: 'facebook_sharing_5.png',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+
+    const { container } = render(<App />);
+    const messageList = container.querySelector('.message-list') as HTMLElement;
+
+    expect(messageList.querySelector('.generated-image-result')).toBeNull();
+    expect(within(messageList).queryByRole('button', { name: /facebook_sharing_5/ })).not.toBeInTheDocument();
+  });
+
   it('falls back to a local data URL when the Tauri asset preview cannot load', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
     useChatStore.setState({

@@ -102,6 +102,15 @@ describe('finance research domain', () => {
     expect(instructions).toContain('左侧「自动化」页');
   });
 
+  it('keeps large web and market payloads out of tool logs', () => {
+    const instructions = buildCodingInstructions();
+
+    expect(instructions).toContain('工具输出与上下文容量');
+    expect(instructions).toContain('原始内容保存到工作区文件');
+    expect(instructions).toContain('不要把整页 HTML');
+    expect(instructions).toContain('base64');
+  });
+
   it('keeps Alpha Studio instructions separate from the user task for app-server turns', () => {
     const instructions = buildCodingInstructions(
       { selectedSkill: { id: 'chrome', title: 'Chrome' } },

@@ -2,12 +2,18 @@ import type { ChatMessage, Conversation, MessageAttachment, MessageBlock } from 
 
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 258_000;
 export const CONTEXT_COMPACT_THRESHOLD_RATIO = 0.82;
-export const CUSTOM_MODEL_COMPACT_THRESHOLD_RATIO = 0.90;
+export const CUSTOM_MODEL_COMPACT_THRESHOLD_RATIO = 0.80;
 
 const CONTEXT_RECENT_MESSAGE_KEEP_COUNT = 8;
 const CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT = 2;
 const SUMMARY_TOKEN_TARGET = 12_000;
 const SYSTEM_CONTEXT_OVERHEAD_TOKENS = 1_200;
+const DEFAULT_OUTPUT_RESERVE_TOKENS = 32_000;
+const MAX_OUTPUT_RESERVE_RATIO = 0.50;
+const MIN_CUSTOM_MODEL_INPUT_RATIO = 0.35;
+const CONTEXT_SAFETY_MARGIN_RATIO = 0.05;
+const MIN_CONTEXT_SAFETY_MARGIN_TOKENS = 2_000;
+const MAX_CONTEXT_SAFETY_MARGIN_TOKENS = 16_000;
 
 export interface ContextWindowUsage {
   usedTokens: number;
@@ -31,6 +37,8 @@ export interface PreparedConversationContext {
 
 export interface PrepareConversationContextOptions {
   contextWindowTokens?: number;
+  maxOutputTokens?: number;
+  pendingInputTokens?: number;
   compactResumableThread?: boolean;
 }
 
@@ -63,9 +71,10 @@ export function prepareConversationForOutgoingTurn(
   options: PrepareConversationContextOptions = {},
 ): PreparedConversationContext {
   const contextWindowTokens = finitePositiveNumber(options.contextWindowTokens) ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
-  const compactThresholdRatio = options.compactResumableThread
-    ? CUSTOM_MODEL_COMPACT_THRESHOLD_RATIO
-    : CONTEXT_COMPACT_THRESHOLD_RATIO;
+  const compactThresholdTokens = options.compactResumableThread
+    ? customModelInputBudgetTokens(contextWindowTokens, options.maxOutputTokens)
+    : Math.floor(contextWindowTokens * CONTEXT_COMPACT_THRESHOLD_RATIO);
+  const pendingInputTokens = finiteNonNegativeNumber(options.pendingInputTokens);
   const minimumRecentMessageCount = options.compactResumableThread
     ? 1
     : CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT;
@@ -73,12 +82,18 @@ export function prepareConversationForOutgoingTurn(
   const shouldUseLocalCompaction = canUseLocalCompaction
     && shouldCompactConversation(
       conversation,
-      contextWindowTokens,
-      compactThresholdRatio,
+      compactThresholdTokens,
+      pendingInputTokens,
       minimumRecentMessageCount,
     );
   const compactedConversation = shouldUseLocalCompaction
-    ? compactConversation(conversation, contextWindowTokens, minimumRecentMessageCount)
+    ? compactConversation(
+        conversation,
+        contextWindowTokens,
+        compactThresholdTokens,
+        pendingInputTokens,
+        minimumRecentMessageCount,
+      )
     : conversation;
   const compacted = compactedConversation !== conversation;
   const needsPromptContext = compacted || !compactedConversation.codexThreadId;
@@ -90,6 +105,26 @@ export function prepareConversationForOutgoingTurn(
     promptContext,
     compacted,
   };
+}
+
+// Custom providers vary in how they account for output tokens, tool schemas,
+// and system instructions. Reserve the configured output allowance (up to half
+// the window) plus a fixed safety margin, while never waiting beyond 80%.
+export function customModelInputBudgetTokens(
+  contextWindowTokens: number,
+  maxOutputTokens?: number,
+): number {
+  const context = finitePositiveNumber(contextWindowTokens) ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+  const configuredOutput = finitePositiveNumber(maxOutputTokens) ?? DEFAULT_OUTPUT_RESERVE_TOKENS;
+  const outputReserve = Math.min(configuredOutput, Math.floor(context * MAX_OUTPUT_RESERVE_RATIO));
+  const safetyMargin = Math.min(
+    MAX_CONTEXT_SAFETY_MARGIN_TOKENS,
+    Math.max(MIN_CONTEXT_SAFETY_MARGIN_TOKENS, Math.floor(context * CONTEXT_SAFETY_MARGIN_RATIO)),
+  );
+  const ratioLimit = Math.floor(context * CUSTOM_MODEL_COMPACT_THRESHOLD_RATIO);
+  const capacityLimit = Math.max(0, context - outputReserve - safetyMargin);
+  const minimumInput = Math.floor(context * MIN_CUSTOM_MODEL_INPUT_RATIO);
+  return Math.max(minimumInput, Math.min(ratioLimit, capacityLimit));
 }
 
 export function addBackgroundContextToPrompt(prompt: string, context?: string): string {
@@ -170,8 +205,8 @@ export function buildBackgroundPromptContext(conversation: Conversation): string
 
 function shouldCompactConversation(
   conversation: Conversation,
-  contextWindowTokens = DEFAULT_CONTEXT_WINDOW_TOKENS,
-  compactThresholdRatio = CONTEXT_COMPACT_THRESHOLD_RATIO,
+  compactThresholdTokens = Math.floor(DEFAULT_CONTEXT_WINDOW_TOKENS * CONTEXT_COMPACT_THRESHOLD_RATIO),
+  pendingInputTokens = 0,
   minimumRecentMessageCount = CONTEXT_MIN_RECENT_MESSAGE_KEEP_COUNT,
 ): boolean {
   if (conversation.status === 'streaming') return false;
@@ -179,26 +214,45 @@ function shouldCompactConversation(
   if (activeMessages.length <= minimumRecentMessageCount) return false;
   const measuredTokens = finitePositiveNumber(conversation.codexTokenUsage?.last?.totalTokens) ?? 0;
   const usage = Math.max(measuredTokens, estimateConversationBackgroundTokens(conversation));
-  return usage >= contextWindowTokens * compactThresholdRatio;
+  return usage + pendingInputTokens >= compactThresholdTokens;
 }
 
 function compactConversation(
   conversation: Conversation,
   contextWindowTokens: number,
+  compactThresholdTokens: number,
+  pendingInputTokens: number,
   minimumRecentMessageCount: number,
 ): Conversation {
-  const cutIndex = compactCutIndex(conversation, minimumRecentMessageCount);
-  if (cutIndex <= (conversation.backgroundContext?.sourceMessageCount ?? 0)) return conversation;
-  const sourceMessages = conversation.messages.slice(
-    conversation.backgroundContext?.sourceMessageCount ?? 0,
-    cutIndex,
-  );
+  const start = conversation.backgroundContext?.sourceMessageCount ?? 0;
+  let cutIndex = compactCutIndex(conversation, minimumRecentMessageCount);
+  if (cutIndex <= start) return conversation;
+  const maximumCutIndex = Math.max(start, conversation.messages.length - minimumRecentMessageCount);
+  const now = Date.now();
+  let compacted = compactConversationAtIndex(conversation, cutIndex, contextWindowTokens, now);
+  while (
+    preparedPromptContextTokens(compacted) + pendingInputTokens > compactThresholdTokens
+    && cutIndex < maximumCutIndex
+  ) {
+    cutIndex += 1;
+    compacted = compactConversationAtIndex(conversation, cutIndex, contextWindowTokens, now);
+  }
+  return compacted;
+}
+
+function compactConversationAtIndex(
+  conversation: Conversation,
+  cutIndex: number,
+  contextWindowTokens: number,
+  now: number,
+): Conversation {
+  const start = conversation.backgroundContext?.sourceMessageCount ?? 0;
+  const sourceMessages = conversation.messages.slice(start, cutIndex);
   const summary = summarizeBackgroundContext(
     conversation.backgroundContext?.summary,
     sourceMessages,
     summaryTokenTarget(contextWindowTokens),
   );
-  const now = Date.now();
   return {
     ...conversation,
     codexThreadId: undefined,
@@ -236,6 +290,10 @@ function estimateConversationBackgroundTokens(conversation: Conversation): numbe
   return SYSTEM_CONTEXT_OVERHEAD_TOKENS + summaryTokens + estimateMessagesTokens(messagesForActiveBackground(conversation));
 }
 
+function preparedPromptContextTokens(conversation: Conversation): number {
+  return SYSTEM_CONTEXT_OVERHEAD_TOKENS + estimateTextTokens(buildBackgroundPromptContext(conversation) ?? '');
+}
+
 function codexContextWindowUsage(conversation: Conversation): { usedTokens: number; totalTokens: number } | null {
   const usage = conversation.codexTokenUsage;
   if (!usage) return null;
@@ -247,6 +305,11 @@ function codexContextWindowUsage(conversation: Conversation): { usedTokens: numb
 
 function finitePositiveNumber(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value);
+}
+
+function finiteNonNegativeNumber(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0;
   return Math.round(value);
 }
 

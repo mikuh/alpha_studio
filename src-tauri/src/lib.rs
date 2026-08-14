@@ -122,6 +122,7 @@ pub struct CodexChatRequest {
     provider_api_key: Option<String>,
     provider_wire_api: Option<String>,
     provider_context_window_tokens: Option<u32>,
+    provider_max_output_tokens: Option<u32>,
     provider_thinking_enabled: Option<bool>,
     reasoning_effort: Option<String>,
     service_tier: Option<String>,
@@ -160,6 +161,7 @@ struct ModelProviderConfig {
     adapter: Option<ModelProviderAdapter>,
     show_raw_reasoning: bool,
     context_window_tokens: Option<u32>,
+    max_output_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -194,6 +196,8 @@ pub struct ModelProfileConfig {
     api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_window_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u32>,
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default)]
@@ -4348,6 +4352,9 @@ fn sanitize_model_provider(
         context_window_tokens: request
             .provider_context_window_tokens
             .map(sanitize_custom_model_context_window),
+        max_output_tokens: request
+            .provider_max_output_tokens
+            .map(sanitize_custom_model_max_output),
     }))
 }
 
@@ -4355,6 +4362,33 @@ fn sanitize_custom_model_context_window(value: u32) -> u32 {
     const MIN_TOKENS: u32 = 16_000;
     const MAX_TOKENS: u32 = 2_000_000;
     value.clamp(MIN_TOKENS, MAX_TOKENS)
+}
+
+fn sanitize_custom_model_max_output(value: u32) -> u32 {
+    const MIN_TOKENS: u32 = 1_000;
+    const MAX_TOKENS: u32 = 1_000_000;
+    value.clamp(MIN_TOKENS, MAX_TOKENS)
+}
+
+fn custom_model_auto_compact_token_limit(
+    context_window_tokens: u32,
+    max_output_tokens: Option<u32>,
+) -> u32 {
+    const DEFAULT_OUTPUT_RESERVE_TOKENS: u32 = 32_000;
+    const MIN_SAFETY_MARGIN_TOKENS: u32 = 2_000;
+    const MAX_SAFETY_MARGIN_TOKENS: u32 = 16_000;
+
+    let output_reserve = max_output_tokens
+        .unwrap_or(DEFAULT_OUTPUT_RESERVE_TOKENS)
+        .min(context_window_tokens / 2);
+    let safety_margin =
+        (context_window_tokens / 20).clamp(MIN_SAFETY_MARGIN_TOKENS, MAX_SAFETY_MARGIN_TOKENS);
+    let ratio_limit = context_window_tokens.saturating_mul(4) / 5;
+    let capacity_limit = context_window_tokens
+        .saturating_sub(output_reserve)
+        .saturating_sub(safety_margin);
+    let minimum_input = context_window_tokens.saturating_mul(35) / 100;
+    ratio_limit.min(capacity_limit).max(minimum_input)
 }
 
 fn codex_app_server_args(
@@ -4403,7 +4437,10 @@ fn codex_app_server_args(
             "model_context_window",
             &context_window_tokens.to_string(),
         );
-        let compact_token_limit = context_window_tokens.saturating_mul(9) / 10;
+        let compact_token_limit = custom_model_auto_compact_token_limit(
+            context_window_tokens,
+            provider.max_output_tokens,
+        );
         push_raw_config_arg(
             &mut args,
             "model_auto_compact_token_limit",
@@ -8408,6 +8445,7 @@ mod tests {
             adapter: None,
             show_raw_reasoning: true,
             context_window_tokens: Some(64_000),
+            max_output_tokens: Some(32_000),
         };
 
         let args = codex_app_server_args(Some(&provider), Some("fast"));
@@ -8433,7 +8471,7 @@ mod tests {
                 "--config",
                 "model_context_window=64000",
                 "--config",
-                "model_auto_compact_token_limit=57600",
+                "model_auto_compact_token_limit=28800",
             ]
         );
     }
@@ -9398,6 +9436,7 @@ mod tests {
             provider_api_key: provider_api_key.map(str::to_string),
             provider_wire_api: provider_wire_api.map(str::to_string),
             provider_context_window_tokens: Some(64_000),
+            provider_max_output_tokens: Some(32_000),
             provider_thinking_enabled: Some(provider_wire_api == Some("chat")),
             reasoning_effort: None,
             service_tier: None,

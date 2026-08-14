@@ -7658,6 +7658,8 @@ const MessageBubble = memo(function MessageBubble({
 	                              : <WebSearchGroup key={`web-group-${unit.startIndex}`} blocks={unit.blocks} />)
 	                        : unit.block.type === 'file_result'
 	                          ? null
+	                          : unit.block.type === 'image_result' && !shouldRenderPersistedImageResult(unit.block, message.blocks)
+	                            ? null
 	                          : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={Boolean(message.isStreaming) && unit.index === lastBlockIndex} />,
 	                    )}
               {generatedFiles.length > 0 && (
@@ -8336,6 +8338,23 @@ function isCommandBlock(block: MessageBlock): boolean {
 
 function isWebSearchBlock(block: MessageBlock): boolean {
   return block.type === 'tool' && isWebSearchToolTitle(block.title);
+}
+
+// Conversations created before the event-parser fix may already contain an
+// image_result synthesized from raw shell/web output. Hide those stale cards
+// when their source block is a command or web search. Standalone image blocks,
+// Image Gen, view-image, screenshot, and generic wait payloads remain visible.
+function shouldRenderPersistedImageResult(
+  block: Extract<MessageBlock, { type: 'image_result' }>,
+  blocks: MessageBlock[],
+): boolean {
+  const sourceToolId = block.id.replace(/-result$/, '');
+  if (sourceToolId === block.id) return true;
+  const source = blocks.find((candidate): candidate is Extract<MessageBlock, { type: 'tool' }> => (
+    candidate.type === 'tool' && candidate.id === sourceToolId
+  ));
+  if (!source) return true;
+  return !isCommandBlock(source) && !isWebSearchBlock(source);
 }
 
 function isReconnectStatusBlock(block: MessageBlock): boolean {
@@ -13851,7 +13870,10 @@ function firstLine(value?: string): string {
 
 function messageToPlainText(message: ChatMessage): string {
   const hideReconnectStatus = message.blocks.some((block) => !isReconnectStatusBlock(block));
-  return message.blocks.filter((block) => !(hideReconnectStatus && isReconnectStatusBlock(block))).map((block) => {
+  return message.blocks.filter((block) => (
+    !(hideReconnectStatus && isReconnectStatusBlock(block))
+    && (block.type !== 'image_result' || shouldRenderPersistedImageResult(block, message.blocks))
+  )).map((block) => {
     if (block.type === 'text' || block.type === 'thinking' || block.type === 'error') return block.content;
     if (block.type === 'tool') return [block.title, block.input, block.output].filter(Boolean).join('\n');
     if (block.type === 'image_result') return [block.title, ...block.images.map((image) => image.src)].filter(Boolean).join('\n');

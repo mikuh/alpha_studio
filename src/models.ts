@@ -17,6 +17,9 @@ export type ModelWireApi = 'chat' | 'responses';
 export const DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS = 64_000;
 export const MIN_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS = 16_000;
 export const MAX_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS = 2_000_000;
+export const DEFAULT_CUSTOM_MODEL_MAX_OUTPUT_TOKENS = 32_000;
+export const MIN_CUSTOM_MODEL_MAX_OUTPUT_TOKENS = 1_000;
+export const MAX_CUSTOM_MODEL_MAX_OUTPUT_TOKENS = 1_000_000;
 
 export interface ModelProfile {
   id: string;
@@ -27,6 +30,7 @@ export interface ModelProfile {
   baseUrl?: string;
   apiKey?: string;
   contextWindowTokens?: number;
+  maxOutputTokens?: number;
   enabled: boolean;
   supportsReasoningEffort: boolean;
   supportsFastMode?: boolean;
@@ -195,6 +199,7 @@ export function normalizeModelProfile(value: unknown): ModelProfile | null {
   const baseUrl = optionalTrimmedString(source.baseUrl);
   const apiKey = optionalTrimmedString(source.apiKey);
   const builtIn = Boolean(source.builtIn) && BUILTIN_MODEL_PROFILES.some((profile) => profile.id === id);
+  const contextWindowTokens = builtIn ? undefined : normalizeCustomModelContextWindowTokens(source.contextWindowTokens);
   return {
     id,
     label,
@@ -203,7 +208,8 @@ export function normalizeModelProfile(value: unknown): ModelProfile | null {
     wireApi: builtIn ? 'responses' : wireApi,
     baseUrl: builtIn ? undefined : baseUrl,
     apiKey: builtIn ? undefined : apiKey,
-    contextWindowTokens: builtIn ? undefined : normalizeCustomModelContextWindowTokens(source.contextWindowTokens),
+    contextWindowTokens,
+    maxOutputTokens: builtIn ? undefined : normalizeCustomModelMaxOutputTokens(source.maxOutputTokens, contextWindowTokens),
     enabled: source.enabled !== false,
     supportsReasoningEffort: source.supportsReasoningEffort === true,
     supportsFastMode: source.supportsFastMode === true,
@@ -213,6 +219,7 @@ export function normalizeModelProfile(value: unknown): ModelProfile | null {
 
 export function normalizeModelProfileDraft(value: ModelProfileDraft): ModelProfileDraft {
   const providerId = normalizeProviderId(value.providerId) || 'custom';
+  const contextWindowTokens = normalizeCustomModelContextWindowTokens(value.contextWindowTokens);
   return {
     label: value.label.trim() || value.model.trim() || providerId,
     providerId,
@@ -220,7 +227,8 @@ export function normalizeModelProfileDraft(value: ModelProfileDraft): ModelProfi
     wireApi: value.wireApi === 'chat' ? 'chat' : 'responses',
     baseUrl: optionalTrimmedString(value.baseUrl),
     apiKey: optionalTrimmedString(value.apiKey),
-    contextWindowTokens: normalizeCustomModelContextWindowTokens(value.contextWindowTokens),
+    contextWindowTokens,
+    maxOutputTokens: normalizeCustomModelMaxOutputTokens(value.maxOutputTokens, contextWindowTokens),
     enabled: value.enabled !== false,
     supportsReasoningEffort: value.supportsReasoningEffort === true,
     supportsFastMode: value.supportsFastMode === true,
@@ -250,6 +258,23 @@ export function normalizeCustomModelContextWindowTokens(value: unknown): number 
   return Math.min(
     MAX_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS,
     Math.max(MIN_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS, Math.round(numeric)),
+  );
+}
+
+export function normalizeCustomModelMaxOutputTokens(
+  value: unknown,
+  contextWindowTokens = DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW_TOKENS,
+): number {
+  const numeric = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value.trim())
+      : Number.NaN;
+  const fallback = Math.min(DEFAULT_CUSTOM_MODEL_MAX_OUTPUT_TOKENS, contextWindowTokens);
+  const normalized = Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : fallback;
+  return Math.min(
+    MAX_CUSTOM_MODEL_MAX_OUTPUT_TOKENS,
+    Math.max(MIN_CUSTOM_MODEL_MAX_OUTPUT_TOKENS, Math.min(contextWindowTokens, normalized)),
   );
 }
 

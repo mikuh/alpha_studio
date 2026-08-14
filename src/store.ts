@@ -3,7 +3,7 @@ import { persist, type PersistStorage } from 'zustand/middleware';
 import { addScheduledAutomationTask, automationCreatedReply, detectAutomationIntent } from './automation';
 import {
   addBackgroundContextToPrompt,
-  messagesForActiveBackground,
+  estimateTextTokens,
   prepareConversationForOutgoingTurn,
   type PrepareConversationContextOptions,
 } from './contextWindow';
@@ -505,9 +505,26 @@ export const useChatStore = create<ChatState>()(
         }
 
         const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+        const domain = activeDomain(get().workModeId);
+        const promptOptions = {
+          selectedSkill: userMessage.selectedSkill,
+          coworkers: userMessage.coworkers,
+        };
+        const outgoingPrompt = addThemeAbilityContext(
+          promptWithSelectedTextContexts(promptWithAttachments(trimmed, attachmentList), selectedTextContexts),
+          userMessage.selectedSkill?.id,
+          get().conversations,
+        );
+        const developerInstructions = buildCodingInstructions(
+          { ...promptOptions, nativeSkillInput: Boolean(userMessage.selectedSkill) },
+          domain,
+        );
         const preparedContext = prepareConversationForOutgoingTurn(
           conversation,
-          modelContextPreparationOptions(modelProfile),
+          modelContextPreparationOptions(
+            modelProfile,
+            estimateTextTokens(outgoingPrompt) + estimateTextTokens(developerInstructions),
+          ),
         );
         const baseConversation = removeQueuedMessageFromConversation(preparedContext.conversation, queuedMessageId);
 
@@ -550,25 +567,10 @@ export const useChatStore = create<ChatState>()(
               ? { ...item, activeModelProfileId: modelProfile.id }
               : item),
           }));
-          const domain = activeDomain(get().workModeId);
-          const promptOptions = {
-            selectedSkill: userMessage.selectedSkill,
-            coworkers: userMessage.coworkers,
-          };
           const result = await startCodexChat({
             conversationId,
-            prompt: addBackgroundContextToPrompt(
-              addThemeAbilityContext(
-                promptWithSelectedTextContexts(promptWithAttachments(trimmed, attachmentList), selectedTextContexts),
-                userMessage.selectedSkill?.id,
-                get().conversations,
-              ),
-              preparedContext.promptContext,
-            ),
-            developerInstructions: buildCodingInstructions(
-              { ...promptOptions, nativeSkillInput: Boolean(userMessage.selectedSkill) },
-              domain,
-            ),
+            prompt: addBackgroundContextToPrompt(outgoingPrompt, preparedContext.promptContext),
+            developerInstructions,
             selectedSkill: userMessage.selectedSkill,
             attachments: attachmentList,
             codexThreadId: latest?.codexThreadId,
@@ -1269,9 +1271,10 @@ export const useChatStore = create<ChatState>()(
         const nextTitle = conversation.messages.length === 0 ? request.label : conversation.title;
 
         const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+        const reviewPrompt = buildReviewPrompt(request);
         const preparedContext = prepareConversationForOutgoingTurn(
           conversation,
-          modelContextPreparationOptions(modelProfile),
+          modelContextPreparationOptions(modelProfile, estimateTextTokens(reviewPrompt)),
         );
 
         set((state) => ({
@@ -1306,7 +1309,7 @@ export const useChatStore = create<ChatState>()(
 	          // matching Codex's dedicated reviewer (no approval prompt needed).
 	          const result = await startCodexChat({
 	            conversationId,
-	            prompt: addBackgroundContextToPrompt(buildReviewPrompt(request), preparedContext.promptContext),
+	            prompt: addBackgroundContextToPrompt(reviewPrompt, preparedContext.promptContext),
 	            codexThreadId: latest?.codexThreadId,
 	            cwd: latest?.cwd || undefined,
 	            ...(await codexModelRequest(modelProfile, get().reasoningEffort, get().speed)),
@@ -1360,6 +1363,15 @@ export const useChatStore = create<ChatState>()(
             ? conversation.backgroundContext
             : undefined;
         const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
+        const domain = activeDomain(get().workModeId);
+        const promptOptions = {
+          selectedSkill: original.selectedSkill,
+          coworkers: original.coworkers,
+        };
+        const developerInstructions = buildCodingInstructions(
+          { ...promptOptions, nativeSkillInput: Boolean(original.selectedSkill) },
+          domain,
+        );
         const preparedContext = prepareConversationForOutgoingTurn(
           {
             ...conversation,
@@ -1371,9 +1383,11 @@ export const useChatStore = create<ChatState>()(
             codexCompactedAt: undefined,
             backgroundContext: retainedBackgroundContext,
           },
-          modelContextPreparationOptions(modelProfile),
+          modelContextPreparationOptions(
+            modelProfile,
+            estimateTextTokens(trimmed) + estimateTextTokens(developerInstructions),
+          ),
         );
-        const activePreviousMessages = messagesForActiveBackground(preparedContext.conversation);
         const editedUserMessage: ChatMessage = {
           ...original,
           timestamp: now,
@@ -1430,21 +1444,10 @@ export const useChatStore = create<ChatState>()(
               ? { ...item, activeModelProfileId: modelProfile.id }
               : item),
           }));
-          const domain = activeDomain(get().workModeId);
-          const promptOptions = {
-            selectedSkill: original.selectedSkill,
-            coworkers: original.coworkers,
-          };
           const result = await startCodexChat({
             conversationId,
-            prompt: addBackgroundContextToPrompt(
-              buildEditedPrompt(trimmed, activePreviousMessages),
-              preparedContext.promptContext,
-            ),
-            developerInstructions: buildCodingInstructions(
-              { ...promptOptions, nativeSkillInput: Boolean(original.selectedSkill) },
-              domain,
-            ),
+            prompt: addBackgroundContextToPrompt(trimmed, preparedContext.promptContext),
+            developerInstructions,
             selectedSkill: original.selectedSkill,
             attachments: nextAttachments,
             cwd: latest?.cwd || undefined,
@@ -2042,6 +2045,7 @@ async function codexModelRequest(profile: ModelProfile, reasoningEffort: Reasoni
       providerApiKey: gateway.providerApiKey,
       providerWireApi: gateway.providerWireApi,
       providerContextWindowTokens: profile.contextWindowTokens,
+      providerMaxOutputTokens: profile.maxOutputTokens,
       reasoningEffort: profile.supportsReasoningEffort ? validatedEffort : undefined,
       serviceTier,
     };
@@ -2053,16 +2057,24 @@ async function codexModelRequest(profile: ModelProfile, reasoningEffort: Reasoni
     providerApiKey: profile.apiKey,
     providerWireApi: profile.wireApi,
     providerContextWindowTokens: profile.providerId === 'openai' ? undefined : profile.contextWindowTokens,
+    providerMaxOutputTokens: profile.providerId === 'openai' ? undefined : profile.maxOutputTokens,
     providerThinkingEnabled: profile.wireApi === 'chat' ? profile.supportsReasoningEffort : undefined,
     reasoningEffort: profile.supportsReasoningEffort ? validatedEffort : undefined,
     serviceTier,
   };
 }
 
-function modelContextPreparationOptions(profile: ModelProfile): PrepareConversationContextOptions {
-  if (profile.providerId === 'openai' || !profile.contextWindowTokens) return {};
+function modelContextPreparationOptions(
+  profile: ModelProfile,
+  pendingInputTokens = 0,
+): PrepareConversationContextOptions {
+  if (profile.providerId === 'openai' || !profile.contextWindowTokens) {
+    return pendingInputTokens > 0 ? { pendingInputTokens } : {};
+  }
   return {
     contextWindowTokens: profile.contextWindowTokens,
+    maxOutputTokens: profile.maxOutputTokens,
+    pendingInputTokens,
     compactResumableThread: true,
   };
 }
@@ -2119,28 +2131,6 @@ function localContextCompactionBlock(conversation: Conversation): MessageBlock |
     target: `已压缩前 ${background.sourceMessageCount} 条历史上下文`,
     output: 'Alpha Studio 已将较早的可见对话整理为背景摘要，并随本轮消息交给 GPT 继续使用。',
   };
-}
-
-function buildEditedPrompt(message: string, previousMessages: ChatMessage[]): string {
-  const context = previousMessages
-    .map((item) => {
-      const content = messageBlocksToText(item.blocks);
-      if (!content) return null;
-      return `${item.role === 'user' ? '用户' : 'AI'}：\n${content}`;
-    })
-    .filter(Boolean)
-    .join('\n\n');
-
-  if (!context) return message;
-
-  return [
-    '以下是本地可见的历史上下文。用户刚刚编辑了后续的一条消息，旧回复已被截断。',
-    '',
-    context,
-    '',
-    '请基于以上上下文回答这条编辑后的用户消息：',
-    message,
-  ].join('\n');
 }
 
 function messageBlocksToText(blocks: ChatMessage['blocks']): string {
