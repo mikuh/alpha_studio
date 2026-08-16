@@ -57,6 +57,12 @@ const GATEWAY_RUN_TTL_SECONDS: i64 = 48 * 60 * 60;
 // real-time spending gate before each request.
 const GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP: u64 = 64;
 const MAX_GATEWAY_TASK_BUDGET_YUAN: u64 = 10_000;
+// Codex can start the request after a tool result as soon as it receives the
+// function-call item, before the preceding Responses stream emits its final
+// usage frame. Give that stream time to settle and release the per-run lease
+// instead of surfacing a false 429 to the client.
+const GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
+const GATEWAY_REQUEST_LEASE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 pub async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
@@ -3148,43 +3154,64 @@ async fn start_gateway_request(
     claims: &RunTokenClaims,
     gateway_request_id: &str,
 ) -> ApiResult<Decimal> {
-    let row = sqlx::query(
-        r#"
-        update model_runs r
-        set status = 'running',
-            started_at = coalesce(r.started_at, now()),
-            active_request_id = $7,
-            request_count = r.request_count + 1,
-            last_activity_at = now()
-        from tenants t, devices d
-        where r.id = $1 and r.tenant_id = $2 and r.user_id = $3
-          and r.device_id = $4 and r.model_id = $5
-          and r.budget_yuan = $6
-          and r.status in ('created', 'running')
-          and r.active_request_id is null
-          and r.accumulated_billable_yuan < r.budget_yuan
-          and t.id = r.tenant_id and t.status = 'active' and t.balance_yuan > 0
-          and d.id = r.device_id and d.tenant_id = r.tenant_id
-          and d.status = 'active' and d.lease_expires_at > now()
-        returning r.budget_yuan - r.accumulated_billable_yuan as remaining_budget_yuan
-        "#,
-    )
-    .bind(&claims.run_id)
-    .bind(&claims.tenant_id)
-    .bind(&claims.user_id)
-    .bind(&claims.device_id)
-    .bind(&claims.model_id)
-    .bind(claims.budget_yuan)
-    .bind(gateway_request_id)
-    .fetch_optional(pool)
-    .await?;
-    row.map(|row| row.get::<Decimal, _>("remaining_budget_yuan"))
-        .ok_or_else(|| {
-            ApiError::TooManyRequests(
-                "this task already has an in-flight model request or its budget is exhausted"
+    let waiting_since = std::time::Instant::now();
+    let mut waited_for_previous_request = false;
+    loop {
+        let row = sqlx::query(
+            r#"
+            update model_runs r
+            set status = 'running',
+                started_at = coalesce(r.started_at, now()),
+                active_request_id = $7,
+                request_count = r.request_count + 1,
+                last_activity_at = now()
+            from tenants t, devices d
+            where r.id = $1 and r.tenant_id = $2 and r.user_id = $3
+              and r.device_id = $4 and r.model_id = $5
+              and r.budget_yuan = $6
+              and r.status in ('created', 'running')
+              and r.active_request_id is null
+              and r.accumulated_billable_yuan < r.budget_yuan
+              and t.id = r.tenant_id and t.status = 'active' and t.balance_yuan > 0
+              and d.id = r.device_id and d.tenant_id = r.tenant_id
+              and d.status = 'active' and d.lease_expires_at > now()
+            returning r.budget_yuan - r.accumulated_billable_yuan as remaining_budget_yuan
+            "#,
+        )
+        .bind(&claims.run_id)
+        .bind(&claims.tenant_id)
+        .bind(&claims.user_id)
+        .bind(&claims.device_id)
+        .bind(&claims.model_id)
+        .bind(claims.budget_yuan)
+        .bind(gateway_request_id)
+        .fetch_optional(pool)
+        .await?;
+        if let Some(row) = row {
+            if waited_for_previous_request {
+                tracing::info!(
+                    run_id = %claims.run_id,
+                    wait_ms = waiting_since.elapsed().as_millis(),
+                    "waited for previous gateway request settlement"
+                );
+            }
+            return Ok(row.get::<Decimal, _>("remaining_budget_yuan"));
+        }
+
+        // Revalidate after a failed atomic acquisition so an exhausted budget,
+        // revoked device, or expired run fails immediately instead of waiting.
+        // If it remains available, the only transient blocker is another active
+        // request for this same run.
+        ensure_gateway_run_available(pool, claims).await?;
+        if waiting_since.elapsed() >= GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT {
+            return Err(ApiError::TooManyRequests(
+                "the previous model request did not settle before the next request arrived"
                     .to_string(),
-            )
-        })
+            ));
+        }
+        waited_for_previous_request = true;
+        tokio::time::sleep(GATEWAY_REQUEST_LEASE_RETRY_INTERVAL).await;
+    }
 }
 
 async fn release_gateway_request(
@@ -4855,6 +4882,48 @@ mod tests {
             ensure_gateway_run_available(&pool, &claims).await.unwrap();
         }
 
+        // Codex may send the post-tool request before the previous stream has
+        // delivered its final usage frame. The second acquisition must wait for
+        // settlement rather than fail with a transient 429.
+        let overlapping_owner = "gwreq_overlap_owner";
+        start_gateway_request(&pool, &claims, overlapping_owner)
+            .await
+            .unwrap();
+        let waiting_pool = pool.clone();
+        let waiting_claims = claims.clone();
+        let waiting_started = std::time::Instant::now();
+        let waiting_request = tokio::spawn(async move {
+            start_gateway_request(&waiting_pool, &waiting_claims, "gwreq_overlap_waiter").await
+        });
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        settle_and_record_usage(
+            &pool,
+            &claims,
+            overlapping_owner,
+            &pricing,
+            &usage,
+            200,
+            Utc::now(),
+            MeteringStatus::Reported,
+        )
+        .await
+        .unwrap();
+        let remaining = waiting_request.await.unwrap().unwrap();
+        assert!(remaining > Decimal::ZERO);
+        assert!(waiting_started.elapsed() >= Duration::from_millis(200));
+        settle_and_record_usage(
+            &pool,
+            &claims,
+            "gwreq_overlap_waiter",
+            &pricing,
+            &usage,
+            200,
+            Utc::now(),
+            MeteringStatus::Reported,
+        )
+        .await
+        .unwrap();
+
         let run = sqlx::query(
             r#"
             select status, active_request_id, request_count, accumulated_billable_yuan
@@ -4867,7 +4936,7 @@ mod tests {
         .unwrap();
         assert_eq!(run.get::<String, _>("status"), "running");
         assert_eq!(run.get::<Option<String>, _>("active_request_id"), None);
-        assert_eq!(run.get::<i64, _>("request_count"), 2);
+        assert_eq!(run.get::<i64, _>("request_count"), 4);
         assert!(run.get::<Decimal, _>("accumulated_billable_yuan") > Decimal::ZERO);
         let settlement_count = sqlx::query_scalar::<_, i64>(
             "select count(*)::bigint from usage_events where run_id = $1",
@@ -4876,7 +4945,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(settlement_count, 2);
+        assert_eq!(settlement_count, 4);
 
         sqlx::query("delete from tenants where id = $1")
             .bind(&tenant_id)
