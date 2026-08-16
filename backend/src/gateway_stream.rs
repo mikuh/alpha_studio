@@ -88,6 +88,14 @@ pub fn inspect_responses_stream_data(data: &str) -> Option<NativeStreamEvent> {
     }
 }
 
+/// Completion frames must not reach Codex until the gateway has settled usage
+/// and released the run's per-request lease. Codex starts the next model call
+/// as soon as it observes one of these frames; waiting only for the HTTP body
+/// to reach EOF is therefore too late.
+pub fn is_terminal_responses_stream_data(data: &str) -> bool {
+    data.trim() == "[DONE]" || inspect_responses_stream_data(data).is_some()
+}
+
 /// Rewrite a complete native Responses SSE frame after a strict upstream used
 /// flattened names for Codex namespace tools. Non-JSON and unchanged frames are
 /// returned byte-for-byte.
@@ -432,6 +440,10 @@ impl ResponsesStreamAdapter {
 
     pub fn usage(&self) -> GatewayUsage {
         self.usage.clone()
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.finished
     }
 
     fn ingest_chat(&mut self, value: &Value) -> Result<String, String> {
@@ -1045,6 +1057,7 @@ mod tests {
             .unwrap();
         let done = adapter.ingest(r#"{"type":"message_stop"}"#).unwrap();
         assert!(done.contains("response.completed"));
+        assert!(adapter.is_finished());
         assert_eq!(adapter.usage().input_tokens, 12);
         assert_eq!(adapter.usage().output_tokens, 4);
     }
@@ -1063,6 +1076,20 @@ mod tests {
                 reasoning_tokens: 1,
             }))
         );
+    }
+
+    #[test]
+    fn identifies_native_frames_that_can_trigger_a_follow_up_request() {
+        assert!(is_terminal_responses_stream_data(
+            r#"{"type":"response.completed","response":{"usage":{}}}"#
+        ));
+        assert!(is_terminal_responses_stream_data(
+            r#"{"type":"response.failed","response":{"error":{}}}"#
+        ));
+        assert!(is_terminal_responses_stream_data("[DONE]"));
+        assert!(!is_terminal_responses_stream_data(
+            r#"{"type":"response.output_text.delta","delta":"hello"}"#
+        ));
     }
 
     #[test]

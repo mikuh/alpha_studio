@@ -33,8 +33,9 @@ use crate::{
         ProviderApiFormat, ProviderAuthType, ProviderConfig, UpstreamRequest,
     },
     gateway_stream::{
-        inspect_responses_stream_data, restore_namespace_tools_in_sse_frame, NativeStreamEvent,
-        ResponsesStreamAdapter, SseDecoder,
+        inspect_responses_stream_data, is_terminal_responses_stream_data,
+        restore_namespace_tools_in_sse_frame, NativeStreamEvent, ResponsesStreamAdapter,
+        SseDecoder,
     },
     license::{
         can_activate_device, codex_subscription_available, hash_authorization_code,
@@ -2512,6 +2513,8 @@ fn stream_upstream_response(
         let mut usage = GatewayUsage::default();
         let mut failed = false;
         let mut failure_message = None;
+        let mut saw_done = false;
+        let mut terminal_output = Vec::new();
 
         while let Some(chunk) = source.next().await {
             match chunk {
@@ -2523,67 +2526,89 @@ fn stream_upstream_response(
                                 continue;
                             };
                             match adapter.ingest(&data) {
+                                Ok(output) if adapter.is_finished() => {
+                                    terminal_output.extend_from_slice(output.as_bytes());
+                                    saw_done = true;
+                                }
                                 Ok(output) => send_stream_bytes(&sender, output).await,
                                 Err(error) => {
                                     failed = true;
                                     failure_message = Some(error.clone());
-                                    send_stream_bytes(&sender, adapter.fail(&error)).await;
+                                    terminal_output
+                                        .extend_from_slice(adapter.fail(&error).as_bytes());
                                     break;
                                 }
                             }
                         }
                     } else {
                         for frame in frames {
+                            let terminal = frame
+                                .data
+                                .as_deref()
+                                .map(is_terminal_responses_stream_data)
+                                .unwrap_or(false);
                             if let Some(data) = frame.data.as_deref() {
                                 match inspect_responses_stream_data(data) {
                                     Some(NativeStreamEvent::Completed(value)) => usage = value,
                                     Some(NativeStreamEvent::Failed) => failed = true,
                                     None => {}
                                 }
+                                if data.trim() == "[DONE]" {
+                                    saw_done = true;
+                                }
                             }
-                            if namespace_tool_compat {
-                                let output =
-                                    restore_namespace_tools_in_sse_frame(frame, &original_body);
+                            let output = if namespace_tool_compat {
+                                restore_namespace_tools_in_sse_frame(frame, &original_body)
+                            } else {
+                                frame.raw
+                            };
+                            if terminal {
+                                terminal_output.extend_from_slice(&output);
+                            } else {
                                 let _ = sender.send(Ok(Bytes::from(output))).await;
                             }
                         }
-                        if !namespace_tool_compat {
-                            // Native Responses SSE needs no protocol conversion. Forward each
-                            // network chunk immediately instead of waiting for a complete event.
-                            let _ = sender.send(Ok(chunk)).await;
-                        }
                     }
-                    if failed {
+                    if failed || saw_done {
                         break;
                     }
                 }
                 Err(error) => {
                     failed = true;
                     failure_message = Some(error.to_string());
-                    if let Some(adapter) = adapter.as_mut() {
-                        send_stream_bytes(&sender, adapter.fail(&error.to_string())).await;
+                    let output = if let Some(adapter) = adapter.as_mut() {
+                        adapter.fail(&error.to_string())
                     } else {
-                        send_stream_bytes(&sender, native_stream_failure(&error.to_string())).await;
-                    }
+                        native_stream_failure(&error.to_string())
+                    };
+                    terminal_output.extend_from_slice(output.as_bytes());
                     break;
                 }
             }
         }
 
-        if !failed {
+        if !failed && !saw_done {
             if let Some(frame) = decoder.finish() {
                 if let Some(adapter) = adapter.as_mut() {
                     if let Some(data) = frame.data.as_deref() {
                         match adapter.ingest(data) {
+                            Ok(output) if adapter.is_finished() => {
+                                terminal_output.extend_from_slice(output.as_bytes());
+                            }
                             Ok(output) => send_stream_bytes(&sender, output).await,
                             Err(error) => {
                                 failed = true;
                                 failure_message = Some(error.clone());
-                                send_stream_bytes(&sender, adapter.fail(&error)).await;
+                                terminal_output.extend_from_slice(adapter.fail(&error).as_bytes());
                             }
                         }
                     }
                 } else {
+                    let terminal = frame
+                        .data
+                        .as_deref()
+                        .map(is_terminal_responses_stream_data)
+                        .unwrap_or(false);
                     if let Some(data) = frame.data.as_deref() {
                         if let Some(event) = inspect_responses_stream_data(data) {
                             match event {
@@ -2592,8 +2617,14 @@ fn stream_upstream_response(
                             }
                         }
                     }
-                    if namespace_tool_compat {
-                        let output = restore_namespace_tools_in_sse_frame(frame, &original_body);
+                    let output = if namespace_tool_compat {
+                        restore_namespace_tools_in_sse_frame(frame, &original_body)
+                    } else {
+                        frame.raw
+                    };
+                    if terminal {
+                        terminal_output.extend_from_slice(&output);
+                    } else {
                         let _ = sender.send(Ok(Bytes::from(output))).await;
                     }
                 }
@@ -2602,7 +2633,7 @@ fn stream_upstream_response(
 
         if !failed {
             if let Some(adapter) = adapter.as_mut() {
-                send_stream_bytes(&sender, adapter.finish()).await;
+                terminal_output.extend_from_slice(adapter.finish().as_bytes());
                 usage = adapter.usage();
             }
         }
@@ -2640,9 +2671,12 @@ fn stream_upstream_response(
                 tracing::warn!(run_id = %claims.run_id, %message, "upstream model stream failed");
             }
         }
-        // Settle and release the per-request lease before Codex sees EOF. Codex
-        // immediately follows tool results with another Responses call using the
-        // same task token, so releasing after EOF creates a false concurrency race.
+        // Codex starts the next model call when it sees response.completed or
+        // [DONE], without waiting for HTTP EOF. Publish those terminal frames only
+        // after settlement has released this run's per-request lease.
+        if !terminal_output.is_empty() {
+            let _ = sender.send(Ok(Bytes::from(terminal_output))).await;
+        }
         drop(sender);
     });
 
@@ -4940,6 +4974,102 @@ mod tests {
         .expect("gateway stream did not close after the upstream completion");
         assert!(started.elapsed() >= Duration::from_millis(200));
         assert!(rest.contains("second"));
+        assert!(rest.contains("response.completed"));
+        assert!(rest.contains("data: [DONE]"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn withholds_native_terminal_frames_from_a_shared_network_chunk() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let stream = futures_util::stream::once(async {
+                    Ok::<Bytes, Infallible>(Bytes::from_static(
+                        br#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"ready"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"usage":{"input_tokens":8,"output_tokens":3}}}
+
+data: [DONE]
+
+"#,
+                    ))
+                });
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from_stream(stream))
+                    .unwrap()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let upstream = reqwest::Client::new()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
+        let request = UpstreamRequest {
+            url: format!("http://{address}/"),
+            headers: Vec::new(),
+            query_params: Vec::new(),
+            response_format: UpstreamResponseFormat::Responses,
+            stream_response: true,
+            namespace_tool_compat: false,
+            request_timeout_ms: 1_000,
+            max_retries: 0,
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(25))
+            .connect_lazy("postgresql://postgres:postgres@127.0.0.1:1/unused")
+            .unwrap();
+        let response = stream_upstream_response(
+            upstream,
+            request,
+            json!({ "stream": true }),
+            pool,
+            RunTokenClaims::new(
+                "tenant_test".to_string(),
+                "user_test".to_string(),
+                "device_test".to_string(),
+                "run_test".to_string(),
+                "model_test".to_string(),
+                Decimal::ONE,
+                60,
+            ),
+            "gwreq_test".to_string(),
+            Pricing {
+                input_yuan_per_million: Decimal::ZERO,
+                output_yuan_per_million: Decimal::ZERO,
+                reasoning_yuan_per_million: Decimal::ZERO,
+                cached_input_yuan_per_million: Decimal::ZERO,
+                markup_bps: 0,
+            },
+            Utc::now(),
+        );
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(Duration::from_millis(150), body.next())
+            .await
+            .expect("native delta was buffered with settlement")
+            .expect("gateway stream ended before the native delta")
+            .unwrap();
+        let first = String::from_utf8(first.to_vec()).unwrap();
+        assert!(first.contains("response.output_text.delta"));
+        assert!(first.contains("ready"));
+        assert!(!first.contains("response.completed"));
+        assert!(!first.contains("[DONE]"));
+
+        let mut rest = String::new();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while let Some(chunk) = body.next().await {
+                rest.push_str(std::str::from_utf8(&chunk.unwrap()).unwrap());
+            }
+        })
+        .await
+        .expect("gateway stream did not publish native completion after settlement");
         assert!(rest.contains("response.completed"));
         assert!(rest.contains("data: [DONE]"));
 
