@@ -57,11 +57,10 @@ const GATEWAY_RUN_TTL_SECONDS: i64 = 48 * 60 * 60;
 // real-time spending gate before each request.
 const GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP: u64 = 64;
 const MAX_GATEWAY_TASK_BUDGET_YUAN: u64 = 10_000;
-// Codex can start the request after a tool result as soon as it receives the
-// function-call item, before the preceding Responses stream emits its final
-// usage frame. Give that stream time to settle and release the per-run lease
+// A Codex run can fan out several model requests at once. Queue them fairly per
+// run and leave enough headroom for high-reasoning GPT streams and agent bursts
 // instead of surfacing a false 429 to the client.
-const GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
+const GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 const GATEWAY_REQUEST_LEASE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 pub async fn healthz() -> Json<Value> {
@@ -2342,6 +2341,23 @@ pub async fn gateway_responses(
     .await?;
     let provider = load_provider_config(&state, &route).await?;
     let gateway_request_id = format!("gwreq_{}", Uuid::new_v4().simple());
+    let queue_started = std::time::Instant::now();
+    let run_permit = state
+        .gateway_run_queue
+        .acquire(&claims.run_id, GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT)
+        .await
+        .ok_or_else(|| {
+            ApiError::TooManyRequests(
+                "the model request waited too long in the per-run FIFO queue".to_string(),
+            )
+        })?;
+    if queue_started.elapsed() >= GATEWAY_REQUEST_LEASE_RETRY_INTERVAL {
+        tracing::info!(
+            run_id = %claims.run_id,
+            wait_ms = queue_started.elapsed().as_millis(),
+            "waited in per-run gateway request queue"
+        );
+    }
     let remaining_budget = start_gateway_request(&state.db, &claims, &gateway_request_id).await?;
     if let Err(error) = enforce_request_budget(&mut body, remaining_budget, &route) {
         release_gateway_request(&state.db, &claims, &gateway_request_id, None).await?;
@@ -2398,6 +2414,7 @@ pub async fn gateway_responses(
             gateway_request_id,
             route.pricing,
             started,
+            run_permit,
         ));
     }
     let text = match upstream.text().await {
@@ -2505,6 +2522,7 @@ fn stream_upstream_response(
     gateway_request_id: String,
     pricing: Pricing,
     started: chrono::DateTime<Utc>,
+    run_permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Response {
     let upstream_status = upstream.status().as_u16();
     let format = request.response_format;
@@ -2683,6 +2701,7 @@ fn stream_upstream_response(
         if !terminal_output.is_empty() {
             let _ = sender.send(Ok(Bytes::from(terminal_output))).await;
         }
+        drop(run_permit);
         drop(sender);
     });
 
@@ -4555,6 +4574,7 @@ mod tests {
     use crate::{
         billing::{GatewayUsage, Pricing},
         gateway::{UpstreamRequest, UpstreamResponseFormat},
+        state::GatewayRunQueue,
         tokens::RunTokenClaims,
     };
 
@@ -4996,6 +5016,11 @@ mod tests {
             .acquire_timeout(Duration::from_millis(25))
             .connect_lazy("postgresql://postgres:postgres@127.0.0.1:1/unused")
             .unwrap();
+        let run_queue = GatewayRunQueue::default();
+        let run_permit = run_queue
+            .acquire("run_test", Duration::from_secs(1))
+            .await
+            .unwrap();
         let response = stream_upstream_response(
             upstream,
             request,
@@ -5019,6 +5044,7 @@ mod tests {
                 markup_bps: 0,
             },
             Utc::now(),
+            run_permit,
         );
         let started = tokio::time::Instant::now();
         let mut body = response.into_body().into_data_stream();
@@ -5031,6 +5057,10 @@ mod tests {
         assert!(first.contains("response.output_text.delta"));
         assert!(first.contains("first"));
         assert!(!first.contains("response.completed"));
+        assert!(run_queue
+            .acquire("run_test", Duration::from_millis(20))
+            .await
+            .is_none());
 
         let mut rest = String::new();
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -5045,6 +5075,10 @@ mod tests {
         assert!(rest.contains("second"));
         assert!(rest.contains("response.completed"));
         assert!(rest.contains("data: [DONE]"));
+        assert!(run_queue
+            .acquire("run_test", Duration::from_millis(20))
+            .await
+            .is_some());
 
         server.abort();
     }
@@ -5095,6 +5129,11 @@ data: [DONE]
             .acquire_timeout(Duration::from_millis(25))
             .connect_lazy("postgresql://postgres:postgres@127.0.0.1:1/unused")
             .unwrap();
+        let run_queue = GatewayRunQueue::default();
+        let run_permit = run_queue
+            .acquire("run_test", Duration::from_secs(1))
+            .await
+            .unwrap();
         let response = stream_upstream_response(
             upstream,
             request,
@@ -5118,6 +5157,7 @@ data: [DONE]
                 markup_bps: 0,
             },
             Utc::now(),
+            run_permit,
         );
         let mut body = response.into_body().into_data_stream();
         let first = tokio::time::timeout(Duration::from_millis(150), body.next())
@@ -5130,6 +5170,10 @@ data: [DONE]
         assert!(first.contains("ready"));
         assert!(!first.contains("response.completed"));
         assert!(!first.contains("[DONE]"));
+        assert!(run_queue
+            .acquire("run_test", Duration::from_millis(20))
+            .await
+            .is_none());
 
         let mut rest = String::new();
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -5141,6 +5185,10 @@ data: [DONE]
         .expect("gateway stream did not publish native completion after settlement");
         assert!(rest.contains("response.completed"));
         assert!(rest.contains("data: [DONE]"));
+        assert!(run_queue
+            .acquire("run_test", Duration::from_millis(20))
+            .await
+            .is_some());
 
         server.abort();
     }

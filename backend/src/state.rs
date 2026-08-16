@@ -1,7 +1,12 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use reqwest::Client;
 use sqlx::{PgPool, Row};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     config::AppConfig,
@@ -10,6 +15,36 @@ use crate::{
     secrets::{AuthorizationCodeCipher, ManagedSecretCipher},
     tokens::{AdminTokenService, DeviceTokenService, RunTokenService},
 };
+
+#[derive(Clone, Default)]
+pub struct GatewayRunQueue {
+    gates: Arc<Mutex<HashMap<String, Weak<Semaphore>>>>,
+}
+
+impl GatewayRunQueue {
+    pub async fn acquire(
+        &self,
+        run_id: &str,
+        wait_timeout: Duration,
+    ) -> Option<OwnedSemaphorePermit> {
+        let gate = {
+            let mut gates = self.gates.lock().await;
+            gates.retain(|_, gate| gate.strong_count() > 0);
+            if let Some(gate) = gates.get(run_id).and_then(Weak::upgrade) {
+                gate
+            } else {
+                let gate = Arc::new(Semaphore::new(1));
+                gates.insert(run_id.to_string(), Arc::downgrade(&gate));
+                gate
+            }
+        };
+
+        tokio::time::timeout(wait_timeout, gate.acquire_owned())
+            .await
+            .ok()
+            .and_then(Result::ok)
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -25,6 +60,7 @@ pub struct AppState {
     pub market: MarketDataHub,
     pub capital_flow: MarketCapitalFlowHub,
     pub http_metrics: HttpMetrics,
+    pub gateway_run_queue: GatewayRunQueue,
 }
 
 impl AppState {
@@ -51,6 +87,7 @@ impl AppState {
             market,
             capital_flow,
             http_metrics: HttpMetrics::default(),
+            gateway_run_queue: GatewayRunQueue::default(),
         }
     }
 
@@ -124,5 +161,66 @@ impl AppState {
                 tokio::time::sleep(std::time::Duration::from_secs(hub.refresh_seconds())).await;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::sync::mpsc;
+
+    use super::GatewayRunQueue;
+
+    #[tokio::test]
+    async fn gateway_run_queue_serves_waiters_in_arrival_order() {
+        let queue = GatewayRunQueue::default();
+        let owner = queue
+            .acquire("run_fifo", Duration::from_secs(1))
+            .await
+            .unwrap();
+        let (ready_tx, mut ready_rx) = mpsc::channel(3);
+        let (order_tx, mut order_rx) = mpsc::channel(3);
+        let mut waiters = Vec::new();
+
+        for position in 1..=3 {
+            let queue = queue.clone();
+            let ready_tx = ready_tx.clone();
+            let order_tx = order_tx.clone();
+            waiters.push(tokio::spawn(async move {
+                ready_tx.send(position).await.unwrap();
+                let permit = queue
+                    .acquire("run_fifo", Duration::from_secs(1))
+                    .await
+                    .unwrap();
+                order_tx.send(position).await.unwrap();
+                tokio::task::yield_now().await;
+                drop(permit);
+            }));
+            assert_eq!(ready_rx.recv().await, Some(position));
+            tokio::task::yield_now().await;
+        }
+
+        drop(owner);
+        for expected in 1..=3 {
+            assert_eq!(order_rx.recv().await, Some(expected));
+        }
+        for waiter in waiters {
+            waiter.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn gateway_run_queue_honors_the_wait_timeout() {
+        let queue = GatewayRunQueue::default();
+        let _owner = queue
+            .acquire("run_timeout", Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        assert!(queue
+            .acquire("run_timeout", Duration::from_millis(20))
+            .await
+            .is_none());
     }
 }
