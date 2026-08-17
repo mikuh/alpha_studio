@@ -135,6 +135,7 @@ export interface BillingLedgerEntry {
   amountYuan: number;
   description: string;
   createdAt: string;
+  entryCount?: number;
 }
 
 export interface BillingLedgerPagination {

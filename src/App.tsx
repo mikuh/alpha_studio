@@ -13575,7 +13575,7 @@ function BillingLedgerList({ entries, pagination, loading, onPageChange }: {
     <section className="billing-ledger" aria-label="最近账单流水">
       <div className="billing-section-title">
         <strong>最近账单流水</strong>
-        <span>网关扣费和余额变动{total > 0 ? ` · 共 ${formatWholeNumber(total)} 条` : ''}</span>
+        <span>同一运行已合并，金额为累计变动{total > 0 ? ` · 共 ${formatWholeNumber(total)} 条汇总` : ''}</span>
       </div>
       {entries.length === 0 ? (
         <div className="billing-empty">暂无账单流水。</div>
@@ -13585,9 +13585,9 @@ function BillingLedgerList({ entries, pagination, loading, onPageChange }: {
             <div className="billing-ledger-row" key={entry.id}>
               <div>
                 <strong title={entry.description || formatLedgerEntryType(entry.entryType)}>{entry.description || formatLedgerEntryType(entry.entryType)}</strong>
-                <span title={entry.runId || undefined}>{formatLicenseDate(entry.createdAt)}{entry.runId ? ` · ${entry.runId}` : ''}</span>
+                <span title={entry.runId || undefined}>{formatLicenseDate(entry.createdAt)}{entry.runId ? ` · ${entry.runId}` : ''}{(entry.entryCount ?? 1) > 1 ? ` · ${entry.entryCount} 笔合计` : ''}</span>
               </div>
-              <em className={entry.amountYuan < 0 ? 'charge' : 'credit'}>{formatSignedYuan(entry.amountYuan)}</em>
+              <em className={entry.amountYuan < 0 ? 'charge' : 'credit'}>{formatSignedLedgerYuan(entry.amountYuan)}</em>
             </div>
           ))}
           {pagination && pagination.totalPages > 1 && (
@@ -13678,6 +13678,17 @@ function formatYuan(value: number | undefined): string {
 
 function formatSignedYuan(value: number): string {
   return `${value > 0 ? '+' : ''}${formatYuan(value)}`;
+}
+
+function formatSignedLedgerYuan(value: number): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  const formatted = new Intl.NumberFormat('zh-CN', {
+    style: 'currency',
+    currency: 'CNY',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  }).format(safe);
+  return `${safe > 0 ? '+' : ''}${formatted}`;
 }
 
 function formatMonthLabel(value: string): string {

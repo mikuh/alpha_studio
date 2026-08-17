@@ -2362,9 +2362,10 @@ describe('right feature panel', () => {
                 id: 'ledger_1',
                 runId: 'run_1',
                 entryType: 'usage_charge',
-                amountYuan: -3.25,
+                amountYuan: -3.250001,
                 description: 'gpt-5.5 usage charge',
                 createdAt: '2026-07-09T08:00:00.000Z',
+                entryCount: 4,
               },
             ],
             ledgerPagination: {
@@ -2401,6 +2402,8 @@ describe('right feature panel', () => {
     expect(within(settings).getByText('34,400')).toBeInTheDocument();
     expect(within(settings).getByText('GPT-5.5 API')).toBeInTheDocument();
     expect(within(settings).getByText('gpt-5.5 usage charge')).toBeInTheDocument();
+    expect(within(settings).getByText(/4 笔合计/)).toBeInTheDocument();
+    expect(within(settings).getByText('-¥3.250001')).toBeInTheDocument();
     expect(within(settings).getByText('第 1 / 3 页')).toBeInTheDocument();
     expect(within(settings).queryByText('PolyForm Noncommercial License 1.0.0。')).not.toBeInTheDocument();
     expect(fetch).toHaveBeenCalledWith(

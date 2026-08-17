@@ -4069,7 +4069,15 @@ async fn billing_ledger_page(
     page_size: i64,
 ) -> ApiResult<BillingLedgerPage> {
     let total = sqlx::query_scalar::<_, i64>(
-        "select count(*)::bigint from billing_ledger where tenant_id = $1",
+        r#"
+        select count(*)::bigint
+        from (
+          select 1
+          from billing_ledger
+          where tenant_id = $1
+          group by run_id, case when run_id is null then id else null end
+        ) grouped_ledger
+        "#,
     )
     .bind(tenant_id)
     .fetch_one(pool)
@@ -4083,9 +4091,23 @@ async fn billing_ledger_page(
     let offset = (page - 1) * page_size;
     let rows = sqlx::query(
         r#"
-        select id, run_id, entry_type, amount_yuan, description, created_at
+        select
+          case
+            when run_id is not null then 'run:' || run_id
+            else (array_agg(id order by created_at desc, id desc))[1]
+          end as id,
+          run_id,
+          case
+            when count(distinct entry_type) = 1 then min(entry_type)
+            else 'run_summary'
+          end as entry_type,
+          sum(amount_yuan) as amount_yuan,
+          (array_agg(description order by created_at desc, id desc))[1] as description,
+          max(created_at) as created_at,
+          count(*)::bigint as entry_count
         from billing_ledger
         where tenant_id = $1
+        group by run_id, case when run_id is null then id else null end
         order by created_at desc, id desc
         limit $2 offset $3
         "#,
@@ -4104,7 +4126,8 @@ async fn billing_ledger_page(
                 "entryType": row.get::<String, _>("entry_type"),
                 "amountYuan": decimal_json(row.get::<Decimal, _>("amount_yuan")),
                 "description": row.get::<String, _>("description"),
-                "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at")
+                "createdAt": row.get::<chrono::DateTime<Utc>, _>("created_at"),
+                "entryCount": row.get::<i64, _>("entry_count")
             })
         })
         .collect();
@@ -4563,13 +4586,13 @@ mod tests {
     use sqlx::{postgres::PgPoolOptions, Row};
 
     use super::{
-        bounded_pagination, enforce_request_budget, ensure_gateway_run_available,
-        estimate_request_input_tokens, looks_like_secret_field, normalized_codex_tenant_ids,
-        recommended_run_budget_yuan, request_safety_charge_yuan, resolve_usage_charge,
-        settle_and_record_usage, start_gateway_request, stream_upstream_response,
-        validate_client_agreement_acceptance, validate_offline_payment_request,
-        ClientAgreementAcceptance, MeteringStatus, ModelRoute, OfflinePaymentRequest,
-        GATEWAY_RUN_TTL_SECONDS, GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP,
+        billing_ledger_page, bounded_pagination, enforce_request_budget,
+        ensure_gateway_run_available, estimate_request_input_tokens, looks_like_secret_field,
+        normalized_codex_tenant_ids, recommended_run_budget_yuan, request_safety_charge_yuan,
+        resolve_usage_charge, settle_and_record_usage, start_gateway_request,
+        stream_upstream_response, validate_client_agreement_acceptance,
+        validate_offline_payment_request, ClientAgreementAcceptance, MeteringStatus, ModelRoute,
+        OfflinePaymentRequest, GATEWAY_RUN_TTL_SECONDS, GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP,
     };
     use crate::{
         billing::{GatewayUsage, Pricing},
@@ -4966,6 +4989,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(settlement_count, 4);
+
+        let ledger = billing_ledger_page(&pool, &tenant_id, 1, 20).await.unwrap();
+        assert_eq!(ledger.total, 1);
+        assert_eq!(ledger.entries.len(), 1);
+        assert_eq!(ledger.entries[0]["runId"], run_id);
+        assert_eq!(ledger.entries[0]["entryCount"], 4);
+        assert_eq!(ledger.entries[0]["amountYuan"], json!(-0.008));
 
         sqlx::query("delete from tenants where id = $1")
             .bind(&tenant_id)

@@ -155,6 +155,7 @@ interface BillingLedgerEntry {
   amountYuan: number;
   description: string;
   createdAt: string;
+  entryCount?: number;
 }
 
 interface BillingLedgerPagination {
@@ -2655,8 +2656,8 @@ function TenantUsageWorkspace({
 
           <section className="panel">
             <div className="panel-head">
-              <div><h2>账单流水</h2><span>服务端分页，仅加载当前页，流水再多也不会拖慢页面</span></div>
-              <span>共 {formatWholeNumber(pagination?.total ?? ledger.length)} 条</span>
+              <div><h2>账单流水</h2><span>同一运行的流水已合并，金额为该运行累计变动</span></div>
+              <span>共 {formatWholeNumber(pagination?.total ?? ledger.length)} 条汇总</span>
             </div>
             {ledger.length === 0 ? <div className="empty">暂无账单流水。</div> : (
               <div className="table-wrap">
@@ -2665,9 +2666,9 @@ function TenantUsageWorkspace({
                   <tbody>{ledger.map((entry) => (
                     <tr key={entry.id}>
                       <td className="nowrap">{formatDate(entry.createdAt)}</td>
-                      <td><strong title={entry.description}>{entry.description || entry.entryType}</strong><span>{entry.entryType}</span></td>
+                      <td><strong title={entry.description}>{entry.description || entry.entryType}</strong><span>{entry.entryType}{(entry.entryCount ?? 1) > 1 ? ` · ${entry.entryCount} 笔合计` : ''}</span></td>
                       <td><code title={entry.runId || undefined}>{entry.runId || '-'}</code></td>
-                      <td className={`nowrap usage-amount ${entry.amountYuan < 0 ? 'charge' : 'credit'}`}>{formatSignedYuan(entry.amountYuan)}</td>
+                      <td className={`nowrap usage-amount ${entry.amountYuan < 0 ? 'charge' : 'credit'}`}>{formatSignedLedgerYuan(entry.amountYuan)}</td>
                     </tr>
                   ))}</tbody>
                 </table>
@@ -3202,6 +3203,17 @@ function formatBytes(bytes: number) {
 
 function formatSignedYuan(yuan: number) {
   return `${yuan > 0 ? '+' : ''}${formatYuan(yuan)}`;
+}
+
+function formatSignedLedgerYuan(yuan: number) {
+  const safe = Number.isFinite(yuan) ? yuan : 0;
+  const formatted = new Intl.NumberFormat('zh-CN', {
+    style: 'currency',
+    currency: 'CNY',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  }).format(safe);
+  return `${safe > 0 ? '+' : ''}${formatted}`;
 }
 
 function formatWholeNumber(value: number) {

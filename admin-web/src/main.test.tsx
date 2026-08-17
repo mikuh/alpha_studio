@@ -523,6 +523,8 @@ describe('admin model gateway', () => {
     expect(await screen.findByRole('heading', { name: 'LLM 用量与账单' })).toBeTruthy();
     expect(await screen.findByText('GPT-5.5 API')).toBeTruthy();
     expect(screen.getByText('usage charge 1')).toBeTruthy();
+    expect(screen.getByText(/3 笔合计/)).toBeTruthy();
+    expect(screen.getByText('-¥3.250001')).toBeTruthy();
     expect(screen.getByText('第 1 / 3 页 · 每页 20 条')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '下一页' }));
@@ -670,9 +672,10 @@ function tenantBillingSummary(page: number) {
         id: `ledger_${page}`,
         runId: `run_${page}`,
         entryType: 'usage_charge',
-        amountYuan: -3.25,
+        amountYuan: -3.250001,
         description: `usage charge ${page}`,
         createdAt: '2026-07-09T08:00:00.000Z',
+        entryCount: 3,
       }],
       ledgerPagination: {
         page,
