@@ -128,10 +128,9 @@ request carrying an unlisted `Origin` is rejected before route handling. In
 production the API base URL must use HTTPS, loopback development origins are
 rejected, and the CORS list must be supplied explicitly.
 
-On desktop, JQData passwords and custom model API keys are stored in the native
-OS credential vault (macOS Keychain, Windows Credential Manager, or Linux Secret
-Service). Existing plaintext JSON values are moved on first load and then
-removed from the local configuration file. The Tauri webview uses an explicit
+On desktop, custom model API keys are stored in the native OS credential vault
+(macOS Keychain, Windows Credential Manager, or Linux Secret Service). The
+Tauri webview uses an explicit
 CSP, has no asset-protocol filesystem scope, and opens/reveals files only
 through the validated Rust commands.
 

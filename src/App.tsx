@@ -257,18 +257,14 @@ import {
   type Speed,
 } from './models';
 import {
-  emptyJqDataConfig,
-  loadJqDataConfig,
-  saveJqDataConfig,
-  type JqDataConfig,
-} from './jqdata';
-import {
   activeConversations,
   activeProjects,
   archivedConversations,
   archivedProjects,
   useChatStore,
   useCurrentConversation,
+  useCurrentConversationCwd,
+  useCurrentConversationStatus,
   useImageViewer,
   visibleConversations,
 } from './store';
@@ -345,7 +341,6 @@ type SettingsSection =
   | 'general'
   | 'profile'
   | 'usage'
-  | 'jqdata'
   | 'archived';
 
 const SIDEBAR_WIDTH_KEY = 'alpha:codex-sidebar-width';
@@ -385,11 +380,27 @@ const RIGHT_DOCK_META: Record<RightDockKind, { label: string; shortcut?: string 
 };
 const RIGHT_DOCK_ADD_MENU_KINDS: readonly RightDockKind[] = ['research-workbench', 'files', 'browser'];
 
+const dailyThemeTurnByLatestUser = new WeakMap<ChatMessage, boolean>();
+
+function latestUserMessageIn(messages: ChatMessage[]): ChatMessage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user') return messages[index];
+  }
+  return undefined;
+}
+
 function conversationHasDailyThemeTurn(conversation: Conversation | null | undefined): boolean {
-  return Boolean(conversation?.messages.some((message) => message.role === 'user' && (
+  if (!conversation) return false;
+  const latestUser = latestUserMessageIn(conversation.messages);
+  if (!latestUser) return false;
+  const cached = dailyThemeTurnByLatestUser.get(latestUser);
+  if (cached !== undefined) return cached;
+  const result = conversation.messages.some((message) => message.role === 'user' && (
     message.selectedSkill?.id === ALPHA_STUDIO_DAILY_THEME_SKILL_ID
     || message.blocks.some((block) => block.type === 'text' && block.content.includes(ALPHA_STUDIO_DAILY_THEME_SKILL_ID))
-  )));
+  ));
+  dailyThemeTurnByLatestUser.set(latestUser, result);
+  return result;
 }
 
 function sidebarConversationRevision(conversations: Conversation[]): string {
@@ -1314,6 +1325,10 @@ function isDocumentFullscreen(): boolean {
 }
 
 export function App() {
+  const workspacePreview = !isTauriRuntime()
+    && import.meta.env.DEV
+    && new URLSearchParams(window.location.search).has('workspace-preview');
+  if (workspacePreview) return <AppWorkspace />;
   return (
     <ClientLicenseBoundary>
       <FirstUseGuide><AppWorkspace /></FirstUseGuide>
@@ -3155,10 +3170,6 @@ function SearchDialog({
     <div className="dialog-layer" role="presentation">
       <button className="dialog-backdrop" type="button" aria-label="关闭搜索" onClick={onClose} />
       <section className="command-dialog" role="dialog" aria-modal="true" aria-label="搜索">
-        <div className="command-dialog-label" aria-hidden="true">
-          <span>GLOBAL INDEX</span>
-          <em>SEARCH</em>
-        </div>
         <div className="command-input-row">
           <Search size={16} />
           <input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.searchPlaceholder} />
@@ -3221,7 +3232,7 @@ function anchorFromCursor(event: ReactMouseEvent): MenuAnchor {
 function ContextMenu({ menu, onClose }: { menu: SidebarMenu; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: menu.x, top: menu.y });
-  useLayoutEffect(() => {
+  const updatePosition = useCallback(() => {
     const rect = panelRef.current?.getBoundingClientRect();
     if (!rect) return;
     const pad = 10;
@@ -3229,7 +3240,16 @@ function ContextMenu({ menu, onClose }: { menu: SidebarMenu; onClose: () => void
       left: Math.max(pad, Math.min(menu.x, window.innerWidth - rect.width - pad)),
       top: Math.max(pad, Math.min(menu.y, window.innerHeight - rect.height - pad)),
     });
-  }, [menu]);
+  }, [menu.x, menu.y]);
+  useLayoutEffect(() => {
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [menu.items.length, updatePosition]);
   useEffect(() => {
     const onKey = (event: WindowEventMap['keydown']) => {
       if (event.key === 'Escape') onClose();
@@ -3241,18 +3261,40 @@ function ContextMenu({ menu, onClose }: { menu: SidebarMenu; onClose: () => void
     onClose();
     action();
   };
-  return (
+  return createPortal(
     <>
       <button className="menu-backdrop" type="button" aria-label="关闭菜单" onClick={onClose} />
       <div ref={panelRef} className="cmenu" role="menu" style={{ left: pos.left, top: pos.top }}>
         {menu.items.map((node, index) => <MenuRow key={index} node={node} onRun={run} />)}
       </div>
-    </>
+    </>,
+    document.body,
   );
 }
 
 function MenuRow({ node, onRun }: { node: MenuNode; onRun: (action: () => void) => void }) {
   const [subOpen, setSubOpen] = useState(false);
+  const flyoutRef = useRef<HTMLDivElement>(null);
+  const [flyoutPlacement, setFlyoutPlacement] = useState<{ left: boolean; top: number }>({ left: false, top: 0 });
+  useLayoutEffect(() => {
+    if (!subOpen || node.kind !== 'submenu') return;
+    const updateFlyoutPlacement = () => {
+      const flyout = flyoutRef.current;
+      const row = flyout?.parentElement;
+      if (!flyout || !row) return;
+      const flyoutRect = flyout.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const pad = 10;
+      const openLeft = flyoutRect.right > window.innerWidth - pad && rowRect.left >= flyoutRect.width + pad;
+      const desiredTop = rowRect.top + flyoutRect.height > window.innerHeight - pad
+        ? window.innerHeight - pad - rowRect.top - flyoutRect.height
+        : 0;
+      setFlyoutPlacement({ left: openLeft, top: Math.max(pad - rowRect.top, desiredTop) });
+    };
+    updateFlyoutPlacement();
+    window.addEventListener('resize', updateFlyoutPlacement);
+    return () => window.removeEventListener('resize', updateFlyoutPlacement);
+  }, [node.kind, subOpen]);
   if (node.kind === 'separator') return <div className="cmenu-sep" role="separator" />;
   if (node.kind === 'submenu') {
     return (
@@ -3260,7 +3302,15 @@ function MenuRow({ node, onRun }: { node: MenuNode; onRun: (action: () => void) 
         <button type="button" className={`cmenu-item ${subOpen ? 'active' : ''}`} role="menuitem">
           <span className="cmenu-icon">{node.icon}</span><span className="cmenu-label">{node.label}</span><ChevronRight size={14} className="cmenu-chevron" />
         </button>
-        {subOpen && <div className="cmenu-flyout"><div className="cmenu" role="menu">{node.children.map((child, index) => <MenuRow key={index} node={child} onRun={onRun} />)}</div></div>}
+        {subOpen && (
+          <div
+            ref={flyoutRef}
+            className={`cmenu-flyout ${flyoutPlacement.left ? 'open-left' : ''}`}
+            style={{ top: flyoutPlacement.top }}
+          >
+            <div className="cmenu" role="menu">{node.children.map((child, index) => <MenuRow key={index} node={child} onRun={onRun} />)}</div>
+          </div>
+        )}
       </div>
     );
   }
@@ -3324,7 +3374,39 @@ function TopBar({
   onToggleBrowser: () => void;
   onOpenSideChat: () => void;
 }) {
-  const conversation = useCurrentConversation();
+  const conversationRevision = useChatStore((state) => {
+    const conversation = state.conversations.find((item) => (
+      item.id === state.currentConversationId && !item.archivedAt && !item.ephemeral
+    )) ?? state.conversations.find((item) => !item.archivedAt && !item.ephemeral);
+    if (!conversation) return '';
+    const latestUser = latestUserMessageIn(conversation.messages);
+    let latestAssistantId = '';
+    for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
+      const message = conversation.messages[index];
+      if (message.role === 'assistant' && message.timestamp >= (latestUser?.timestamp ?? 0)) {
+        latestAssistantId = message.id;
+        break;
+      }
+    }
+    return [
+      conversation.id,
+      conversation.title,
+      conversation.cwd,
+      conversation.pinned ? '1' : '0',
+      conversation.status,
+      conversation.messages.length,
+      latestUser?.id ?? '',
+      latestUser?.timestamp ?? '',
+      conversationHasDailyThemeTurn(conversation) ? 'daily' : '',
+      latestAssistantId,
+    ].join('\u0000');
+  });
+  const conversation = useMemo(() => {
+    const state = useChatStore.getState();
+    return state.conversations.find((item) => (
+      item.id === state.currentConversationId && !item.archivedAt && !item.ephemeral
+    )) ?? state.conversations.find((item) => !item.archivedAt && !item.ephemeral) ?? null;
+  }, [conversationRevision]);
   const renameConversation = useChatStore((state) => state.renameConversation);
   const toggleConversationPin = useChatStore((state) => state.toggleConversationPin);
   const archiveConversation = useChatStore((state) => state.archiveConversation);
@@ -3348,12 +3430,19 @@ function TopBar({
   const conversationReports = dailyReports.filter((report) => report.sourceConversationId === conversation?.id);
   const hasDailyThemeTurn = conversationHasDailyThemeTurn(conversation);
   const dailyDecisionAvailable = hasDailyThemeTurn || conversationReports.length > 0;
-  const latestUserMessage = [...(conversation?.messages ?? [])].reverse().find((message) => message.role === 'user');
+  const latestUserMessage = latestUserMessageIn(conversation?.messages ?? []);
   const latestTurnIsDailyTheme = Boolean(latestUserMessage && (
     latestUserMessage.selectedSkill?.id === ALPHA_STUDIO_DAILY_THEME_SKILL_ID
     || latestUserMessage.blocks.some((block) => block.type === 'text' && block.content.includes(ALPHA_STUDIO_DAILY_THEME_SKILL_ID))
   ));
-  const latestAssistantMessage = [...(conversation?.messages ?? [])].reverse().find((message) => message.role === 'assistant' && message.timestamp >= (latestUserMessage?.timestamp ?? 0));
+  let latestAssistantMessage: ChatMessage | undefined;
+  for (let index = (conversation?.messages.length ?? 0) - 1; index >= 0; index -= 1) {
+    const message = conversation?.messages[index];
+    if (message?.role === 'assistant' && message.timestamp >= (latestUserMessage?.timestamp ?? 0)) {
+      latestAssistantMessage = message;
+      break;
+    }
+  }
   const boundMessageIds = new Set(conversationReports.map((report) => report.sourceMessageId).filter(Boolean));
   const dailyDecisionLoading = latestTurnIsDailyTheme && conversation?.status === 'streaming';
   const dailyDecisionWarning = latestTurnIsDailyTheme
@@ -3383,7 +3472,7 @@ function TopBar({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [conversation, toggleConversationPin, archiveConversation]);
+  }, [conversation?.id, toggleConversationPin, archiveConversation]);
 
   const openSideChat = () => {
     onOpenSideChat();
@@ -3413,7 +3502,16 @@ function TopBar({
           label: '复制',
           children: [
             { kind: 'item', icon: <Pencil size={15} />, label: '复制对话标题', onSelect: () => void copyToClipboard(conversation.title) },
-            { kind: 'item', icon: <FileText size={15} />, label: '复制对话内容', disabled: !hasMessages, onSelect: () => void copyToClipboard(conversationToPlainText(conversation)) },
+            {
+              kind: 'item',
+              icon: <FileText size={15} />,
+              label: '复制对话内容',
+              disabled: !hasMessages,
+              onSelect: () => {
+                const latest = useChatStore.getState().conversations.find((item) => item.id === conversation.id);
+                void copyToClipboard(conversationToPlainText(latest ?? conversation));
+              },
+            },
           ],
         },
       ],
@@ -3681,8 +3779,7 @@ function EnvironmentMenu({
 }
 
 function QuickGitDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const conversation = useCurrentConversation();
-  const cwd = conversation?.cwd || '';
+  const cwd = useCurrentConversationCwd();
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [stat, setStat] = useState<GitDiffStat | null>(null);
   const [commitMessage, setCommitMessage] = useState('');
@@ -4231,8 +4328,7 @@ function TerminalPanel({
   dock?: boolean;
   visible?: boolean;
 }) {
-  const conversation = useCurrentConversation();
-  const cwd = conversation?.cwd || '';
+  const cwd = useCurrentConversationCwd();
   const baseName = basename(cwd) || '终端';
   const nextTabIdRef = useRef(0);
 
@@ -5344,8 +5440,7 @@ function ensureTrailingSlash(path: string): string {
 }
 
 function FilesDockPanel({ filePath }: { filePath?: string }) {
-  const conversation = useCurrentConversation();
-  const cwd = conversation?.cwd || '';
+  const cwd = useCurrentConversationCwd();
   if (filePath) return <FilePreviewDockPanel path={filePath} />;
   return <WorkspaceFilesDockPanel cwd={cwd} />;
 }
@@ -5804,6 +5899,28 @@ function SideChatPanel({
   const sendMessageToConversation = useChatStore((state) => state.sendMessageToConversation);
   const stopConversation = useChatStore((state) => state.stopConversation);
   const { codexReady } = useComposerRuntimeState();
+  const sendSideChatMessage = useCallback<NonNullable<ComposerProps['onSendMessage']>>((
+    message,
+    attachments,
+    selectedSkill,
+    coworkers,
+    contexts,
+  ) => {
+    if (!conversationId) return;
+    return sendMessageToConversation(
+      conversationId,
+      message,
+      attachments,
+      selectedSkill,
+      coworkers,
+      false,
+      contexts,
+    );
+  }, [conversationId, sendMessageToConversation]);
+  const stopSideChat = useCallback(() => {
+    if (!conversationId) return;
+    return stopConversation(conversationId);
+  }, [conversationId, stopConversation]);
 
   useEffect(() => {
     const id = createEphemeralConversation(sourceConversationId);
@@ -5817,7 +5934,7 @@ function SideChatPanel({
         <>
           <div className={`side-chat-body ${conversation.messages.length === 0 ? 'empty' : ''}`}>
             {conversation.messages.length > 0 ? (
-              <MessageList conversation={conversation} />
+              <MessageList key={conversation.id} conversation={conversation} />
             ) : (
               <div className="side-chat-empty">
                 <MessageCircleQuestionMark size={24} />
@@ -5834,18 +5951,8 @@ function SideChatPanel({
               selectedTextContexts={selectedTextContexts}
               onRemoveSelectedTextContext={onRemoveSelectedTextContext}
               onConsumeSelectedTextContexts={onConsumeSelectedTextContexts}
-              onSendMessage={(message, attachments, selectedSkill, coworkers, contexts) => (
-                sendMessageToConversation(
-                  conversation.id,
-                  message,
-                  attachments,
-                  selectedSkill,
-                  coworkers,
-                  false,
-                  contexts,
-                )
-              )}
-              onStop={() => stopConversation(conversation.id)}
+              onSendMessage={sendSideChatMessage}
+              onStop={stopSideChat}
             />
           </div>
         </>
@@ -6103,7 +6210,6 @@ function AutomationsPage({
           {tab === 'tasks' ? (
             <div className="automation-view">
               <header className="automation-head">
-                <span className="workspace-section-kicker">SCHEDULER / TASKS</span>
                 <div>
                   <h1>已安排的任务</h1>
                   <div className="automation-subtitle">
@@ -6190,7 +6296,6 @@ function AutomationsPage({
           ) : (
             <div className="automation-view">
               <header className="automation-head templates">
-                <span className="workspace-section-kicker">SCHEDULER / TEMPLATES</span>
                 <div>
                   <h1>任务模板</h1>
                   <p>从金融投研预设开始创建计划任务</p>
@@ -6582,8 +6687,10 @@ function AutomationEditorTime({ value, onChange }: { value: string; onChange: (v
   const selectedHour = Number.parseInt(hourText, 10);
   const selectedMinute = minuteText.padStart(2, '0');
   const [open, setOpen] = useState(false);
+  const [openAbove, setOpenAbove] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const selectedHourRef = useRef<HTMLButtonElement>(null);
   const minuteOptions = ['00', '15', '30', '45'];
   if (!minuteOptions.includes(selectedMinute)) minuteOptions.push(selectedMinute);
@@ -6597,6 +6704,28 @@ function AutomationEditorTime({ value, onChange }: { value: string; onChange: (v
   useCloseOnOutsidePointer(open, rootRef, () => setOpen(false));
   useEffect(() => {
     if (open) selectedHourRef.current?.focus();
+  }, [open]);
+  useLayoutEffect(() => {
+    if (!open) {
+      setOpenAbove(false);
+      return;
+    }
+    const updatePlacement = () => {
+      const triggerRect = triggerRef.current?.getBoundingClientRect();
+      const popoverRect = popoverRef.current?.getBoundingClientRect();
+      if (!triggerRect || !popoverRect) return;
+      const gap = 8;
+      const roomBelow = window.innerHeight - triggerRect.bottom - gap;
+      const roomAbove = triggerRect.top - gap;
+      setOpenAbove(popoverRect.height > roomBelow && roomAbove > roomBelow);
+    };
+    updatePlacement();
+    window.addEventListener('resize', updatePlacement);
+    window.addEventListener('scroll', updatePlacement, true);
+    return () => {
+      window.removeEventListener('resize', updatePlacement);
+      window.removeEventListener('scroll', updatePlacement, true);
+    };
   }, [open]);
 
   const selectTime = (hour: number, minute: string, close = false) => {
@@ -6646,7 +6775,12 @@ function AutomationEditorTime({ value, onChange }: { value: string; onChange: (v
         </button>
 
         {open && (
-          <div className="automation-time-popover" role="dialog" aria-label="选择时间">
+          <div
+            ref={popoverRef}
+            className={`automation-time-popover ${openAbove ? 'open-above' : ''}`}
+            role="dialog"
+            aria-label="选择时间"
+          >
             <div className="automation-time-popover-head">
               <span className="automation-time-popover-title"><Clock3 size={14} />选择时间</span>
               <strong>{normalizedValue}</strong>
@@ -6798,7 +6932,6 @@ function SkillsPage({
       <CollapsedSidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} className="skills-sidebar-open-btn" />
       <div className="skills-page-shell">
         <header className="skills-page-head">
-          <span className="workspace-section-kicker">CAPABILITY REGISTRY / SKILLS</span>
           <div className="skills-page-title-row">
             <div>
               <h1>技能</h1>
@@ -7203,6 +7336,7 @@ function ChatArea({
       ) : (
         <>
           <MessageList
+            key={conversation.id}
             conversation={conversation}
             onAddSelectionToChat={onAddSelectionToChat}
             onAskSelectionInSideChat={onAskSelectionInSideChat}
@@ -7292,7 +7426,7 @@ function EmptyState({
       <div className="empty-intro">
         <span className="empty-kicker"><i aria-hidden="true" /> Research workspace</span>
         <h1 className="empty-heading">{domain.ui.emptyHeading}</h1>
-        <p>从市场线索到投资结论，在同一个工作区完成研究、验证与决策。</p>
+        <p>把市场线索、资料和想法放进来，我们一起梳理。</p>
       </div>
       <Composer
         domain={domain}
@@ -7323,6 +7457,9 @@ function EmptyState({
 }
 
 const MESSAGE_SCROLL_BOTTOM_TOLERANCE_PX = 80;
+const STREAM_ACTIVITY_IDLE_MS = 420;
+const INITIAL_RENDERED_MESSAGE_COUNT = 48;
+const MESSAGE_HISTORY_BATCH_SIZE = 48;
 
 function MessageList({
   conversation,
@@ -7336,13 +7473,24 @@ function MessageList({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const followLatestRef = useRef(true);
   const activeConversationIdRef = useRef(conversation.id);
+  const prependedHistoryAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  const [visibleStart, setVisibleStart] = useState(() => (
+    Math.max(0, conversation.messages.length - INITIAL_RENDERED_MESSAGE_COUNT)
+  ));
   const streaming = conversation.status === 'streaming';
   const answerLength = streaming ? streamingAnswerLength(conversation) : 0;
   const typing = useActiveTyping(answerLength, streaming);
   const latestMessage = conversation.messages[conversation.messages.length - 1];
-  const streamingAssistant = streaming
-    ? [...conversation.messages].reverse().find((message) => message.role === 'assistant' && message.isStreaming)
-    : undefined;
+  const effectiveVisibleStart = Math.min(
+    visibleStart,
+    Math.max(0, conversation.messages.length - INITIAL_RENDERED_MESSAGE_COUNT),
+  );
+  const hiddenMessageCount = effectiveVisibleStart;
+  const visibleMessages = useMemo(
+    () => conversation.messages.slice(effectiveVisibleStart),
+    [conversation.messages, effectiveVisibleStart],
+  );
+  const streamingAssistant = streaming ? findStreamingAssistant(conversation.messages) : undefined;
   const [selectionMenu, setSelectionMenu] = useState<{
     context: SelectedTextContext;
     left: number;
@@ -7354,8 +7502,15 @@ function MessageList({
       followLatestRef.current = true;
     }
     const container = scrollContainerRef.current;
-    if (container && followLatestRef.current) container.scrollTop = container.scrollHeight;
-  }, [conversation.id, conversation.messages.length, latestMessage, streaming]);
+    if (!container) return;
+    const prependedAnchor = prependedHistoryAnchorRef.current;
+    if (prependedAnchor) {
+      prependedHistoryAnchorRef.current = null;
+      container.scrollTop = prependedAnchor.scrollTop + (container.scrollHeight - prependedAnchor.scrollHeight);
+      return;
+    }
+    if (followLatestRef.current) container.scrollTop = container.scrollHeight;
+  }, [conversation.id, conversation.messages.length, effectiveVisibleStart, latestMessage, streaming]);
   useEffect(() => {
     if (!selectionMenu) return;
     const dismiss = (event: MouseEvent) => {
@@ -7398,6 +7553,17 @@ function MessageList({
       top: Math.max(10, rect.top - 52),
     });
   };
+  const loadEarlierMessages = () => {
+    const container = scrollContainerRef.current;
+    if (container) {
+      prependedHistoryAnchorRef.current = {
+        scrollHeight: container.scrollHeight,
+        scrollTop: container.scrollTop,
+      };
+    }
+    followLatestRef.current = false;
+    setVisibleStart(Math.max(0, effectiveVisibleStart - MESSAGE_HISTORY_BATCH_SIZE));
+  };
   return (
     <div
       className="message-scroll"
@@ -7410,14 +7576,22 @@ function MessageList({
       }}
     >
       <div className="message-list">
-        {conversation.messages.map((message, index) => (
+        {hiddenMessageCount > 0 && (
+          <div className="message-history-loader">
+            <button type="button" onClick={loadEarlierMessages}>
+              加载更早的 {Math.min(MESSAGE_HISTORY_BATCH_SIZE, hiddenMessageCount)} 条消息
+            </button>
+            <span>还有 {hiddenMessageCount} 条较早记录</span>
+          </div>
+        )}
+        {visibleMessages.map((message, index) => (
           <MessageBubble
             key={message.id}
             message={message}
             conversationId={conversation.id}
             conversationCwd={conversation.cwd}
             conversationStatus={conversation.status}
-            index={index}
+            index={effectiveVisibleStart + index}
           />
         ))}
         {streaming && !typing && (
@@ -7452,6 +7626,14 @@ function MessageList({
   );
 }
 
+function findStreamingAssistant(messages: ChatMessage[]): ChatMessage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === 'assistant' && message.isStreaming) return message;
+  }
+  return undefined;
+}
+
 // Total characters of answer text in the last (streaming) assistant message.
 function streamingAnswerLength(conversation: Conversation): number {
   const last = conversation.messages[conversation.messages.length - 1];
@@ -7480,7 +7662,7 @@ function useActiveTyping(answerLength: number, streaming: boolean): boolean {
     previousLength.current = answerLength;
     if (!grew) return;
     setTyping(true);
-    const timer = window.setTimeout(() => setTyping(false), 700);
+    const timer = window.setTimeout(() => setTyping(false), STREAM_ACTIVITY_IDLE_MS);
     return () => window.clearTimeout(timer);
   }, [answerLength, streaming]);
   return typing;
@@ -7582,8 +7764,10 @@ const MessageBubble = memo(function MessageBubble({
     [message],
   );
   const generatedFiles = useMemo(
-    () => message.role === 'assistant' ? generatedFilesFromMessageBlocks(message.blocks) : [],
-    [message.blocks, message.role],
+    () => message.role === 'assistant'
+      ? generatedFilesFromMessageBlocks(message.blocks, !message.isStreaming)
+      : [],
+    [message.blocks, message.isStreaming, message.role],
   );
   const securityMentions = useMemo(() => message.role === 'assistant' && !message.isStreaming
     ? findResearchSecurityMentions(message.blocks.flatMap((block) => block.type === 'text' ? [block.content] : []).join('\n'))
@@ -7614,9 +7798,10 @@ const MessageBubble = memo(function MessageBubble({
   }
   return (
     <article
-      className={`message ${message.role} ${editing ? 'editing' : ''}`}
+      className={`message ${message.role} ${message.isStreaming ? 'streaming' : ''} ${editing ? 'editing' : ''}`}
       data-message-id={message.id}
       data-message-role={message.role}
+      aria-busy={message.isStreaming || undefined}
     >
       <header className="message-record-head">
         <span className="message-record-index">{String(index + 1).padStart(2, '0')}</span>
@@ -7926,7 +8111,6 @@ function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: 
             <span className="event-icon">{streaming ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}</span>
             <span className="event-verb">{streaming ? '正在推理' : '推理过程'}</span>
             <span className="event-target" />
-            <ChevronDown size={13} className="event-chevron" />
           </>
         )}
       >
@@ -7946,15 +8130,78 @@ function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: 
   return <div className="error-block"><AlertCircle size={16} /><span>{block.content}</span></div>;
 }
 
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+const STREAMING_MARKDOWN_CHUNK_MIN_CHARS = 4_000;
+const STREAMING_MARKDOWN_PLAIN_TAIL_CHARS = 12_000;
+
+const MarkdownFragment = memo(function MarkdownFragment({ content }: { content: string }) {
+  return <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>;
+});
+
+const StreamingPlainText = memo(function StreamingPlainText({ content }: { content: string }) {
+  return <div className="streaming-plain-text">{content}</div>;
+});
+
+// Keep completed chunks referentially stable while the tail is streaming. This
+// prevents ReactMarkdown from reparsing the full answer on every token. The
+// scan is linear and only cuts at blank lines outside fenced code blocks.
+export function splitStreamingMarkdown(content: string): { settled: string[]; active: string } {
+  const settled: string[] = [];
+  let chunkStart = 0;
+  let lineStart = 0;
+  let fence: { marker: '`' | '~'; length: number } | null = null;
+
+  while (lineStart < content.length) {
+    const newline = content.indexOf('\n', lineStart);
+    if (newline < 0) break;
+    const line = content.slice(lineStart, newline).trimStart().replace(/\r$/, '');
+    const fenceMatch = /^(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const token = fenceMatch[1];
+      const marker = token[0] as '`' | '~';
+      if (!fence) {
+        fence = { marker, length: token.length };
+      } else if (
+        marker === fence.marker
+        && token.length >= fence.length
+        && line.slice(token.length).trim().length === 0
+      ) {
+        fence = null;
+      }
+    } else if (
+      !fence
+      && line.trim().length === 0
+      && newline + 1 - chunkStart >= STREAMING_MARKDOWN_CHUNK_MIN_CHARS
+    ) {
+      settled.push(content.slice(chunkStart, newline + 1));
+      chunkStart = newline + 1;
+    }
+    lineStart = newline + 1;
+  }
+
+  return { settled, active: content.slice(chunkStart) };
+}
+
 function MarkdownText({ content, streaming, variant = 'assistant' }: { content: string; streaming?: boolean; variant?: 'assistant' | 'user' }) {
+  const streamed = useMemo(
+    () => streaming ? splitStreamingMarkdown(content) : { settled: [content], active: '' },
+    [content, streaming],
+  );
   return (
     <div className={`markdown-content markdown-${variant} ${streaming ? 'streaming' : ''}`}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
+      {streamed.settled.map((fragment, index) => (
+        <MarkdownFragment key={`settled-${index}`} content={fragment} />
+      ))}
+      {streamed.active && (
+        streaming && streamed.active.length > STREAMING_MARKDOWN_PLAIN_TAIL_CHARS
+          ? <StreamingPlainText content={streamed.active} />
+          : <MarkdownFragment content={streamed.active} />
+      )}
     </div>
   );
 }
 
-function ToolBlockView({ block }: { block: Extract<MessageBlock, { type: 'tool' }> }) {
+function ToolBlockView({ block, groupedIndex }: { block: Extract<MessageBlock, { type: 'tool' }>; groupedIndex?: number }) {
   const tool = toolPresentation(block.title);
   const running = block.status === 'in_progress';
   const failed = block.status === 'failed';
@@ -7973,18 +8220,17 @@ function ToolBlockView({ block }: { block: Extract<MessageBlock, { type: 'tool' 
       : Boolean(plainBody) && plainBody !== target;
   return (
     <EventDetails
-      className={`tool-block event-block ${block.status} kind-${tool.kind}`}
+      className={`tool-block event-block ${block.status} kind-${tool.kind} ${groupedIndex === undefined ? '' : 'grouped-item'}`}
       forceOpen={running}
       defaultOpen={tool.kind === 'image'}
       summary={(
         <>
           <span className="event-icon">{tool.icon}</span>
-          <span className="event-verb">{verb}</span>
+          <span className="event-verb">{groupedIndex === undefined ? verb : `搜索 ${String(groupedIndex + 1).padStart(2, '0')}`}</span>
           <span className={`event-target ${targetIsRawInput ? 'mono' : ''}`}>{target}</span>
-          <span className="event-trailing">
+          {(running || failed) && <span className="event-trailing">
             {running ? <Loader2 size={12} className="spin" /> : failed ? <AlertCircle size={12} className="event-fail" /> : null}
-            <ChevronDown size={13} className="event-chevron" />
-          </span>
+          </span>}
         </>
       )}
     >
@@ -8252,10 +8498,9 @@ function CommandGroup({ blocks }: { blocks: Array<Extract<MessageBlock, { type: 
           <span className="event-icon command-group-icon"><SquareTerminal size={15} /></span>
           <span className="event-verb">{verb} {blocks.length} 条命令</span>
           <span className="event-target" />
-          <span className="event-trailing">
+          {(anyRunning || anyFailed) && <span className="event-trailing">
             {anyRunning ? <Loader2 size={12} className="spin" /> : anyFailed ? <AlertCircle size={12} className="event-fail" /> : null}
-            <ChevronDown size={13} className="event-chevron" />
-          </span>
+          </span>}
         </>
       )}
     >
@@ -8280,15 +8525,14 @@ function WebSearchGroup({ blocks }: { blocks: Array<Extract<MessageBlock, { type
           <span className="event-icon web-search-group-icon"><Globe size={15} /></span>
           <span className="event-verb">{verb} {blocks.length} 次</span>
           <span className="event-target" />
-          <span className="event-trailing">
+          {(anyRunning || anyFailed) && <span className="event-trailing">
             {anyRunning ? <Loader2 size={12} className="spin" /> : anyFailed ? <AlertCircle size={12} className="event-fail" /> : null}
-            <ChevronDown size={13} className="event-chevron" />
-          </span>
+          </span>}
         </>
       )}
     >
       <div className="tool-group-items">
-        {blocks.map((block) => <ToolBlockView key={block.id} block={block} />)}
+        {blocks.map((block, index) => <ToolBlockView key={block.id} block={block} groupedIndex={index} />)}
       </div>
     </EventDetails>
   );
@@ -8361,18 +8605,7 @@ function isReconnectStatusBlock(block: MessageBlock): boolean {
   return block.type === 'error' && /^Reconnecting\.\.\.\s+\d+\/\d+$/i.test(block.content.trim());
 }
 
-function Composer({
-  domain,
-  conversation,
-  disabled,
-  bottom,
-  prefillRequest,
-  selectedTextContexts = [],
-  onRemoveSelectedTextContext,
-  onConsumeSelectedTextContexts,
-  onSendMessage,
-  onStop,
-}: {
+interface ComposerProps {
   domain: DomainConfig;
   conversation: Conversation;
   disabled?: boolean;
@@ -8389,7 +8622,20 @@ function Composer({
     selectedContexts?: SelectedTextContext[] | null,
   ) => void | Promise<void>;
   onStop?: () => void | Promise<void>;
-}) {
+}
+
+function ComposerImpl({
+  domain,
+  conversation,
+  disabled,
+  bottom,
+  prefillRequest,
+  selectedTextContexts = [],
+  onRemoveSelectedTextContext,
+  onConsumeSelectedTextContexts,
+  onSendMessage,
+  onStop,
+}: ComposerProps) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [pendingAttachmentBatches, setPendingAttachmentBatches] = useState(0);
@@ -8689,6 +8935,27 @@ function Composer({
     </div>
   );
 }
+
+function composerPropsEqual(previous: ComposerProps, next: ComposerProps): boolean {
+  const previousConversation = previous.conversation;
+  const nextConversation = next.conversation;
+  return previous.domain === next.domain
+    && previous.disabled === next.disabled
+    && previous.bottom === next.bottom
+    && previous.prefillRequest === next.prefillRequest
+    && previous.selectedTextContexts === next.selectedTextContexts
+    && previous.onRemoveSelectedTextContext === next.onRemoveSelectedTextContext
+    && previous.onConsumeSelectedTextContexts === next.onConsumeSelectedTextContexts
+    && previous.onSendMessage === next.onSendMessage
+    && previous.onStop === next.onStop
+    && previousConversation.id === nextConversation.id
+    && previousConversation.status === nextConversation.status
+    && previousConversation.cwd === nextConversation.cwd
+    && previousConversation.projectId === nextConversation.projectId
+    && previousConversation.queuedMessages === nextConversation.queuedMessages;
+}
+
+const Composer = memo(ComposerImpl, composerPropsEqual);
 
 function ComposerSelectedTextContexts({
   contexts,
@@ -9337,7 +9604,7 @@ function generatedFilesFromPlainText(text: string): GeneratedFile[] {
 // The runtime may emit a file_result block and then mention the same path in
 // prose. Collect both sources in transcript order so each response can finish
 // with one deduplicated artifact handoff instead of repeated inline cards.
-function generatedFilesFromMessageBlocks(blocks: MessageBlock[]): GeneratedFile[] {
+function generatedFilesFromMessageBlocks(blocks: MessageBlock[], includeTextReferences = true): GeneratedFile[] {
   const files = new Map<string, GeneratedFile>();
   const remember = (file: GeneratedFile) => {
     if (isRemoteHtmlPage(file)) return;
@@ -9348,7 +9615,7 @@ function generatedFilesFromMessageBlocks(blocks: MessageBlock[]): GeneratedFile[
   };
 
   for (const block of blocks) {
-    if (block.type === 'text') {
+    if (block.type === 'text' && includeTextReferences) {
       generatedFilesFromPlainText(block.content).forEach(remember);
     } else if (block.type === 'file_result') {
       block.files.forEach(remember);
@@ -9687,12 +9954,11 @@ function FileContextMenu({
     });
   }
 
-  return createPortal(
+  return (
     <ContextMenu
       menu={{ owner: `file-context:${path}`, x: anchor.x, y: anchor.y, items }}
       onClose={onClose}
-    />,
-    document.body,
+    />
   );
 }
 
@@ -9981,10 +10247,35 @@ function ComposerPlusMenu({
   const { catalog, status } = useSkillRuntime();
   const [open, setOpen] = useState(false);
   const [submenu, setSubmenu] = useState<'plugins' | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ left: number; bottom: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const close = () => {
     setOpen(false);
     setSubmenu(null);
   };
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const triggerRect = trigger.getBoundingClientRect();
+      const menuWidth = 244;
+      const viewportGap = 12;
+      const triggerGap = 8;
+      setMenuPosition({
+        left: Math.min(Math.max(viewportGap, triggerRect.left), window.innerWidth - menuWidth - viewportGap),
+        bottom: Math.max(viewportGap, window.innerHeight - triggerRect.top + triggerGap),
+      });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
 
   const pickFiles = async () => {
     close();
@@ -10003,6 +10294,7 @@ function ComposerPlusMenu({
   return (
     <div className="plus-picker">
       <button
+        ref={triggerRef}
         type="button"
         className={`composer-icon-btn ${open ? 'active' : ''}`}
         onClick={() => setOpen((prev) => !prev)}
@@ -10014,10 +10306,15 @@ function ComposerPlusMenu({
       >
         <Plus size={16} />
       </button>
-      {open && (
+      {open && createPortal(
         <>
           <button className="menu-backdrop" type="button" aria-label="关闭菜单" onClick={close} />
-          <div className="plus-menu" role="menu" onMouseLeave={() => setSubmenu(null)}>
+          <div
+            className="plus-menu fixed"
+            role="menu"
+            style={menuPosition ? { left: menuPosition.left, bottom: menuPosition.bottom } : undefined}
+            onMouseLeave={() => setSubmenu(null)}
+          >
             <button type="button" className="plus-menu-item" role="menuitem" onMouseEnter={() => setSubmenu(null)} onClick={() => void pickFiles()}>
               <Paperclip size={15} />
               <span>添加照片和文件</span>
@@ -10045,14 +10342,13 @@ function ComposerPlusMenu({
                         <span>{`$${skill.id}`}</span>
                       </button>
                     ))}
-                    <div className="plus-menu-hint">金融版会在这里扩展投研数据、资料处理和自动化技能。</div>
                   </div>
                 </div>
               )}
             </div>
           </div>
         </>
-      )}
+      , document.body)}
     </div>
   );
 }
@@ -10707,10 +11003,10 @@ type ReviewStep = 'menu' | 'base' | 'commit' | 'custom';
 // reviewer with custom instructions. Picking a target kicks off a read-only
 // review turn in the current conversation and closes the dialog.
 function ReviewDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const conversation = useCurrentConversation();
-  const cwd = conversation?.cwd || '';
+  const cwd = useCurrentConversationCwd();
+  const conversationStatus = useCurrentConversationStatus();
   const startReview = useChatStore((state) => state.startReview);
-  const busy = conversation?.status === 'streaming';
+  const busy = conversationStatus === 'streaming';
   const [step, setStep] = useState<ReviewStep>('menu');
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
   const [commits, setCommits] = useState<GitCommit[]>([]);
@@ -11457,8 +11753,7 @@ const DISCARD_ALL_KEY = '__all__';
 // left diff column with word-level highlights, per-hunk staging, discard,
 // "mark viewed" and expandable unchanged-context; and a right file-tree.
 function ReviewChangesPanel() {
-  const conversation = useCurrentConversation();
-  const cwd = conversation?.cwd || '';
+  const cwd = useCurrentConversationCwd();
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [diffs, setDiffs] = useState<Record<string, FileDiffState>>({});
   const [fullDiffs, setFullDiffs] = useState<Record<string, ParsedDiff | 'loading'>>({});
@@ -12195,8 +12490,7 @@ function reviewFileIcon(name: string): ReactNode {
 }
 
 function GitPanel({ onClose }: { onClose: () => void }) {
-  const conversation = useCurrentConversation();
-  const cwd = conversation?.cwd || '';
+  const cwd = useCurrentConversationCwd();
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
   const [remotes, setRemotes] = useState<GitRemote[]>([]);
@@ -12396,10 +12690,6 @@ function SettingsPage({
     <div className="settings-page" role="dialog" aria-modal="true" aria-label="设置">
       <nav className="settings-page-nav">
         <div className="settings-page-traffic" data-tauri-drag-region />
-        <div className="settings-console-label" aria-hidden="true">
-          <span>ALPHA STUDIO</span>
-          <em>SYS.CONFIG</em>
-        </div>
         <button className="settings-back" type="button" onClick={onClose}><ChevronLeft size={16} /><span>返回应用</span></button>
         <SettingsNavGroup label="基础与账户" items={domain.navigation.personal} section={section} onSectionChange={onSectionChange} />
         <SettingsNavGroup label="金融数据" items={domain.navigation.integrations} section={section} onSectionChange={onSectionChange} />
@@ -12410,7 +12700,6 @@ function SettingsPage({
         <div className="settings-page-scroll">
           <div className="settings-content">
             <header className="settings-content-header">
-              <span className="settings-content-kicker">CONTROL PANEL / {section.toUpperCase()}</span>
               <h1 className="settings-content-title">{activeLabel}</h1>
             </header>
             <SettingsContent domain={domain} section={section} theme={theme} onThemeChange={onThemeChange} />
@@ -12447,7 +12736,6 @@ function SettingsNavGroup({
 
 function SettingsContent({ domain, section, theme, onThemeChange }: { domain: DomainConfig; section: SettingsSection; theme: Theme; onThemeChange: (theme: Theme) => void }) {
   if (section === 'archived') return <ArchivedSettings />;
-  if (section === 'jqdata') return <JqDataSettings />;
   if (section === 'usage') return <UsageSettings />;
   if (section === 'profile') return <ProfileSettings />;
   if (section === 'general') {
@@ -12464,109 +12752,6 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
     );
   }
 	return null;
-	}
-
-function JqDataSettings() {
-  const [config, setConfig] = useState<JqDataConfig>(() => emptyJqDataConfig());
-  const [enabled, setEnabled] = useState(false);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [apiUrl, setApiUrl] = useState('https://dataapi.joinquant.com/v2/apis');
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState('');
-  const [error, setError] = useState('');
-
-  const hydrate = useCallback((next: JqDataConfig) => {
-    setConfig(next);
-    setEnabled(next.enabled);
-    setUsername(next.username);
-    setApiUrl(next.apiUrl || 'https://dataapi.joinquant.com/v2/apis');
-    setPassword('');
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    void loadJqDataConfig()
-      .then((next) => {
-        if (!cancelled) hydrate(next);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(stringifyError(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [hydrate]);
-
-  const canSave = !enabled || Boolean(username.trim());
-
-  const save = async () => {
-    setSaving(true);
-    setError('');
-    setNotice('');
-    try {
-      await saveJqDataConfig({
-        enabled,
-        username,
-        password: password.trim() || undefined,
-        apiUrl,
-      });
-      const next = await loadJqDataConfig();
-      hydrate(next);
-      setNotice('聚宽数据配置已保存');
-      return true;
-    } catch (err) {
-      setError(stringifyError(err));
-      return false;
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    if (!canSave || saving) return;
-    void save();
-  };
-
-  return (
-    <>
-      <form className="jqdata-settings-form" onSubmit={submit}>
-        <div className="settings-subtitle">聚宽账号</div>
-        <div className="jqdata-form-grid">
-          <label>
-            <span>启用数据源</span>
-            <span className="jqdata-toggle-row">
-              <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
-              <em>{enabled ? '已启用' : '未启用'}</em>
-            </span>
-          </label>
-          <label>
-            <span>账号</span>
-            <input className="settings-input" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="手机号或聚宽账号" />
-          </label>
-          <label>
-            <span>密码</span>
-            <input className="settings-input" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={config.passwordConfigured ? '已保存，留空则不修改' : '聚宽登录密码'} />
-          </label>
-        </div>
-        <div className="jqdata-form-actions">
-          {notice && <span className="settings-state-pill ready">{notice}</span>}
-          {error && <span className="settings-inline-error">{error}</span>}
-          <button className="settings-btn primary" type="submit" disabled={!canSave || saving}>
-            {saving ? <Loader2 size={13} className="spin" /> : <Check size={13} />}
-            保存
-          </button>
-        </div>
-      </form>
-
-    </>
-  );
 }
 
 const EMPTY_MODEL_DRAFT: ModelProfileDraft = {
@@ -13178,9 +13363,14 @@ function ProfileSettings() {
   return (
     <>
       <div className="profile-settings">
-        <div className="avatar">{profileAvatarLabel(profileTitle)}</div>
-        <h2>{profileTitle}</h2>
-        <span>{profileSubtitle}</span>
+        <div className="profile-summary">
+          <div className="avatar" aria-hidden="true">{profileAvatarLabel(profileTitle)}</div>
+          <div className="profile-identity">
+            <span>当前客户</span>
+            <h2>{profileTitle}</h2>
+            <p>{profileSubtitle}</p>
+          </div>
+        </div>
         <div className="profile-actions">
           <button className="settings-btn danger" type="button" onClick={signOut}>
             <LogOut size={14} />
@@ -13193,7 +13383,7 @@ function ProfileSettings() {
             <em>已安装设备</em>
           </span>
           <span><strong>{codexSubscriptionEnabled ? 'GPT 订阅' : 'API 网关'}</strong><em>运行模式</em></span>
-          <span><strong>{session ? '已激活' : '未激活'}</strong><em>客户端状态</em></span>
+          <span><strong className={session ? 'profile-status-active' : 'profile-status-inactive'}>{session ? '已激活' : '未激活'}</strong><em>客户端状态</em></span>
         </div>
       </div>
       <SettingsGroup>
@@ -13799,7 +13989,6 @@ function settingsIcon(section: SettingsSection): ReactNode {
     general: <SlidersHorizontal size={15} />,
     profile: <UserCircle size={15} />,
     usage: <History size={15} />,
-    jqdata: <Database size={15} />,
     archived: <Archive size={15} />,
   };
   return icons[section];

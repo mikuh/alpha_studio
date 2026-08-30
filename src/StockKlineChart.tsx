@@ -8,13 +8,10 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import { ChartCandlestick, Database, Loader2 } from 'lucide-react';
-import { fetchJqDailyBars, fetchJqHistoricalBars, type JqDailyBar, type JqHistoricalBar } from './jqdata';
+import { ChartCandlestick } from 'lucide-react';
 import { changeTone, formatPercent, sampleBars, type ResearchQuote } from './research';
 
 type KlineInterval = '1m' | '5m' | '1d' | '1w' | '1mo';
-type ChartSource = 'loading' | 'jqdata' | 'snapshot';
-
 interface InspectedCandle {
   candle: CandlestickData<Time>;
   previousClose?: number;
@@ -33,32 +30,6 @@ function dateStamp(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
-}
-
-function daysAgo(days: number): string {
-  const value = new Date();
-  value.setDate(value.getDate() - days);
-  return dateStamp(value);
-}
-
-function minuteTimestamp(value: string): UTCTimestamp | null {
-  const parsed = new Date(value.replace(' ', 'T')).getTime();
-  return Number.isFinite(parsed) ? (Math.floor(parsed / 1000) as UTCTimestamp) : null;
-}
-
-function toDailyCandles(bars: JqDailyBar[]): CandlestickData<Time>[] {
-  return bars
-    .filter((bar) => [bar.open, bar.high, bar.low, bar.close].every(Number.isFinite))
-    .map((bar) => ({ time: bar.date.slice(0, 10), open: bar.open, high: bar.high, low: bar.low, close: bar.close }));
-}
-
-function toMinuteCandles(bars: JqHistoricalBar[]): CandlestickData<Time>[] {
-  return bars.flatMap((bar) => {
-    const time = minuteTimestamp(bar.time);
-    return time === null || ![bar.open, bar.high, bar.low, bar.close].every(Number.isFinite)
-      ? []
-      : [{ time, open: bar.open, high: bar.high, low: bar.low, close: bar.close }];
-  });
 }
 
 function aggregateCandles(
@@ -188,20 +159,6 @@ function candleTimeLabel(time: Time, intraday: boolean): string {
   return value.slice(0, intraday ? 16 : 10);
 }
 
-async function loadHistoricalCandles(code: string, interval: KlineInterval): Promise<CandlestickData<Time>[] | null> {
-  if (interval === '1m' || interval === '5m') {
-    const bars = await fetchJqHistoricalBars(code, daysAgo(7), dateStamp(new Date()), '1m', { fq: 'none' });
-    if (!bars?.length) return null;
-    const candles = toMinuteCandles(bars);
-    return interval === '1m' ? candles.slice(-240) : aggregateCandles(candles, '5m').slice(-160);
-  }
-  const bars = await fetchJqDailyBars(code, 720);
-  if (!bars?.length) return null;
-  const daily = toDailyCandles(bars);
-  if (interval === '1d') return daily.slice(-120);
-  return aggregateCandles(daily, interval).slice(interval === '1w' ? -120 : -72);
-}
-
 export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const interactionRef = useRef<HTMLDivElement>(null);
@@ -209,42 +166,13 @@ export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
   const [interval, setInterval] = useState<KlineInterval>('1d');
   const [isInteractive, setIsInteractive] = useState(false);
   const fallback = useMemo(() => snapshotCandles(quote, interval), [interval, quote]);
-  const fallbackRef = useRef(fallback);
-  fallbackRef.current = fallback;
   const [candles, setCandles] = useState<CandlestickData<Time>[]>(fallback);
-  const [source, setSource] = useState<ChartSource>('snapshot');
-  const [historyRequest, setHistoryRequest] = useState(0);
   const [inspected, setInspected] = useState<InspectedCandle | null>(null);
 
   useEffect(() => {
-    if (historyRequest > 0) return;
     setInspected(null);
     setCandles(fallback);
-    setSource('snapshot');
-  }, [fallback, historyRequest]);
-
-  useEffect(() => {
-    if (historyRequest === 0) return;
-    let active = true;
-    setInspected(null);
-    setSource('loading');
-    void loadHistoricalCandles(quote.code, interval).then((historical) => {
-      if (!active) return;
-      if (historical?.length) {
-        setCandles(historical);
-        setSource('jqdata');
-      } else {
-        setCandles(fallbackRef.current);
-        setSource('snapshot');
-      }
-    }).catch(() => {
-      if (active) {
-        setCandles(fallbackRef.current);
-        setSource('snapshot');
-      }
-    });
-    return () => { active = false; };
-  }, [historyRequest, interval, quote.code]);
+  }, [fallback]);
 
   useEffect(() => {
     if (!isInteractive) return;
@@ -350,27 +278,13 @@ export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
     ? ((shown.close - previousClose) / previousClose) * 100
     : undefined;
   const bodyPct = shown && shown.open > 0 ? ((shown.close - shown.open) / shown.open) * 100 : undefined;
-  const sourceLabel = source === 'jqdata'
-    ? '聚宽历史行情 · 前复权'
-    : source === 'loading'
-      ? '正在加载历史行情…'
-      : '云端快照 · 本地走势预览';
+  const sourceLabel = '行情快照 · 本地走势预览';
 
   return (
     <section className="market-card stock-kline-card" aria-label={`${quote.name} K线图`}>
       <header className="stock-kline-heading">
         <span><strong>K 线行情</strong><em>{sourceLabel}</em></span>
         <span className="stock-kline-actions">
-          <button
-            type="button"
-            className="stock-kline-history-btn"
-            aria-label={source === 'jqdata' ? '刷新聚宽历史行情' : '加载聚宽历史行情'}
-            disabled={source === 'loading'}
-            onClick={() => setHistoryRequest((current) => current + 1)}
-          >
-            {source === 'loading' ? <Loader2 size={11} className="spin" /> : <Database size={11} />}
-            <span>{source === 'jqdata' ? '刷新聚宽' : '加载聚宽'}</span>
-          </button>
           <span className="stock-kline-brand"><ChartCandlestick size={13} /> TradingView</span>
         </span>
       </header>
@@ -407,7 +321,7 @@ export function StockKlineChart({ quote }: { quote: ResearchQuote }) {
         className={`stock-kline-interaction${isInteractive ? ' is-active' : ''}`}
         data-chart-interactive={isInteractive}
       >
-        <div ref={hostRef} className="stock-kline-canvas" data-chart-source={source} />
+        <div ref={hostRef} className="stock-kline-canvas" data-chart-source="snapshot" />
         {!isInteractive && (
           <button
             type="button"

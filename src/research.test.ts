@@ -47,7 +47,7 @@ function blankState(): ResearchState {
 }
 
 describe('normalizeSecurityCode', () => {
-  it('normalizes bare, prefixed and suffixed codes to JQData format', () => {
+  it('normalizes bare, prefixed and suffixed codes to the workspace format', () => {
     expect(normalizeSecurityCode('600519')).toBe('600519.XSHG');
     expect(normalizeSecurityCode('000001')).toBe('000001.XSHE');
     expect(normalizeSecurityCode('300750')).toBe('300750.XSHE');
@@ -281,7 +281,7 @@ describe('quotes and market stats', () => {
     ]]);
     const quotes = buildQuoteMap(state, overrides);
     const quote = quotes.get('600519.XSHG');
-    expect(quote?.source).toBe('jqdata');
+    expect(quote?.source).toBe('eastmoney');
     expect(quote?.price).toBe(1600);
     expect(quote?.changePct).toBeCloseTo((100 / 1500) * 100, 6);
     expect(quote?.high).toBe(1618);
@@ -316,7 +316,7 @@ describe('quotes and market stats', () => {
     });
     expect(marketPrompt).toContain('涨跌家数');
     expect(marketPrompt).toContain('成交额 Top');
-    expect(marketPrompt).toContain('JQData 字段');
+    expect(marketPrompt).toContain('补充验证的数据字段');
 
     expect(rankListPrompt('成交额 Top', quoteList.slice(0, 3), 'turnover')).toContain('共振');
     expect(sectorHeatPrompt(heat, quoteList)).toContain(heat.sector);

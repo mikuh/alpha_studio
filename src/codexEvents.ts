@@ -505,18 +505,25 @@ function updateStreamingAssistant(
   now: number,
   updater: (message: ChatMessage) => ChatMessage,
 ): Conversation {
-  let updated = false;
-  const messages = conversation.messages.map((message, index, all) => {
-    const isLastAssistant = message.role === 'assistant'
-      && (message.isStreaming || index === all.length - 1);
-    if (!isLastAssistant) return message;
-    updated = true;
-    return updater(message);
-  });
-
-  if (!updated) {
-    return conversation;
+  let assistantIndex = -1;
+  for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
+    const message = conversation.messages[index];
+    if (message.role === 'assistant' && message.isStreaming) {
+      assistantIndex = index;
+      break;
+    }
   }
+  const lastIndex = conversation.messages.length - 1;
+  if (assistantIndex < 0 && conversation.messages[lastIndex]?.role === 'assistant') {
+    assistantIndex = lastIndex;
+  }
+  if (assistantIndex < 0) return conversation;
+
+  // A conversation owns a single live assistant turn. Clone the array in
+  // native code and replace only that tail entry instead of invoking a map
+  // callback for every historical message on every streamed frame.
+  const messages = conversation.messages.slice();
+  messages[assistantIndex] = updater(messages[assistantIndex]);
 
   return {
     ...conversation,

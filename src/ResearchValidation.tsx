@@ -2,22 +2,18 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import {
   Activity,
   AlertTriangle,
-  BarChart3,
   Check,
   ChevronRight,
   Clock3,
-  Crosshair,
   FileInput,
   Layers,
   Loader2,
-  MessageSquarePlus,
   Play,
   RefreshCw,
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
 } from 'lucide-react';
-import { fetchJqHistoricalBars, loadJqDataConfig } from './jqdata';
 import {
   AUTOMATION_TASKS_CHANGED_EVENT,
   addScheduledAutomationTask,
@@ -45,28 +41,18 @@ import {
   type PremarketThemeTrigger,
 } from './themeResearch';
 import {
-  DEFAULT_THEME_BACKTEST_CONFIG,
   IMPORTANT_TRIGGER_STATES,
   TRIGGER_STATUS_LABELS,
   THEME_TRACKING_CHANGED_EVENT,
   THEME_REVIEWS_CHANGED_EVENT,
   createDailyReview,
   hydrateThemeValidationFromLocalStore,
-  loadThemeBacktestRuns,
   loadThemeReviews,
   loadThemeTrackingEvents,
   overrideTrackingEvent,
-  runThemeBacktest,
-  eligibleOpenReports,
-  selectBacktestCandidate,
-  saveThemeBacktestRun,
   saveThemeReviews,
   saveThemeTrackingEvents,
   summarizeStockConditions,
-  type BacktestCurvePoint,
-  type BacktestPriceBar,
-  type ThemeBacktestConfig,
-  type ThemeBacktestRun,
   type ThemeDailyReview,
   type ThemeTrackingEvent,
   type TriggerEvaluationStatus,
@@ -88,13 +74,12 @@ import { loadLocalStoreSnapshot } from './localStore';
 import { insertIntoComposer } from './composerBridge';
 import { buildResearchCalibration } from './researchCalibration';
 
-type ValidationView = 'cockpit' | 'ledger' | 'review' | 'backtest' | 'calibration';
+type ValidationView = 'cockpit' | 'ledger' | 'review' | 'calibration';
 
 const VIEW_LABELS: Record<ValidationView, string> = {
   cockpit: '今日作战',
   ledger: '主题台账',
   review: '收盘复盘',
-  backtest: '净值回测',
   calibration: '概率校准',
 };
 
@@ -139,28 +124,12 @@ function formatPercent(value: number): string {
   return `${prefix}${value.toFixed(2)}%`;
 }
 
-function toBacktestBars(bars: Awaited<ReturnType<typeof fetchJqHistoricalBars>>): BacktestPriceBar[] {
-  return (bars ?? []).map((bar) => ({
-    time: bar.time,
-    open: bar.open,
-    close: bar.close,
-    high: bar.high,
-    low: bar.low,
-    volume: bar.volume,
-    money: bar.money,
-    paused: bar.paused,
-    highLimit: bar.highLimit,
-    lowLimit: bar.lowLimit,
-  }));
-}
-
 export function ResearchValidationPanel() {
   const [view, setView] = useState<ValidationView>('cockpit');
   const [reports, setReports] = useState<PremarketThemeRun[]>(() => loadPremarketThemeRuns());
   const [selectedReportId, setSelectedReportId] = useState(() => reports[0]?.id || '');
   const [events, setEvents] = useState<ThemeTrackingEvent[]>(() => loadThemeTrackingEvents());
   const [reviews, setReviews] = useState<ThemeDailyReview[]>(() => loadThemeReviews());
-  const [backtestRuns, setBacktestRuns] = useState<ThemeBacktestRun[]>(() => loadThemeBacktestRuns());
   const [quotes, setQuotes] = useState<Map<string, ResearchQuote>>(new Map());
   const [dataAsOf, setDataAsOf] = useState<string>('');
   const [dataError, setDataError] = useState<string>('');
@@ -194,7 +163,6 @@ export function ResearchValidationPanel() {
       }
       setEvents(loadThemeTrackingEvents());
       setReviews(loadThemeReviews());
-      setBacktestRuns(loadThemeBacktestRuns());
     }).catch(() => undefined);
     const handleRuns = () => {
       const next = loadPremarketThemeRuns();
@@ -440,7 +408,7 @@ export function ResearchValidationPanel() {
         </div>
       ) : null}
 
-      <div className="rv-view-tabs five" role="tablist" aria-label="跟踪验证视图">
+      <div className="rv-view-tabs four" role="tablist" aria-label="跟踪验证视图">
         {(Object.keys(VIEW_LABELS) as ValidationView[]).map((key) => (
           <button key={key} type="button" role="tab" aria-selected={view === key} className={view === key ? 'active' : ''} onClick={() => setView(key)}>
             {VIEW_LABELS[key]}
@@ -506,11 +474,6 @@ export function ResearchValidationPanel() {
             onAcceptRules={acceptRuleChanges}
             onSelectReport={setSelectedReportId}
           />
-        ) : null}
-        {selectedReport && view === 'backtest' ? (
-          <BacktestView reports={reports} events={events} runs={backtestRuns} onRun={(run) => {
-            setBacktestRuns(saveThemeBacktestRun(run));
-          }} />
         ) : null}
         {selectedReport && view === 'calibration' ? (
           <CalibrationView reports={reports} reviews={reviews} />
@@ -911,32 +874,6 @@ function ReviewView({
   );
 }
 
-// ---- 净值回测 --------------------------------------------------------------
-
-interface BacktestPreset {
-  label: string;
-  config: Partial<ThemeBacktestConfig>;
-}
-
-const BACKTEST_PRESETS: BacktestPreset[] = [
-  { label: '龙头 T+1', config: { name: 'Top1·龙头·T+1', stockRole: '龙头', roleRank: 1, holdingDays: 1 } },
-  { label: '中军 T+1', config: { name: 'Top1·第一中军·T+1', stockRole: '中军', roleRank: 1, holdingDays: 1 } },
-  { label: '中军 T+3', config: { name: 'Top1·第一中军·T+3', stockRole: '中军', roleRank: 1, holdingDays: 3 } },
-  { label: '趋势核心 T+2', config: { name: 'Top1·趋势核心·T+2', stockRole: '趋势核心', roleRank: 1, holdingDays: 2 } },
-  { label: '补涨 T+1', config: { name: 'Top1·补涨·T+1', stockRole: '补涨', roleRank: 1, holdingDays: 1 } },
-];
-
-const SCAN_ROLES = ['龙头', '中军', '趋势核心', '补涨'];
-const SCAN_HOLDING_DAYS = [1, 2, 3, 5];
-
-interface ScanCell {
-  role: string;
-  holdingDays: number;
-  totalReturnPct: number;
-  winRatePct: number;
-  sampleCount: number;
-}
-
 function CalibrationView({ reports, reviews }: { reports: PremarketThemeRun[]; reviews: ThemeDailyReview[] }) {
   const calibration = useMemo(() => buildResearchCalibration(reports, reviews), [reports, reviews]);
   const pct = (value: number | null) => value === null ? '—' : `${(value * 100).toFixed(1)}%`;
@@ -969,282 +906,4 @@ function CalibrationView({ reports, reviews }: { reports: PremarketThemeRun[]; r
       <p className="rv-calibration-definition">口径：hit=1、partial=0.5、not_triggered/miss=0、data_missing 排除；同一主题多个触发取平均。本页评估“触发兑现概率”，不代表收益率或可成交性。</p>
     </section>
   </div>;
-}
-
-function BacktestView({ reports, events, runs, onRun }: { reports: PremarketThemeRun[]; events: ThemeTrackingEvent[]; runs: ThemeBacktestRun[]; onRun: (run: ThemeBacktestRun) => void }) {
-  const [config, setConfig] = useState<ThemeBacktestConfig>(DEFAULT_THEME_BACKTEST_CONFIG);
-  const [running, setRunning] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  const [error, setError] = useState('');
-  const [activeRun, setActiveRun] = useState<ThemeBacktestRun | null>(runs[0] ?? null);
-  const [scanResults, setScanResults] = useState<ScanCell[] | null>(null);
-
-  const dateRange = useCallback(() => {
-    const eligible = reports.filter((report) => report.tradeDate);
-    if (!eligible.length) throw new Error('没有带交易日期的结构化报告。');
-    const dates = eligible.map((report) => report.tradeDate).sort();
-    const start = config.dateFrom || dates[0];
-    const endBase = config.dateTo || dates[dates.length - 1];
-    const endDate = new Date(`${endBase}T00:00:00+08:00`);
-    endDate.setDate(endDate.getDate() + 12);
-    const end = endDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
-    return { start, end };
-  }, [config.dateFrom, config.dateTo, reports]);
-
-  const requireJq = useCallback(async () => {
-    const jqConfig = await loadJqDataConfig();
-    if (!jqConfig.enabled || !jqConfig.passwordConfigured) throw new Error('净值回测需要先在设置中启用 JQData；不会使用样例行情代替。');
-  }, []);
-
-  const execute = useCallback(async () => {
-    setRunning(true);
-    setError('');
-    try {
-      await requireJq();
-      const { start, end } = dateRange();
-      const backtestEligible = eligibleOpenReports(reports, config);
-      const selections = backtestEligible.map((report) => ({ report, candidate: selectBacktestCandidate(report, config) }));
-      const codes = Array.from(new Set(selections.map((item) => item.candidate?.stock.code).filter((code): code is string => Boolean(code))));
-      const [dailyEntries, rawDailyEntries] = await Promise.all([
-        Promise.all(codes.map(async (code) => [code, toBacktestBars(await fetchJqHistoricalBars(code, start, end, '1d', { fq: 'pre' }))] as const)),
-        Promise.all(codes.map(async (code) => [code, toBacktestBars(await fetchJqHistoricalBars(code, start, end, '1d', { fq: 'none' }))] as const)),
-      ]);
-      const reportsWithEvents = new Set(events.map((event) => event.reportId));
-      const eventCodes = new Set(selections.filter((item) => reportsWithEvents.has(item.report.id)).map((item) => item.candidate?.stock.code).filter((code): code is string => Boolean(code)));
-      const minuteEntries = await Promise.all(Array.from(eventCodes).map(async (code) => [code, toBacktestBars(await fetchJqHistoricalBars(code, start, end, '1m', { fq: 'none' }))] as const));
-      const benchmark = toBacktestBars(await fetchJqHistoricalBars(config.benchmarkCode, start, end, '1d', { fq: 'pre' }));
-      if (!benchmark.length) throw new Error('JQData 未返回沪深300基准行情。');
-      const backtestInput = {
-        reports,
-        events,
-        dailyBarsByCode: new Map(dailyEntries),
-        rawDailyBarsByCode: new Map(rawDailyEntries),
-        minuteBarsByCode: new Map(minuteEntries),
-        benchmarkBars: benchmark,
-        config,
-        dataSource: 'jqdata',
-        dataVersion: new Date().toISOString(),
-      };
-      const run = runThemeBacktest(backtestInput);
-      run.sensitivity = [0, 5, 10].map((slippageBps) => ({
-        slippageBps,
-        executableReturnPct: runThemeBacktest({ ...backtestInput, config: { ...config, slippageBps } }).metrics.executableReturnPct,
-      }));
-      setActiveRun(run);
-      onRun(run);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setRunning(false);
-    }
-  }, [config, dateRange, events, onRun, reports, requireJq]);
-
-  const scan = useCallback(async () => {
-    setScanning(true);
-    setError('');
-    try {
-      await requireJq();
-      const { start, end } = dateRange();
-      const codes = new Set<string>();
-      for (const role of SCAN_ROLES) {
-        const scanConfig = { ...config, stockRole: role, roleRank: 1 };
-        for (const report of eligibleOpenReports(reports, scanConfig)) {
-          const candidate = selectBacktestCandidate(report, scanConfig);
-          if (candidate?.stock.code) codes.add(candidate.stock.code);
-        }
-      }
-      if (!codes.size) throw new Error('没有可用于扫描的角色标的。');
-      const dailyEntries = await Promise.all(Array.from(codes).map(async (code) =>
-        [code, toBacktestBars(await fetchJqHistoricalBars(code, start, end, '1d', { fq: 'pre' }))] as const));
-      const benchmark = toBacktestBars(await fetchJqHistoricalBars(config.benchmarkCode, start, end, '1d', { fq: 'pre' }));
-      if (!benchmark.length) throw new Error('JQData 未返回沪深300基准行情。');
-      const dailyBarsByCode = new Map(dailyEntries);
-      const cells: ScanCell[] = [];
-      for (const role of SCAN_ROLES) {
-        for (const holdingDays of SCAN_HOLDING_DAYS) {
-          const run = runThemeBacktest({
-            reports,
-            events,
-            dailyBarsByCode,
-            benchmarkBars: benchmark,
-            config: { ...config, stockRole: role, roleRank: 1, holdingDays, name: `扫描·${role}·T+${holdingDays}` },
-            dataSource: 'jqdata',
-            dataVersion: new Date().toISOString(),
-          });
-          cells.push({
-            role,
-            holdingDays,
-            totalReturnPct: run.metrics.totalReturnPct,
-            winRatePct: run.metrics.winRatePct,
-            sampleCount: run.metrics.sampleCount,
-          });
-        }
-      }
-      setScanResults(cells);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setScanning(false);
-    }
-  }, [config, dateRange, events, reports, requireJq]);
-
-  return (
-    <div className="rv-stack">
-      <div className="rv-presets" role="group" aria-label="策略预设">
-        {BACKTEST_PRESETS.map((preset) => (
-          <button
-            key={preset.label}
-            type="button"
-            className={preset.config.stockRole === config.stockRole && preset.config.holdingDays === config.holdingDays ? 'active' : ''}
-            onClick={() => setConfig({ ...config, ...preset.config })}
-          >
-            {preset.label}
-          </button>
-        ))}
-      </div>
-      <section className="rv-section rv-backtest-config">
-        <header>
-          <div><strong>{config.name}</strong><span>信号曲线 + 可执行净值 · 防未来函数</span></div>
-          <div className="rv-backtest-actions">
-            <button type="button" onClick={() => insertIntoComposer([
-              '请通过对话回测 Alpha Studio 每日结构化日报。',
-              `策略：题材排名 ${config.themeRank}，角色 ${config.stockRole} 第 ${config.roleRank} 顺位，持有 T+${config.holdingDays}。`,
-              `范围：${config.dateFrom || '最早留档日'} 至 ${config.dateTo || '最新留档日'}。`,
-              `成本：佣金率 ${config.commissionRate}，最低佣金 ${config.minimumCommission} 元，印花税率 ${config.stampDutyRate}，滑点 ${config.slippageBps}bp。`,
-              '请严格使用事前报告快照和已留痕触发事件，排除未来函数，并给出样本、净值、最大回撤、胜率、超额收益、未成交与数据缺口。',
-            ].join('\n'))}><MessageSquarePlus size={13} />对话回测</button>
-            <button type="button" onClick={() => void scan()} disabled={scanning || running}>{scanning ? <Loader2 size={13} className="spin" /> : <Crosshair size={13} />}扫描矩阵</button>
-            <button type="button" className="primary" onClick={() => void execute()} disabled={running || scanning}>{running ? <Loader2 size={13} className="spin" /> : <Play size={13} />}运行</button>
-          </div>
-        </header>
-        <div className="rv-form-grid">
-          <label>题材排名<input type="number" min="1" value={config.themeRank} onChange={(event) => setConfig({ ...config, themeRank: Number(event.target.value) || 1 })} /></label>
-          <label>股票角色<select value={config.stockRole} onChange={(event) => setConfig({ ...config, stockRole: event.target.value })}><option>中军</option><option>趋势核心</option><option>龙头</option><option>补涨</option></select></label>
-          <label>角色顺序<input type="number" min="1" value={config.roleRank} onChange={(event) => setConfig({ ...config, roleRank: Number(event.target.value) || 1 })} /></label>
-          <label>持有日<input type="number" min="1" max="20" value={config.holdingDays} onChange={(event) => setConfig({ ...config, holdingDays: Number(event.target.value) || 1 })} /></label>
-          <label>佣金率<input type="number" step="0.0001" value={config.commissionRate} onChange={(event) => setConfig({ ...config, commissionRate: Number(event.target.value) || 0 })} /></label>
-          <label>滑点 bp<select value={config.slippageBps} onChange={(event) => setConfig({ ...config, slippageBps: Number(event.target.value) })}><option value="0">0</option><option value="5">5</option><option value="10">10</option></select></label>
-        </div>
-      </section>
-      {error ? <div className="rv-error"><AlertTriangle size={13} />{error}</div> : null}
-      {scanResults ? (
-        <section className="rv-section">
-          <header><div><strong>角色 × 持有期扫描</strong><span>信号毛收益（不含费用/成交约束）；点击单元格套用配置</span></div></header>
-          <div className="rv-scan-grid" style={{ gridTemplateColumns: `64px repeat(${SCAN_HOLDING_DAYS.length}, minmax(0, 1fr))` }}>
-            <span className="rv-scan-head" />
-            {SCAN_HOLDING_DAYS.map((days) => <span key={days} className="rv-scan-head">T+{days}</span>)}
-            {SCAN_ROLES.map((role) => (
-              <ScanRow
-                key={role}
-                role={role}
-                cells={scanResults.filter((cell) => cell.role === role)}
-                onPick={(cell) => setConfig({ ...config, stockRole: cell.role, roleRank: 1, holdingDays: cell.holdingDays, name: `Top1·${cell.role}·T+${cell.holdingDays}` })}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
-      {runs.length > 1 ? (
-        <section className="rv-section">
-          <header><div><strong>历史回测记录</strong><span>最近 {Math.min(runs.length, 8)} 次，点击查看</span></div></header>
-          <div className="rv-run-history">
-            {runs.slice(0, 8).map((run) => (
-              <button key={run.id} type="button" className={activeRun?.id === run.id ? 'active' : ''} onClick={() => setActiveRun(run)}>
-                <span>{formatDateTime(run.createdAt)}</span>
-                <strong>{run.config.name}</strong>
-                <em className={run.metrics.totalReturnPct >= 0 ? 'up' : 'down'}>{formatPercent(run.metrics.totalReturnPct)}</em>
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
-      {activeRun ? <BacktestResults run={activeRun} /> : <div className="rv-empty compact"><BarChart3 size={24} /><strong>等待第一次可信回测</strong><span>只使用结构化报告和 JQData 历史行情，缺失样本会留在排除清单。</span></div>}
-    </div>
-  );
-}
-
-function ScanRow({ role, cells, onPick }: { role: string; cells: ScanCell[]; onPick: (cell: ScanCell) => void }) {
-  return (
-    <>
-      <span className="rv-scan-role">{role}</span>
-      {cells.map((cell) => (
-        <button
-          key={`${cell.role}:${cell.holdingDays}`}
-          type="button"
-          className={`rv-scan-cell ${cell.sampleCount ? (cell.totalReturnPct >= 0 ? 'up' : 'down') : 'empty'}`}
-          onClick={() => onPick(cell)}
-          title={`${role} T+${cell.holdingDays} · 胜率 ${cell.winRatePct.toFixed(0)}% · ${cell.sampleCount} 笔`}
-        >
-          <strong>{cell.sampleCount ? formatPercent(cell.totalReturnPct) : '—'}</strong>
-          <span>{cell.sampleCount ? `${cell.winRatePct.toFixed(0)}% · ${cell.sampleCount}笔` : '无样本'}</span>
-        </button>
-      ))}
-    </>
-  );
-}
-
-function BacktestResults({ run }: { run: ThemeBacktestRun }) {
-  const metrics = run.metrics;
-  return (
-    <>
-      <div className="rv-metrics">
-        <Metric label="信号收益" value={formatPercent(metrics.totalReturnPct)} tone={metrics.totalReturnPct} />
-        <Metric label="可执行收益" value={formatPercent(metrics.executableReturnPct)} tone={metrics.executableReturnPct} />
-        <Metric label="超额收益" value={formatPercent(metrics.excessReturnPct)} tone={metrics.excessReturnPct} />
-        <Metric label="最大回撤" value={formatPercent(metrics.maxDrawdownPct)} tone={metrics.maxDrawdownPct} />
-        <Metric label="胜率" value={`${metrics.winRatePct.toFixed(1)}%`} />
-        <Metric label="平均单笔" value={formatPercent(metrics.averageTradePct)} tone={metrics.averageTradePct} />
-        <Metric label="中位单笔" value={formatPercent(metrics.medianTradePct)} tone={metrics.medianTradePct} />
-        <Metric label="盈亏比" value={metrics.profitLossRatio === null ? '样本不足' : metrics.profitLossRatio.toFixed(2)} />
-        <Metric label="有效样本" value={`${metrics.sampleCount}/${metrics.eligibleReports}`} />
-        <Metric label="覆盖率" value={`${metrics.coveragePct.toFixed(1)}%`} />
-      </div>
-      {run.sensitivity?.length ? <div className="rv-sensitivity"><strong>滑点敏感性</strong>{run.sensitivity.map((item) => <span key={item.slippageBps}>{item.slippageBps}bp <em>{formatPercent(item.executableReturnPct)}</em></span>)}</div> : null}
-      <section className="rv-section">
-        <header><div><strong>资金净值</strong><span>运行哈希 {run.runHash}</span></div></header>
-        <CurveChart signal={run.signalCurve} executable={run.executableCurve} benchmark={run.benchmarkCurve} />
-        <div className="rv-chart-legend"><span className="signal">信号曲线</span><span className="executable">可执行净值</span><span className="benchmark">沪深300</span></div>
-      </section>
-      <section className="rv-section">
-        <header><div><strong>逐日交易账本</strong><span>{run.dataSource} · {formatDateTime(run.createdAt)}</span></div></header>
-        <div className="rv-trade-list">
-          {run.signalTrades.map((trade) => (
-            <div key={trade.id}><span>{trade.tradeDate}</span><strong>{trade.theme} · {trade.name}</strong><em className={trade.grossReturnPct >= 0 ? 'up' : 'down'}>{formatPercent(trade.grossReturnPct)}</em><p>{trade.entryPrice.toFixed(2)} → {trade.exitPrice.toFixed(2)} · {trade.evidence}</p></div>
-          ))}
-          {!run.signalTrades.length ? <div className="rv-muted-row">没有形成有效交易样本。</div> : null}
-        </div>
-      </section>
-      {run.exclusions.length ? <section className="rv-section"><header><div><strong>排除与未成交</strong><span>{run.exclusions.length} 项</span></div></header><div className="rv-exclusions">{run.exclusions.slice(0, 12).map((item, index) => <p key={`${item.reportId}:${index}`}><span>{item.tradeDate}</span>{item.reason}</p>)}</div></section> : null}
-    </>
-  );
-}
-
-function Metric({ label, value, tone }: { label: string; value: string; tone?: number }) {
-  return <div><span>{label}</span><strong className={tone === undefined ? '' : tone >= 0 ? 'up' : 'down'}>{value}</strong></div>;
-}
-
-function CurveChart({ signal, executable, benchmark }: { signal: BacktestCurvePoint[]; executable: BacktestCurvePoint[]; benchmark: BacktestCurvePoint[] }) {
-  const width = 720;
-  const height = 220;
-  const all = [...signal, ...executable, ...benchmark].filter((point) => Number.isFinite(point.value));
-  if (all.length < 2) return <div className="rv-chart-empty">样本不足，暂时无法绘制净值曲线。</div>;
-  const dates = Array.from(new Set(all.map((point) => point.date))).sort();
-  const min = Math.min(...all.map((point) => point.value));
-  const max = Math.max(...all.map((point) => point.value));
-  const span = Math.max(1, max - min);
-  const path = (points: BacktestCurvePoint[]) => points.map((point, index) => {
-    const x = dates.length > 1 ? dates.indexOf(point.date) / (dates.length - 1) * width : 0;
-    const y = height - (point.value - min) / span * height;
-    return `${index ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  return (
-    <div className="rv-chart-wrap">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="信号、可执行与沪深300净值曲线">
-        <line x1="0" y1={height / 2} x2={width} y2={height / 2} className="grid" />
-        <path d={path(benchmark)} className="benchmark" />
-        <path d={path(signal)} className="signal" />
-        <path d={path(executable)} className="executable" />
-      </svg>
-    </div>
-  );
 }

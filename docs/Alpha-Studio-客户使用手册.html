@@ -521,7 +521,7 @@
             <div class="step"><b>04</b><strong>创建研究主题</strong><span>为每个主题选择独立的本地资料目录并纳入备份。</span></div>
           </div>
           <div class="steps" style="margin-top:14px">
-            <div class="step"><b>05</b><strong>配置数据源</strong><span>按需启用聚宽数据；未配置时仍可使用样例或公开数据能力。</span></div>
+            <div class="step"><b>05</b><strong>核对数据口径</strong><span>确认行情来源、更新时间与样例标识，不把预览数据当成实盘依据。</span></div>
             <div class="step"><b>06</b><strong>发起首个任务</strong><span>选择目录、模型与批准方式，使用建议卡或直接输入问题。</span></div>
             <div class="step"><b>07</b><strong>核验研究输出</strong><span>检查来源、数据时点、关键假设、反证条件和风险提示。</span></div>
             <div class="step"><b>08</b><strong>建立日常流程</strong><span>将盘前、盘中和盘后任务固化为技能或自动化任务。</span></div>
@@ -903,29 +903,23 @@
       <div class="page-foot"><span>财务与资金研究</span><span>16 / 26</span></div>
     </section>
 
-    <section class="page" id="p17" data-title="聚宽数据">
+    <section class="page" id="p17" data-title="行情数据口径">
       <div class="page-body">
-        <header class="page-head"><div><span class="eyebrow">JQDATA</span><h1>配置并使用聚宽数据</h1></div><span class="page-index">17</span></header>
-        <div class="content grid wide-left">
-          <figure class="shot" style="height:500px">
-            <img src="customer-manual-assets/06-jqdata-center.png" alt="聚宽数据中心说明图，展示接口状态、更新时间、权限和示例参数" />
-            <span class="demo-label">功能说明图 · 权限以实际账号为准</span>
-            <figcaption>图 7 · 聚宽数据能力说明：接口状态、权限、更新时间和调用示例。</figcaption>
-          </figure>
-          <aside class="card compact">
-            <h2>配置路径</h2>
-            <ol class="number-list">
-              <li>进入<strong>设置 › 聚宽数据</strong>。</li>
-              <li>启用数据源，输入本人合规持有的聚宽账号。</li>
-              <li>输入密码并保存；不要在聊天中粘贴凭证。</li>
-              <li>返回工作台刷新数据，核对数据时点与错误提示。</li>
-            </ol>
-            <div class="note danger" style="margin-top:13px"><strong>凭证安全：</strong>聚宽账号密码属于敏感认证信息。不得通过邮件、聊天或截图发送给服务人员。</div>
-            <div class="note" style="margin-top:9px"><strong>权限差异：</strong>可用接口、历史深度、资产范围和速率限制取决于聚宽账号授权。</div>
-          </aside>
+        <header class="page-head"><div><span class="eyebrow">MARKET DATA</span><h1>识别行情来源与数据时点</h1></div><span class="page-index">17</span></header>
+        <div class="content grid two">
+          <article class="card">
+            <span class="tag green">云端行情</span><h2 style="margin-top:11px">主备源归一化快照</h2>
+            <ul><li>页面明确展示行情来源与更新时间。</li><li>主源不可用时可能切换备源，字段覆盖会有差异。</li><li>刷新失败时保留错误，不把缺失值伪装为零。</li></ul>
+            <div class="note warning" style="margin-top:14px"><strong>使用原则：</strong>所有价格、成交量和资金字段都应与交易日、采集时间及复权口径一起阅读。</div>
+          </article>
+          <article class="card">
+            <span class="tag amber">本地预览</span><h2 style="margin-top:11px">样例与走势预览</h2>
+            <ul><li>样例行情用于熟悉界面和研究流程。</li><li>K 线预览不代表完整历史行情或可成交价格。</li><li>需要精确结论时，应补充可核验的授权数据或官方材料。</li></ul>
+            <div class="note danger" style="margin-top:14px"><strong>决策边界：</strong>不要仅凭样例、缓存或单一供应商快照作出实盘交易决定。</div>
+          </article>
         </div>
       </div>
-      <div class="page-foot"><span>第三方数据服务</span><span>17 / 26</span></div>
+      <div class="page-foot"><span>行情数据口径</span><span>17 / 26</span></div>
     </section>
 
     <section class="page" id="p18" data-title="每日决策与跟踪验证">
@@ -994,18 +988,18 @@
 
     <section class="page" id="p20" data-title="设置与账户">
       <div class="page-body">
-        <header class="page-head"><div><span class="eyebrow">SETTINGS</span><h1>显示偏好、账户与数据设置</h1></div><span class="page-index">20</span></header>
+        <header class="page-head"><div><span class="eyebrow">SETTINGS</span><h1>显示偏好、账户与使用设置</h1></div><span class="page-index">20</span></header>
         <div class="content grid wide-left">
           <div class="grid two">
             <article class="card compact"><span class="tag">显示偏好</span><h2 style="margin-top:11px">主题与引导</h2><ul><li>切换浅色 / 深色界面</li><li>界面语言为简体中文</li><li>重新打开首次使用引导</li></ul></article>
             <article class="card compact"><span class="tag green">账户与授权</span><h2 style="margin-top:11px">模型与设备</h2><ul><li>查看客户与授权状态</li><li>检查本地 AI 运行环境</li><li>管理可用模型与账号授权</li></ul></article>
             <article class="card compact"><span class="tag amber">使用情况和计费</span><h2 style="margin-top:11px">额度与流水</h2><ul><li>查看余额和实际用量</li><li>按模型检查 Token 消耗</li><li>查询账本和 request_id</li></ul></article>
-            <article class="card compact"><span class="tag">聚宽数据</span><h2 style="margin-top:11px">第三方数据</h2><ul><li>启用或停用数据源</li><li>配置账号与密码</li><li>核对保存状态与错误</li></ul></article>
+            <article class="card compact"><span class="tag">已归档对话</span><h2 style="margin-top:11px">历史内容</h2><ul><li>查找已归档研究对话</li><li>恢复仍需继续的项目</li><li>永久删除无须保留的记录</li></ul></article>
           </div>
           <aside class="card">
             <h2>进入方式</h2>
             <p class="lead">左下角<strong>设置</strong> → 在左侧选择目标章节 → 完成查看或修改 → 点击<strong>返回应用</strong>。</p>
-            <div class="note warning"><strong>设置变更原则：</strong>主题等显示偏好可随时调整；账号、数据源、设备和授权属于敏感配置，应由获准人员操作。</div>
+            <div class="note warning"><strong>设置变更原则：</strong>主题等显示偏好可随时调整；账号、设备和授权属于敏感配置，应由获准人员操作。</div>
             <div class="note danger" style="margin-top:10px"><strong>退出模型账号：</strong>设备转让、人员离职或共享终端停止使用时，同时撤销客户端设备并退出模型服务账号。</div>
           </aside>
         </div>
@@ -1103,7 +1097,7 @@
               <tr><td><strong>授权已失效</strong></td><td>网络、系统时间、设备是否被撤销</td><td>恢复网络并重新打开；仍失败时提供公司名、设备名、错误文字和 request_id。</td></tr>
               <tr><td><strong>模型不可用</strong></td><td>本地 AI 环境、账号登录、模型授权和余额</td><td>进入账户与授权刷新状态；通过服务方官方页面重新登录，不向他人发送验证码。</td></tr>
               <tr><td><strong>无法发送任务</strong></td><td>是否选择模型、目录是否可访问、输入是否为空</td><td>重新选择目录与模型；降低附件数量；确认批准对话框未被遮挡。</td></tr>
-              <tr><td><strong>行情或数据为空</strong></td><td>数据源状态、交易日、账号权限、网络</td><td>点击刷新；核对截止日期；检查聚宽配置及权限，保留原始错误。</td></tr>
+              <tr><td><strong>行情或数据为空</strong></td><td>网络、交易日、云端授权和数据时点</td><td>点击刷新；核对截止日期与来源标识；保留原始错误后联系支持人员。</td></tr>
               <tr><td><strong>自动化未运行</strong></td><td>任务是否启用、时间/频率、项目和模型</td><td>检查最近运行记录；确认设备在线、应用环境可用且任务未被暂停。</td></tr>
               <tr><td><strong>目录或文件打不开</strong></td><td>路径是否移动、磁盘是否挂载、访问权限</td><td>在 Finder 中确认路径；重新绑定目录；从备份恢复，不要直接覆盖唯一副本。</td></tr>
               <tr><td><strong>计费对不上</strong></td><td>时间、模型、Token、实际用量与扣费流水</td><td>导出或记录账本条目及 request_id，联系服务人员核对更正流水。</td></tr>
@@ -1126,7 +1120,7 @@
             <article class="card compact"><h3>Q1 · 软件会把我的项目全部上传到云端吗？</h3><p class="small"><strong>不会自动整体上传。</strong>项目和会话默认在本机；你主动发起模型调用时，完成请求所需的上下文会发送给所选模型服务方。</p></article>
             <article class="card compact"><h3>Q2 · 可以把模型账号密码交给服务人员配置吗？</h3><p class="small"><strong>不可以。</strong>使用官方页面登录；不要提供密码、验证码、Cookie、Token、恢复码或本地授权文件。</p></article>
             <article class="card compact"><h3>Q3 · 模拟交易会提交到券商吗？</h3><p class="small"><strong>不会。</strong>工作台交易用于模拟研究和复盘，不代表实盘连接或真实委托。</p></article>
-            <article class="card compact"><h3>Q4 · 聚宽数据不可用还能研究吗？</h3><p class="small">可以使用本地资料、公开来源和其他已授权能力；但依赖聚宽字段的功能会提示缺失或权限不足。</p></article>
+            <article class="card compact"><h3>Q4 · 行情暂时不可用还能研究吗？</h3><p class="small">可以继续整理本地资料、公告和研究假设；涉及价格或资金字段的结论应标记为待核验，等待可信数据恢复后再确认。</p></article>
           </div>
           <div class="grid">
             <article class="card compact"><h3>Q5 · 升级会丢失本地数据吗？</h3><p class="small">常规升级通常保留数据，但任何升级前都应备份。卸载也不一定删除所有本地文件。</p></article>
@@ -1150,7 +1144,7 @@
           </article>
           <article class="card">
             <span class="tag green">首次上线完成标准</span>
-            <ul class="checklist empty" style="margin-top:16px"><li>已完成协议阅读、激活与设备登记</li><li>已确认本地数据和模型传输边界</li><li>已绑定研究主题目录并验证备份</li><li>已检查模型、批准方式和费用口径</li><li>按需完成聚宽数据配置</li><li>已成功执行一个非敏感的测试任务</li><li>已核验输出中的来源、时点和风险</li><li>已建立盘前、盘中、盘后工作规范</li></ul>
+            <ul class="checklist empty" style="margin-top:16px"><li>已完成协议阅读、激活与设备登记</li><li>已确认本地数据和模型传输边界</li><li>已绑定研究主题目录并验证备份</li><li>已检查模型、批准方式和费用口径</li><li>已确认行情来源、时点与样例标识</li><li>已成功执行一个非敏感的测试任务</li><li>已核验输出中的来源、时点和风险</li><li>已建立盘前、盘中、盘后工作规范</li></ul>
             <p class="lead" style="margin-top:22px">从可追溯的证据开始，<br />以可验证的决策结束。</p>
           </article>
         </div>

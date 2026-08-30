@@ -745,9 +745,6 @@
 .stock-kline-heading strong { color: var(--text); font-size: 13px; }
 .stock-kline-heading em { overflow: hidden; color: var(--text-faint); font-size: 8.5px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .stock-kline-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px; }
-.stock-kline-history-btn { min-height: 24px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-elev-1); color: var(--text-muted); padding: 3px 6px; font-size: 8px; font-weight: 650; cursor: pointer; }
-.stock-kline-history-btn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--bg-hover); color: var(--text); }
-.stock-kline-history-btn:disabled { opacity: 0.58; cursor: wait; }
 .stock-kline-brand { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 8px; font-weight: 650; letter-spacing: 0.01em; }
 
 .stock-kline-intervals {

@@ -21,7 +21,6 @@ use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, Mutex};
 
 mod builtin_skills;
-mod jqdata_http;
 mod keychain;
 mod local_store;
 mod managed_skills;
@@ -253,87 +252,6 @@ pub struct ProjectFolderCreateResult {
 pub struct ClipboardAttachmentSaveRequest {
     name: String,
     data: String,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct JqDataConfigFile {
-    #[serde(default = "default_jqdata_config_version")]
-    version: u32,
-    #[serde(default)]
-    enabled: bool,
-    #[serde(default)]
-    username: String,
-    #[serde(default)]
-    #[serde(skip_serializing)]
-    password: String,
-    #[serde(default)]
-    password_configured: bool,
-    #[serde(default = "default_jqdata_api_url")]
-    api_url: String,
-    #[serde(default)]
-    updated_at: String,
-}
-
-#[derive(Clone, Serialize, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct JqDataConfigLoadResult {
-    version: u32,
-    enabled: bool,
-    username: String,
-    password_configured: bool,
-    api_url: String,
-    updated_at: String,
-    path: String,
-}
-
-#[derive(Clone, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct JqDataConfigSaveRequest {
-    enabled: bool,
-    username: String,
-    password: Option<String>,
-    api_url: Option<String>,
-}
-
-#[derive(Clone, Serialize, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct JqDataConfigSaveResult {
-    path: String,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct JqDataProbeResult {
-    ok: bool,
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    query_count: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sample: Option<Value>,
-}
-
-#[derive(Clone, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct JqDataQueryRequest {
-    method: String,
-    #[serde(default)]
-    params: Map<String, Value>,
-}
-
-#[derive(Clone, Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct JqDataQueryResult {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rows: Option<Value>,
-}
-
-#[derive(Default)]
-struct JqDataQueryState {
-    http: jqdata_http::JqDataHttpClient,
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -943,141 +861,6 @@ fn clipboard_attachment_save(request: ClipboardAttachmentSaveRequest) -> Result<
 }
 
 #[tauri::command]
-async fn jqdata_config_load() -> Result<JqDataConfigLoadResult, String> {
-    let path = jqdata_config_path()?;
-    if !path.exists() {
-        return Ok(jqdata_config_load_result(JqDataConfigFile::default(), path));
-    }
-
-    let mut config = read_jqdata_config_file(&path)?;
-    let legacy_password = config.password.trim().to_string();
-    let migrated_legacy_password = !legacy_password.is_empty();
-    let upgraded = upgrade_jqdata_config_metadata(&mut config);
-    if migrated_legacy_password {
-        keychain::set_secret(keychain::JQDATA_PASSWORD_ACCOUNT, legacy_password).await?;
-        config.password.clear();
-    }
-    if upgraded || migrated_legacy_password {
-        write_jqdata_config_file(&path, &config)?;
-    }
-    Ok(jqdata_config_load_result(config, path))
-}
-
-#[tauri::command]
-async fn jqdata_config_save(
-    state: State<'_, JqDataQueryState>,
-    request: JqDataConfigSaveRequest,
-) -> Result<JqDataConfigSaveResult, String> {
-    let path = jqdata_config_path()?;
-    let mut existing = if path.exists() {
-        read_jqdata_config_file(&path)?
-    } else {
-        JqDataConfigFile::default()
-    };
-    upgrade_jqdata_config_metadata(&mut existing);
-    let password = request
-        .password
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    if let Some(password) = &password {
-        keychain::set_secret(keychain::JQDATA_PASSWORD_ACCOUNT, password.clone()).await?;
-    }
-    let api_url = request
-        .api_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            let existing_url = existing.api_url.trim();
-            if existing_url.is_empty() {
-                None
-            } else {
-                Some(existing_url.to_string())
-            }
-        })
-        .unwrap_or_else(default_jqdata_api_url);
-    let config = JqDataConfigFile {
-        version: default_jqdata_config_version(),
-        enabled: request.enabled,
-        username: request.username.trim().to_string(),
-        password: String::new(),
-        password_configured: password.is_some() || existing.password_configured,
-        api_url,
-        updated_at: unix_millis_string(),
-    };
-    write_jqdata_config_file(&path, &config)?;
-    state.http.clear_token().await;
-    Ok(JqDataConfigSaveResult {
-        path: path.to_string_lossy().to_string(),
-    })
-}
-
-#[tauri::command]
-async fn jqdata_test_connection(
-    state: State<'_, JqDataQueryState>,
-) -> Result<JqDataProbeResult, String> {
-    let path = jqdata_config_path()?;
-    let mut metadata = read_jqdata_config_file(&path)?;
-    upgrade_jqdata_config_metadata(&mut metadata);
-    if !metadata.enabled {
-        return Ok(JqDataProbeResult {
-            ok: false,
-            message: "JQData 数据源尚未启用。".to_string(),
-            query_count: None,
-            sample: None,
-        });
-    }
-    if metadata.username.trim().is_empty() || !metadata.password_configured {
-        return Ok(JqDataProbeResult {
-            ok: false,
-            message: "请先配置聚宽账号和密码。".to_string(),
-            query_count: None,
-            sample: None,
-        });
-    }
-
-    let config = read_jqdata_config_secure(&path).await?;
-    if config.password.trim().is_empty() {
-        return Ok(JqDataProbeResult {
-            ok: false,
-            message: "请先配置聚宽账号和密码。".to_string(),
-            query_count: None,
-            sample: None,
-        });
-    }
-    run_jqdata_probe(config, &state).await
-}
-
-#[tauri::command]
-async fn jqdata_query(
-    state: State<'_, JqDataQueryState>,
-    request: JqDataQueryRequest,
-) -> Result<JqDataQueryResult, String> {
-    let path = jqdata_config_path()?;
-    let mut metadata = read_jqdata_config_file(&path).unwrap_or_default();
-    upgrade_jqdata_config_metadata(&mut metadata);
-    if !metadata.enabled || metadata.username.trim().is_empty() || !metadata.password_configured {
-        return Ok(JqDataQueryResult {
-            ok: false,
-            message: Some("JQData 数据源尚未配置或未启用。".to_string()),
-            rows: None,
-        });
-    }
-    let config: JqDataConfigFile = read_jqdata_config_secure(&path).await.unwrap_or_default();
-    if config.password.trim().is_empty() {
-        return Ok(JqDataQueryResult {
-            ok: false,
-            message: Some("JQData 数据源尚未配置或未启用。".to_string()),
-            rows: None,
-        });
-    }
-    run_jqdata_http_query(&config, &request, &state).await
-}
-
-#[tauri::command]
 async fn codex_chat_start(
     app: AppHandle,
     state: State<'_, CodexProcessState>,
@@ -1514,11 +1297,11 @@ impl CodexDriver {
                 // server-initiated JSON-RPC request (e.g. an approval or
                 // elicitation prompt). The protocol blocks until we answer, so
                 // failing to reply leaves the turn stuck on "正在思考" forever.
-                // We approve approval/permission prompts (the user already chose
-                // the sandbox/approval policy up front) and acknowledge anything
-                // else, so the turn can always make progress.
+                // The user already chose the sandbox/approval policy up front.
+                // Reply with the method-specific protocol shape so the app-server
+                // does not remain blocked waiting for a response it can decode.
                 if let Some(request_id) = message.get("id").filter(|id| !id.is_null()) {
-                    let _ = answer_app_server_request(stdin, request_id, method).await;
+                    answer_app_server_request(stdin, request_id, method).await?;
                     continue;
                 }
 
@@ -1934,23 +1717,63 @@ async fn answer_app_server_request<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    send_jsonrpc(
-        stdin,
-        &json!({
+    let response = if let Some(result) = app_server_request_result(method) {
+        json!({
             "jsonrpc": "2.0",
             "id": request_id.clone(),
-            "result": app_server_request_result(method),
-        }),
-    )
-    .await
+            "result": result,
+        })
+    } else {
+        json!({
+            "jsonrpc": "2.0",
+            "id": request_id.clone(),
+            "error": {
+                "code": -32601,
+                "message": format!("Alpha Studio does not implement app-server request method: {method}"),
+            },
+        })
+    };
+    send_jsonrpc(stdin, &response).await
 }
 
-fn app_server_request_result(method: &str) -> Value {
-    let lowered = method.to_ascii_lowercase();
-    if lowered.contains("approv") || lowered.contains("permission") || lowered.contains("elicit") {
-        json!({ "decision": "approved", "approved": true, "allow": true })
-    } else {
-        json!({})
+fn app_server_request_result(method: &str) -> Option<Value> {
+    match method {
+        // Current v2 approval methods use `accept`, while the legacy methods
+        // below use `approved`. Sending the legacy value to a v2 request makes
+        // the server reject the response and leaves the turn waiting forever.
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            Some(json!({ "decision": "accept" }))
+        }
+        "applyPatchApproval" | "execCommandApproval" => Some(json!({ "decision": "approved" })),
+        // Alpha Studio has no inline form UI for server-originated questions.
+        // Return valid negative/empty responses instead of an undecodable `{}`.
+        "mcpServer/elicitation/request" | "elicitation/create" => {
+            Some(json!({ "action": "cancel" }))
+        }
+        "item/tool/requestUserInput" => Some(json!({ "answers": {} })),
+        // Do not silently expand the sandbox chosen by the user. An empty grant
+        // is a valid response and lets the agent continue with existing access.
+        "item/permissions/requestApproval" => Some(json!({
+            "permissions": {},
+            "scope": "turn",
+            "strictAutoReview": false,
+        })),
+        // Dynamic client-side tools are not registered by Alpha Studio. Report
+        // a normal tool failure so the model can recover within the same turn.
+        "item/tool/call" => Some(json!({
+            "success": false,
+            "contentItems": [{
+                "type": "inputText",
+                "text": "Alpha Studio does not provide this client-side dynamic tool.",
+            }],
+        })),
+        "currentTime/read" => Some(json!({
+            "currentTimeAt": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0),
+        })),
+        _ => None,
     }
 }
 
@@ -3867,14 +3690,6 @@ fn default_model_config_version() -> u32 {
     1
 }
 
-fn default_jqdata_config_version() -> u32 {
-    2
-}
-
-fn default_jqdata_api_url() -> String {
-    "https://dataapi.joinquant.com/v2/apis".to_string()
-}
-
 fn project_folder_root() -> Result<PathBuf, String> {
     let home = home_dir().ok_or_else(|| "Cannot resolve home directory.".to_string())?;
     Ok(Path::new(&home).join(".alphastudio").join("projects"))
@@ -3996,20 +3811,6 @@ fn save_clipboard_attachment(root: &Path, name: &str, data: &str) -> Result<Path
     Ok(path)
 }
 
-impl Default for JqDataConfigFile {
-    fn default() -> Self {
-        Self {
-            version: default_jqdata_config_version(),
-            enabled: false,
-            username: String::new(),
-            password: String::new(),
-            password_configured: false,
-            api_url: default_jqdata_api_url(),
-            updated_at: String::new(),
-        }
-    }
-}
-
 fn default_true() -> bool {
     true
 }
@@ -4034,173 +3835,6 @@ fn write_model_config_file(path: &Path, config: &ModelConfigLoadResult) -> Resul
     let text = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to encode model config: {e}"))?;
     fs::write(path, format!("{text}\n")).map_err(|e| format!("Failed to write model config: {e}"))
-}
-
-fn jqdata_config_path() -> Result<PathBuf, String> {
-    let home = home_dir().ok_or_else(|| "Cannot resolve home directory.".to_string())?;
-    Ok(Path::new(&home)
-        .join(".alpha-studio")
-        .join("jqdata-config.json"))
-}
-
-fn read_jqdata_config_file(path: &Path) -> Result<JqDataConfigFile, String> {
-    let text =
-        fs::read_to_string(path).map_err(|e| format!("Failed to read JQData config: {e}"))?;
-    serde_json::from_str(&text).map_err(|e| format!("Failed to parse JQData config: {e}"))
-}
-
-async fn read_jqdata_config_secure(path: &Path) -> Result<JqDataConfigFile, String> {
-    let mut config = read_jqdata_config_file(path)?;
-    let legacy_password = config.password.trim().to_string();
-    let migrated_legacy_password = !legacy_password.is_empty();
-    let upgraded = upgrade_jqdata_config_metadata(&mut config);
-    if migrated_legacy_password {
-        keychain::set_secret(keychain::JQDATA_PASSWORD_ACCOUNT, legacy_password.clone()).await?;
-        config.password = legacy_password;
-    } else if config.password_configured {
-        config.password = keychain::get_secret(keychain::JQDATA_PASSWORD_ACCOUNT)
-            .await?
-            .unwrap_or_default();
-    }
-    if upgraded || migrated_legacy_password {
-        write_jqdata_config_file(path, &config)?;
-    }
-    Ok(config)
-}
-
-fn upgrade_jqdata_config_metadata(config: &mut JqDataConfigFile) -> bool {
-    let mut changed = false;
-    if config.version < default_jqdata_config_version() {
-        if !config.password.trim().is_empty()
-            || (config.enabled
-                && !config.username.trim().is_empty()
-                && !config.updated_at.trim().is_empty())
-        {
-            config.password_configured = true;
-        }
-        config.version = default_jqdata_config_version();
-        changed = true;
-    } else if !config.password.trim().is_empty() && !config.password_configured {
-        config.password_configured = true;
-        changed = true;
-    }
-    changed
-}
-
-fn write_jqdata_config_file(path: &Path, config: &JqDataConfigFile) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create JQData config directory: {e}"))?;
-    }
-    let text = serde_json::to_string_pretty(config)
-        .map_err(|e| format!("Failed to encode JQData config: {e}"))?;
-    fs::write(path, format!("{text}\n")).map_err(|e| format!("Failed to write JQData config: {e}"))
-}
-
-fn jqdata_config_load_result(config: JqDataConfigFile, path: PathBuf) -> JqDataConfigLoadResult {
-    JqDataConfigLoadResult {
-        version: config.version,
-        enabled: config.enabled,
-        username: config.username,
-        password_configured: config.password_configured || !config.password.trim().is_empty(),
-        api_url: upgrade_legacy_jqdata_api_url(&config.api_url),
-        updated_at: config.updated_at,
-        path: path.to_string_lossy().to_string(),
-    }
-}
-
-fn unix_millis_string() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_millis().to_string())
-        .unwrap_or_else(|_| "0".to_string())
-}
-
-async fn run_jqdata_probe(
-    config: JqDataConfigFile,
-    state: &JqDataQueryState,
-) -> Result<JqDataProbeResult, String> {
-    match state
-        .http
-        .probe(
-            &upgrade_legacy_jqdata_api_url(&config.api_url),
-            config.username.trim(),
-            config.password.trim(),
-        )
-        .await
-    {
-        Ok(result) => Ok(JqDataProbeResult {
-            ok: true,
-            message: "JQData 原生 HTTP 连接成功；安装包无需额外数据运行时。".to_string(),
-            query_count: Some(result.query_count),
-            sample: Some(json!({
-                "transport": "native_http",
-                "priceRows": result.price_rows,
-            })),
-        }),
-        Err(error) => Ok(JqDataProbeResult {
-            ok: false,
-            message: scrub_jqdata_secret(&config, &error),
-            query_count: None,
-            sample: None,
-        }),
-    }
-}
-
-async fn run_jqdata_http_query(
-    config: &JqDataConfigFile,
-    request: &JqDataQueryRequest,
-    state: &JqDataQueryState,
-) -> Result<JqDataQueryResult, String> {
-    match state
-        .http
-        .query(
-            &upgrade_legacy_jqdata_api_url(&config.api_url),
-            config.username.trim(),
-            config.password.trim(),
-            &request.method,
-            &request.params,
-        )
-        .await
-    {
-        Ok(rows) => Ok(JqDataQueryResult {
-            ok: true,
-            message: None,
-            rows: Some(Value::Array(rows)),
-        }),
-        Err(error) => Ok(JqDataQueryResult {
-            ok: false,
-            message: Some(scrub_jqdata_secret(config, &error)),
-            rows: None,
-        }),
-    }
-}
-
-fn scrub_jqdata_secret(config: &JqDataConfigFile, text: &str) -> String {
-    let mut scrubbed = text.to_string();
-    let username = config.username.trim();
-    if !username.is_empty() {
-        scrubbed = scrubbed.replace(username, "[jqdata-user]");
-    }
-    let password = config.password.trim();
-    if !password.is_empty() {
-        scrubbed = scrubbed.replace(password, "[jqdata-password]");
-    }
-    scrubbed
-}
-
-fn upgrade_legacy_jqdata_api_url(value: &str) -> String {
-    let url = value.trim().trim_end_matches('/');
-    if url == "https://dataapi.joinquant.com/apis" {
-        return default_jqdata_api_url();
-    }
-    if url == "http://dataapi.joinquant.com/apis" {
-        return "http://dataapi.joinquant.com/v2/apis".to_string();
-    }
-    if url.is_empty() {
-        return default_jqdata_api_url();
-    }
-    url.to_string()
 }
 
 #[cfg(target_os = "macos")]
@@ -7429,7 +7063,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(CodexProcessState::default())
         .manage(TerminalState::default())
-        .manage(JqDataQueryState::default())
         .invoke_handler(tauri::generate_handler![
             codex_check,
             codex_login,
@@ -7442,10 +7075,6 @@ pub fn run() {
             project_folder_create,
             project_folder_rename,
             clipboard_attachment_save,
-            jqdata_config_load,
-            jqdata_config_save,
-            jqdata_test_connection,
-            jqdata_query,
             local_store::local_store_info,
             local_store::local_store_load,
             local_store::local_store_commit,
@@ -7525,28 +7154,6 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn jqdata_metadata_upgrade_avoids_loading_the_saved_password_for_display() {
-        let mut config = JqDataConfigFile {
-            version: 1,
-            enabled: true,
-            username: "research-user".to_string(),
-            password: String::new(),
-            password_configured: false,
-            api_url: default_jqdata_api_url(),
-            updated_at: "1785557678921".to_string(),
-        };
-
-        assert!(upgrade_jqdata_config_metadata(&mut config));
-        assert_eq!(config.version, 2);
-        assert!(config.password_configured);
-        assert!(config.password.is_empty());
-
-        let encoded = serde_json::to_string(&config).unwrap();
-        assert!(encoded.contains(r#""passwordConfigured":true"#));
-        assert!(!encoded.contains(r#""password":"#));
-    }
 
     #[test]
     fn codex_model_catalog_preserves_renderer_safe_fields() {
@@ -8412,7 +8019,7 @@ mod tests {
     #[tokio::test]
     async fn await_response_answers_server_requests_before_target_response() {
         let input = [
-            r#"{"jsonrpc":"2.0","id":"approval-1","method":"elicitation/create","params":{"message":"Continue?"}}"#,
+            r#"{"jsonrpc":"2.0","id":"approval-1","method":"item/commandExecution/requestApproval","params":{"command":"cargo test"}}"#,
             r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#,
         ]
         .join("\n")
@@ -8432,7 +8039,32 @@ mod tests {
             Some(&Value::Bool(true)),
         );
         assert!(replies.contains(r#""id":"approval-1""#));
-        assert!(replies.contains(r#""approved":true"#));
+        assert!(replies.contains(r#""decision":"accept""#));
+    }
+
+    #[test]
+    fn app_server_request_results_match_each_protocol_generation() {
+        assert_eq!(
+            app_server_request_result("item/fileChange/requestApproval"),
+            Some(json!({ "decision": "accept" })),
+        );
+        assert_eq!(
+            app_server_request_result("execCommandApproval"),
+            Some(json!({ "decision": "approved" })),
+        );
+        assert_eq!(
+            app_server_request_result("mcpServer/elicitation/request"),
+            Some(json!({ "action": "cancel" })),
+        );
+        assert_eq!(
+            app_server_request_result("item/permissions/requestApproval"),
+            Some(json!({
+                "permissions": {},
+                "scope": "turn",
+                "strictAutoReview": false,
+            })),
+        );
+        assert_eq!(app_server_request_result("unknown/request"), None,);
     }
 
     #[test]

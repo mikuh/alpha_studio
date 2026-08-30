@@ -1,7 +1,6 @@
 use keyring::{Entry, Error};
 
 const SERVICE: &str = "com.alpha-studio.desktop";
-pub const JQDATA_PASSWORD_ACCOUNT: &str = "jqdata-password";
 
 pub fn model_provider_account(profile_id: &str) -> String {
     format!("model-provider:{}", profile_id.trim())

@@ -1,6 +1,6 @@
 // 投研工作台的数据与业务逻辑层（无 React 依赖，便于单元测试）。
 // - 内置约 40 只 A 股样例目录，用确定性伪随机序列生成可复现的行情；
-// - JQData（聚宽）可用时，用真实价格覆盖样例快照；
+// - 云端行情可用时，用真实价格覆盖样例快照；
 // - 实盘记录账户：手工录入资金、成交和持仓，全部本地持久化，不连接券商；
 // - 为拖拽到对话框生成自然语言 prompt，供 Agent 使用。
 
@@ -87,7 +87,7 @@ export interface ResearchSecurityMentionRange {
   mention: ResearchSecurityMention;
 }
 
-export type ResearchQuoteSource = 'sample' | 'jqdata' | 'eastmoney' | 'tencent';
+export type ResearchQuoteSource = 'sample' | 'eastmoney' | 'tencent';
 
 export const RESEARCH_CATALOG: ResearchCatalogEntry[] = [
   { code: '600519.XSHG', name: '贵州茅台', board: '沪市主板', sector: '白酒', basePrice: 1518.8, shares: 12.6, tags: ['核心资产', '高ROE'], thesis: '消费龙头，跟踪批价、估值中枢和机构仓位变化。' },
@@ -314,7 +314,7 @@ export interface LivePriceOverride {
 
 /**
  * 汇总样例目录 + 用户自定义证券的行情快照。
- * `overrides` 里的 JQData 实时价会覆盖样例价格并重算涨跌。
+ * `overrides` 里的云端实时价会覆盖样例价格并重算涨跌。
  */
 export function buildQuoteMap(
   state: ResearchState,
@@ -376,7 +376,7 @@ export function buildQuoteMap(
         lowLimit: live.lowLimit,
         paused: live.paused,
         dataDate: live.date,
-        source: live.source ?? 'jqdata',
+        source: live.source ?? 'eastmoney',
       });
     }
   }
@@ -405,7 +405,7 @@ export function buildIndexQuotes(
     if (live && Number.isFinite(live.price) && live.price > 0) {
       prevClose = live.prevClose && live.prevClose > 0 ? live.prevClose : prevClose;
       price = live.price;
-      source = live.source ?? 'jqdata';
+      source = live.source ?? 'eastmoney';
     }
     const changeAmt = price - prevClose;
     return {
@@ -427,7 +427,7 @@ export function boardFromCode(code: string): string {
   return '深市主板';
 }
 
-/** 把用户输入（600519 / 600519.XSHG / sh600519）归一化成聚宽代码格式。 */
+/** 把用户输入（600519 / 600519.XSHG / sh600519）归一化成工作台证券代码格式。 */
 export function normalizeSecurityCode(input: string): string | null {
   const raw = input.trim().toUpperCase();
   const withSuffix = raw.match(/^(\d{6})\.(XSHG|XSHE)$/);
@@ -1271,8 +1271,6 @@ export function securityPrompt(quote: ResearchQuote): string {
     lines.push('价格由云端行情服务从东方财富主源归一化后推送。请结合我的持仓与风险偏好，给出可验证的投研结论、关键风险和下一步需要补充的数据。');
   } else if (quote.source === 'tencent') {
     lines.push('价格由云端行情服务从腾讯备源归一化后推送，部分板块或估值字段可能缺失。请结合我的持仓与风险偏好，给出可验证的投研结论、关键风险和下一步需要补充的数据。');
-  } else if (quote.source === 'jqdata') {
-    lines.push('价格来自聚宽（JQData）日线快照。请结合我的持仓与风险偏好，给出可验证的投研结论、关键风险和下一步需要补充的数据。');
   } else {
     lines.push('价格为本地样例快照，如需精确数据请调用真实行情源。请给出可验证的投研结论、关键风险和下一步需要补充的数据。');
   }
@@ -1323,7 +1321,7 @@ export function accountPrompt(state: ResearchState, summary: ResearchAccountSumm
     valuationLine,
     '当前持仓明细：',
     ...(holdingLines.length || unpricedLines.length ? [...holdingLines, ...unpricedLines] : ['- 暂无持仓。']),
-    '请输出仓位建议、风险来源、可执行观察清单和需要补充的 JQData 数据字段。',
+    '请输出仓位建议、风险来源、可执行观察清单和需要补充验证的数据字段。',
   ].join('\n');
 }
 
@@ -1366,7 +1364,7 @@ export function marketSnapshotPrompt(input: {
     `成交额 Top：${turnoverLeaders.join('；') || '暂无'}。`,
     `异动标的：${movers.join('；') || '暂无'}。`,
     input.note ? `数据提示：${input.note}` : '',
-    '请判断市场风险偏好、主线扩散/收敛、对我的持仓仓位的影响，以及下一步需要调用的 JQData 字段。',
+    '请判断市场风险偏好、主线扩散/收敛、对我的持仓仓位的影响，以及下一步需要补充验证的数据字段。',
   ].filter(Boolean).join('\n');
 }
 
@@ -1396,7 +1394,7 @@ export function sectorHeatPrompt(tile: SectorHeatTile, quotes: ResearchQuote[]):
     `行业平均涨跌幅 ${formatPercent(tile.avgPct)}，样本 ${tile.count} 只。`,
     '代表标的：',
     ...(leaders.length ? leaders : ['- 暂无可用成分。']),
-    '请判断这是主线强化、补涨轮动还是风险释放，并给出可跟踪的催化、证伪信号和需要补充的聚宽数据。',
+    '请判断这是主线强化、补涨轮动还是风险释放，并给出可跟踪的催化、证伪信号和需要补充验证的数据。',
   ].join('\n');
 }
 
@@ -1415,7 +1413,7 @@ export function sectorExposurePrompt(rows: SectorExposureRow[]): string {
   return [
     '请分析我的持仓行业暴露。',
     ...(lines.length ? lines : ['- 暂无行业暴露。']),
-    '请指出集中度风险、相关性风险、需要对冲或替换的方向，以及每个行业下一步应补充的 JQData 数据。',
+    '请指出集中度风险、相关性风险、需要对冲或替换的方向，以及每个行业下一步应补充验证的数据。',
   ].join('\n');
 }
 
@@ -1466,6 +1464,6 @@ export const RESEARCH_ANALYSIS_TASKS: ResearchAnalysisTask[] = [
   { id: 'position-risk', title: '持仓体检', prompt: '请对我记录的实盘持仓做一次风险体检，重点看集中度、行业暴露、浮盈亏结构和止损止盈安排。' },
   { id: 'portfolio-compare', title: '组合比较', prompt: '请比较我的股票组合，判断哪个组合的主线更清晰、风险收益比更好，并列出需要补充验证的数据。' },
   { id: 'trade-plan', title: '交易计划', prompt: '请基于当前实盘记录、持仓和自选股，给出一份只读交易计划：观察位、买卖触发条件、仓位上限和证伪信号。' },
-  { id: 'jq-fundamental-gap', title: '财务缺口', prompt: '请优先补齐聚宽财务基本面数据：估值、利润表、资产负债表、现金流和连续财务指标，判断当前结论有哪些盲区。' },
-  { id: 'jq-factor-risk', title: '因子风控', prompt: '请用聚宽因子/风险模型视角检查我的组合，重点看风格暴露、行业暴露、拥挤度、回撤风险和需要降低的共性因子。' },
+  { id: 'fundamental-gap', title: '财务缺口', prompt: '请优先补齐财务基本面数据：估值、利润表、资产负债表、现金流和连续财务指标，判断当前结论有哪些盲区。' },
+  { id: 'factor-risk', title: '因子风控', prompt: '请从因子与风险模型视角检查我的组合，重点看风格暴露、行业暴露、拥挤度、回撤风险和需要降低的共性因子。' },
 ];

@@ -1066,7 +1066,7 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
               windowStart: '09:30',
               windowEnd: '10:00',
               confirmForSeconds: 60,
-              dataSource: 'eastmoney|jqdata|official_news',
+              dataSource: 'eastmoney|tencent|official_news',
               actionOnTrigger: '等待二次确认',
               actionOnFailure: '继续观察',
             }],

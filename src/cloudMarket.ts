@@ -119,7 +119,7 @@ function asFinite(value: number | null | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function asSource(value: string): Exclude<ResearchQuoteSource, 'sample' | 'jqdata'> {
+function asSource(value: string): Exclude<ResearchQuoteSource, 'sample'> {
   return value === 'tencent' ? 'tencent' : 'eastmoney';
 }
 

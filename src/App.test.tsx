@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { App } from './App';
+import { App, splitStreamingMarkdown } from './App';
 import { ALPHA_GATEWAY_PROVIDER_ID, clearClientLicenseSession, loadClientLicenseSession, saveClientLicenseSession } from './license';
 import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles, modelProfilesFromCodexCatalog } from './models';
 import type { CodexModelCatalogItem } from './types';
@@ -64,107 +64,6 @@ vi.mock('@tauri-apps/api/core', () => ({
     }
     if (command === 'clipboard_attachment_save') {
       return Promise.resolve(`/Users/demo/.alpha-studio/attachments/clipboard/${args?.request?.name || 'attachment.bin'}`);
-    }
-    if (command === 'jqdata_config_load') {
-      return Promise.resolve({
-        version: 1,
-        enabled: true,
-        username: 'demo-user',
-        passwordConfigured: true,
-        apiUrl: 'https://dataapi.joinquant.com/v2/apis',
-        updatedAt: '1',
-        path: '/Users/demo/.alpha-studio/jqdata-config.json',
-      });
-    }
-    if (command === 'jqdata_config_save') return Promise.resolve({ path: '/Users/demo/.alpha-studio/jqdata-config.json' });
-    if (command === 'jqdata_test_connection') {
-      return Promise.resolve({
-        ok: true,
-        message: 'JQData 连接成功。',
-        queryCount: { total: 1000 },
-        sample: { tradeDays: ['2024-01-02'], priceRows: [{ index: '2024-01-02', close: 9.1 }] },
-      });
-    }
-    if (command === 'jqdata_query') {
-      const request = args?.request;
-      if (request?.method === 'get_price') {
-        const codes = Array.isArray(request.params?.codes)
-          ? request.params.codes.filter((item): item is string => typeof item === 'string')
-          : [typeof request.params?.code === 'string' ? request.params.code : '000001.XSHE'];
-        const rows = codes.flatMap((code) => {
-          const seed = Array.from(code).reduce((sum, char) => sum + char.charCodeAt(0), 0);
-          const prevClose = 10 + (seed % 80);
-          const close = Number((prevClose * (1 + (((seed % 7) - 3) / 100))).toFixed(2));
-          return [
-            {
-              code,
-              date: '2026-07-06',
-              open: prevClose * 0.99,
-              close: prevClose,
-              high: prevClose * 1.01,
-              low: prevClose * 0.98,
-              volume: 1_000_000 + seed * 100,
-              money: prevClose * 1_000_000,
-            },
-            {
-              code,
-              date: '2026-07-07',
-              open: prevClose,
-              close,
-              high: Math.max(prevClose, close) * 1.01,
-              low: Math.min(prevClose, close) * 0.99,
-              volume: 1_200_000 + seed * 100,
-              money: close * 1_200_000,
-              pre_close: prevClose,
-            },
-          ];
-        });
-        return Promise.resolve({
-          ok: true,
-          rows,
-        });
-      }
-      if (request?.method === 'get_security_info') {
-        const code = typeof request.params?.code === 'string' ? request.params.code : '000001.XSHE';
-        return Promise.resolve({ ok: true, rows: [{ code, display_name: '测试标的', name: '测试标的' }] });
-      }
-      if (request?.method === 'get_privilege') {
-        return Promise.resolve({
-          ok: true,
-          rows: ['VALUATION', 'INDICATOR', 'BALANCE', 'INCOME', 'CASH_FLOW', 'GET_MONEY_FLOW', 'GET_MTSS', 'GET_BILLBOARD_LIST', 'GET_INDUSTRY', 'GET_CONCEPT', 'GET_LOCKED_SHARES', 'GET_PREOPEN_INFOS', 'GET_ALL_SECURITIES'].map((privilege) => ({ privilege })),
-        });
-      }
-      if (request?.method === 'get_fundamentals_snapshot') {
-        return Promise.resolve({ ok: true, rows: [{ code: '000001.XSHE', pe_ratio: 5.8, pb_ratio: 0.58, roe: 10.4, net_profit_margin: 25.7, inc_revenue_year_on_year: 2.1, inc_net_profit_year_on_year: 4.8, total_assets: 5_300_000_000_000, total_liability: 4_860_000_000_000, net_operate_cash_flow: 64_210_000_000, net_profit: 54_400_000_000 }] });
-      }
-      if (request?.method === 'get_money_flow') {
-        return Promise.resolve({ ok: true, rows: [{ date: '2026-07-10', change_pct: 0.8, net_amount_main: 1200, net_pct_main: 3.2 }, { date: '2026-07-13', change_pct: -0.2, net_amount_main: -320, net_pct_main: -0.9 }] });
-      }
-      if (request?.method === 'get_mtss') {
-        return Promise.resolve({ ok: true, rows: [{ date: '2026-07-10', fin_value: 46_312_000_000, fin_buy_value: 843_100_000, sec_value: 73_200_000 }, { date: '2026-07-13', fin_value: 46_783_000_000, fin_buy_value: 921_000_000, sec_value: 69_800_000 }] });
-      }
-      if (request?.method === 'get_industry') {
-        return Promise.resolve({ ok: true, rows: [{ code: '000001.XSHE', category: '申万一级', industry_code: '801780', industry_name: '银行' }] });
-      }
-      if (request?.method === 'get_concept') {
-        return Promise.resolve({ ok: true, rows: [{ code: '000001.XSHE', concept_code: 'SC0098', name: '高股息' }] });
-      }
-      if (request?.method === 'get_locked_shares') {
-        return Promise.resolve({ ok: true, rows: [{ day: '2026-09-01', num: 20_000_000, rate1: 0.1, type: '首发原股东限售股份' }] });
-      }
-      if (request?.method === 'get_billboard_list') {
-        return Promise.resolve({ ok: true, rows: [{ day: '2026-07-01', direction: 'BUY', sales_depart_name: '机构专用', net_value: 18_000_000 }] });
-      }
-      if (request?.method === 'get_preopen_infos') {
-        return Promise.resolve({ ok: true, rows: [{ code: '000001.XSHE', high_limit: 12.54, low_limit: 10.26 }] });
-      }
-      if (request?.method === 'get_company_research') {
-        return Promise.resolve({ ok: true, rows: [{ section: 'northbound', day: '2026-07-13', share_number: 120_000_000, share_ratio: 0.62 }, { section: 'forecast', pub_date: '2026-07-08', type: '预增', profit_ratio_min: 3.2, profit_ratio_max: 6.8 }, { section: 'shareholders', end_date: '2026-03-31', shareholder_name: '测试股东', share_ratio: 8.2, share_pledge_freeze: 0 }, { section: 'pledge', pub_date: '2026-06-01', pledge_number: 12_000_000, pledge_total_ratio: 0.06 }] });
-      }
-      if (request?.method === 'get_all_securities') {
-        return Promise.resolve({ ok: true, rows: [{ index: '000001.XSHE', display_name: '平安银行', start_date: '1991-04-03', end_date: '2200-01-01' }] });
-      }
-      return Promise.resolve({ ok: true, rows: [] });
     }
     if (command === 'list_open_apps') return Promise.resolve(['finder', 'preview']);
     if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
@@ -784,10 +683,8 @@ describe('right feature panel', () => {
     const workbench = await screen.findByLabelText('投研工作台');
     await waitFor(() => expect(within(workbench).getByRole('heading', { name: '贵州茅台' })).toBeInTheDocument());
     const kline = within(workbench).getByLabelText('贵州茅台 K线图');
-    expect(await within(kline).findByText('云端快照 · 本地走势预览')).toBeInTheDocument();
-    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'jqdata_query')).toBe(false);
-    await user.click(within(kline).getByRole('button', { name: '加载聚宽历史行情' }));
-    await waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'jqdata_query')).toBe(true));
+    expect(await within(kline).findByText('行情快照 · 本地走势预览')).toBeInTheDocument();
+    expect(within(kline).queryByRole('button', { name: /历史行情/ })).not.toBeInTheDocument();
     expect(within(container.querySelector('.right-dock-workspace') as HTMLElement).getByRole('tab', { name: '投研工作台' }))
       .toHaveAttribute('aria-selected', 'true');
   });
@@ -843,6 +740,30 @@ describe('right feature panel', () => {
         cwd: '/Users/demo/.alphastudio/projects/投资研究',
       });
     });
+  });
+
+  it('portals shared action menus above clipped top-bar and sidebar surfaces', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '对话操作' }));
+    const titleMenu = document.querySelector('.cmenu') as HTMLElement;
+    expect(titleMenu).toBeInTheDocument();
+    expect(titleMenu.parentElement).toBe(document.body);
+    expect(titleMenu.closest('.top-bar')).toBeNull();
+
+    await user.hover(within(titleMenu).getByRole('menuitem', { name: '复制' }));
+    const flyout = titleMenu.querySelector('.cmenu-flyout > .cmenu') as HTMLElement;
+    expect(flyout).toBeInTheDocument();
+    expect(flyout.parentElement).toHaveClass('cmenu-flyout');
+
+    await user.click(screen.getByRole('button', { name: '关闭菜单' }));
+    await user.click(screen.getByRole('button', { name: '新建研究主题' }));
+
+    const sidebarMenu = document.querySelector('.cmenu') as HTMLElement;
+    expect(sidebarMenu).toBeInTheDocument();
+    expect(sidebarMenu.parentElement).toBe(document.body);
+    expect(sidebarMenu.closest('.sidebar')).toBeNull();
   });
 
   it('opens the mobile market console and navigates into secondary pages', async () => {
@@ -1505,6 +1426,46 @@ describe('right feature panel', () => {
     expect(scrollTop).toBe(1_000);
   });
 
+  it('mounts long transcripts in bounded batches and keeps older messages available', async () => {
+    const user = userEvent.setup();
+    const messages = Array.from({ length: 120 }, (_, index) => ({
+      id: `long-message-${index}`,
+      role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+      timestamp: index + 1,
+      blocks: [{ type: 'text' as const, content: `第 ${index + 1} 条消息` }],
+    }));
+    useChatStore.setState({ conversations: [conversation({ messages })] });
+
+    const { container } = render(<App />);
+    const list = container.querySelector('.message-list') as HTMLElement;
+
+    expect(list.querySelectorAll('[data-message-id]')).toHaveLength(48);
+    expect(list.querySelector('[data-message-id="long-message-0"]')).not.toBeInTheDocument();
+    expect(list.querySelector('[data-message-id="long-message-119"]')).toBeInTheDocument();
+    expect(within(list).getByText('还有 72 条较早记录')).toBeInTheDocument();
+
+    await user.click(within(list).getByRole('button', { name: '加载更早的 48 条消息' }));
+    expect(list.querySelectorAll('[data-message-id]')).toHaveLength(96);
+    expect(within(list).getByText('还有 24 条较早记录')).toBeInTheDocument();
+
+    await user.click(within(list).getByRole('button', { name: '加载更早的 24 条消息' }));
+    expect(list.querySelectorAll('[data-message-id]')).toHaveLength(120);
+    expect(list.querySelector('[data-message-id="long-message-0"]')).toBeInTheDocument();
+    expect(list.querySelector('.message-history-loader')).not.toBeInTheDocument();
+  });
+
+  it('freezes large completed Markdown chunks but keeps open code fences together', () => {
+    const completedChunk = `${'长期研究结论。'.repeat(700)}\n\n`;
+    const split = splitStreamingMarkdown(`${completedChunk}仍在生成的尾部`);
+    expect(split.settled).toEqual([completedChunk]);
+    expect(split.active).toBe('仍在生成的尾部');
+
+    const openFence = `\`\`\`ts\n${'const value = 1;\n\n'.repeat(300)}`;
+    const fencedSplit = splitStreamingMarkdown(openFence);
+    expect(fencedSplit.settled).toEqual([]);
+    expect(fencedSplit.active).toBe(openFence);
+  });
+
   it('imports a coworker preset task into the composer with one click', async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
@@ -1564,7 +1525,9 @@ describe('right feature panel', () => {
     const composerCard = container.querySelector('.main-stage .composer-card') as HTMLElement;
 
     await user.click(within(composerCard).getByLabelText('添加内容'));
-    fireEvent.mouseEnter(composerCard.querySelector('.plus-flyout-row') as HTMLElement);
+    const flyoutRow = document.querySelector('.plus-menu .plus-flyout-row') as HTMLElement;
+    expect(flyoutRow).toBeInTheDocument();
+    fireEvent.mouseEnter(flyoutRow);
 
     expect(await screen.findByRole('menuitem', { name: '$alpha-studio-daily-theme-research' })).toBeInTheDocument();
   });
@@ -1797,6 +1760,32 @@ describe('right feature panel', () => {
     expect(within(editor).getByRole('dialog', { name: '选择时间' })).toBeInTheDocument();
     await user.keyboard('{Escape}');
     expect(within(editor).queryByRole('dialog', { name: '选择时间' })).not.toBeInTheDocument();
+  });
+
+  it('opens the automation time picker upward when the lower viewport has no room', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: '自动化' }));
+    const automationPage = container.querySelector('.automation-page') as HTMLElement;
+    await user.click(within(automationPage).getByRole('button', { name: '创建计划任务' }));
+
+    const editor = within(automationPage).getByRole('complementary', { name: '手动创建自动化任务' });
+    const timeTrigger = within(editor).getByRole('button', { name: '时间' });
+    vi.stubGlobal('innerHeight', 720);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect(this: HTMLElement) {
+      if (this === timeTrigger) {
+        return { x: 900, y: 530, left: 900, top: 530, right: 1100, bottom: 560, width: 200, height: 30, toJSON: () => ({}) } as DOMRect;
+      }
+      if (this.classList.contains('automation-time-popover')) {
+        return { x: 818, y: 568, left: 818, top: 568, right: 1100, bottom: 848, width: 282, height: 280, toJSON: () => ({}) } as DOMRect;
+      }
+      return { x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: () => ({}) } as DOMRect;
+    });
+
+    await user.click(timeTrigger);
+
+    await waitFor(() => expect(within(editor).getByRole('dialog', { name: '选择时间' })).toHaveClass('open-above'));
   });
 
   it('does not show the left sidebar collapse button in the automation page', async () => {
@@ -2690,7 +2679,7 @@ describe('right feature panel', () => {
     expect(within(settings).getByRole('heading', { name: '显示偏好' })).toBeInTheDocument();
     expect(within(settings).getByText('界面主题')).toBeInTheDocument();
     expect(within(settings).getByRole('button', { name: '账户与授权' })).toBeInTheDocument();
-    expect(within(settings).getByRole('button', { name: '聚宽数据' })).toBeInTheDocument();
+    expect(within(settings).queryByText('金融数据')).not.toBeInTheDocument();
     expect(within(settings).getByRole('button', { name: '已归档对话' })).toBeInTheDocument();
     expect(within(settings).queryByRole('button', { name: '模型' })).not.toBeInTheDocument();
     expect(within(settings).queryByText('自定义模型')).not.toBeInTheDocument();
@@ -3013,6 +3002,23 @@ describe('right feature panel', () => {
     expect(within(plusMenu).getByRole('button', { name: /技能/ })).toBeInTheDocument();
     expect(within(plusMenu).queryByText('计划模式')).not.toBeInTheDocument();
     expect(within(plusMenu).queryByText('追求目标')).not.toBeInTheDocument();
+  });
+
+  it('anchors the composer menu directly above the add-content button', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const trigger = screen.getByLabelText('添加内容');
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      left: 40,
+      top: 700,
+    } as DOMRect);
+
+    await user.click(trigger);
+
+    const plusMenu = document.querySelector('.plus-menu') as HTMLElement;
+    expect(plusMenu.style.left).toBe('40px');
+    expect(plusMenu.style.bottom).toBe(`${window.innerHeight - 700 + 8}px`);
   });
 
   it('queues follow-up messages from the composer while a response is streaming', async () => {
@@ -4146,10 +4152,11 @@ describe('right feature panel', () => {
 
     await user.click(groupLabel);
 
-    expect(within(group).getAllByText('已搜索网页')).toHaveLength(3);
+    expect(within(group).getAllByText(/搜索 0[1-3]/)).toHaveLength(3);
     expect(within(group).getByText('机器人 产业链 最新政策')).toBeInTheDocument();
     expect(within(group).getByText('国产算力 交换机 订单')).toBeInTheDocument();
     expect(within(group).getByText('CGT 征求意见 国家药监局')).toBeInTheDocument();
+    expect(group.querySelector('.event-chevron')).not.toBeInTheDocument();
   });
 
   it('shows edited file names and change details instead of an empty disclosure', async () => {
@@ -4330,6 +4337,13 @@ describe('right feature panel', () => {
     expect(css).toMatch(/\.project-actions \.row-icon-btn,\s*\.conv-actions \.row-icon-btn\s*{[^}]*background:\s*var\(--bg-elev-1\);[^}]*color:\s*var\(--text\);/s);
     expect(css).toMatch(/\.conv-row:hover \.conv-title,\s*\.conv-row\.menu-open \.conv-title\s*{[^}]*padding-right:\s*58px;/s);
     expect(css).not.toMatch(/\.project-actions,\s*\.conv-actions\s*{[^}]*background:\s*linear-gradient\(to right, transparent/s);
+  });
+
+  it('keeps the settings icon readable on hover and keyboard focus', () => {
+    const cssPath = `${process.cwd()}/src/styles.css`;
+    const css = readFileSync(cssPath, 'utf8');
+
+    expect(css).toMatch(/\.sidebar-footer \.settings-entry:hover svg,\s*\.sidebar-footer \.settings-entry:focus-visible svg\s*{[^}]*color:\s*inherit;/s);
   });
 
   it('keeps the review workspace styled as tabs with a hideable file list', () => {

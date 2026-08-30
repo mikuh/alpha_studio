@@ -168,7 +168,7 @@ ${JSON.stringify({
       rawDailyBarsByCode: new Map([['000001.XSHE', rawDaily]]),
       minuteBarsByCode: new Map([['000001.XSHE', minutes]]),
       benchmarkBars: [bar('2026-07-13', 4_000), bar('2026-07-14', 4_040)],
-      dataSource: 'jqdata', dataVersion: 'fixture-v1',
+      dataSource: 'fixture', dataVersion: 'fixture-v1',
     };
     const first = runThemeBacktest(input);
     const second = runThemeBacktest(input);
@@ -193,7 +193,7 @@ ${JSON.stringify({
     const run = runThemeBacktest({
       reports: [item], events: [], dailyBarsByCode: new Map([['000001.XSHE', daily]]),
       minuteBarsByCode: new Map(), benchmarkBars: [bar('2026-07-13', 4_000)],
-      dataSource: 'jqdata', dataVersion: 'fixture-v1',
+      dataSource: 'fixture', dataVersion: 'fixture-v1',
     });
     expect(run.signalTrades).toHaveLength(1);
     expect(run.executableTrades).toHaveLength(0);

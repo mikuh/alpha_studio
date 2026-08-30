@@ -122,7 +122,7 @@ export const financeResearchDomain: DomainConfig = {
     ],
   },
   ui: {
-    emptyHeading: '把投研问题交给 Alpha Studio',
+    emptyHeading: '今天想研究什么？',
     composerPlaceholder: '询问投研问题，或录入实盘持仓与买卖记录',
     followupPlaceholder: '继续追问投研问题',
     sidebar: {
@@ -205,9 +205,7 @@ export const financeResearchDomain: DomainConfig = {
       { id: 'profile', label: '账户与授权' },
       { id: 'usage', label: '使用情况和计费' },
     ],
-    integrations: [
-      { id: 'jqdata', label: '聚宽数据' },
-    ],
+    integrations: [],
     coding: [],
     archived: [{ id: 'archived', label: '已归档对话' }],
   },

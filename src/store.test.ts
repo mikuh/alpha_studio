@@ -5,6 +5,7 @@ import {
   activeConversations,
   archivedConversations,
   buildConversationTitle,
+  createCodexEventFrameBatcher,
   isDraftConversation,
   migratePersistedState,
   parseDailyThemeReportCompletion,
@@ -203,6 +204,41 @@ describe('archive semantics', () => {
     })]);
   });
 
+  it('updates only the conversation that owns a streaming event', () => {
+    const target = conversation('conv-target', {
+      status: 'streaming',
+      runId: 'run-target',
+      messages: [{
+        id: 'assistant-target',
+        role: 'assistant',
+        timestamp: 1,
+        isStreaming: true,
+        blocks: [],
+      }],
+    });
+    const unrelated = conversation('conv-unrelated');
+    useChatStore.setState({ conversations: [target, unrelated] });
+
+    const beforeUnknownEvent = useChatStore.getState().conversations;
+    useChatStore.getState().handleCodexEvent({
+      type: 'text_delta',
+      runId: 'missing-run',
+      conversationId: 'missing-conversation',
+      text: 'ignored',
+    });
+    expect(useChatStore.getState().conversations).toBe(beforeUnknownEvent);
+
+    useChatStore.getState().handleCodexEvent({
+      type: 'text_delta',
+      runId: 'run-target',
+      conversationId: 'conv-target',
+      text: 'progress',
+    });
+    const updated = useChatStore.getState().conversations;
+    expect(updated[0].messages[0].blocks).toEqual([{ type: 'text', content: 'progress' }]);
+    expect(updated[1]).toBe(unrelated);
+  });
+
   it('adds, updates, disables, and deletes custom model profiles', () => {
     const id = useChatStore.getState().addModelProfile({
       label: 'DeepSeek V4',
@@ -299,11 +335,41 @@ describe('conversation titles', () => {
     expect(buildConversationTitle('给我写一篇5000字的关于西安旅游的文章，要求适合公众号')).toBe('写5000字西安旅游文章');
     expect(buildConversationTitle('杭州未来一周的天气怎么样')).toBe('杭州天气查询');
     expect(buildConversationTitle('这个图是什么')).toBe('识别图片内容');
+    expect(buildConversationTitle('我想了一下，还是把整体界面风格改成 https://claude.ai/new cowork 的风格吧')).toBe('Claude Cowork 界面改版');
   });
 
   it('uses a stable fallback for greeting-only messages', () => {
     expect(buildConversationTitle('你好')).toBe('问候');
     expect(buildConversationTitle('   ')).toBe('新对话');
+  });
+});
+
+describe('stream event scheduling', () => {
+  it('delivers the first delta immediately and merges the rest until the next frame', () => {
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback);
+      return 41;
+    });
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+    const received: Array<{ type: string; text?: string }> = [];
+    const dispatch = createCodexEventFrameBatcher((event) => received.push(event));
+
+    dispatch({ type: 'text_delta', runId: 'run-1', conversationId: 'conv-1', text: '你' });
+    dispatch({ type: 'text_delta', runId: 'run-1', conversationId: 'conv-1', text: '好' });
+    dispatch({ type: 'text_delta', runId: 'run-1', conversationId: 'conv-1', text: '！' });
+
+    expect(received).toEqual([{ type: 'text_delta', runId: 'run-1', conversationId: 'conv-1', text: '你' }]);
+    expect(requestFrame).toHaveBeenCalledOnce();
+    expect(frames).toHaveLength(1);
+    frames[0]!(16);
+    expect(received).toEqual([
+      { type: 'text_delta', runId: 'run-1', conversationId: 'conv-1', text: '你' },
+      { type: 'text_delta', runId: 'run-1', conversationId: 'conv-1', text: '好！' },
+    ]);
+
+    requestFrame.mockRestore();
+    cancelFrame.mockRestore();
   });
 });
 

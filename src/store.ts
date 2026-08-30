@@ -1268,7 +1268,9 @@ export const useChatStore = create<ChatState>()(
           blocks: [],
           review: true,
         };
-        const nextTitle = conversation.messages.length === 0 ? request.label : conversation.title;
+        const nextTitle = conversation.messages.length === 0
+          ? buildConversationTitle(request.label)
+          : conversation.title;
 
         const modelProfile = resolveModelProfile(get().modelProfiles, get().selectedModelProfileId);
         const reviewPrompt = buildReviewPrompt(request);
@@ -1502,49 +1504,53 @@ export const useChatStore = create<ChatState>()(
         const shouldStartQueuedMessage = event.type === 'completed' || event.type === 'stopped';
         const readyConversationIds: string[] = [];
         set((state) => {
+          const conversationIndex = event.conversationId
+            ? state.conversations.findIndex((conversation) => conversation.id === event.conversationId)
+            : event.runId
+              ? state.conversations.findIndex((conversation) => conversation.runId === event.runId)
+              : -1;
+          if (conversationIndex < 0) return state;
+
           let subscriptionUsage = state.subscriptionUsage;
-          const conversations = state.conversations.map((conversation) => {
-            const wasStreaming = conversation.status === 'streaming';
-            let next = applyCodexEventToConversation(conversation, event);
-            const ownsEvent = event.conversationId
-              ? event.conversationId === conversation.id
-              : Boolean(event.runId && event.runId === conversation.runId);
-            if (event.type === 'token_usage' && ownsEvent && next.codexTokenUsage) {
-              const profileId = conversation.activeModelProfileId || state.selectedModelProfileId;
-              const profile = state.modelProfiles.find((item) => item.id === profileId);
-              if (profile?.builtIn) {
-                const delta = subscriptionTokenDelta(next.codexTokenUsage, conversation.codexTokenUsage);
-                if (delta.totalTokens > 0) {
-                  subscriptionUsage = accumulateSubscriptionUsage(
-                    subscriptionUsage,
-                    profile.model,
-                    profile.label,
-                    delta,
-                    next.codexTokenUsage.updatedAt,
-                  );
-                }
+          const conversation = state.conversations[conversationIndex];
+          const wasStreaming = conversation.status === 'streaming';
+          let next = applyCodexEventToConversation(conversation, event);
+          if (event.type === 'token_usage' && next.codexTokenUsage) {
+            const profileId = conversation.activeModelProfileId || state.selectedModelProfileId;
+            const profile = state.modelProfiles.find((item) => item.id === profileId);
+            if (profile?.builtIn) {
+              const delta = subscriptionTokenDelta(next.codexTokenUsage, conversation.codexTokenUsage);
+              if (delta.totalTokens > 0) {
+                subscriptionUsage = accumulateSubscriptionUsage(
+                  subscriptionUsage,
+                  profile.model,
+                  profile.label,
+                  delta,
+                  next.codexTokenUsage.updatedAt,
+                );
               }
             }
-            if (
-              shouldStartQueuedMessage &&
-              wasStreaming &&
-              next.status !== 'streaming' &&
-              !next.archivedAt &&
-              ((next.guidedQueuedMessages?.length ?? 0) > 0 || (next.queuedMessages?.length ?? 0) > 0)
-            ) {
-              readyConversationIds.push(next.id);
-            }
-            // A turn that finishes while the user is looking at another
-            // conversation gets an unread dot until it is opened again.
-            if (
-              wasStreaming &&
-              next.status !== 'streaming' &&
-              next.id !== state.currentConversationId
-            ) {
-              next = { ...next, unread: true };
-            }
-            return next;
-          });
+          }
+          if (
+            shouldStartQueuedMessage &&
+            wasStreaming &&
+            next.status !== 'streaming' &&
+            !next.archivedAt &&
+            ((next.guidedQueuedMessages?.length ?? 0) > 0 || (next.queuedMessages?.length ?? 0) > 0)
+          ) {
+            readyConversationIds.push(next.id);
+          }
+          // A turn that finishes while the user is looking at another
+          // conversation gets an unread dot until it is opened again.
+          if (
+            wasStreaming &&
+            next.status !== 'streaming' &&
+            next.id !== state.currentConversationId
+          ) {
+            next = { ...next, unread: true };
+          }
+          const conversations = state.conversations.slice();
+          conversations[conversationIndex] = next;
           return { conversations, subscriptionUsage };
         });
         const completedConversation = event.type === 'completed' && event.conversationId
@@ -1696,11 +1702,15 @@ if (hotChatState) {
 
 let localStoreChatHydrated = !isTauriRuntime() || Boolean(hotChatState);
 let unsubscribeLocalStoreChanges: (() => void) | null = null;
+const STREAMING_CHAT_PERSIST_DELAY_MS = 5_000;
 
 if (isTauriRuntime()) {
   if (!hotChatState) void hydrateChatFromLocalStore();
   unsubscribeLocalStoreChanges = useChatStore.subscribe(() => {
     if (!localStoreChatHydrated) return;
+    const streaming = useChatStore.getState().conversations.some(
+      (conversation) => conversation.status === 'streaming',
+    );
     scheduleLocalStoreCommit('chat', () => {
       const state = useChatStore.getState();
       return {
@@ -1712,7 +1722,7 @@ if (isTauriRuntime()) {
           payload: { conversationCount: state.conversations.length, projectCount: state.projects.length },
         },
       };
-    });
+    }, streaming ? STREAMING_CHAT_PERSIST_DELAY_MS : undefined);
   });
 }
 
@@ -1781,11 +1791,27 @@ export const useImageViewer = create<ImageViewerState>((set) => ({
 }));
 
 export function useCurrentConversation(): Conversation | null {
-  return useChatStore((state) => {
-    const active = activeConversations(state.conversations);
-    const id = state.currentConversationId || active[0]?.id;
-    return active.find((conversation) => conversation.id === id) || active[0] || null;
-  });
+  return useChatStore(currentConversationFromState);
+}
+
+export function useCurrentConversationCwd(): string {
+  return useChatStore((state) => currentConversationFromState(state)?.cwd ?? '');
+}
+
+export function useCurrentConversationStatus(): Conversation['status'] | null {
+  return useChatStore((state) => currentConversationFromState(state)?.status ?? null);
+}
+
+function currentConversationFromState(
+  state: Pick<ChatState, 'conversations' | 'currentConversationId'>,
+): Conversation | null {
+  let firstActive: Conversation | null = null;
+  for (const conversation of state.conversations) {
+    if (conversation.archivedAt || conversation.ephemeral) continue;
+    if (!firstActive) firstActive = conversation;
+    if (conversation.id === state.currentConversationId) return conversation;
+  }
+  return firstActive;
 }
 
 export function activeConversations(conversations: Conversation[]): Conversation[] {
@@ -1928,6 +1954,8 @@ export function buildConversationTitle(message: string): string {
 function normalizeTitleSource(message: string): string {
   return message
     .replace(/```[\s\S]*?```/g, '代码片段')
+    .replace(/https?:\/\/(?:www\.)?claude\.ai(?:\/\S*)?/gi, 'Claude')
+    .replace(/https?:\/\/([^/\s]+)(?:\/\S*)?/gi, '$1')
     .replace(/(?:^|\s)(?:附带文件|附件|上传文件|已附加文件)[：:].*$/s, '')
     .replace(/\s+/g, ' ')
     .replace(/[“”"']/g, '')
@@ -1949,6 +1977,7 @@ function stripLeadingGreeting(message: string): string {
 function cleanTitlePhrase(message: string): string {
   let next = message.trim();
   const leadingFillers = [
+    /^(?:我想了一下|我考虑了一下|再想了想)[，,：:\s]*/,
     /^(?:请你?|麻烦你?|劳烦你?|拜托你?|可以的话|如果可以的话)[，,：:\s]*/,
     /^(?:能不能|能否|可以|可不可以)?(?:帮我|帮忙|替我|给我)[，,：:\s]*/,
     /^(?:我希望|我想要?|我需要|想让你|希望你)[，,：:\s]*/,
@@ -1972,6 +2001,12 @@ function cleanTitlePhrase(message: string): string {
 }
 
 function summarizeKnownTitleIntent(message: string): string | null {
+  const coworkRestyle = /(?:界面|ui|页面|视觉|整体风格)/i.test(message)
+    && /(?:改成|改为|调整为|重做|换成|风格)/.test(message)
+    && /claude/i.test(message)
+    && /cowork/i.test(message);
+  if (coworkRestyle) return 'Claude Cowork 界面改版';
+
   const imageQuestion = message.match(/^(?:这个|这张|这幅)?(?:图|图片|照片|截图)(?:是|是什么|里有什么|内容是什么|有什么)/);
   if (imageQuestion) return '识别图片内容';
 
@@ -2506,28 +2541,51 @@ function isProjectSort(value: unknown): value is ProjectSort {
 const CODEX_SUBSCRIPTION_FLAG = '__alphaStudioCodexSubscribed__';
 const CODEX_EVENT_DISPATCH_KEY = '__alphaStudioCodexEventDispatch__';
 
-function createCodexEventFrameBatcher(dispatch: (event: CodexChatEvent) => void) {
+const STREAM_EVENT_MAX_LATENCY_MS = 32;
+
+export function createCodexEventFrameBatcher(dispatch: (event: CodexChatEvent) => void) {
   let pending: CodexChatEvent | null = null;
   let frameId: number | null = null;
+  let fallbackId: number | null = null;
 
   const flush = () => {
+    if (frameId !== null) window.cancelAnimationFrame(frameId);
+    if (fallbackId !== null) window.clearTimeout(fallbackId);
     frameId = null;
+    fallbackId = null;
     const event = pending;
     pending = null;
     if (event) dispatch(event);
   };
 
+  const scheduleFlush = () => {
+    if (frameId === null) frameId = window.requestAnimationFrame(flush);
+    // requestAnimationFrame can be heavily throttled while the desktop window
+    // is occluded. Keep a short timer as a latency ceiling so streamed output
+    // and tool activity still reach the UI promptly in that state.
+    if (fallbackId === null) fallbackId = window.setTimeout(flush, STREAM_EVENT_MAX_LATENCY_MS);
+  };
+
   return (event: CodexChatEvent) => {
     const batchable = (event.type === 'text_delta' || event.type === 'reasoning_delta') && Boolean(event.text);
     if (!batchable) {
-      if (frameId !== null) {
-        window.cancelAnimationFrame(frameId);
-        frameId = null;
-      }
       const queued = pending;
       pending = null;
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+      if (fallbackId !== null) window.clearTimeout(fallbackId);
+      frameId = null;
+      fallbackId = null;
       if (queued) dispatch(queued);
       dispatch(event);
+      return;
+    }
+
+    // Paint the first token of a new frame window synchronously. Later tokens
+    // are merged until the frame boundary, preserving smoothness without
+    // making time-to-first-feedback pay a full-frame delay.
+    if (frameId === null && fallbackId === null && pending === null) {
+      dispatch(event);
+      scheduleFlush();
       return;
     }
 
@@ -2543,7 +2601,7 @@ function createCodexEventFrameBatcher(dispatch: (event: CodexChatEvent) => void)
       if (pending) dispatch(pending);
       pending = event;
     }
-    if (frameId === null) frameId = window.requestAnimationFrame(flush);
+    scheduleFlush();
   };
 }
 

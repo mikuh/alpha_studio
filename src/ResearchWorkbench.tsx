@@ -219,7 +219,6 @@ function quoteOverride(quote: ResearchQuote): LivePriceOverride {
 function quoteSourceLabel(source: ResearchQuote['source']): string {
   if (source === 'eastmoney') return '云端 · 东方财富';
   if (source === 'tencent') return '云端 · 腾讯备源';
-  if (source === 'jqdata') return '聚宽行情';
   return '样例行情';
 }
 
