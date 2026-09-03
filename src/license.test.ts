@@ -447,7 +447,9 @@ describe('client license session', () => {
       },
     }));
 
-    const summary = await fetchClientBillingSummary(loadClientLicenseSession()!);
+    const summary = await fetchClientBillingSummary(loadClientLicenseSession()!, {
+      period: { kind: 'year', value: '2025' },
+    });
 
     expect(summary.tenant.balanceYuan).toBe(88);
     expect(summary.usage.currentMonth.billableYuan).toBe(0.02);
@@ -455,7 +457,7 @@ describe('client license session', () => {
       'http://localhost:18080/api/client/billing-summary',
       expect.objectContaining({
         method: 'POST',
-        body: expect.stringContaining('"deviceId":"dev_demo"'),
+        body: expect.stringMatching(/"deviceId":"dev_demo".*"periodKind":"year".*"periodValue":"2025"/),
       }),
     );
   });

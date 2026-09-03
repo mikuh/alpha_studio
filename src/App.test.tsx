@@ -2221,10 +2221,14 @@ describe('right feature panel', () => {
     const { container } = render(<App />);
     const sidebar = container.querySelector('.sidebar') as HTMLElement;
     const account = within(sidebar).getByText('Demo Fund').closest('.sidebar-account') as HTMLElement;
+    const css = readFileSync(`${process.cwd()}/src/styles.css`, 'utf8');
+    const calmTheme = css.slice(css.indexOf('/* Cowork calm'));
 
     expect(account).toBeInTheDocument();
     expect(account).toHaveAttribute('title', 'Demo Fund · Demo User · user@demo.local');
     expect(account.querySelector('svg')).not.toBeInTheDocument();
+    expect(calmTheme).toMatch(/\.sidebar-account\s*{[^}]*display:\s*inline-flex;/s);
+    expect(calmTheme).not.toMatch(/\.sidebar-account\s*{[^}]*display:\s*none;/s);
   });
 
   it('marks the app shell as fullscreen so the sidebar title can use the left edge', () => {
@@ -2283,6 +2287,17 @@ describe('right feature panel', () => {
         cachedTokens: 18_000,
         totalTokens: 34_400,
         lastUsedAt: Date.parse('2026-07-09T08:20:00.000Z'),
+      }, {
+        month: '2026-06',
+        modelId: 'gpt-5.6-sol',
+        label: 'GPT-5.6 Sol',
+        runCount: 1,
+        inputTokens: 80,
+        outputTokens: 20,
+        reasoningTokens: 0,
+        cachedTokens: 0,
+        totalTokens: 100,
+        lastUsedAt: Date.parse('2026-06-09T08:20:00.000Z'),
       }],
     });
     vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
@@ -2384,12 +2399,14 @@ describe('right feature panel', () => {
     expect(within(settings).getByText('63%')).toBeInTheDocument();
     expect(within(settings).getByText('23%')).toBeInTheDocument();
     expect(within(settings).getByText('API 套餐')).toBeInTheDocument();
+    expect(within(settings).getByText('组织')).toBeInTheDocument();
     expect(within(settings).getByText(/96\.75/)).toBeInTheDocument();
     expect(within(settings).getAllByText(/3\.25/).length).toBeGreaterThan(0);
     expect(within(settings).getByText('GPT-5.6 Sol')).toBeInTheDocument();
     expect(within(settings).getByText('Included')).toHaveAttribute('title', '费用已包含在 GPT 订阅中');
     expect(within(settings).getByText('34,400')).toBeInTheDocument();
     expect(within(settings).getByText('GPT-5.5 API')).toBeInTheDocument();
+    expect(within(settings).queryByText('openai')).not.toBeInTheDocument();
     expect(within(settings).getByText('gpt-5.5 usage charge')).toBeInTheDocument();
     expect(within(settings).getByText(/4 笔合计/)).toBeInTheDocument();
     expect(within(settings).getByText('-¥3.250001')).toBeInTheDocument();
@@ -2399,9 +2416,23 @@ describe('right feature panel', () => {
       'http://localhost:18080/api/client/billing-summary',
       expect.objectContaining({
         method: 'POST',
-        body: expect.stringContaining('"tenantId":"tenant_demo"'),
+        body: expect.stringMatching(/"tenantId":"tenant_demo".*"periodKind":"month"/),
       }),
     );
+
+    fireEvent.change(within(settings).getByLabelText('选择月份'), { target: { value: '2026-06' } });
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/client/billing-summary',
+      expect.objectContaining({ body: expect.stringContaining('"periodValue":"2026-06"') }),
+    ));
+
+    await user.click(within(settings).getByRole('button', { name: '年度' }));
+    expect(within(settings).getByLabelText('选择年份')).toHaveValue(2026);
+    expect(within(settings).getByText('34,500')).toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/client/billing-summary',
+      expect.objectContaining({ body: expect.stringMatching(/"periodKind":"year".*"periodValue":"2026"/) }),
+    ));
 
     await user.click(within(settings).getByRole('button', { name: '下一页' }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
@@ -2989,6 +3020,30 @@ describe('right feature panel', () => {
       expect.objectContaining({ id: 'chrome', title: 'Chrome' }),
       [],
     ]);
+  });
+
+  it('does not send when Enter confirms an IME composition', () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ sendMessage });
+    render(<App />);
+
+    const composer = document.querySelector('.composer-card') as HTMLElement;
+    const textarea = within(composer).getByRole('textbox');
+    fireEvent.change(textarea, { target: { value: '中文输入' } });
+
+    fireEvent.compositionStart(textarea);
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue('中文输入');
+
+    fireEvent.compositionEnd(textarea);
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', keyCode: 229 });
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue('中文输入');
+
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith('中文输入', [], null, []);
   });
 
   it('keeps the finance composer menu focused on attachments and skills', async () => {
@@ -4203,6 +4258,15 @@ describe('right feature panel', () => {
     expect(within(editDetails).getAllByText('修改')).toHaveLength(2);
   });
 
+  it('keeps event icons and targets readable on hover in both themes', () => {
+    const css = readFileSync(`${process.cwd()}/src/styles.css`, 'utf8');
+    const coworkPolish = css.slice(css.indexOf('/* Cowork polish'));
+
+    expect(coworkPolish).toMatch(/\.event-summary:hover \.event-icon,[\s\S]*?\.tool-summary:hover \.event-icon\s*{[^}]*color:\s*var\(--accent\);/s);
+    expect(coworkPolish).toMatch(/\.event-summary:hover \.event-target,[\s\S]*?\.tool-summary:hover \.event-chevron\s*{[^}]*color:\s*var\(--text-muted\);/s);
+    expect(coworkPolish).not.toMatch(/\.event-summary:hover \.event-(?:icon|target)[\s\S]*?{[^}]*color:\s*color-mix\(in srgb, var\(--bg\)/s);
+  });
+
   it('explains when an edit tool returned no change details', async () => {
     const user = userEvent.setup();
     useChatStore.setState({
@@ -4290,12 +4354,15 @@ describe('right feature panel', () => {
   it('adapts the conversation composer to the width left by a wide right dock', () => {
     const cssPath = `${process.cwd()}/src/styles.css`;
     const css = readFileSync(cssPath, 'utf8');
+    const calmTheme = css.slice(css.indexOf('/* Cowork calm'));
 
     expect(css).toMatch(/\.right-dock-workspace\s*{[^}]*width:\s*min\(\s*var\(--right-sidebar-width, 416px\),\s*calc\(100% - var\(--right-panel-main-min-width, 360px\)\)\s*\);/s);
     expect(css).toMatch(/\.main-stage\s*{[^}]*container-name:\s*main-stage;[^}]*container-type:\s*inline-size;/s);
     expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.composer-toolbar\s*{[^}]*flex-wrap:\s*nowrap;[\s\S]*?\.approval-pill > span,[\s\S]*?\.approval-pill > \.lucide-chevron-down\s*{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.suggestion-row\s*{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(180px, 100%\), 1fr\)\);/s);
     expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.suggestion-row\s*{[^}]*grid-template-columns:\s*1fr;/s);
+    expect(calmTheme).toMatch(/\.suggestion-row\s*{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0, 1fr\)\);[^}]*overflow-x:\s*visible;/s);
+    expect(calmTheme).not.toMatch(/\.suggestion-row\s*{[^}]*overflow-x:\s*auto;/s);
     expect(css).not.toMatch(/\.suggestion-card:nth-child\(n \+ 2\)\s*{[^}]*display:\s*none;/s);
     expect(css).not.toContain('.model-pill-icon');
   });

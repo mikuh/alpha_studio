@@ -523,6 +523,8 @@ pub struct ClientBillingSummaryRequest {
     device_id: String,
     ledger_page: Option<i64>,
     ledger_page_size: Option<i64>,
+    period_kind: Option<String>,
+    period_value: Option<String>,
 }
 
 pub async fn client_billing_summary(
@@ -533,7 +535,11 @@ pub async fn client_billing_summary(
     require_device(&state, &headers, &request.tenant_id, &request.device_id).await?;
     release_expired_run_reservations(&state.db, &request.tenant_id).await?;
     let now = Utc::now();
-    let (current_month_start, next_month_start) = current_billing_period(now);
+    let selected_period = resolve_billing_period(
+        now,
+        request.period_kind.as_deref(),
+        request.period_value.as_deref(),
+    )?;
     let (ledger_page, ledger_page_size) =
         bounded_pagination(request.ledger_page, request.ledger_page_size, 8);
 
@@ -560,12 +566,33 @@ pub async fn client_billing_summary(
         codex_subscription_expires_at,
         now,
     );
-    let current_month =
-        usage_totals_since(&state.db, &request.tenant_id, current_month_start).await?;
+    let selected_usage = usage_totals_between(
+        &state.db,
+        &request.tenant_id,
+        selected_period.start,
+        selected_period.end,
+    )
+    .await?;
     let all_time = usage_totals_all(&state.db, &request.tenant_id).await?;
-    let model_usage = model_usage_since(&state.db, &request.tenant_id, current_month_start).await?;
-    let ledger =
-        billing_ledger_page(&state.db, &request.tenant_id, ledger_page, ledger_page_size).await?;
+    let mut model_usage = model_usage_between(
+        &state.db,
+        &request.tenant_id,
+        selected_period.start,
+        selected_period.end,
+    )
+    .await?;
+    // Provider routing is an internal implementation detail. The client only
+    // receives the configured display name for each model.
+    remove_model_provider_fields(&mut model_usage);
+    let ledger = billing_ledger_page(
+        &state.db,
+        &request.tenant_id,
+        ledger_page,
+        ledger_page_size,
+        Some(selected_period.start),
+        Some(selected_period.end),
+    )
+    .await?;
     let ledger_pagination = ledger.pagination_json();
     let recent_ledger = ledger.entries;
 
@@ -584,12 +611,19 @@ pub async fn client_billing_summary(
         },
         "activeDevices": tenant_row.get::<i64, _>("active_devices"),
         "period": {
-            "currentMonthStart": current_month_start,
-            "currentMonthEnd": next_month_start,
+            "kind": selected_period.kind,
+            "value": selected_period.value,
+            "start": selected_period.start,
+            "end": selected_period.end,
+            // Retained for older desktop clients. These fields represent the
+            // selected period, which defaults to the current month.
+            "currentMonthStart": selected_period.start,
+            "currentMonthEnd": selected_period.end,
             "generatedAt": now
         },
         "usage": {
-            "currentMonth": current_month,
+            "selectedPeriod": selected_usage,
+            "currentMonth": selected_usage,
             "allTime": all_time,
             "models": model_usage,
             "recentLedger": recent_ledger,
@@ -1135,10 +1169,12 @@ pub async fn admin_tenant_billing(
     let now = Utc::now();
     let (current_month_start, next_month_start) = current_billing_period(now);
     let (page, page_size) = bounded_pagination(query.page, query.page_size, 20);
-    let current_month = usage_totals_since(&state.db, tenant_id, current_month_start).await?;
+    let current_month =
+        usage_totals_between(&state.db, tenant_id, current_month_start, next_month_start).await?;
     let all_time = usage_totals_all(&state.db, tenant_id).await?;
-    let model_usage = model_usage_since(&state.db, tenant_id, current_month_start).await?;
-    let ledger = billing_ledger_page(&state.db, tenant_id, page, page_size).await?;
+    let model_usage =
+        model_usage_between(&state.db, tenant_id, current_month_start, next_month_start).await?;
+    let ledger = billing_ledger_page(&state.db, tenant_id, page, page_size, None, None).await?;
     let ledger_pagination = ledger.pagination_json();
     let recent_ledger = ledger.entries;
     let offline_payments = offline_payment_records(&state.db, tenant_id).await?;
@@ -3938,10 +3974,11 @@ async fn load_codex_accounts_for_client(pool: &PgPool, tenant_id: &str) -> ApiRe
         .collect())
 }
 
-async fn usage_totals_since(
+async fn usage_totals_between(
     pool: &PgPool,
     tenant_id: &str,
-    since: chrono::DateTime<Utc>,
+    start: chrono::DateTime<Utc>,
+    end: chrono::DateTime<Utc>,
 ) -> ApiResult<Value> {
     let row = sqlx::query(
         r#"
@@ -3956,11 +3993,12 @@ async fn usage_totals_since(
           coalesce(sum(billable_yuan), 0::numeric) as billable_yuan,
           max(created_at) as last_used_at
         from usage_events
-        where tenant_id = $1 and created_at >= $2
+        where tenant_id = $1 and created_at >= $2 and created_at < $3
         "#,
     )
     .bind(tenant_id)
-    .bind(since)
+    .bind(start)
+    .bind(end)
     .fetch_one(pool)
     .await?;
     Ok(usage_totals_json(&row))
@@ -3989,10 +4027,11 @@ async fn usage_totals_all(pool: &PgPool, tenant_id: &str) -> ApiResult<Value> {
     Ok(usage_totals_json(&row))
 }
 
-async fn model_usage_since(
+async fn model_usage_between(
     pool: &PgPool,
     tenant_id: &str,
-    since: chrono::DateTime<Utc>,
+    start: chrono::DateTime<Utc>,
+    end: chrono::DateTime<Utc>,
 ) -> ApiResult<Vec<Value>> {
     let rows = sqlx::query(
         r#"
@@ -4011,14 +4050,15 @@ async fn model_usage_since(
           max(u.created_at) as last_used_at
         from usage_events u
         left join model_routes m on m.model_id = u.model_id
-        where u.tenant_id = $1 and u.created_at >= $2
+        where u.tenant_id = $1 and u.created_at >= $2 and u.created_at < $3
         group by u.model_id, coalesce(m.label, u.model_id), coalesce(m.provider, '')
         order by coalesce(sum(u.billable_yuan), 0) desc, max(u.created_at) desc
         limit 8
         "#,
     )
     .bind(tenant_id)
-    .bind(since)
+    .bind(start)
+    .bind(end)
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -4039,6 +4079,14 @@ async fn model_usage_since(
             value
         })
         .collect())
+}
+
+fn remove_model_provider_fields(models: &mut [Value]) {
+    for model in models {
+        if let Value::Object(object) = model {
+            object.remove("provider");
+        }
+    }
 }
 
 struct BillingLedgerPage {
@@ -4067,6 +4115,8 @@ async fn billing_ledger_page(
     tenant_id: &str,
     requested_page: i64,
     page_size: i64,
+    period_start: Option<chrono::DateTime<Utc>>,
+    period_end: Option<chrono::DateTime<Utc>>,
 ) -> ApiResult<BillingLedgerPage> {
     let total = sqlx::query_scalar::<_, i64>(
         r#"
@@ -4075,11 +4125,15 @@ async fn billing_ledger_page(
           select 1
           from billing_ledger
           where tenant_id = $1
+            and ($2::timestamptz is null or created_at >= $2)
+            and ($3::timestamptz is null or created_at < $3)
           group by run_id, case when run_id is null then id else null end
         ) grouped_ledger
         "#,
     )
     .bind(tenant_id)
+    .bind(period_start)
+    .bind(period_end)
     .fetch_one(pool)
     .await?;
     let total_pages = if total == 0 {
@@ -4107,6 +4161,8 @@ async fn billing_ledger_page(
           count(*)::bigint as entry_count
         from billing_ledger
         where tenant_id = $1
+          and ($4::timestamptz is null or created_at >= $4)
+          and ($5::timestamptz is null or created_at < $5)
         group by run_id, case when run_id is null then id else null end
         order by created_at desc, id desc
         limit $2 offset $3
@@ -4115,6 +4171,8 @@ async fn billing_ledger_page(
     .bind(tenant_id)
     .bind(page_size)
     .bind(offset)
+    .bind(period_start)
+    .bind(period_end)
     .fetch_all(pool)
     .await?;
     let entries = rows
@@ -4234,6 +4292,103 @@ fn current_billing_period(
             .unwrap_or(now)
     };
     (current_month_start, next_month_start)
+}
+
+struct BillingPeriod {
+    kind: &'static str,
+    value: String,
+    start: chrono::DateTime<Utc>,
+    end: chrono::DateTime<Utc>,
+}
+
+fn resolve_billing_period(
+    now: chrono::DateTime<Utc>,
+    requested_kind: Option<&str>,
+    requested_value: Option<&str>,
+) -> ApiResult<BillingPeriod> {
+    let kind = requested_kind.unwrap_or("month").trim();
+    match kind {
+        "month" => {
+            let fallback = format!("{:04}-{:02}", now.year(), now.month());
+            let value = requested_value.unwrap_or(&fallback).trim();
+            let mut parts = value.split('-');
+            let year = parts.next().and_then(|part| part.parse::<i32>().ok());
+            let month = parts.next().and_then(|part| part.parse::<u32>().ok());
+            if parts.next().is_some()
+                || year.is_none()
+                || month.is_none()
+                || value.len() != 7
+                || value.as_bytes().get(4) != Some(&b'-')
+            {
+                return Err(ApiError::BadRequest(
+                    "periodValue must use YYYY-MM for a monthly period".to_string(),
+                ));
+            }
+            let year = year.unwrap_or_default();
+            let month = month.unwrap_or_default();
+            if !(1..=9998).contains(&year) || !(1..=12).contains(&month) {
+                return Err(ApiError::BadRequest(
+                    "monthly billing period is out of range".to_string(),
+                ));
+            }
+            let start = Utc
+                .with_ymd_and_hms(year, month, 1, 0, 0, 0)
+                .single()
+                .ok_or_else(|| {
+                    ApiError::BadRequest("invalid monthly billing period".to_string())
+                })?;
+            let (next_year, next_month) = if month == 12 {
+                (year + 1, 1)
+            } else {
+                (year, month + 1)
+            };
+            let end = Utc
+                .with_ymd_and_hms(next_year, next_month, 1, 0, 0, 0)
+                .single()
+                .ok_or_else(|| {
+                    ApiError::BadRequest("invalid monthly billing period".to_string())
+                })?;
+            Ok(BillingPeriod {
+                kind: "month",
+                value: value.to_string(),
+                start,
+                end,
+            })
+        }
+        "year" => {
+            let fallback = format!("{:04}", now.year());
+            let value = requested_value.unwrap_or(&fallback).trim();
+            let year = value.parse::<i32>().ok();
+            if value.len() != 4 || year.is_none() {
+                return Err(ApiError::BadRequest(
+                    "periodValue must use YYYY for a yearly period".to_string(),
+                ));
+            }
+            let year = year.unwrap_or_default();
+            if !(1..=9998).contains(&year) {
+                return Err(ApiError::BadRequest(
+                    "yearly billing period is out of range".to_string(),
+                ));
+            }
+            let start = Utc
+                .with_ymd_and_hms(year, 1, 1, 0, 0, 0)
+                .single()
+                .ok_or_else(|| ApiError::BadRequest("invalid yearly billing period".to_string()))?;
+            let end = Utc
+                .with_ymd_and_hms(year + 1, 1, 1, 0, 0, 0)
+                .single()
+                .ok_or_else(|| ApiError::BadRequest("invalid yearly billing period".to_string()))?;
+            Ok(BillingPeriod {
+                kind: "year",
+                value: value.to_string(),
+                start,
+                end,
+            })
+        }
+        _ => Err(ApiError::BadRequest(
+            "periodKind must be month or year".to_string(),
+        )),
+    }
 }
 
 fn usage_totals_json(row: &sqlx::postgres::PgRow) -> Value {
@@ -4579,7 +4734,7 @@ mod tests {
         routing::get,
         Router,
     };
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
     use futures_util::StreamExt;
     use rust_decimal::Decimal;
     use serde_json::json;
@@ -4588,11 +4743,12 @@ mod tests {
     use super::{
         billing_ledger_page, bounded_pagination, enforce_request_budget,
         ensure_gateway_run_available, estimate_request_input_tokens, looks_like_secret_field,
-        normalized_codex_tenant_ids, recommended_run_budget_yuan, request_safety_charge_yuan,
-        resolve_usage_charge, settle_and_record_usage, start_gateway_request,
-        stream_upstream_response, validate_client_agreement_acceptance,
-        validate_offline_payment_request, ClientAgreementAcceptance, MeteringStatus, ModelRoute,
-        OfflinePaymentRequest, GATEWAY_RUN_TTL_SECONDS, GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP,
+        normalized_codex_tenant_ids, recommended_run_budget_yuan, remove_model_provider_fields,
+        request_safety_charge_yuan, resolve_billing_period, resolve_usage_charge,
+        settle_and_record_usage, start_gateway_request, stream_upstream_response,
+        validate_client_agreement_acceptance, validate_offline_payment_request,
+        ClientAgreementAcceptance, MeteringStatus, ModelRoute, OfflinePaymentRequest,
+        GATEWAY_RUN_TTL_SECONDS, GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP,
     };
     use crate::{
         billing::{GatewayUsage, Pricing},
@@ -4606,6 +4762,57 @@ mod tests {
         assert_eq!(bounded_pagination(None, None, 8), (1, 8));
         assert_eq!(bounded_pagination(Some(0), Some(0), 8), (1, 1));
         assert_eq!(bounded_pagination(Some(4), Some(500), 8), (4, 100));
+    }
+
+    #[test]
+    fn resolves_monthly_and_yearly_billing_periods() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 9, 3, 11, 17, 0)
+            .single()
+            .unwrap();
+        let month = resolve_billing_period(now, Some("month"), Some("2026-02")).unwrap();
+        assert_eq!(month.kind, "month");
+        assert_eq!(month.value, "2026-02");
+        assert_eq!(
+            month.start,
+            Utc.with_ymd_and_hms(2026, 2, 1, 0, 0, 0).single().unwrap()
+        );
+        assert_eq!(
+            month.end,
+            Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).single().unwrap()
+        );
+
+        let year = resolve_billing_period(now, Some("year"), Some("2025")).unwrap();
+        assert_eq!(year.kind, "year");
+        assert_eq!(year.value, "2025");
+        assert_eq!(
+            year.start,
+            Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).single().unwrap()
+        );
+        assert_eq!(
+            year.end,
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).single().unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_billing_periods() {
+        let now = Utc::now();
+        assert!(resolve_billing_period(now, Some("month"), Some("2026-13")).is_err());
+        assert!(resolve_billing_period(now, Some("year"), Some("26")).is_err());
+        assert!(resolve_billing_period(now, Some("quarter"), Some("2026-Q1")).is_err());
+    }
+
+    #[test]
+    fn removes_provider_details_from_client_model_usage() {
+        let mut models = vec![json!({
+            "modelId": "gpt-5.6-sol",
+            "label": "GPT-5.6 Sol",
+            "provider": "cli-proxy"
+        })];
+        remove_model_provider_fields(&mut models);
+        assert_eq!(models[0]["label"], "GPT-5.6 Sol");
+        assert!(models[0].get("provider").is_none());
     }
 
     #[test]
@@ -4990,7 +5197,9 @@ mod tests {
         .unwrap();
         assert_eq!(settlement_count, 4);
 
-        let ledger = billing_ledger_page(&pool, &tenant_id, 1, 20).await.unwrap();
+        let ledger = billing_ledger_page(&pool, &tenant_id, 1, 20, None, None)
+            .await
+            .unwrap();
         assert_eq!(ledger.total, 1);
         assert_eq!(ledger.entries.len(), 1);
         assert_eq!(ledger.entries[0]["runId"], run_id);

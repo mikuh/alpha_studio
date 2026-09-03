@@ -158,6 +158,68 @@ describe('applyCodexEventToConversation', () => {
     expect(stopped.messages[0].blocks).toEqual([{ type: 'text', content: '处理中' }]);
   });
 
+  it('settles an orphaned running tool when the turn completes', () => {
+    const conversation = baseConversation();
+    conversation.messages[0].blocks = [
+      { type: 'tool', id: 'cmd-complete', title: 'execute', status: 'completed', input: 'date' },
+      { type: 'tool', id: 'cmd-orphan', title: 'execute', status: 'in_progress', input: 'render report' },
+      { type: 'text', content: '报告已生成。' },
+    ];
+
+    const completed = applyCodexEventToConversation(conversation, {
+      type: 'completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+    });
+
+    expect(completed.status).toBe('idle');
+    expect(completed.messages[0].isStreaming).toBe(false);
+    expect(completed.messages[0].blocks).toEqual([
+      { type: 'tool', id: 'cmd-complete', title: 'execute', status: 'completed', input: 'date' },
+      { type: 'tool', id: 'cmd-orphan', title: 'execute', status: 'completed', input: 'render report' },
+      { type: 'text', content: '报告已生成。' },
+    ]);
+  });
+
+  it('marks an orphaned running tool failed when the turn stops', () => {
+    const conversation = baseConversation();
+    conversation.messages[0].blocks = [
+      { type: 'tool', id: 'cmd-orphan', title: 'execute', status: 'in_progress', input: 'render report' },
+    ];
+
+    const stopped = applyCodexEventToConversation(conversation, {
+      type: 'stopped',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+    });
+
+    expect(stopped.messages[0].blocks[0]).toMatchObject({
+      type: 'tool',
+      id: 'cmd-orphan',
+      status: 'failed',
+    });
+  });
+
+  it('marks an orphaned running tool failed when the turn errors', () => {
+    const conversation = baseConversation();
+    conversation.messages[0].blocks = [
+      { type: 'tool', id: 'cmd-orphan', title: 'execute', status: 'in_progress', input: 'render report' },
+    ];
+
+    const failed = applyCodexEventToConversation(conversation, {
+      type: 'error',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      message: '进程异常退出',
+    });
+
+    expect(failed.status).toBe('error');
+    expect(failed.messages[0].blocks).toEqual([
+      { type: 'tool', id: 'cmd-orphan', title: 'execute', status: 'failed', input: 'render report' },
+      { type: 'error', content: '进程异常退出' },
+    ]);
+  });
+
   it('ignores a buffered text delta that arrives after the turn stopped', () => {
     const stopped = applyCodexEventToConversation(baseConversation(), {
       type: 'stopped',
@@ -172,6 +234,35 @@ describe('applyCodexEventToConversation', () => {
       text: '不应追加',
     });
 
+    expect(afterLateDelta).toBe(stopped);
+    expect(afterLateDelta.messages[0].blocks).toEqual([]);
+  });
+
+  it('ignores late tool starts and deltas after the turn stopped', () => {
+    const stopped = applyCodexEventToConversation(baseConversation(), {
+      type: 'stopped',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+    });
+
+    const afterLateStart = applyCodexEventToConversation(stopped, {
+      type: 'tool_started',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'late-tool',
+      title: 'execute',
+      text: 'should not start',
+    });
+    const afterLateDelta = applyCodexEventToConversation(afterLateStart, {
+      type: 'tool_delta',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'late-tool',
+      title: 'execute',
+      text: 'should not append',
+    });
+
+    expect(afterLateStart).toBe(stopped);
     expect(afterLateDelta).toBe(stopped);
     expect(afterLateDelta.messages[0].blocks).toEqual([]);
   });

@@ -128,6 +128,29 @@ describe('archive semantics', () => {
     expect(migrated.workModeId).toBe('finance-research');
   });
 
+  it('repairs finished persisted messages that still contain running tools', () => {
+    const migrated = migratePersistedState({
+      conversations: [conversation('stale-tool', {
+        status: 'idle',
+        messages: [{
+          id: 'assistant-stale-tool',
+          role: 'assistant',
+          timestamp: 1,
+          isStreaming: false,
+          blocks: [
+            { type: 'tool', id: 'cmd-1', title: 'execute', status: 'completed', input: 'date' },
+            { type: 'tool', id: 'cmd-2', title: 'execute', status: 'in_progress', input: 'render report' },
+          ],
+        }],
+      })],
+    });
+
+    expect(migrated.conversations[0].messages[0].blocks).toEqual([
+      { type: 'tool', id: 'cmd-1', title: 'execute', status: 'completed', input: 'date' },
+      { type: 'tool', id: 'cmd-2', title: 'execute', status: 'completed', input: 'render report' },
+    ]);
+  });
+
   it('migrates an unknown legacy model into a custom OpenAI profile', () => {
     const migrated = migratePersistedState({
       conversations: [conversation('old')],

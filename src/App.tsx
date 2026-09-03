@@ -223,6 +223,7 @@ import {
   type BillingLedgerEntry,
   type BillingLedgerPagination,
   type BillingModelUsage,
+  type BillingPeriodKind,
   type BillingUsageTotals,
   type ClientBillingSummary,
   type ClientDeviceSummary,
@@ -316,6 +317,7 @@ import type {
   ReviewRequest,
   SelectedTextContext,
   SkillSelection,
+  SubscriptionModelUsage,
 } from './types';
 
 const BrowserPdfViewer = lazy(() => import('./BrowserPdfViewer').then((module) => ({ default: module.BrowserPdfViewer })));
@@ -7996,6 +7998,18 @@ function MessageSelectedTextContexts({ contexts }: { contexts: SelectedTextConte
   );
 }
 
+function isImeComposingKeyEvent(
+  event: ReactKeyboardEvent<HTMLElement>,
+  trackedComposition = false,
+): boolean {
+  // WKWebView can report `isComposing=false` for the Enter key that confirms
+  // an IME candidate while still exposing the legacy process key code 229.
+  // Keep both signals so confirming Chinese/Japanese/Korean input never sends.
+  return trackedComposition
+    || event.nativeEvent.isComposing
+    || event.nativeEvent.keyCode === 229;
+}
+
 // Chips on a user message showing which coworkers were summoned for the turn.
 function MessageCoworkersLabel({ coworkers }: { coworkers: CoworkerSelection[] }) {
   return (
@@ -8014,6 +8028,7 @@ function MessageEditBubble({ initialValue, initialAttachments, onCancel, onSubmi
   const [value, setValue] = useState(initialValue);
   const [attachments, setAttachments] = useState<MessageAttachment[]>(initialAttachments);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const imeCompositionRef = useRef(false);
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -8043,9 +8058,9 @@ function MessageEditBubble({ initialValue, initialAttachments, onCancel, onSubmi
           ))}
         </div>
       )}
-      <textarea ref={textareaRef} className="message-edit-textarea" value={value} rows={1} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => {
+      <textarea ref={textareaRef} className="message-edit-textarea" value={value} rows={1} onChange={(event) => setValue(event.target.value)} onCompositionStart={() => { imeCompositionRef.current = true; }} onCompositionEnd={() => { imeCompositionRef.current = false; }} onKeyDown={(event) => {
         if (event.key === 'Escape') onCancel();
-        if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+        if (event.key === 'Enter' && !event.shiftKey && !isImeComposingKeyEvent(event, imeCompositionRef.current)) {
           event.preventDefault();
           submit();
         }
@@ -8644,6 +8659,7 @@ function ComposerImpl({
   const [selectedCoworkers, setSelectedCoworkers] = useState<CoworkerSelection[]>([]);
   const [composerDragKind, setComposerDragKind] = useState<'context' | 'path' | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const imeCompositionRef = useRef(false);
   const { queuedSkill, queuedSkillPrompt, consumeQueuedSkill, queuedCoworkerTask, consumeQueuedCoworkerTask } = useSkillRuntime();
   const sendMessage = useChatStore((state) => state.sendMessage);
   const removeQueuedMessage = useChatStore((state) => state.removeQueuedMessage);
@@ -8900,9 +8916,11 @@ function ComposerImpl({
           value={value}
           disabled={disabled}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setValue(event.target.value)}
+          onCompositionStart={() => { imeCompositionRef.current = true; }}
+          onCompositionEnd={() => { imeCompositionRef.current = false; }}
           onPaste={(event) => void handlePaste(event)}
           onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+            if (event.key === 'Enter' && !event.shiftKey && !isImeComposingKeyEvent(event, imeCompositionRef.current)) {
               event.preventDefault();
               submit();
             }
@@ -9010,6 +9028,7 @@ function ComposerQueue({
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const imeCompositionRef = useRef(false);
 
   const startEdit = (message: QueuedChatMessage) => {
     setEditingId(message.id);
@@ -9088,12 +9107,14 @@ function ComposerQueue({
                     rows={1}
                     autoFocus
                     onChange={(event) => setEditingValue(event.target.value)}
+                    onCompositionStart={() => { imeCompositionRef.current = true; }}
+                    onCompositionEnd={() => { imeCompositionRef.current = false; }}
                     onKeyDown={(event) => {
                       if (event.key === 'Escape') {
                         event.preventDefault();
                         cancelEdit();
                       }
-                      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                      if (event.key === 'Enter' && !event.shiftKey && !isImeComposingKeyEvent(event, imeCompositionRef.current)) {
                         event.preventDefault();
                         saveEdit(message);
                       }
@@ -13439,12 +13460,18 @@ function KeyboardSettings() {
 function UsageSettings() {
   const session = useChatStore((state) => state.clientLicenseSession);
   const subscriptionUsage = useChatStore((state) => state.subscriptionUsage);
+  const latestMonth = useMemo(() => billingMonthValue(new Date()), []);
+  const latestYear = latestMonth.slice(0, 4);
+  const [periodKind, setPeriodKind] = useState<BillingPeriodKind>('month');
+  const [selectedMonth, setSelectedMonth] = useState(latestMonth);
+  const [selectedYear, setSelectedYear] = useState(latestYear);
   const [summary, setSummary] = useState<ClientBillingSummary | null>(null);
   const [codexUsage, setCodexUsage] = useState<CodexSubscriptionUsage | null>(null);
   const [loading, setLoading] = useState(false);
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
   const [error, setError] = useState('');
   const [codexUsageError, setCodexUsageError] = useState('');
+  const selectedPeriodValue = periodKind === 'month' ? selectedMonth : selectedYear;
 
   const refresh = useCallback(async (ledgerPage = 1, includeCodexUsage = true) => {
     if (!session) return;
@@ -13457,7 +13484,11 @@ function UsageSettings() {
 
     const shouldLoadCodexUsage = Boolean(session.tenant.codexSubscriptionEnabled || session.codexAccounts.length > 0);
     const [billingResult, codexResult] = await Promise.allSettled([
-      fetchClientBillingSummary(session, { page: ledgerPage, pageSize: 8 }),
+      fetchClientBillingSummary(session, {
+        page: ledgerPage,
+        pageSize: 8,
+        period: { kind: periodKind, value: selectedPeriodValue },
+      }),
       includeCodexUsage
         ? shouldLoadCodexUsage ? fetchCodexSubscriptionUsage() : Promise.resolve(null)
         : Promise.resolve(undefined),
@@ -13477,7 +13508,7 @@ function UsageSettings() {
 
     setLoading(false);
     if (includeCodexUsage) setCodexUsageLoading(false);
-  }, [session]);
+  }, [periodKind, selectedPeriodValue, session]);
 
   useEffect(() => {
     void refresh();
@@ -13485,50 +13516,100 @@ function UsageSettings() {
 
   const tenant = summary?.tenant ?? session?.tenant;
   const billingMode = tenant?.billingMode || defaultBillingModeForSession(session);
-  const currentMonth = summary?.usage?.currentMonth ?? EMPTY_BILLING_USAGE;
+  const periodUsage = summary?.usage?.selectedPeriod ?? summary?.usage?.currentMonth ?? EMPTY_BILLING_USAGE;
   const allTime = summary?.usage?.allTime ?? EMPTY_BILLING_USAGE;
   const models = summary?.usage?.models ?? [];
   const recentLedger = summary?.usage?.recentLedger ?? [];
   const ledgerPagination = summary?.usage?.ledgerPagination;
   const generatedAt = summary?.period?.generatedAt ? formatLicenseDate(summary.period.generatedAt) : loading ? '同步中' : '尚未同步';
-  const monthLabel = summary?.period?.currentMonthStart
-    ? `${formatMonthLabel(summary.period.currentMonthStart)}账期`
-    : '当前账期';
+  const displayedPeriodKind = summary?.period?.kind ?? periodKind;
+  const displayedPeriodValue = summary?.period?.value
+    ?? (summary?.period?.currentMonthStart
+      ? displayedPeriodKind === 'year'
+        ? summary.period.currentMonthStart.slice(0, 4)
+        : summary.period.currentMonthStart.slice(0, 7)
+      : selectedPeriodValue);
+  const periodLabel = formatBillingPeriodLabel(displayedPeriodKind, displayedPeriodValue);
   const codexSubscriptionEnabled = Boolean(tenant?.codexSubscriptionEnabled);
   const apiSubscriptionEnabled = Boolean(tenant?.subscriptionPlan);
-  const billingMonth = (summary?.period?.currentMonthStart || new Date().toISOString()).slice(0, 7);
+  const canSelectNextPeriod = selectedPeriodValue < (periodKind === 'month' ? latestMonth : latestYear);
   const modelRows = useMemo<BillingModelTableRow[]>(() => [
-    ...subscriptionUsage
-      .filter((model) => model.month === billingMonth)
-      .sort((left, right) => right.lastUsedAt - left.lastUsedAt)
-      .map((model) => ({
-        ...model,
-        provider: `GPT 订阅 · ${model.modelId}`,
-        costYuan: 0,
-        billableYuan: 0,
-        lastUsedAt: new Date(model.lastUsedAt).toISOString(),
-        billingKind: 'included' as const,
-      })),
+    ...subscriptionModelsForPeriod(subscriptionUsage, displayedPeriodKind, displayedPeriodValue),
     ...models.map((model) => ({ ...model, billingKind: 'metered' as const })),
-  ], [billingMonth, models, subscriptionUsage]);
+  ], [displayedPeriodKind, displayedPeriodValue, models, subscriptionUsage]);
+
+  const changePeriodKind = (nextKind: BillingPeriodKind) => {
+    if (nextKind === periodKind) return;
+    if (nextKind === 'year') {
+      setSelectedYear(selectedMonth.slice(0, 4));
+    } else if (!selectedMonth.startsWith(`${selectedYear}-`)) {
+      setSelectedMonth(`${selectedYear}-${selectedYear === latestYear ? latestMonth.slice(5, 7) : '01'}`);
+    }
+    setPeriodKind(nextKind);
+  };
+
+  const stepPeriod = (delta: number) => {
+    const next = shiftBillingPeriod(periodKind, selectedPeriodValue, delta);
+    if (periodKind === 'month') setSelectedMonth(next);
+    else setSelectedYear(next);
+  };
 
   return (
     <>
       <section className="billing-overview" aria-label="账单总览">
         <div className="billing-overview-head">
-          <div>
-            <strong>{monthLabel}</strong>
+          <div className="billing-overview-copy">
+            <strong>{periodLabel}账期</strong>
             <span>数据更新时间：{generatedAt}</span>
           </div>
-          <button className="settings-btn" type="button" onClick={() => void refresh(ledgerPagination?.page ?? 1)} disabled={!session || loading} aria-label="刷新账单">
-            <RefreshCw size={13} className={loading ? 'spin' : ''} />
-            <span>刷新</span>
-          </button>
+          <div className="billing-overview-actions">
+            <div className="settings-segment billing-period-kind" role="group" aria-label="统计周期">
+              <button className={`settings-segment-btn ${periodKind === 'month' ? 'active' : ''}`} type="button" aria-pressed={periodKind === 'month'} onClick={() => changePeriodKind('month')}>月度</button>
+              <button className={`settings-segment-btn ${periodKind === 'year' ? 'active' : ''}`} type="button" aria-pressed={periodKind === 'year'} onClick={() => changePeriodKind('year')}>年度</button>
+            </div>
+            <div className="billing-period-picker">
+              <button className="settings-btn billing-period-step" type="button" onClick={() => stepPeriod(-1)} aria-label={`查看上一${periodKind === 'month' ? '月' : '年'}`} title={`上一${periodKind === 'month' ? '月' : '年'}`}>
+                <ChevronLeft size={14} />
+              </button>
+              {periodKind === 'month' ? (
+                <input
+                  className="billing-period-input"
+                  type="month"
+                  value={selectedMonth}
+                  max={latestMonth}
+                  aria-label="选择月份"
+                  onChange={(event) => {
+                    if (/^\d{4}-\d{2}$/.test(event.target.value) && event.target.value <= latestMonth) setSelectedMonth(event.target.value);
+                  }}
+                />
+              ) : (
+                <input
+                  className="billing-period-input year"
+                  type="number"
+                  value={selectedYear}
+                  min="1"
+                  max={latestYear}
+                  step="1"
+                  aria-label="选择年份"
+                  onChange={(event) => {
+                    if (/^\d{4}$/.test(event.target.value) && event.target.value <= latestYear) setSelectedYear(event.target.value);
+                  }}
+                />
+              )}
+              <button className="settings-btn billing-period-step" type="button" onClick={() => stepPeriod(1)} disabled={!canSelectNextPeriod} aria-label={`查看下一${periodKind === 'month' ? '月' : '年'}`} title={`下一${periodKind === 'month' ? '月' : '年'}`}>
+                <ChevronRight size={14} />
+              </button>
+            </div>
+            <button className="settings-btn billing-refresh" type="button" onClick={() => void refresh(ledgerPagination?.page ?? 1)} disabled={!session || loading} aria-label="刷新账单">
+              <RefreshCw size={13} className={loading ? 'spin' : ''} />
+              <span>刷新</span>
+            </button>
+          </div>
         </div>
         <div className="billing-metrics">
-          <BillingMetric label="本月按量费用" value={formatYuan(currentMonth.billableYuan)} meta={`${formatWholeNumber(currentMonth.runCount)} 次调用`} />
+          <BillingMetric label={`${displayedPeriodKind === 'month' ? '月度' : '年度'}按量费用`} value={formatYuan(periodUsage.billableYuan)} meta={`${formatWholeNumber(periodUsage.runCount)} 次调用`} />
           <BillingMetric label="账户余额" value={formatYuan(tenant?.balanceYuan ?? 0)} meta="API 网关预付余额" tone={(tenant?.balanceYuan ?? 0) <= 0 ? 'warning' : 'default'} />
-          <BillingMetric label="本月按量 Tokens" value={formatWholeNumber(currentMonth.totalTokens)} meta={formatUsageBreakdown(currentMonth)} />
+          <BillingMetric label={`${displayedPeriodKind === 'month' ? '月度' : '年度'}按量 Tokens`} value={formatWholeNumber(periodUsage.totalTokens)} meta={formatUsageBreakdown(periodUsage)} />
         </div>
         {error && <div className="billing-alert"><AlertCircle size={14} />{error}</div>}
       </section>
@@ -13537,10 +13618,10 @@ function UsageSettings() {
         <SettingsRow title="计费模式" description="订阅模型按席位或套餐授权，API 网关按真实 token 用量结算。">
           <span className="settings-static">{formatBillingMode(billingMode)}</span>
         </SettingsRow>
-        <SettingsRow title="客户" description="当前设备激活的计费主体。">
+        <SettingsRow title="组织" description="当前设备激活的计费主体。">
           <span className="settings-static">{tenant?.name || '未激活'}</span>
         </SettingsRow>
-        <SettingsRow title="活跃设备" description="该客户当前处于激活状态的设备数量。">
+        <SettingsRow title="活跃设备" description="该组织当前处于激活状态的设备数量。">
           <span className="settings-static">{summary?.activeDevices ?? tenant?.maxDevices ?? 0} / {tenant?.maxDevices ?? '-'}</span>
         </SettingsRow>
       </SettingsGroup>
@@ -13562,22 +13643,23 @@ function UsageSettings() {
 
       <div className="settings-subtitle">按量使用</div>
       <SettingsGroup>
-        <SettingsRow title="本月费用" description={formatUsageBreakdown(currentMonth)}>
-          <span className="settings-static">{formatYuan(currentMonth.billableYuan)}</span>
+        <SettingsRow title="账期费用" description={`${periodLabel} · ${formatUsageBreakdown(periodUsage)}`}>
+          <span className="settings-static">{formatYuan(periodUsage.billableYuan)}</span>
         </SettingsRow>
         <SettingsRow title="累计费用" description={`累计 ${formatWholeNumber(allTime.runCount)} 次调用 · ${formatWholeNumber(allTime.totalTokens)} tokens`}>
           <span className="settings-static">{formatYuan(allTime.billableYuan)}</span>
         </SettingsRow>
-        <SettingsRow title="最近使用" description="最近一笔按量调用产生的时间。">
-          <span className="settings-static">{formatLicenseDate(currentMonth.lastUsedAt || allTime.lastUsedAt)}</span>
+        <SettingsRow title="账期内最近使用" description="所选账期内最近一笔按量调用产生的时间。">
+          <span className="settings-static">{formatLicenseDate(periodUsage.lastUsedAt)}</span>
         </SettingsRow>
       </SettingsGroup>
 
-      <BillingModelTable models={modelRows} />
+      <BillingModelTable models={modelRows} periodLabel={periodLabel} />
       <BillingLedgerList
         entries={recentLedger}
         pagination={ledgerPagination}
         loading={loading}
+        periodLabel={periodLabel}
         onPageChange={(page) => void refresh(page, false)}
       />
     </>
@@ -13641,14 +13723,54 @@ interface BillingModelTableRow extends BillingModelUsage {
   billingKind: 'included' | 'metered';
 }
 
-function BillingModelTable({ models }: { models: BillingModelTableRow[] }) {
+function subscriptionModelsForPeriod(
+  usage: SubscriptionModelUsage[],
+  kind: BillingPeriodKind,
+  value: string,
+): BillingModelTableRow[] {
+  const matching = usage.filter((model) => kind === 'month' ? model.month === value : model.month.startsWith(`${value}-`));
+  const totals = new Map<string, BillingModelTableRow>();
+  for (const model of matching) {
+    const existing = totals.get(model.modelId);
+    if (existing) {
+      existing.runCount += model.runCount;
+      existing.inputTokens += model.inputTokens;
+      existing.outputTokens += model.outputTokens;
+      existing.reasoningTokens += model.reasoningTokens;
+      existing.cachedTokens += model.cachedTokens;
+      existing.totalTokens += model.totalTokens;
+      if (Date.parse(existing.lastUsedAt || '') < model.lastUsedAt) {
+        existing.lastUsedAt = new Date(model.lastUsedAt).toISOString();
+        existing.label = model.label;
+      }
+      continue;
+    }
+    totals.set(model.modelId, {
+      modelId: model.modelId,
+      label: model.label,
+      runCount: model.runCount,
+      inputTokens: model.inputTokens,
+      outputTokens: model.outputTokens,
+      reasoningTokens: model.reasoningTokens,
+      cachedTokens: model.cachedTokens,
+      totalTokens: model.totalTokens,
+      costYuan: 0,
+      billableYuan: 0,
+      lastUsedAt: new Date(model.lastUsedAt).toISOString(),
+      billingKind: 'included',
+    });
+  }
+  return [...totals.values()].sort((left, right) => Date.parse(right.lastUsedAt || '') - Date.parse(left.lastUsedAt || ''));
+}
+
+function BillingModelTable({ models, periodLabel }: { models: BillingModelTableRow[]; periodLabel: string }) {
   return (
     <section className="billing-table-section" aria-label="模型用量">
       <div className="billing-section-title">
         <strong>模型用量</strong>
       </div>
       {models.length === 0 ? (
-        <div className="billing-empty">本月还没有可显示的模型消耗。</div>
+        <div className="billing-empty">{periodLabel}还没有可显示的模型消耗。</div>
       ) : (
         <div className="billing-table-wrap">
           <table className="billing-table">
@@ -13662,10 +13784,9 @@ function BillingModelTable({ models }: { models: BillingModelTableRow[] }) {
             </thead>
             <tbody>
               {models.map((model) => (
-                <tr key={model.modelId}>
+                <tr key={`${model.billingKind}:${model.modelId}`}>
                   <td>
                     <strong>{model.label || model.modelId}</strong>
-                    <span>{model.provider || model.modelId}</span>
                   </td>
                   <td>{formatWholeNumber(model.runCount)}</td>
                   <td title={formatUsageBreakdown(model)}>{formatWholeNumber(model.totalTokens)}</td>
@@ -13754,21 +13875,22 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function BillingLedgerList({ entries, pagination, loading, onPageChange }: {
+function BillingLedgerList({ entries, pagination, loading, periodLabel, onPageChange }: {
   entries: BillingLedgerEntry[];
   pagination?: BillingLedgerPagination;
   loading: boolean;
+  periodLabel: string;
   onPageChange: (page: number) => void;
 }) {
   const total = pagination?.total ?? entries.length;
   return (
-    <section className="billing-ledger" aria-label="最近账单流水">
+    <section className="billing-ledger" aria-label="账单流水">
       <div className="billing-section-title">
-        <strong>最近账单流水</strong>
-        <span>同一运行已合并，金额为累计变动{total > 0 ? ` · 共 ${formatWholeNumber(total)} 条汇总` : ''}</span>
+        <strong>账单流水</strong>
+        <span>{periodLabel} · 同一运行已合并，金额为累计变动{total > 0 ? ` · 共 ${formatWholeNumber(total)} 条汇总` : ''}</span>
       </div>
       {entries.length === 0 ? (
-        <div className="billing-empty">暂无账单流水。</div>
+        <div className="billing-empty">{periodLabel}暂无账单流水。</div>
       ) : (
         <div className="billing-ledger-list">
           {entries.map((entry) => (
@@ -13881,10 +14003,26 @@ function formatSignedLedgerYuan(value: number): string {
   return `${safe > 0 ? '+' : ''}${formatted}`;
 }
 
-function formatMonthLabel(value: string): string {
-  const time = Date.parse(value);
-  if (!Number.isFinite(time)) return value;
-  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long' }).format(time);
+function billingMonthValue(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function formatBillingPeriodLabel(kind: BillingPeriodKind, value: string): string {
+  if (kind === 'year') return /^\d{4}$/.test(value) ? `${value}年` : value;
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  return `${match[1]}年${Number(match[2])}月`;
+}
+
+function shiftBillingPeriod(kind: BillingPeriodKind, value: string, delta: number): string {
+  if (kind === 'year') {
+    const year = Number(value);
+    return String(Math.max(1, Math.min(9998, year + delta))).padStart(4, '0');
+  }
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1 + delta, 1);
+  return billingMonthValue(date);
 }
 
 function PluginSettings() {

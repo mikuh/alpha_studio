@@ -10,6 +10,7 @@ import {
 import {
   applyCodexEventToConversation,
   CONTEXT_COMPACTION_TOOL_TITLE,
+  finalizePendingToolBlocks,
 } from './codexEvents';
 import { buildCodingInstructions, buildReviewPrompt } from './prompt';
 import { coworkerSelectionsByIds } from './coworkers';
@@ -1667,7 +1668,7 @@ export const useChatStore = create<ChatState>()(
     },
     {
       name: 'alpha-studio.chat.v2',
-      version: 8,
+      version: 9,
       // The native local-store subscriber below owns desktop persistence. Keep
       // the middleware's hot-path projection constant-time on streamed tokens.
       partialize: isTauriRuntime() ? () => tauriNoopPersistedState : persistedChatState,
@@ -1890,7 +1891,9 @@ function recoverInterruptedConversation(conversation: Conversation): Conversatio
     return {
       ...message,
       isStreaming: false,
-      blocks: message.blocks.length > 0 ? message.blocks : interrupted,
+      blocks: message.blocks.length > 0
+        ? finalizePendingToolBlocks(message.blocks, 'failed')
+        : interrupted,
     };
   });
 
@@ -2411,14 +2414,14 @@ function simulateBrowserReview(
 export function migratePersistedState(persistedState: unknown): PersistedChatState {
   const source = (persistedState && typeof persistedState === 'object' ? persistedState : {}) as Record<string, unknown>;
   const conversations = Array.isArray(source.conversations)
-    ? (source.conversations as Conversation[]).map((conversation) => ({
-        ...conversation,
-        codexThreadId: undefined,
-        codexTokenUsage: undefined,
-        activeModelProfileId: undefined,
-        codexCompactedAt: undefined,
-        title: conversation.title === LEGACY_DEFAULT_CONVERSATION_TITLE ? '新对话' : conversation.title,
-      }))
+    ? (source.conversations as Conversation[]).map((conversation) => reconcileFinishedMessageTools({
+      ...conversation,
+      codexThreadId: undefined,
+      codexTokenUsage: undefined,
+      activeModelProfileId: undefined,
+      codexCompactedAt: undefined,
+      title: conversation.title === LEGACY_DEFAULT_CONVERSATION_TITLE ? '新对话' : conversation.title,
+    }))
     : [createEmptyConversation()];
   const projects = Array.isArray(source.projects) ? (source.projects as Project[]) : [];
 	  const currentConversationId = typeof source.currentConversationId === 'string'
@@ -2447,6 +2450,22 @@ export function migratePersistedState(persistedState: unknown): PersistedChatSta
     projectSort: isProjectSort(source.projectSort) ? source.projectSort : 'updated',
     conversationSort: isProjectSort(source.conversationSort) ? source.conversationSort : 'updated',
   };
+}
+
+// Repair conversations written by older builds that had already reached a
+// terminal state while one or more tool blocks still said `in_progress`.
+// Active assistant messages are left untouched; their tools are genuinely
+// allowed to keep running.
+function reconcileFinishedMessageTools(conversation: Conversation): Conversation {
+  let changed = false;
+  const messages = conversation.messages.map((message) => {
+    if (message.isStreaming) return message;
+    const blocks = finalizePendingToolBlocks(message.blocks, 'completed');
+    if (blocks === message.blocks) return message;
+    changed = true;
+    return { ...message, blocks };
+  });
+  return changed ? { ...conversation, messages } : conversation;
 }
 
 function subscriptionTokenDelta(

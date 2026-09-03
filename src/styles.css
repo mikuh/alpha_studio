@@ -1735,23 +1735,77 @@ code {
   border-bottom: 1px solid var(--border);
 }
 
-.billing-overview-head > div,
+.billing-overview-copy,
 .billing-section-title {
   min-width: 0;
   display: grid;
   gap: 4px;
 }
 
-.billing-overview-head strong,
+.billing-overview-copy strong,
 .billing-section-title strong {
   font-size: 14px;
   line-height: 1.25;
 }
 
-.billing-overview-head span,
+.billing-overview-copy > span,
 .billing-section-title span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.billing-overview-actions,
+.billing-period-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.billing-overview-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.billing-period-kind {
+  flex: none;
+}
+
+.billing-period-picker {
+  min-width: 0;
+}
+
+.billing-period-step.settings-btn {
+  width: 30px;
+  padding: 0;
+}
+
+.billing-period-input {
+  width: 132px;
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  background: var(--bg-soft);
+  color: var(--text);
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.billing-period-input.year {
+  width: 78px;
+  text-align: center;
+}
+
+.billing-period-input:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-elev-2);
+}
+
+.billing-period-input:focus {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .billing-metrics {
@@ -2768,6 +2822,14 @@ code {
 
   .billing-overview-head .settings-btn {
     width: fit-content;
+  }
+
+  .billing-overview-actions {
+    justify-content: flex-start;
+  }
+
+  .billing-overview-head .billing-period-step {
+    width: 30px;
   }
 
   .billing-metrics {
@@ -20814,14 +20876,14 @@ select {
 }
 
 .sidebar-traffic {
-  height: 52px;
-  min-height: 52px;
+  height: 56px;
+  min-height: 56px;
   border-bottom: 0;
   background: transparent;
 }
 
 .sidebar-brand {
-  top: 15px;
+  top: 7px;
   height: 24px;
 }
 
@@ -20846,7 +20908,7 @@ select {
 }
 
 .sidebar-account {
-  display: none;
+  display: inline-flex;
 }
 
 .sidebar-collapse-btn.chrome-tool-button,
@@ -21327,24 +21389,19 @@ select {
 
 .suggestion-row {
   width: min(680px, calc(100% - 40px));
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-top: 2px;
   border: 0;
   background: transparent;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-  scrollbar-width: none;
-}
-
-.suggestion-row::-webkit-scrollbar {
-  display: none;
+  overflow-x: visible;
 }
 
 .suggestion-card {
   min-width: 0;
   min-height: 62px;
-  flex: 0 0 190px;
+  width: 100%;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: transparent;
@@ -21520,6 +21577,39 @@ select {
   border: 0;
   padding: 0;
   font-size: 20px;
+}
+
+/* Keep list markers as readable as the surrounding Cowork-style prose. The
+   earlier research-theme rules deliberately miniaturized markers and used the
+   faintest text token, which made ordered-list digits hard to distinguish. */
+.markdown-content ul,
+.markdown-content ol {
+  margin: 10px 0 14px;
+  padding-inline-start: 1.7em;
+}
+
+.markdown-content li {
+  margin: 5px 0;
+  padding-inline-start: 0.15em;
+}
+
+.markdown-content li > ul,
+.markdown-content li > ol {
+  margin: 6px 0;
+  padding-inline-start: 1.55em;
+}
+
+.markdown-content ul > li::marker {
+  color: var(--accent);
+  font-size: 0.9em;
+}
+
+.markdown-content ol > li::marker {
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 0.96em;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
 }
 
 .markdown-content pre,
@@ -21754,10 +21844,11 @@ details[open] > .event-summary,
 
   .suggestion-row {
     width: calc(100% - 28px);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .suggestion-card {
-    flex-basis: 170px;
+    width: 100%;
   }
 }
 
@@ -22261,6 +22352,27 @@ details[open] > .event-summary,
   border-radius: var(--cowork-radius-sm);
   background: var(--bg-hover);
   box-shadow: none;
+}
+
+/* Earlier inverse-hover rules assumed a dark solid background. The current
+   subtle hover surface needs foreground tokens that keep their contrast in
+   both themes instead of fading toward the page background. */
+.thinking-block > summary:hover .event-icon,
+.event-summary:hover .event-icon,
+.tool-summary:hover .event-icon {
+  color: var(--accent);
+}
+
+.thinking-block > summary:hover .event-target,
+.thinking-block > summary:hover .event-trailing,
+.thinking-block > summary:hover .event-chevron,
+.event-summary:hover .event-target,
+.event-summary:hover .event-trailing,
+.event-summary:hover .event-chevron,
+.tool-summary:hover .event-target,
+.tool-summary:hover .event-trailing,
+.tool-summary:hover .event-chevron {
+  color: var(--text-muted);
 }
 
 .event-body,

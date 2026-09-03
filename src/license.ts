@@ -147,6 +147,13 @@ export interface BillingLedgerPagination {
   hasNext: boolean;
 }
 
+export type BillingPeriodKind = 'month' | 'year';
+
+export interface BillingPeriodSelection {
+  kind: BillingPeriodKind;
+  value: string;
+}
+
 export interface ClientBillingSummary {
   tenant: ClientTenant & {
     billingMode: string;
@@ -156,11 +163,16 @@ export interface ClientBillingSummary {
   };
   activeDevices: number;
   period: {
+    kind?: BillingPeriodKind;
+    value?: string;
+    start?: string;
+    end?: string;
     currentMonthStart: string;
     currentMonthEnd: string;
     generatedAt: string;
   };
   usage: {
+    selectedPeriod?: BillingUsageTotals;
     currentMonth: BillingUsageTotals;
     allTime: BillingUsageTotals;
     models: BillingModelUsage[];
@@ -377,7 +389,7 @@ export async function createGatewayRun(
 
 export async function fetchClientBillingSummary(
   session: ClientLicenseSession,
-  ledger: { page?: number; pageSize?: number } = {},
+  options: { page?: number; pageSize?: number; period?: BillingPeriodSelection } = {},
 ): Promise<ClientBillingSummary> {
   return alphaFetch<ClientBillingSummary>(session.apiBaseUrl, '/api/client/billing-summary', {
     method: 'POST',
@@ -385,8 +397,12 @@ export async function fetchClientBillingSummary(
     body: JSON.stringify({
       tenantId: session.tenant.id,
       deviceId: session.device.id,
-      ledgerPage: ledger.page ?? 1,
-      ledgerPageSize: ledger.pageSize ?? 8,
+      ledgerPage: options.page ?? 1,
+      ledgerPageSize: options.pageSize ?? 8,
+      ...(options.period ? {
+        periodKind: options.period.kind,
+        periodValue: options.period.value,
+      } : {}),
     }),
   }, { retryLoopback: true });
 }

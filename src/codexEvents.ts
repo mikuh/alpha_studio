@@ -56,12 +56,12 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   // conversationId) from finalizing other conversations that are still running.
   if (event.type === 'stopped') {
     if (conversation.status !== 'streaming') return conversation;
-    return finishStreaming(conversation, now);
+    return finishStreaming(conversation, now, 'failed');
   }
 
   if (event.type === 'completed') {
     if (conversation.status !== 'streaming') return conversation;
-    return finishStreaming(conversation, now);
+    return finishStreaming(conversation, now, 'completed');
   }
 
   if (event.type === 'error') {
@@ -88,10 +88,12 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   }
 
   if (event.type === 'tool_started') {
+    if (conversation.status !== 'streaming') return conversation;
     return appendToolStart(conversation, now, event);
   }
 
   if (event.type === 'tool_delta' && event.text) {
+    if (conversation.status !== 'streaming') return conversation;
     return appendToolDelta(conversation, now, event);
   }
 
@@ -423,11 +425,16 @@ function appendToStreamingAssistant(
         : conversation.runId,
     },
     now,
-    (message) => ({
-      ...message,
-      blocks: [...message.blocks, block],
-      isStreaming: options?.done ? false : message.isStreaming,
-    }),
+    (message) => {
+      const blocks = options?.done
+        ? finalizePendingToolBlocks(message.blocks, 'failed')
+        : message.blocks;
+      return {
+        ...message,
+        blocks: [...blocks, block],
+        isStreaming: options?.done ? false : message.isStreaming,
+      };
+    },
   );
 }
 
@@ -462,7 +469,11 @@ function isReconnectStatusContent(content: string): boolean {
   return /^Reconnecting\.\.\.\s+\d+\/\d+$/i.test(content.trim());
 }
 
-function finishStreaming(conversation: Conversation, now: number): Conversation {
+function finishStreaming(
+  conversation: Conversation,
+  now: number,
+  pendingToolStatus: Extract<ToolBlock['status'], 'completed' | 'failed'>,
+): Conversation {
   const imageGenerationTurn = isImageGenerationTurn(conversation);
   return updateStreamingAssistant(
     {
@@ -481,15 +492,34 @@ function finishStreaming(conversation: Conversation, now: number): Conversation 
       const hasMissingResultNotice = message.blocks.some(
         (block) => block.type === 'error' && block.content.includes('未收到可展示的图片结果'),
       );
+      const blocks = finalizePendingToolBlocks(message.blocks, pendingToolStatus);
       return {
         ...message,
         isStreaming: false,
         blocks: imageGenerationTurn && !hasImageResult && !hasMissingResultNotice
-          ? [...message.blocks, { type: 'error', content: '图片生成已结束，但未收到可展示的图片结果。请重试。' }]
-          : message.blocks,
+          ? [...blocks, { type: 'error', content: '图片生成已结束，但未收到可展示的图片结果。请重试。' }]
+          : blocks,
       };
     },
   );
+}
+
+// A terminal turn is authoritative: no tool in its assistant message can
+// still be running. Codex normally emits a matching tool completion first,
+// but a killed child process or a missing lifecycle notification can leave an
+// orphaned in-progress block behind. Settle it here so grouped events cannot
+// keep spinning after the conversation has ended.
+export function finalizePendingToolBlocks(
+  blocks: MessageBlock[],
+  status: Extract<ToolBlock['status'], 'completed' | 'failed'>,
+): MessageBlock[] {
+  let changed = false;
+  const next = blocks.map((block) => {
+    if (block.type !== 'tool' || block.status !== 'in_progress') return block;
+    changed = true;
+    return { ...block, status };
+  });
+  return changed ? next : blocks;
 }
 
 function isImageGenerationTurn(conversation: Conversation): boolean {
