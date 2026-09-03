@@ -57,6 +57,7 @@ import {
 import {
   ALPHA_GATEWAY_PROVIDER_ID,
   createGatewayRun,
+  DEFAULT_GATEWAY_TASK_SPEND_LIMIT_YUAN,
   isCodexAccountAllowed,
   loadClientLicenseSession,
   modelProfilesFromClientLicense,
@@ -2075,7 +2076,11 @@ async function codexModelRequest(profile: ModelProfile, reasoningEffort: Reasoni
   const validatedEffort = resolveReasoningEffortForProfile(profile, reasoningEffort);
   const serviceTier = profile.supportsFastMode && speed === 'fast' ? 'fast' as const : undefined;
   if (profile.providerId === ALPHA_GATEWAY_PROVIDER_ID) {
-    const gateway = await createGatewayRun(profile.model);
+    const gateway = await createGatewayRun(
+      profile.model,
+      DEFAULT_GATEWAY_TASK_SPEND_LIMIT_YUAN,
+      serviceTier === 'fast',
+    );
     return {
       model: profile.model,
       providerId: gateway.providerId,

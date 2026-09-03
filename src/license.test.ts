@@ -395,6 +395,34 @@ describe('client license session', () => {
         body: expect.stringContaining('"budgetYuan":20'),
       }),
     );
+    expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/runs/create',
+      expect.objectContaining({
+        body: expect.stringContaining('"fastMode":false'),
+      }),
+    );
+  });
+
+  it('marks fast gateway runs so the server can size their safety budget at priority prices', async () => {
+    saveClientLicenseSession({
+      apiBaseUrl: 'http://localhost:18080',
+      activatedAt: 1,
+      ...activationResponse,
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+      runId: 'run_fast',
+      runToken: 'run-token-fast',
+      gatewayUrl: 'http://localhost:18080/v1/responses',
+    }));
+
+    await createGatewayRun('gpt-5.5', 20, true);
+
+    expect(fetch).toHaveBeenCalledWith(
+      'http://localhost:18080/api/runs/create',
+      expect.objectContaining({
+        body: expect.stringContaining('"fastMode":true'),
+      }),
+    );
   });
 
   it('loads the client billing summary for the active device', async () => {

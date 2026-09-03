@@ -245,7 +245,9 @@ describe('admin model gateway', () => {
     fireEvent.change(within(modelForm).getByLabelText('输出 元/百万'), { target: { value: '2.5' } });
     fireEvent.change(within(modelForm).getByLabelText('缓存输入 元/百万'), { target: { value: '0.02' } });
     fireEvent.change(within(modelForm).getByLabelText('用户价格倍率'), { target: { value: '1.5' } });
-    expect(within(modelForm).getByText(/输入.*¥1\.875.*输出.*¥3\.75.*缓存输入.*¥0\.03/)).toBeTruthy();
+    expect(within(modelForm).getByText(/标准：输入.*¥1\.875.*输出.*¥3\.75.*缓存输入.*¥0\.03/)).toBeTruthy();
+    expect(within(modelForm).getByText(/Fast：输入.*¥3\.75.*输出.*¥7\.5.*缓存输入.*¥0\.06/)).toBeTruthy();
+    expect(within(modelForm).getByText('服务端对 Fast 请求先按上游成本 ×2，再按用户价格倍率 ×1.5 结算。')).toBeTruthy();
     fireEvent.click(within(modelForm).getByRole('button', { name: '保存模型' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(

@@ -57,6 +57,7 @@ const GATEWAY_RUN_TTL_SECONDS: i64 = 48 * 60 * 60;
 // real-time spending gate before each request.
 const GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP: u64 = 64;
 const MAX_GATEWAY_TASK_BUDGET_YUAN: u64 = 10_000;
+const FAST_MODE_COST_MULTIPLIER: u64 = 2;
 // A Codex run can fan out several model requests at once. Queue them fairly per
 // run and leave enough headroom for high-reasoning GPT streams and agent bursts
 // instead of surfacing a false 429 to the client.
@@ -1004,6 +1005,8 @@ pub struct RunCreateRequest {
         deserialize_with = "deserialize_decimal"
     )]
     budget_yuan: Decimal,
+    #[serde(default)]
+    fast_mode: bool,
 }
 
 pub async fn run_create(
@@ -1027,7 +1030,16 @@ pub async fn run_create(
     )
     .await?;
     load_provider_config(&state, &route).await?;
-    request.budget_yuan = request.budget_yuan.max(recommended_run_budget_yuan(&route));
+    let budget_pricing = if request.fast_mode {
+        route
+            .pricing
+            .with_cost_multiplier(FAST_MODE_COST_MULTIPLIER)
+    } else {
+        route.pricing.clone()
+    };
+    request.budget_yuan = request
+        .budget_yuan
+        .max(recommended_run_budget_yuan(&route, &budget_pricing));
     validate_run_budget(request.budget_yuan)?;
     let run_id = format!("run_{}", Uuid::new_v4().simple());
     create_unreserved_run(&state.db, &run_id, &request).await?;
@@ -2375,6 +2387,7 @@ pub async fn gateway_responses(
         state.config.min_gateway_markup_bps,
     )
     .await?;
+    let request_pricing = pricing_for_gateway_request(&route.pricing, &body);
     let provider = load_provider_config(&state, &route).await?;
     let gateway_request_id = format!("gwreq_{}", Uuid::new_v4().simple());
     let queue_started = std::time::Instant::now();
@@ -2395,7 +2408,9 @@ pub async fn gateway_responses(
         );
     }
     let remaining_budget = start_gateway_request(&state.db, &claims, &gateway_request_id).await?;
-    if let Err(error) = enforce_request_budget(&mut body, remaining_budget, &route) {
+    if let Err(error) =
+        enforce_request_budget(&mut body, remaining_budget, &route, &request_pricing)
+    {
         release_gateway_request(&state.db, &claims, &gateway_request_id, None).await?;
         return Err(error);
     }
@@ -2426,7 +2441,7 @@ pub async fn gateway_responses(
                     &state.db,
                     &claims,
                     &gateway_request_id,
-                    &route.pricing,
+                    &request_pricing,
                     &GatewayUsage::default(),
                     0,
                     started,
@@ -2448,7 +2463,7 @@ pub async fn gateway_responses(
             state.db.clone(),
             claims,
             gateway_request_id,
-            route.pricing,
+            request_pricing,
             started,
             run_permit,
         ));
@@ -2460,7 +2475,7 @@ pub async fn gateway_responses(
                 &state.db,
                 &claims,
                 &gateway_request_id,
-                &route.pricing,
+                &request_pricing,
                 &GatewayUsage::default(),
                 status.as_u16(),
                 started,
@@ -2487,7 +2502,7 @@ pub async fn gateway_responses(
                     &state.db,
                     &claims,
                     &gateway_request_id,
-                    &route.pricing,
+                    &request_pricing,
                     &GatewayUsage::default(),
                     status.as_u16(),
                     started,
@@ -2504,7 +2519,7 @@ pub async fn gateway_responses(
             &state.db,
             &claims,
             &gateway_request_id,
-            &route.pricing,
+            &request_pricing,
             &usage,
             status.as_u16(),
             started,
@@ -2519,7 +2534,7 @@ pub async fn gateway_responses(
                 &state.db,
                 &claims,
                 &gateway_request_id,
-                &route.pricing,
+                &request_pricing,
                 &GatewayUsage::default(),
                 status.as_u16(),
                 started,
@@ -2963,6 +2978,17 @@ async fn load_model_route(
     })
 }
 
+fn pricing_for_gateway_request(pricing: &Pricing, body: &Value) -> Pricing {
+    // Codex exposes this as `service_tier = "fast"` in its configuration and
+    // translates it to the OpenAI Responses API's `priority` service tier.
+    // Priority inference costs twice the configured standard token prices.
+    if body.get("service_tier").and_then(Value::as_str) == Some("priority") {
+        pricing.with_cost_multiplier(FAST_MODE_COST_MULTIPLIER)
+    } else {
+        pricing.clone()
+    }
+}
+
 async fn load_provider_config(state: &AppState, route: &ModelRoute) -> ApiResult<ProviderConfig> {
     let row = sqlx::query(
         r#"
@@ -3327,9 +3353,10 @@ fn enforce_request_budget(
     body: &mut Value,
     budget_yuan: Decimal,
     route: &ModelRoute,
+    pricing: &Pricing,
 ) -> ApiResult<()> {
     validate_run_budget(budget_yuan)?;
-    if !route.pricing.is_valid() {
+    if !pricing.is_valid() {
         return Err(ApiError::BadRequest(
             "model pricing is unsafe or incomplete".to_string(),
         ));
@@ -3343,9 +3370,8 @@ fn enforce_request_budget(
             .min(default_model_max_output_tokens() as u64),
     };
     let estimated_input_tokens = estimate_request_input_tokens(body, route.context_window_tokens)?;
-    let charge_for = |output_tokens| {
-        request_safety_charge_yuan(estimated_input_tokens, output_tokens, &route.pricing)
-    };
+    let charge_for =
+        |output_tokens| request_safety_charge_yuan(estimated_input_tokens, output_tokens, pricing);
     if charge_for(0) > budget_yuan {
         return Err(ApiError::Forbidden(
             "per-run safety limit is too small for the request input".to_string(),
@@ -3424,11 +3450,11 @@ fn request_safety_charge_yuan(input_tokens: u64, output_tokens: u64, pricing: &P
     .billable_yuan
 }
 
-fn recommended_run_budget_yuan(route: &ModelRoute) -> Decimal {
+fn recommended_run_budget_yuan(route: &ModelRoute, pricing: &Pricing) -> Decimal {
     let full_window_request = request_safety_charge_yuan(
         route.context_window_tokens,
         route.max_output_tokens,
-        &route.pricing,
+        pricing,
     );
     (full_window_request * Decimal::from(GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP))
         .min(Decimal::from(MAX_GATEWAY_TASK_BUDGET_YUAN))
@@ -4743,12 +4769,13 @@ mod tests {
     use super::{
         billing_ledger_page, bounded_pagination, enforce_request_budget,
         ensure_gateway_run_available, estimate_request_input_tokens, looks_like_secret_field,
-        normalized_codex_tenant_ids, recommended_run_budget_yuan, remove_model_provider_fields,
-        request_safety_charge_yuan, resolve_billing_period, resolve_usage_charge,
-        settle_and_record_usage, start_gateway_request, stream_upstream_response,
-        validate_client_agreement_acceptance, validate_offline_payment_request,
-        ClientAgreementAcceptance, MeteringStatus, ModelRoute, OfflinePaymentRequest,
-        GATEWAY_RUN_TTL_SECONDS, GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP,
+        normalized_codex_tenant_ids, pricing_for_gateway_request, recommended_run_budget_yuan,
+        remove_model_provider_fields, request_safety_charge_yuan, resolve_billing_period,
+        resolve_usage_charge, settle_and_record_usage, start_gateway_request,
+        stream_upstream_response, validate_client_agreement_acceptance,
+        validate_offline_payment_request, ClientAgreementAcceptance, MeteringStatus, ModelRoute,
+        OfflinePaymentRequest, FAST_MODE_COST_MULTIPLIER, GATEWAY_RUN_TTL_SECONDS,
+        GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP,
     };
     use crate::{
         billing::{GatewayUsage, Pricing},
@@ -4936,7 +4963,7 @@ mod tests {
             393_216,
         );
 
-        enforce_request_budget(&mut body, Decimal::ONE, &route).unwrap();
+        enforce_request_budget(&mut body, Decimal::ONE, &route, &route.pricing).unwrap();
 
         let capped = body["max_output_tokens"].as_u64().unwrap();
         assert!(capped > 0);
@@ -4958,7 +4985,9 @@ mod tests {
             131_072,
         );
 
-        assert!(enforce_request_budget(&mut body, Decimal::new(1, 2), &route).is_err());
+        assert!(
+            enforce_request_budget(&mut body, Decimal::new(1, 2), &route, &route.pricing).is_err()
+        );
     }
 
     #[test]
@@ -4974,7 +5003,7 @@ mod tests {
             1_048_576,
             131_072,
         );
-        let budget = recommended_run_budget_yuan(&route);
+        let budget = recommended_run_budget_yuan(&route, &route.pricing);
 
         assert!(budget > Decimal::from(5_u64));
         assert_eq!(budget, Decimal::new(964_689_920, 6));
@@ -4982,6 +5011,15 @@ mod tests {
             budget,
             request_safety_charge_yuan(1_048_576, 131_072, &route.pricing)
                 * Decimal::from(GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP)
+        );
+        assert_eq!(
+            recommended_run_budget_yuan(
+                &route,
+                &route
+                    .pricing
+                    .with_cost_multiplier(FAST_MODE_COST_MULTIPLIER),
+            ),
+            budget * Decimal::from(FAST_MODE_COST_MULTIPLIER),
         );
     }
 
@@ -4993,6 +5031,36 @@ mod tests {
 
         assert!(estimated < serialized_bytes);
         assert!(estimated > 20_000);
+    }
+
+    #[test]
+    fn priority_service_tier_doubles_cost_before_applying_user_markup() {
+        let pricing = Pricing {
+            input_yuan_per_million: Decimal::from(10_u64),
+            output_yuan_per_million: Decimal::from(40_u64),
+            reasoning_yuan_per_million: Decimal::from(40_u64),
+            cached_input_yuan_per_million: Decimal::from(2_u64),
+            markup_bps: 2_500,
+        };
+        let standard = pricing_for_gateway_request(&pricing, &json!({ "service_tier": "default" }));
+        let fast = pricing_for_gateway_request(&pricing, &json!({ "service_tier": "priority" }));
+        let usage = GatewayUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            reasoning_tokens: 0,
+            cached_tokens: 0,
+        };
+
+        assert_eq!(standard, pricing);
+        assert_eq!(fast.input_yuan_per_million, Decimal::from(20_u64));
+        assert_eq!(fast.output_yuan_per_million, Decimal::from(80_u64));
+        assert_eq!(fast.reasoning_yuan_per_million, Decimal::from(80_u64));
+        assert_eq!(fast.cached_input_yuan_per_million, Decimal::from(4_u64));
+        assert_eq!(fast.markup_bps, 2_500);
+
+        let charge = crate::billing::settle_usage_yuan(&usage, &fast);
+        assert_eq!(charge.cost_yuan, Decimal::from(20_u64));
+        assert_eq!(charge.billable_yuan, Decimal::from(25_u64));
     }
 
     #[test]

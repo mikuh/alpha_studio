@@ -52,6 +52,17 @@ impl Pricing {
             && self.output_yuan_per_million > Decimal::ZERO
             && self.markup_bps <= 100_000
     }
+
+    pub fn with_cost_multiplier(&self, multiplier: u64) -> Self {
+        let multiplier = Decimal::from(multiplier);
+        Self {
+            input_yuan_per_million: self.input_yuan_per_million * multiplier,
+            output_yuan_per_million: self.output_yuan_per_million * multiplier,
+            reasoning_yuan_per_million: self.reasoning_yuan_per_million * multiplier,
+            cached_input_yuan_per_million: self.cached_input_yuan_per_million * multiplier,
+            markup_bps: self.markup_bps,
+        }
+    }
 }
 
 pub fn settle_usage_yuan(usage: &GatewayUsage, pricing: &Pricing) -> UsageCharge {

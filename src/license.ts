@@ -362,6 +362,7 @@ export const DEFAULT_GATEWAY_TASK_SPEND_LIMIT_YUAN = 20;
 export async function createGatewayRun(
   modelId: string,
   spendLimitYuan = DEFAULT_GATEWAY_TASK_SPEND_LIMIT_YUAN,
+  fastMode = false,
 ): Promise<GatewayRunConfig> {
   const session = loadClientLicenseSession();
   if (!session) throw new Error('Alpha Studio 客户端尚未激活。');
@@ -376,6 +377,7 @@ export async function createGatewayRun(
       // This caps cumulative exposure for the whole multi-request task; the
       // server does not reserve it from the account balance.
       budgetYuan: spendLimitYuan,
+      fastMode,
     }),
   });
   return {

@@ -292,6 +292,7 @@ const providerPresets: Array<{ id: string; label: string; config: Omit<typeof em
 ];
 
 const reasoningEffortOptions = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const FAST_MODE_COST_MULTIPLIER = 2;
 const reasoningEffortLabels: Record<string, string> = {
   none: '关闭',
   minimal: '极低',
@@ -2327,11 +2328,22 @@ function ModelForm({ form, setForm, providers, onProviderChange, onSubmit, disco
         <div className="field-wide price-multiplier-preview">
           <span>倍率后用户单价</span>
           <strong>
-            输入 {formatYuanPerMillion(userPrice(form.inputYuanPerMillion, form.priceMultiplier))}
+            标准：输入 {formatYuanPerMillion(userPrice(form.inputYuanPerMillion, form.priceMultiplier))}
             {' · '}输出 {formatYuanPerMillion(userPrice(form.outputYuanPerMillion, form.priceMultiplier))}
             {' · '}缓存输入 {formatYuanPerMillion(userPrice(form.cachedInputYuanPerMillion, form.priceMultiplier))}
           </strong>
-          <small>实际用量结算由服务端按 ×{formatPriceMultiplier(form.priceMultiplier)} 计算。</small>
+          {form.fastModeSupported && (
+            <strong>
+              Fast：输入 {formatYuanPerMillion(userPrice(form.inputYuanPerMillion * FAST_MODE_COST_MULTIPLIER, form.priceMultiplier))}
+              {' · '}输出 {formatYuanPerMillion(userPrice(form.outputYuanPerMillion * FAST_MODE_COST_MULTIPLIER, form.priceMultiplier))}
+              {' · '}缓存输入 {formatYuanPerMillion(userPrice(form.cachedInputYuanPerMillion * FAST_MODE_COST_MULTIPLIER, form.priceMultiplier))}
+            </strong>
+          )}
+          <small>
+            {form.fastModeSupported
+              ? `服务端对 Fast 请求先按上游成本 ×${FAST_MODE_COST_MULTIPLIER}，再按用户价格倍率 ×${formatPriceMultiplier(form.priceMultiplier)} 结算。`
+              : `实际用量结算由服务端按 ×${formatPriceMultiplier(form.priceMultiplier)} 计算。`}
+          </small>
         </div>
         <label className="check-row">
           <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
@@ -2788,7 +2800,7 @@ function ModelTable({ models, onEdit, onDelete }: {
               <td><strong>{model.upstreamModel}</strong><span>{model.endpointPath} · 上下文 {formatWholeNumber(model.contextWindowTokens)} / 回答 {formatWholeNumber(model.maxOutputTokens)} tokens · 思考 {model.supportedReasoningEfforts.join('/')} · {model.fastModeSupported ? 'Fast' : '标准速度'}</span></td>
               <td>
                 <strong>成本 {formatYuanPerMillion(model.inputYuanPerMillion)} / {formatYuanPerMillion(model.outputYuanPerMillion)}</strong>
-                <span>用户 {formatYuanPerMillion(userPrice(model.inputYuanPerMillion, priceMultiplierFromMarkupBps(model.markupBps)))} / {formatYuanPerMillion(userPrice(model.outputYuanPerMillion, priceMultiplierFromMarkupBps(model.markupBps)))} · ×{formatPriceMultiplier(priceMultiplierFromMarkupBps(model.markupBps))}</span>
+                <span>标准用户 {formatYuanPerMillion(userPrice(model.inputYuanPerMillion, priceMultiplierFromMarkupBps(model.markupBps)))} / {formatYuanPerMillion(userPrice(model.outputYuanPerMillion, priceMultiplierFromMarkupBps(model.markupBps)))} · ×{formatPriceMultiplier(priceMultiplierFromMarkupBps(model.markupBps))}{model.fastModeSupported ? ` · Fast 成本及用户价 ×${FAST_MODE_COST_MULTIPLIER}` : ''}</span>
               </td>
               <td><Status value={model.enabled && model.providerReady ? 'ready' : model.enabled ? 'provider missing' : 'disabled'} /></td>
               <td className="col-actions">

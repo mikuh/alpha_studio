@@ -45,7 +45,7 @@ Codex CLI -> POST /v1/responses -> Alpha Studio adapter -> 上游模型服务
 - `contextWindowTokens`：模型的总上下文窗口。桌面端会将非 OpenAI 模型的窗口传给 Codex，并在约 90% 时提前压缩历史；未配置的非 OpenAI 路由按 64k 保守迁移。火山方舟 GLM-5.2、DeepSeek V4 Pro 与 Flash 按官方 1024k 窗口配置。
 - `maxOutputTokens`：模型最大回答长度。网关结合上下文窗口、最大回答和定价自动抬高内部任务安全预算，避免固定 5 元上限先于模型窗口拒绝合法输入。
 - `supportedReasoningEfforts` / `defaultReasoningEffort`：管理后台会优先按已核验的具体模型锁定真实选项；未知自定义模型才允许手动配置。网关模型可使用的标准超集是 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。`ultra` 是 Codex 编排模式，不是标准模型 effort，不能配置到网关路由。
-- `fastModeSupported`：控制桌面端是否显示 Fast 选项。选中后 Codex 使用 `service_tier = "fast"`，并把请求映射成上游的 `service_tier: "priority"`。
+- `fastModeSupported`：控制桌面端是否显示 Fast 选项。选中后 Codex 使用 `service_tier = "fast"`，并把请求映射成上游的 `service_tier: "priority"`。网关识别实际请求中的 `priority` 标记，将输入、输出、推理和缓存输入的上游成本单价统一按标准价格的 2 倍计算，再应用该路由配置的用户价格倍率；标准请求的价格不变。
 
 ### 思考参数转译
 
