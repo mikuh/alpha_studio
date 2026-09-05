@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { App, splitStreamingMarkdown } from './App';
 import { ALPHA_GATEWAY_PROVIDER_ID, clearClientLicenseSession, loadClientLicenseSession, saveClientLicenseSession } from './license';
 import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles, modelProfilesFromCodexCatalog } from './models';
-import type { CodexModelCatalogItem } from './types';
+import type { CodexModelCatalogItem, MessageBlock, ToolBlock } from './types';
 import { useChatStore } from './store';
 import type { Conversation } from './types';
 import { INTRADAY_MONITOR_CARD_PROMPT, REPORT_REVIEW_CARD_PROMPT } from './themeAbilities';
@@ -319,6 +319,8 @@ function mockLocalHtmlPreviewFiles() {
   });
 }
 
+const defaultInvokeImplementation = vi.mocked(invoke).getMockImplementation()!;
+
 describe('right feature panel', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -328,6 +330,7 @@ describe('right feature panel', () => {
   });
 
   beforeEach(() => {
+    vi.mocked(invoke).mockReset().mockImplementation(defaultInvokeImplementation);
     windowMockState.fullscreen = false;
     windowMockState.resizeHandler = null;
     Object.defineProperty(document, 'fullscreenElement', { value: null, configurable: true });
@@ -1476,6 +1479,41 @@ describe('right feature panel', () => {
     })] });
     const { container } = render(<App />);
     expect(container.querySelector('.kind-file-edit')).not.toBeInTheDocument();
+  });
+
+  it('shows measured tool durations without zero-second placeholders', () => {
+    const cases: { label: string; timing: Partial<ToolBlock>; expected: string | null }[] = [
+      { label: '短操作', timing: { startedAt: 1000, finishedAt: 1125 }, expected: '125ms' },
+      { label: '秒级操作', timing: { startedAt: 1000, finishedAt: 2250 }, expected: '1.3s' },
+      { label: '分钟操作', timing: { startedAt: 1000, finishedAt: 83_000 }, expected: '1m22s' },
+      { label: '原生耗时优先', timing: { durationMs: 450, startedAt: 1000, finishedAt: 6000 }, expected: '450ms' },
+      { label: '只有原生耗时', timing: { durationMs: 2200 }, expected: '2.2s' },
+      { label: '失败耗时', timing: { status: 'failed', durationMs: 125 }, expected: '125ms' },
+      { label: '无历史耗时', timing: {}, expected: null },
+      { label: '缺少开始', timing: { finishedAt: 1000 }, expected: null },
+      { label: '缺少结束', timing: { startedAt: 1000 }, expected: null },
+      { label: '零间隔', timing: { startedAt: 1000, finishedAt: 1000 }, expected: null },
+      { label: '原生零耗时', timing: { durationMs: 0, startedAt: 1000, finishedAt: 6000 }, expected: null },
+      { label: '负间隔', timing: { startedAt: 2000, finishedAt: 1000 }, expected: null },
+      { label: '无效时间', timing: { startedAt: NaN, finishedAt: Infinity }, expected: null },
+      { label: '仍在运行', timing: { status: 'in_progress', durationMs: 125 }, expected: null },
+      { label: '未确认完成', timing: { completionUnconfirmed: true, durationMs: 125 }, expected: null },
+    ];
+    useChatStore.setState({ conversations: [conversation({ messages: [{
+      id: 'assistant-tool-timing', role: 'assistant', timestamp: 1,
+      blocks: cases.flatMap(({ label, timing }): MessageBlock[] => [
+        { type: 'text', content: '执行记录' },
+        { type: 'tool', id: label, title: 'fileRead', status: 'completed', target: label, ...timing },
+      ]),
+    }] })] });
+
+    const { container } = render(<App />);
+    for (const { label, expected } of cases) {
+      const duration = screen.getByText(label).closest('.tool-block')?.querySelector('.event-duration');
+      if (expected) expect(duration).toHaveTextContent(expected);
+      else expect(duration).toBeNull();
+    }
+    expect(container.querySelectorAll('.event-duration')).toHaveLength(6);
   });
 
   it('shows search, file-read, and web-read targets as soon as each activity starts', () => {
@@ -2651,7 +2689,7 @@ describe('right feature panel', () => {
     expect(within(sidebar).getByRole('button', { name: '设置' })).toBeInTheDocument();
   });
 
-  it('shows subscription and pay-as-you-go billing in usage settings', async () => {
+  it('shows only metered billing even when subscription plans and history exist', async () => {
     const user = userEvent.setup();
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
     useChatStore.setState({
@@ -2770,20 +2808,16 @@ describe('right feature panel', () => {
     const settings = screen.getByRole('dialog', { name: '设置' });
     await user.click(within(settings).getByRole('button', { name: '使用情况和计费' }));
 
-    expect(await within(settings).findByText('订阅 + 按量')).toBeInTheDocument();
-    expect(within(settings).getByText('GPT 订阅')).toBeInTheDocument();
-    expect(within(settings).getByText('剩余用量')).toBeInTheDocument();
-    expect(within(settings).getByText('5 小时')).toBeInTheDocument();
-    expect(within(settings).getByText('1 周')).toBeInTheDocument();
-    expect(within(settings).getByText('63%')).toBeInTheDocument();
-    expect(within(settings).getByText('23%')).toBeInTheDocument();
-    expect(within(settings).getByText('API 套餐')).toBeInTheDocument();
+    expect(await within(settings).findByText('按量付费')).toBeInTheDocument();
+    expect(within(settings).queryByText(/订阅/)).not.toBeInTheDocument();
+    expect(within(settings).queryByText('剩余用量')).not.toBeInTheDocument();
+    expect(within(settings).queryByText('API 套餐')).not.toBeInTheDocument();
     expect(within(settings).getByText('组织')).toBeInTheDocument();
     expect(within(settings).getByText(/96\.75/)).toBeInTheDocument();
     expect(within(settings).getAllByText(/3\.25/).length).toBeGreaterThan(0);
-    expect(within(settings).getByText('GPT-5.6 Sol')).toBeInTheDocument();
-    expect(within(settings).getByText('Included')).toHaveAttribute('title', '费用已包含在 GPT 订阅中');
-    expect(within(settings).getByText('34,400')).toBeInTheDocument();
+    expect(within(settings).queryByText('GPT-5.6 Sol')).not.toBeInTheDocument();
+    expect(within(settings).queryByText('Included')).not.toBeInTheDocument();
+    expect(within(settings).queryByText('34,400')).not.toBeInTheDocument();
     expect(within(settings).getByText('GPT-5.5 API')).toBeInTheDocument();
     expect(within(settings).queryByText('openai')).not.toBeInTheDocument();
     expect(within(settings).getByText('gpt-5.5 usage charge')).toBeInTheDocument();
@@ -2807,7 +2841,7 @@ describe('right feature panel', () => {
 
     await user.click(within(settings).getByRole('button', { name: '年度' }));
     expect(within(settings).getByLabelText('选择年份')).toHaveValue(2026);
-    expect(within(settings).getByText('34,500')).toBeInTheDocument();
+    expect(within(settings).queryByText('34,500')).not.toBeInTheDocument();
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
       'http://localhost:18080/api/client/billing-summary',
       expect.objectContaining({ body: expect.stringMatching(/"periodKind":"year".*"periodValue":"2026"/) }),
@@ -2818,7 +2852,8 @@ describe('right feature panel', () => {
       'http://localhost:18080/api/client/billing-summary',
       expect.objectContaining({ body: expect.stringContaining('"ledgerPage":2') }),
     ));
-    expect(invoke).toHaveBeenCalledWith('codex_subscription_usage');
+    expect(invoke).not.toHaveBeenCalledWith('codex_subscription_usage');
+    expect(useChatStore.getState().subscriptionUsage).toHaveLength(2);
   });
 
   it('labels model picker groups as subscription and usage-based models', async () => {
@@ -3148,9 +3183,9 @@ describe('right feature panel', () => {
     const settings = screen.getByRole('dialog', { name: '设置' });
     await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
 
-    expect(within(settings).getByText('GPT 订阅账号')).toBeInTheDocument();
+    expect(within(settings).queryByText(/GPT|订阅/)).not.toBeInTheDocument();
     expect(within(settings).queryByText('codex-demo@alpha.local')).not.toBeInTheDocument();
-    expect(within(settings).getByText('Use browser login handoff')).toBeInTheDocument();
+    expect(within(settings).queryByText('Use browser login handoff')).not.toBeInTheDocument();
     expect(within(settings).getByText('设备授权')).toBeInTheDocument();
     expect(within(settings).queryByText('设备租约')).not.toBeInTheDocument();
 
@@ -3294,17 +3329,17 @@ describe('right feature panel', () => {
     expect(within(settings).queryByRole('button', { name: /解除 .* 的授权/ })).not.toBeInTheDocument();
   });
 
-  it('requires an explicit button press to launch Codex CLI device authorization', async () => {
+  it.each([
+    { subscriptionEnabled: false, loggedIn: false },
+    { subscriptionEnabled: false, loggedIn: true },
+    { subscriptionEnabled: true, loggedIn: false },
+    { subscriptionEnabled: true, loggedIn: true },
+  ])('hides internal model authorization from account settings: %j', async ({ subscriptionEnabled, loggedIn }) => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
-    useChatStore.setState({
-      codexStatus: {
-        installed: true,
-        loggedIn: false,
-        path: '/usr/bin/codex',
-        version: 'test',
-        error: 'Alpha Studio 的 GPT 尚未完成设备授权。',
-      },
-    });
+    const stored = loadClientLicenseSession()!;
+    saveClientLicenseSession({ ...stored, tenant: { ...stored.tenant, codexSubscriptionEnabled: subscriptionEnabled } });
+    codexCatalogMockState.status.loggedIn = loggedIn;
+    useChatStore.setState({ codexStatus: { ...codexCatalogMockState.status } });
     const user = userEvent.setup();
     const { container } = render(<App />);
 
@@ -3312,105 +3347,15 @@ describe('right feature panel', () => {
     const settings = screen.getByRole('dialog', { name: '设置' });
     await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
 
-    const loginButton = within(settings).getByRole('button', { name: '授权 GPT' });
-    expect(invoke).not.toHaveBeenCalledWith('codex_login');
-
-    await user.click(loginButton);
-
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('codex_login'));
-  });
-
-  it('shows the Codex CLI as authorized after device authorization is detected', async () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
-    vi.mocked(invoke).mockImplementation((command: string) => {
-      if (command === 'codex_check') {
-        return Promise.resolve({
-          installed: true,
-          version: 'test',
-          path: '/usr/bin/codex',
-          loggedIn: true,
-          accountEmail: 'codex-demo@alpha.local',
-        });
-      }
-      if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
-      if (command === 'codex_revoke_authorization') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
-      if (command === 'list_open_apps') return Promise.resolve(['finder']);
-      if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
-      if (command === 'git_status') {
-        return Promise.resolve({
-          cwd: '/tmp/alpha-studio',
-          isRepository: false,
-          ahead: 0,
-          behind: 0,
-          clean: true,
-          changes: [],
-        });
-      }
-      return Promise.resolve(undefined);
-    });
-    useChatStore.setState({
-      codexStatus: { installed: true, loggedIn: true, accountEmail: 'codex-demo@alpha.local', path: '/usr/bin/codex', version: 'test' },
-    });
-    const user = userEvent.setup();
-    const { container } = render(<App />);
-
-    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
-    const settings = screen.getByRole('dialog', { name: '设置' });
-    await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
-
-    await waitFor(() => expect(within(settings).getByText('已授权')).toBeInTheDocument());
+    expect(within(settings).queryByText(/GPT|订阅/)).not.toBeInTheDocument();
+    expect(within(settings).queryByText('运行模式')).not.toBeInTheDocument();
     expect(within(settings).queryByRole('button', { name: '授权 GPT' })).not.toBeInTheDocument();
-  });
-
-  it('revokes Codex CLI authorization from profile settings', async () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
-    let revoked = false;
-    vi.mocked(invoke).mockImplementation((command: string) => {
-      if (command === 'codex_check') {
-        return Promise.resolve({
-          installed: true,
-          version: 'test',
-          path: '/usr/bin/codex',
-          loggedIn: !revoked,
-          accountEmail: revoked ? undefined : 'codex-demo@alpha.local',
-          error: revoked ? 'Alpha Studio 的 GPT 尚未完成设备授权。' : undefined,
-        });
-      }
-      if (command === 'codex_revoke_authorization') {
-        revoked = true;
-        return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
-      }
-      if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
-      if (command === 'list_open_apps') return Promise.resolve(['finder']);
-      if (command === 'local_image_data_url') return Promise.resolve('data:image/png;base64,preview');
-      if (command === 'git_status') {
-        return Promise.resolve({
-          cwd: '/tmp/alpha-studio',
-          isRepository: false,
-          ahead: 0,
-          behind: 0,
-          clean: true,
-          changes: [],
-        });
-      }
-      return Promise.resolve(undefined);
-    });
-    useChatStore.setState({
-      codexStatus: { installed: true, loggedIn: true, accountEmail: 'codex-demo@alpha.local', path: '/usr/bin/codex', version: 'test' },
-    });
-    const user = userEvent.setup();
-    const { container } = render(<App />);
-
-    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
-    const settings = screen.getByRole('dialog', { name: '设置' });
-    await user.click(within(settings).getByRole('button', { name: '账户与授权' }));
-
-    await user.click(await within(settings).findByRole('button', { name: '撤销授权' }));
-
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('codex_revoke_authorization'));
-    await waitFor(() => expect(within(settings).getByText('未授权')).toBeInTheDocument());
-    expect(within(settings).getByRole('button', { name: '授权 GPT' })).toBeInTheDocument();
     expect(within(settings).queryByRole('button', { name: '撤销授权' })).not.toBeInTheDocument();
+    expect(within(settings).getByText('设备授权')).toBeInTheDocument();
+    expect(within(settings).getByText('客户端状态')).toBeInTheDocument();
+    expect(within(settings).getByRole('button', { name: '退出登录' })).toBeEnabled();
+    expect(invoke).not.toHaveBeenCalledWith('codex_login');
+    expect(invoke).not.toHaveBeenCalledWith('codex_revoke_authorization');
   });
 
   it('selects a skill from the composer plugin flyout and sends it with the message', async () => {
@@ -4606,8 +4551,8 @@ describe('right feature panel', () => {
               role: 'assistant',
               timestamp: 1,
               blocks: [
-                { type: 'tool', id: 'web-1', title: 'web.run search_query', status: 'completed', input: '机器人 产业链 最新政策', output: '搜索结果 1' },
-                { type: 'tool', id: 'web-2', title: 'web.run search_query', status: 'completed', input: '国产算力 交换机 订单', output: '搜索结果 2' },
+                { type: 'tool', id: 'web-1', title: 'web.run search_query', status: 'completed', input: '机器人 产业链 最新政策', output: '搜索结果 1', durationMs: 250 },
+                { type: 'tool', id: 'web-2', title: 'web.run search_query', status: 'completed', input: '国产算力 交换机 订单', output: '搜索结果 2', startedAt: 1000, finishedAt: 1000 },
                 { type: 'tool', id: 'web-3', title: 'web.search', status: 'completed', input: 'CGT 征求意见 国家药监局', output: '搜索结果 3' },
               ],
             },
@@ -4631,6 +4576,8 @@ describe('right feature panel', () => {
     expect(within(group).getByText('机器人 产业链 最新政策')).toBeInTheDocument();
     expect(within(group).getByText('国产算力 交换机 订单')).toBeInTheDocument();
     expect(within(group).getByText('CGT 征求意见 国家药监局')).toBeInTheDocument();
+    expect(group.querySelectorAll('.event-duration')).toHaveLength(1);
+    expect(within(group).getByText('250ms')).toBeInTheDocument();
     expect(group.querySelector('.event-chevron')).toBeInTheDocument();
   });
 

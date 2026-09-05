@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, convert::Infallible, time::Duration};
 
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{rejection::JsonRejection, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -53,6 +53,10 @@ const CURRENT_PRIVACY_POLICY_VERSION: &str = "2026-08-04";
 const CURRENT_THIRD_PARTY_MODEL_NOTICE_VERSION: &str = "2026-08-04";
 const CURRENT_RESEARCH_RISK_DISCLOSURE_VERSION: &str = "2026-08-04";
 const GATEWAY_RUN_TTL_SECONDS: i64 = 48 * 60 * 60;
+// Report tool loops carry history and base64 preview images. Axum's default
+// 2 MiB rejects these before inference. Keep a bounded, route-local allowance
+// below the deployment proxy's 25 MB ceiling.
+pub(crate) const GATEWAY_REQUEST_BODY_LIMIT: usize = 20 * 1024 * 1024;
 // A Codex turn can issue a new model request after every tool result. Size the
 // task guard for a bounded agent loop, while tenant balance remains the actual
 // real-time spending gate before each request.
@@ -2492,8 +2496,24 @@ pub async fn gateway_run_events(
 pub async fn gateway_responses(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(mut body): Json<Value>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> ApiResult<Response> {
+    let mut body = match body {
+        Ok(Json(body)) => body,
+        Err(error) if error.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return Ok((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({ "error": {
+                    "message": "模型请求超过 20 MiB 上限，请减少附加图片或在新对话中引用已有文件继续。已生成的本地文件仍可打开或打印。",
+                    "type": "invalid_request_error",
+                    "code": "request_body_too_large",
+                    "limit_bytes": GATEWAY_REQUEST_BODY_LIMIT,
+                } })),
+            )
+                .into_response());
+        }
+        Err(error) => return Ok(error.into_response()),
+    };
     let token = bearer_token(&headers)?;
     let claims = state.run_tokens.verify(token)?;
     ensure_gateway_run_available(&state.db, &claims).await?;

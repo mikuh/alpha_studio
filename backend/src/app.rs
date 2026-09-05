@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::{DefaultBodyLimit, Request, State},
     http::{header, HeaderName, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -167,7 +167,11 @@ pub fn build_router(state: AppState) -> Router {
             "/api/client/skills/releases/:id/download",
             get(skill_registry::client_download_skill_release),
         )
-        .route("/v1/responses", post(routes::gateway_responses))
+        .route(
+            "/v1/responses",
+            post(routes::gateway_responses)
+                .layer(DefaultBodyLimit::max(routes::GATEWAY_REQUEST_BODY_LIMIT)),
+        )
         .route("/v1/models", get(routes::gateway_models))
         .route("/v1/run-status", get(routes::gateway_run_status))
         .route("/v1/run-events", get(routes::gateway_run_events))

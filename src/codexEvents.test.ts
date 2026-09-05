@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { applyCodexEventToConversation, TOOL_LOG_MAX_CHARACTERS } from './codexEvents';
 import type { Conversation } from './types';
 
@@ -23,6 +23,22 @@ function baseConversation(): Conversation {
 }
 
 describe('applyCodexEventToConversation', () => {
+  it.each(['tool_completed', 'tool_failed'] as const)('preserves runtime duration on %s even when event delivery takes longer', type => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    const started = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_started', runId: 'run-1', itemId: 'read', title: 'fileRead',
+    });
+    clock.mockReturnValue(15_000);
+    const finished = applyCodexEventToConversation(started, {
+      type, runId: 'run-1', itemId: 'read', raw: { item: { durationMs: 125 } },
+    });
+    const restored = JSON.parse(JSON.stringify(finished)) as Conversation;
+    expect(restored.messages[0].blocks[0]).toMatchObject({
+      startedAt: 10_000, finishedAt: 15_000, durationMs: 125,
+      status: type === 'tool_completed' ? 'completed' : 'failed',
+    });
+  });
+
   it('merges streamed previews without losing admission metadata and clears them at idle', () => {
     const event = { type: 'activity' as const, title: 'gateway', runId: 'run-1' };
     const running = applyCodexEventToConversation(baseConversation(), { ...event, raw: { status: {
@@ -173,6 +189,39 @@ describe('applyCodexEventToConversation', () => {
     }]);
     expect(failed.status).toBe('error');
     expect(failed.runActivity).toBeUndefined();
+  });
+
+  it.each([
+    { message: 'unexpected status 413 Payload Too Large: Failed to buffer the request body: length limit exceeded, request id: test-request' },
+    { message: '请求失败', raw: { error: { additionalDetails: '{"error":{"code":"request_body_too_large","limit_bytes":20971520}}' } } },
+  ])('explains oversized model requests and keeps completed file work', (error) => {
+    const written = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_completed', runId: 'run-1', itemId: 'pdf', title: 'commandExecution',
+      text: 'pages 10 bytes 1954411',
+    });
+    const failed = applyCodexEventToConversation(written, {
+      type: 'error', runId: 'run-1', ...error,
+    });
+    const blocks = failed.messages[0].blocks;
+    const errorBlock = blocks[blocks.length - 1];
+    expect(failed.messages[0].blocks.slice(0, -1)).toEqual(written.messages[0].blocks);
+    expect(errorBlock).toMatchObject({
+      type: 'error',
+      content: expect.stringContaining('模型请求过大（HTTP 413）'),
+    });
+    if (errorBlock.type !== 'error') throw new Error('Expected an error block');
+    expect(errorBlock?.content).toContain('已生成的本地文件仍可打开或打印');
+    expect(errorBlock?.content).toContain(error.message);
+    if (error.raw) expect(errorBlock?.content).toContain(error.raw.error.additionalDetails);
+    expect(failed.status).toBe('error');
+    expect(failed.runActivity).toBeUndefined();
+  });
+
+  it('does not classify an unrelated error containing 413 as a body limit', () => {
+    const failed = applyCodexEventToConversation(baseConversation(), {
+      type: 'error', runId: 'run-1', message: 'Could not read page 413',
+    });
+    expect(failed.messages[0].blocks).toEqual([{ type: 'error', content: 'Could not read page 413' }]);
   });
 
   it('stores the thread id for resume', () => {

@@ -46,17 +46,17 @@ export function ReportBrandingSettings() {
   const disabled = loading || busy || loadFailed;
   return (
     <div className="report-branding-settings">
-      <p className="report-branding-description">设置报告封面、署名和页脚使用的客户品牌。名称或 Logo 留空时，对应部分使用元流涌现默认值。</p>
+      <p className="report-branding-description">报告顶部仅显示放大的品牌 Logo，品牌名称用于署名和页脚。可上传自己的 Logo；名称或 Logo 留空时，对应部分使用元流涌现默认值。</p>
       <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <fieldset disabled={disabled}>
-          <label className="report-branding-field" htmlFor="report-brand-name">客户名称
+          <label className="report-branding-field" htmlFor="report-brand-name">品牌名称
             <input id="report-brand-name" className="settings-input" maxLength={60} value={draft.name} placeholder={DEFAULT_REPORT_NAME}
               onChange={(event) => { setDraft({ ...draft, name: event.target.value }); setNotice(''); }} />
           </label>
           <div className="report-branding-field">
-            <span>客户 Logo</span>
+            <span>品牌 Logo</span>
             <div className="report-branding-actions">
-              <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择客户 Logo" hidden
+              <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择品牌 Logo" hidden
                 onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file); }} />
               <button type="button" className="settings-btn" onClick={() => fileInput.current?.click()}>上传 Logo</button>
               {draft.logoDataUrl && <button type="button" className="settings-btn" onClick={() => { setDraft({ ...draft, logoDataUrl: null }); setNotice(''); }}>移除 Logo</button>}
@@ -65,7 +65,7 @@ export function ReportBrandingSettings() {
           </div>
           <div className="report-branding-preview" aria-label="报告品牌预览">
             <span className="report-branding-hint">报告品牌预览</span>
-            <div className="report-branding-lockup"><img src={draft.logoDataUrl || DEFAULT_REPORT_LOGO} alt={`${name} Logo`} /><strong>{name}</strong></div>
+            <div className="report-branding-lockup"><img src={draft.logoDataUrl || DEFAULT_REPORT_LOGO} alt={`${name} Logo`} /></div>
             <div className="report-branding-preview-title">每日主题研究报告</div>
             <span className="report-branding-hint">{name} · 主题策略与市场研究</span>
           </div>

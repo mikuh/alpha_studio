@@ -141,6 +141,7 @@ Structure rules:
 - Keep every `section.page` and its bottom `.footer` (page numbers) intact — the validator counts them. Standard daily report = 8 pages only when content fits cleanly; use 9-10 pages when market dashboard, overnight/global maps, continuity, sources, or role tables would otherwise overflow.
 - Keep the per-page header (`.page-head` with `.eyebrow` + `.page-kicker`) and wrap page content in `.page-body`. Footer stays pinned at the bottom of each page.
 - Every page footer must include the configured customer name (default: 元流涌现) as the text brand lock (`.footer-brand`) and a compact numeric page mark such as `1 / 8`. Do not put the logo image in the footer; keep the logo on the cover so footer alignment remains clean while copied pages remain visibly attributable.
+- The cover header uses one large logo only, without a separate customer-name label. Keep the logo inside a 60 mm × 24 mm area, left aligned and proportionally contained; retain the full image, including any lettering already present in it.
 - Separate cover page; one A4 page per `section.page`.
 - Use compact print styles (`compact-page`) for the source/disclaimer page and for dense execution/risk tables that have been checked by the validator.
 - Keep the report business-like: no decorative gradients, oversized empty hero areas, warm/gold-dominant color blocks, or marketing copy. Use tables, metric grids, and callouts to organize decisions and evidence.

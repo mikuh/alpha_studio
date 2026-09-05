@@ -251,7 +251,11 @@ function codexErrorMessage(event: CodexChatEvent): string {
   const raw = asRecord(event.raw);
   const error = asRecord(raw?.error) ?? raw;
   const details = typeof error?.additionalDetails === 'string' ? error.additionalDetails.trim() : '';
-  return details && !message.includes(details) ? `${message}\n${details}` : message;
+  const diagnostic = details && !message.includes(details) ? `${message}\n${details}` : message;
+  if (/\b(?:status[:\s]*|http\s+)413\b|\b413\s+payload\b|payload too large|request body too large|request_body_too_large/i.test(diagnostic)) {
+    return `模型请求过大（HTTP 413），服务端拒绝继续处理。可以减少附加图片，或在新对话中引用已有文件继续。已生成的本地文件仍可打开或打印。\n${diagnostic}`;
+  }
+  return diagnostic;
 }
 
 function tokenUsageFromEvent(event: CodexChatEvent, updatedAt: number): CodexTokenUsage | null {

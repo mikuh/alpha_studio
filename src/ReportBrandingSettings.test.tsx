@@ -19,13 +19,13 @@ describe('report branding settings', () => {
     const view = render(<ReportBrandingSettings />);
     await waitFor(() => expect(screen.getByRole('button', { name: '保存品牌设置' })).toBeEnabled());
     expect(screen.getByRole('img', { name: '元流涌现 Logo' })).toHaveAttribute('src', '/neostream-logo.png');
-    await user.type(screen.getByLabelText('客户名称'), '  客户研究  ');
+    await user.type(screen.getByLabelText('品牌名称'), '  客户研究  ');
     expect(screen.getByRole('img', { name: '客户研究 Logo' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '保存品牌设置' }));
     expect(await screen.findByRole('status')).toHaveTextContent('已保存');
     view.unmount();
     render(<ReportBrandingSettings />);
-    await waitFor(() => expect(screen.getByLabelText('客户名称')).toHaveValue('客户研究'));
+    await waitFor(() => expect(screen.getByLabelText('品牌名称')).toHaveValue('客户研究'));
     await user.click(screen.getByRole('button', { name: '恢复默认' }));
     await user.click(screen.getByRole('button', { name: '保存品牌设置' }));
     expect(await loadReportBranding()).toEqual({ name: '', logoDataUrl: null });
@@ -46,7 +46,7 @@ describe('report branding settings', () => {
     await expect(readReportLogo(new File([new Uint8Array(2 * 1024 * 1024 + 1)], 'large.png', { type: 'image/png' }))).rejects.toThrow('2 MB');
     render(<ReportBrandingSettings />);
     await waitFor(() => expect(screen.getByRole('button', { name: '保存品牌设置' })).toBeEnabled());
-    fireEvent.change(screen.getByLabelText('选择客户 Logo'), { target: { files: [new File(['text'], 'logo.txt', { type: 'text/plain' })] } });
+    fireEvent.change(screen.getByLabelText('选择品牌 Logo'), { target: { files: [new File(['text'], 'logo.txt', { type: 'text/plain' })] } });
     expect(await screen.findByRole('alert')).toHaveTextContent('PNG');
     expect(screen.getByRole('img', { name: '元流涌现 Logo' })).toBeInTheDocument();
   });
@@ -56,7 +56,7 @@ describe('report branding settings', () => {
     vi.mocked(invoke).mockResolvedValueOnce({ name: '客户研究', logoDataUrl: null });
     const user = userEvent.setup();
     render(<ReportBrandingSettings />);
-    await waitFor(() => expect(screen.getByLabelText('客户名称')).toHaveValue('客户研究'));
+    await waitFor(() => expect(screen.getByLabelText('品牌名称')).toHaveValue('客户研究'));
     vi.mocked(invoke).mockRejectedValueOnce(new Error('磁盘不可写'));
     await user.click(screen.getByRole('button', { name: '保存品牌设置' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('磁盘不可写');

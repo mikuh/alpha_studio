@@ -9,6 +9,134 @@ use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn gateway_accepts_report_history_with_preview_images_above_two_mib() {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
+        .unwrap();
+    let app = build_router(AppState::new(test_config(), pool, None));
+    let body = serde_json::json!({
+        "model": "test-model",
+        "input": [{ "role": "user", "content": [
+            { "type": "input_text", "text": "报告历史".repeat(100_000) },
+            { "type": "input_image", "image_url": format!("data:image/png;base64,{}", "A".repeat(1024 * 1024)) }
+        ] }]
+    }).to_string();
+    assert!(body.len() > 2 * 1024 * 1024);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // No credentials: reaching auth proves extraction succeeded, without a
+    // database connection, upstream model call, or inference charge.
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(response.headers().contains_key("x-request-id"));
+}
+
+#[tokio::test]
+async fn gateway_body_limit_is_bounded_for_fixed_and_streamed_requests() {
+    const LIMIT: usize = 20 * 1024 * 1024;
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
+        .unwrap();
+    let app = build_router(AppState::new(test_config(), pool, None));
+    for streamed in [false, true] {
+        for extra in [0, 1] {
+            let mut payload = format!("{{\"input\":\"{}\"}}", "x".repeat(LIMIT + extra - 12));
+            assert_eq!(payload.len(), LIMIT + extra);
+            let body = if streamed {
+                let tail = payload.split_off(LIMIT / 2);
+                Body::from_stream(futures_util::stream::iter([
+                    Ok::<_, std::convert::Infallible>(bytes::Bytes::from(payload)),
+                    Ok(bytes::Bytes::from(tail)),
+                ]))
+            } else {
+                Body::from(payload)
+            };
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/responses")
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let expected = if extra == 0 {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::PAYLOAD_TOO_LARGE
+            };
+            assert_eq!(
+                response.status(),
+                expected,
+                "streamed={streamed}, extra={extra}"
+            );
+            assert!(response.headers().contains_key("x-request-id"));
+            if extra > 0 {
+                let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                    .await
+                    .unwrap();
+                let error: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(error["error"]["code"], "request_body_too_large");
+                assert_eq!(error["error"]["limit_bytes"], LIMIT);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn gateway_body_limit_does_not_relax_other_routes_or_json_validation() {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
+        .unwrap();
+    let app = build_router(AppState::new(test_config(), pool, None));
+    for (path, content_type, payload, status) in [
+        (
+            "/api/auth/login",
+            "application/json",
+            format!("{{\"username\":\"{}\"}}", "x".repeat(2 * 1024 * 1024)),
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ),
+        (
+            "/v1/responses",
+            "application/json",
+            "{".to_string(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/v1/responses",
+            "text/plain",
+            "{}".to_string(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", content_type)
+                    .body(Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{path}, {content_type}");
+    }
+}
+
+#[tokio::test]
 async fn health_and_metrics_expose_request_correlation_without_customer_data() {
     let pool = PgPoolOptions::new()
         .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")

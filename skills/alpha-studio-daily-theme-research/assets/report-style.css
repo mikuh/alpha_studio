@@ -148,16 +148,15 @@ a { color: var(--teal); text-decoration: none; border-bottom: 1px solid rgba(31,
 .brand {
   display: flex;
   align-items: center;
-  gap: 3.4mm;
-  color: var(--ink);
-  font-size: 11.5pt;
-  font-weight: 800;
-  letter-spacing: .01em;
+  flex: 0 1 60mm;
+  min-width: 0;
 }
 .brand-mark {
-  width: 13mm; height: 13mm;
+  width: 60mm; height: 24mm;
+  max-width: 100%;
   flex-shrink: 0;
   object-fit: contain;
+  object-position: left center;
   display: block;
 }
 .doc-meta {
@@ -496,7 +495,6 @@ tbody td:first-child { color: var(--ink); font-weight: 700; }
   overflow-wrap: anywhere;
   line-height: 1.25;
 }
-.brand > span { max-width: 85mm; overflow-wrap: anywhere; }
 .signature [data-report-brand="name"] { overflow-wrap: anywhere; }
 .footer-brand em {
   color: var(--faint);

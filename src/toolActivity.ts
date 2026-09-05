@@ -18,6 +18,9 @@ export function toolEventMetadata(event: CodexChatEvent): Partial<ToolBlock> {
   const item = record(raw?.item) ?? raw;
   const command = typeof item?.command === 'string' ? item.command : undefined;
   const cwd = typeof item?.cwd === 'string' ? item.cwd : undefined;
+  const durationMs = item?.durationMs;
+  const hasDuration = (event.type === 'tool_completed' || event.type === 'tool_failed')
+    && typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs >= 0;
   let changes = item?.changes;
   if (!Array.isArray(changes) && /file.?change|apply.?patch/i.test(event.title ?? '')) {
     try { changes = JSON.parse(event.text ?? ''); } catch { /* Legacy patch text is rendered separately. */ }
@@ -43,6 +46,7 @@ export function toolEventMetadata(event: CodexChatEvent): Partial<ToolBlock> {
   return {
     ...(command ? { command } : {}),
     ...(cwd ? { cwd } : {}),
+    ...(hasDuration ? { durationMs } : {}),
     ...(Array.isArray(changes) ? { fileChanges } : {}),
   };
 }

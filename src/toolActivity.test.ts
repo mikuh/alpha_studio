@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { isFileWriteCommand, toolEventMetadata } from './toolActivity';
 
 describe('file activity metadata', () => {
+  it.each([undefined, null, -1, NaN, Infinity, '125'])('ignores invalid native durations: %s', durationMs => {
+    const result = toolEventMetadata({ type: 'tool_completed', runId: 'r', raw: { item: { durationMs } } });
+    expect(result).not.toHaveProperty('durationMs');
+  });
+
   it('preserves all native file names and hunk statistics before truncating long diffs', () => {
     const diff = `@@ -1 +1 @@\n-old\n${'+new\n'.repeat(5000)}`;
     const result = toolEventMetadata({ type: 'tool_completed', runId: 'r', title: 'fileChange', raw: { item: { changes: [

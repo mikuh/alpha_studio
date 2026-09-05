@@ -14,6 +14,7 @@ DEFAULT_NAME = "元流涌现"
 DEFAULT_LOGO = Path(__file__).resolve().parent.parent / "assets" / "neostream-logo.png"
 NAME_PATTERN = r'(<(?P<tag>[a-z][a-z0-9]*)\b[^>]*\bdata-report-brand=[\"\']name[\"\'][^>]*>).*?(</(?P=tag)\s*>)'
 LOGO_PATTERN = r'<img\b[^>]*\bdata-report-brand=[\"\']logo[\"\'][^>]*>'
+BRAND_AREA_PATTERN = r'(<div\b(?=[^>]*\bclass\s*=\s*[\"\'](?:[^\"\']*\s)?brand(?:\s[^\"\']*)?[\"\'])[^>]*>)(.*?)(</div\s*>)'
 
 
 def read_branding(path: Path | None = None) -> tuple[str, Path]:
@@ -40,6 +41,12 @@ def apply_branding(path: Path, branding_path: Path | None = None) -> None:
         raise ValueError("Report logo must be PNG, JPG or WebP")
     data_url = f"data:{mime};base64,{base64.b64encode(logo.read_bytes()).decode('ascii')}"
     text = path.read_text(encoding="utf-8")
+    # Reports adapted from the previous template may still have a name beside
+    # the logo. Keep only the image in that area; signatures/footers keep names.
+    def logo_only(match: re.Match) -> str:
+        logo_tag = re.search(LOGO_PATTERN, match.group(2), flags=re.I)
+        return match.group(1) + logo_tag.group() + match.group(3) if logo_tag else match.group()
+    text = re.sub(BRAND_AREA_PATTERN, logo_only, text, flags=re.S | re.I)
     text, names = re.subn(NAME_PATTERN, lambda match: match.group(1) + html.escape(name) + match.group(3), text, flags=re.S | re.I)
     text, logos = re.subn(LOGO_PATTERN, lambda match: set_attribute(set_attribute(match.group(), "src", data_url), "alt", name + " Logo"), text, flags=re.I)
     if not names or not logos:

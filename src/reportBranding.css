@@ -6,7 +6,6 @@
 .report-branding-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .report-branding-hint { color: #687589; font-size: 12px; font-weight: 400; }
 .report-branding-preview { background: #fff; color: #182334; border: 1px solid #dce2e9; border-top: 3px solid #244766; padding: 24px; margin: 0 0 24px; border-radius: 8px; }
-.report-branding-lockup { display: flex; align-items: center; gap: 16px; margin: 24px 0; }
-.report-branding-lockup img { width: 64px; height: 64px; object-fit: contain; flex-shrink: 0; }
-.report-branding-lockup strong { overflow-wrap: anywhere; font-size: 20px; }
+.report-branding-lockup { display: flex; align-items: center; margin: 24px 0; }
+.report-branding-lockup img { width: 240px; height: 96px; max-width: 100%; object-fit: contain; object-position: left center; }
 .report-branding-preview-title { font-size: 25px; font-weight: 600; margin-bottom: 12px; }

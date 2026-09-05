@@ -19,6 +19,14 @@ Codex CLI -> POST /v1/responses -> Alpha Studio adapter -> 上游模型服务
 
 成功响应会统一转换为 Responses 对象；Codex 请求流式响应时，Responses 上游的 SSE 会按网络块立即透传，Chat Completions、Anthropic Messages 和 Gemini 原生流会边接收边转换为带 `sequence_number` 的 Responses SSE，不再等待完整生成结束。流结束后网关从最终 usage 事件异步完成计费结算。Codex 的 free-form custom tool 会在上游临时包装成带 `input` 字段的 function/tool，再按原始工具表恢复成 `custom_tool_call` 和 `response.custom_tool_call_input.*` 事件。包含点号、命名空间或超长名称的工具会生成稳定的上游安全名称，响应时再恢复原名。上游错误也会归一化为 `error.message/type/code/provider/upstream_status`，避免 Codex 因供应商错误结构不同而只显示解析失败。
 
+## 请求大小限制
+
+`POST /v1/responses` 的 JSON 请求体上限为 **20 MiB（20,971,520 字节）**，覆盖报告任务累积的对话、工具结果及 base64 预览图。该限制只应用于模型接口；普通 API 保留 Axum 默认的 2 MiB，Skill 上传保留自己的限制。Caddy 的 25 MB 外层限制无需调整，20 MiB 以内的模型请求可以到达 API。
+
+超过上限返回 HTTP 413，JSON 中的 `error.code` 为 `request_body_too_large`，并包含 `limit_bytes`。桌面端会说明模型请求过大、提示引用已有文件继续，并保留原始错误及请求 ID。此错误发生在本次上游推理和计费之前；此前已经生成的 HTML/PDF 不受影响，可以直接打开或打印。字节上限独立于模型的 token 上下文窗口，自动压缩历史不能替代合理的请求体容量。
+
+该容量调整需部署后端后生效；中文错误提示需更新桌面客户端。
+
 ## 添加供应商
 
 1. 进入管理后台的“模型网关”。

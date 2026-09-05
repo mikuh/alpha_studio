@@ -171,7 +171,6 @@ import {
   renameProjectFolder,
   revealPath,
   revokeCodexAuthorization,
-  fetchCodexSubscriptionUsage,
   subscribeTerminalEvents,
   syncCoworkerAgents,
   syncManagedSkills,
@@ -180,9 +179,6 @@ import {
   terminalStop,
   terminalWrite,
   updateCodexCli,
-  type CodexRateLimitSnapshot,
-  type CodexRateLimitWindow,
-  type CodexSubscriptionUsage,
   type BrowserWebviewEvent,
   type LocalDirectoryEntry,
 } from './codexBridge';
@@ -325,7 +321,6 @@ import type {
   ReviewRequest,
   SelectedTextContext,
   SkillSelection,
-  SubscriptionModelUsage,
 } from './types';
 
 const BrowserPdfViewer = lazy(() => import('./BrowserPdfViewer').then((module) => ({ default: module.BrowserPdfViewer })));
@@ -8244,11 +8239,27 @@ function MarkdownText({ content, streaming, variant = 'assistant' }: { content: 
   );
 }
 
+function toolDurationText(block: Extract<MessageBlock, { type: 'tool' }>): string | null {
+  if (block.status === 'in_progress' || block.completionUnconfirmed) return null;
+  // Prefer the runtime's measurement over client-side event delivery times.
+  const durationMs = block.durationMs ?? (
+    typeof block.startedAt === 'number' && Number.isFinite(block.startedAt)
+      && typeof block.finishedAt === 'number' && Number.isFinite(block.finishedAt)
+      ? block.finishedAt - block.startedAt : NaN
+  );
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return null;
+  if (durationMs < 1) return '<1ms';
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+  if (durationMs < 60_000) return `${Number((durationMs / 1000).toFixed(1))}s`;
+  return formatThinkingDuration(durationMs / 1000).replace('小时', 'h').replace('分', 'm').replace('秒', 's');
+}
+
 function ToolBlockView({ block, groupedIndex }: { block: Extract<MessageBlock, { type: 'tool' }>; groupedIndex?: number }) {
   const writeCommand = block.command || (/command|exec|shell|fileRead/i.test(block.title) ? block.input : '') || '';
   const tool = toolPresentation(isFileWriteCommand(writeCommand) ? 'fileWrite' : block.title);
   const running = block.status === 'in_progress';
   const failed = block.status === 'failed';
+  const duration = toolDurationText(block);
   const verb = block.completionUnconfirmed ? '写入结果未确认' : running ? tool.running : failed ? tool.failed : tool.done;
   const inferredTarget = inferredSpawnAgentToolTarget(block);
   const editDetails = tool.kind === 'file-edit' ? fileEditDetails(block) : null;
@@ -8283,7 +8294,7 @@ function ToolBlockView({ block, groupedIndex }: { block: Extract<MessageBlock, {
             ? <CommandStatus status={block.status} />
             : <span className="event-verb">{groupedIndex === undefined ? verb : `搜索 ${String(groupedIndex + 1).padStart(2, '0')}`}</span>}
           <span className={`event-target ${targetIsRawInput ? 'mono' : ''}`} title={targetTitle || undefined}>{target}</span>
-          {block.finishedAt && block.startedAt && <span className="event-duration">{formatThinkingDuration(Math.max(0, Math.floor((block.finishedAt - block.startedAt) / 1000)))}</span>}
+          {duration && <span className="event-duration">{duration}</span>}
           {(running || failed) && <span className="event-trailing">
             {running ? <Loader2 size={12} className="spin" /> : failed ? <AlertCircle size={12} className="event-fail" /> : null}
           </span>}
@@ -13508,22 +13519,6 @@ function CodexLoginButton({ compact = false, stateButton = false }: { compact?: 
   );
 }
 
-function CodexAuthorizationBadge({ status }: { status: 'ready' | 'checking' | 'missing' | 'attention' }) {
-  const icon = status === 'ready'
-    ? <CheckCheck size={13} />
-    : status === 'checking'
-      ? <Loader2 size={13} className="spin" />
-      : <ShieldQuestion size={13} />;
-  const label = status === 'ready'
-    ? '已授权'
-    : status === 'checking'
-      ? '检测中'
-      : status === 'missing'
-        ? '未安装'
-        : '未授权';
-  return <span className={`settings-state-pill ${status}`}>{icon}<span>{label}</span></span>;
-}
-
 function CodexRevokeButton({ compact = false }: { compact?: boolean }) {
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
   const [isRevoking, setIsRevoking] = useState(false);
@@ -13657,24 +13652,10 @@ function DeviceManagement({
 function ProfileSettings() {
   const session = useChatStore((state) => state.clientLicenseSession);
   const setClientLicenseSession = useChatStore((state) => state.setClientLicenseSession);
-  const codexStatus = useChatStore((state) => state.codexStatus);
-  const isCheckingCodex = useChatStore((state) => state.isCheckingCodex);
   const [deviceSummary, setDeviceSummary] = useState<ClientDeviceSummary | null>(null);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [devicesError, setDevicesError] = useState('');
   const [revokingDeviceId, setRevokingDeviceId] = useState<string | null>(null);
-  const codexAccount = session?.codexAccounts[0] ?? null;
-  const codexSubscriptionEnabled = Boolean(session?.tenant.codexSubscriptionEnabled);
-  const codexCliAuthorized = Boolean(codexStatus?.installed && codexStatus.loggedIn);
-  const codexAuthorizationStatus = codexCliAuthorized
-    ? 'ready'
-    : isCheckingCodex || !codexStatus
-      ? 'checking'
-      : codexStatus.installed
-        ? 'attention'
-        : 'missing';
-  const showCodexLoginButton = codexSubscriptionEnabled && Boolean(codexAccount) && Boolean(codexStatus?.installed) && !codexCliAuthorized;
-  const showCodexRevokeButton = codexSubscriptionEnabled && codexCliAuthorized;
   const profileTitle = session?.tenant.name || 'Alpha Studio';
   const internalUserEmail = isInternalLicenseEmail(session?.user.email);
   const profileUserName = isInternalLicenseUserName(session?.user.name)
@@ -13685,13 +13666,6 @@ function ProfileSettings() {
       ? '本机授权'
       : `${profileUserName} · ${session.user.email}`
     : '@local · Noncommercial';
-  const codexAvailabilityLabel = codexSubscriptionEnabled ? '未分配账号' : '未启用';
-  const codexPlanLabel = session?.tenant.codexSubscriptionPlan || codexAccount?.plan || '已启用';
-  const codexDescription = codexSubscriptionEnabled
-    ? codexCliAuthorized
-      ? '本地 GPT 已完成设备授权。'
-      : codexAccount?.loginHint || (codexAccount ? `订阅计划：${codexPlanLabel}` : '管理后台尚未为当前客户分配 GPT 账号。')
-    : '当前客户使用 API 网关模式，用量会计入客户额度。';
   const refreshDevices = useCallback(async () => {
     if (!session) return;
     setDevicesLoading(true);
@@ -13758,7 +13732,6 @@ function ProfileSettings() {
             <strong>{deviceSummary?.activeDevices ?? (devicesLoading ? '—' : session ? 1 : 0)} / {deviceSummary?.maxDevices ?? session?.tenant.maxDevices ?? '-'}</strong>
             <em>已安装设备</em>
           </span>
-          <span><strong>{codexSubscriptionEnabled ? 'GPT 订阅' : 'API 网关'}</strong><em>运行模式</em></span>
           <span><strong className={session ? 'profile-status-active' : 'profile-status-inactive'}>{session ? '已激活' : '未激活'}</strong><em>客户端状态</em></span>
         </div>
       </div>
@@ -13771,16 +13744,6 @@ function ProfileSettings() {
           description={internalUserEmail ? '当前设备使用公司授权激活。' : session?.user.email || '当前设备使用公司授权激活。'}
         >
           <span className="settings-static">{profileUserName}</span>
-        </SettingsRow>
-        <SettingsRow title="GPT 订阅账号" description={codexDescription}>
-          <span className="settings-action-stack">
-            {(!codexSubscriptionEnabled || !codexAccount) && (
-              <span className="settings-static">{codexAvailabilityLabel}</span>
-            )}
-            {codexSubscriptionEnabled && !showCodexRevokeButton && !showCodexLoginButton && <CodexAuthorizationBadge status={codexAuthorizationStatus} />}
-            {showCodexLoginButton && <CodexLoginButton compact stateButton />}
-            {showCodexRevokeButton && <CodexRevokeButton compact />}
-          </span>
         </SettingsRow>
         <SettingsRow title="设备授权" description={session ? `设备 ${session.device.id}` : '无有效设备授权。'}>
           <span className="settings-static">{formatLicenseDate(session?.device.leaseExpiresAt)}</span>
@@ -13814,55 +13777,31 @@ function KeyboardSettings() {
 
 function UsageSettings() {
   const session = useChatStore((state) => state.clientLicenseSession);
-  const subscriptionUsage = useChatStore((state) => state.subscriptionUsage);
   const latestMonth = useMemo(() => billingMonthValue(new Date()), []);
   const latestYear = latestMonth.slice(0, 4);
   const [periodKind, setPeriodKind] = useState<BillingPeriodKind>('month');
   const [selectedMonth, setSelectedMonth] = useState(latestMonth);
   const [selectedYear, setSelectedYear] = useState(latestYear);
   const [summary, setSummary] = useState<ClientBillingSummary | null>(null);
-  const [codexUsage, setCodexUsage] = useState<CodexSubscriptionUsage | null>(null);
   const [loading, setLoading] = useState(false);
-  const [codexUsageLoading, setCodexUsageLoading] = useState(false);
   const [error, setError] = useState('');
-  const [codexUsageError, setCodexUsageError] = useState('');
   const selectedPeriodValue = periodKind === 'month' ? selectedMonth : selectedYear;
 
-  const refresh = useCallback(async (ledgerPage = 1, includeCodexUsage = true) => {
+  const refresh = useCallback(async (ledgerPage = 1) => {
     if (!session) return;
     setLoading(true);
     setError('');
-    if (includeCodexUsage) {
-      setCodexUsageLoading(true);
-      setCodexUsageError('');
-    }
-
-    const shouldLoadCodexUsage = Boolean(session.tenant.codexSubscriptionEnabled || session.codexAccounts.length > 0);
-    const [billingResult, codexResult] = await Promise.allSettled([
-      fetchClientBillingSummary(session, {
+    try {
+      setSummary(await fetchClientBillingSummary(session, {
         page: ledgerPage,
         pageSize: 8,
         period: { kind: periodKind, value: selectedPeriodValue },
-      }),
-      includeCodexUsage
-        ? shouldLoadCodexUsage ? fetchCodexSubscriptionUsage() : Promise.resolve(null)
-        : Promise.resolve(undefined),
-    ]);
-
-    if (billingResult.status === 'fulfilled') {
-      setSummary(billingResult.value);
-    } else {
-      setError(stringifyError(billingResult.reason));
+      }));
+    } catch (billingError) {
+      setError(stringifyError(billingError));
+    } finally {
+      setLoading(false);
     }
-
-    if (codexResult.status === 'fulfilled' && codexResult.value !== undefined) {
-      setCodexUsage(codexResult.value);
-    } else if (codexResult.status === 'rejected') {
-      setCodexUsageError(stringifyError(codexResult.reason));
-    }
-
-    setLoading(false);
-    if (includeCodexUsage) setCodexUsageLoading(false);
   }, [periodKind, selectedPeriodValue, session]);
 
   useEffect(() => {
@@ -13870,7 +13809,6 @@ function UsageSettings() {
   }, [refresh]);
 
   const tenant = summary?.tenant ?? session?.tenant;
-  const billingMode = tenant?.billingMode || defaultBillingModeForSession(session);
   const periodUsage = summary?.usage?.selectedPeriod ?? summary?.usage?.currentMonth ?? EMPTY_BILLING_USAGE;
   const allTime = summary?.usage?.allTime ?? EMPTY_BILLING_USAGE;
   const models = summary?.usage?.models ?? [];
@@ -13885,13 +13823,7 @@ function UsageSettings() {
         : summary.period.currentMonthStart.slice(0, 7)
       : selectedPeriodValue);
   const periodLabel = formatBillingPeriodLabel(displayedPeriodKind, displayedPeriodValue);
-  const codexSubscriptionEnabled = Boolean(tenant?.codexSubscriptionEnabled);
-  const apiSubscriptionEnabled = Boolean(tenant?.subscriptionPlan);
   const canSelectNextPeriod = selectedPeriodValue < (periodKind === 'month' ? latestMonth : latestYear);
-  const modelRows = useMemo<BillingModelTableRow[]>(() => [
-    ...subscriptionModelsForPeriod(subscriptionUsage, displayedPeriodKind, displayedPeriodValue),
-    ...models.map((model) => ({ ...model, billingKind: 'metered' as const })),
-  ], [displayedPeriodKind, displayedPeriodValue, models, subscriptionUsage]);
 
   const changePeriodKind = (nextKind: BillingPeriodKind) => {
     if (nextKind === periodKind) return;
@@ -13970,29 +13902,14 @@ function UsageSettings() {
       </section>
 
       <SettingsGroup>
-        <SettingsRow title="计费模式" description="订阅模型按席位或套餐授权，API 网关按真实 token 用量结算。">
-          <span className="settings-static">{formatBillingMode(billingMode)}</span>
+        <SettingsRow title="计费模式" description="按实际用量结算，费用从账户余额中扣除。">
+          <span className="settings-static">按量付费</span>
         </SettingsRow>
         <SettingsRow title="组织" description="当前设备激活的计费主体。">
           <span className="settings-static">{tenant?.name || '未激活'}</span>
         </SettingsRow>
         <SettingsRow title="活跃设备" description="该组织当前处于激活状态的设备数量。">
           <span className="settings-static">{summary?.activeDevices ?? tenant?.maxDevices ?? 0} / {tenant?.maxDevices ?? '-'}</span>
-        </SettingsRow>
-      </SettingsGroup>
-
-      <div className="settings-subtitle">订阅</div>
-      <SettingsGroup>
-        <SettingsRow title="GPT 订阅" description={codexSubscriptionEnabled ? `套餐 ${formatPlanLabel(tenant?.codexSubscriptionPlan)} · ${formatExpiryLabel(tenant?.codexSubscriptionExpiresAt)}` : '未启用 GPT 订阅模型。'}>
-          <BillingStatusPill enabled={codexSubscriptionEnabled} label={codexSubscriptionEnabled ? '已启用' : '未启用'} />
-        </SettingsRow>
-        {codexSubscriptionEnabled && (
-          <SettingsRow title="剩余用量" description={codexUsageDescription(codexUsage, codexUsageLoading, codexUsageError)}>
-            <CodexSubscriptionUsageView usage={codexUsage} loading={codexUsageLoading} error={codexUsageError} />
-          </SettingsRow>
-        )}
-        <SettingsRow title="API 套餐" description={apiSubscriptionEnabled ? `${formatPlanLabel(tenant?.subscriptionPlan)} · ${formatExpiryLabel(tenant?.subscriptionExpiresAt)}` : '未配置固定 API 套餐，API 网关按量扣费。'}>
-          <BillingStatusPill enabled={apiSubscriptionEnabled} label={apiSubscriptionEnabled ? '已订阅' : '按量'} />
         </SettingsRow>
       </SettingsGroup>
 
@@ -14009,13 +13926,13 @@ function UsageSettings() {
         </SettingsRow>
       </SettingsGroup>
 
-      <BillingModelTable models={modelRows} periodLabel={periodLabel} />
+      <BillingModelTable models={models} periodLabel={periodLabel} />
       <BillingLedgerList
         entries={recentLedger}
         pagination={ledgerPagination}
         loading={loading}
         periodLabel={periodLabel}
-        onPageChange={(page) => void refresh(page, false)}
+        onPageChange={(page) => void refresh(page)}
       />
     </>
   );
@@ -14043,82 +13960,7 @@ function BillingMetric({ label, value, meta, tone = 'default' }: { label: string
   );
 }
 
-function BillingStatusPill({ enabled, label }: { enabled: boolean; label: string }) {
-  return <span className={`billing-status-pill ${enabled ? 'active' : 'muted'}`}>{label}</span>;
-}
-
-function CodexSubscriptionUsageView({ usage, loading, error }: { usage: CodexSubscriptionUsage | null; loading: boolean; error: string }) {
-  const snapshot = codexRateLimitSnapshot(usage);
-  const rows = codexUsageRows(snapshot);
-
-  if (rows.length === 0) {
-    if (loading) {
-      return <span className="codex-usage-state"><Loader2 size={13} className="spin" />同步中</span>;
-    }
-    if (error) {
-      return <span className="codex-usage-state error"><AlertCircle size={13} />读取失败</span>;
-    }
-    return <span className="codex-usage-state muted">暂无数据</span>;
-  }
-
-  return (
-    <span className="codex-usage-windows">
-      {rows.map((row) => (
-        <span className="codex-usage-window" key={row.key}>
-          <strong>{row.label}</strong>
-          <em>{row.remainingPercent}%</em>
-          <small>{row.resetsAtLabel}</small>
-        </span>
-      ))}
-    </span>
-  );
-}
-
-interface BillingModelTableRow extends BillingModelUsage {
-  billingKind: 'included' | 'metered';
-}
-
-function subscriptionModelsForPeriod(
-  usage: SubscriptionModelUsage[],
-  kind: BillingPeriodKind,
-  value: string,
-): BillingModelTableRow[] {
-  const matching = usage.filter((model) => kind === 'month' ? model.month === value : model.month.startsWith(`${value}-`));
-  const totals = new Map<string, BillingModelTableRow>();
-  for (const model of matching) {
-    const existing = totals.get(model.modelId);
-    if (existing) {
-      existing.runCount += model.runCount;
-      existing.inputTokens += model.inputTokens;
-      existing.outputTokens += model.outputTokens;
-      existing.reasoningTokens += model.reasoningTokens;
-      existing.cachedTokens += model.cachedTokens;
-      existing.totalTokens += model.totalTokens;
-      if (Date.parse(existing.lastUsedAt || '') < model.lastUsedAt) {
-        existing.lastUsedAt = new Date(model.lastUsedAt).toISOString();
-        existing.label = model.label;
-      }
-      continue;
-    }
-    totals.set(model.modelId, {
-      modelId: model.modelId,
-      label: model.label,
-      runCount: model.runCount,
-      inputTokens: model.inputTokens,
-      outputTokens: model.outputTokens,
-      reasoningTokens: model.reasoningTokens,
-      cachedTokens: model.cachedTokens,
-      totalTokens: model.totalTokens,
-      costYuan: 0,
-      billableYuan: 0,
-      lastUsedAt: new Date(model.lastUsedAt).toISOString(),
-      billingKind: 'included',
-    });
-  }
-  return [...totals.values()].sort((left, right) => Date.parse(right.lastUsedAt || '') - Date.parse(left.lastUsedAt || ''));
-}
-
-function BillingModelTable({ models, periodLabel }: { models: BillingModelTableRow[]; periodLabel: string }) {
+function BillingModelTable({ models, periodLabel }: { models: BillingModelUsage[]; periodLabel: string }) {
   return (
     <section className="billing-table-section" aria-label="模型用量">
       <div className="billing-section-title">
@@ -14139,16 +13981,14 @@ function BillingModelTable({ models, periodLabel }: { models: BillingModelTableR
             </thead>
             <tbody>
               {models.map((model) => (
-                <tr key={`${model.billingKind}:${model.modelId}`}>
+                <tr key={model.modelId}>
                   <td>
                     <strong>{model.label || model.modelId}</strong>
                   </td>
                   <td>{formatWholeNumber(model.runCount)}</td>
                   <td title={formatUsageBreakdown(model)}>{formatWholeNumber(model.totalTokens)}</td>
                   <td>
-                    {model.billingKind === 'included'
-                      ? <span className="billing-cost-included" title="费用已包含在 GPT 订阅中">Included</span>
-                      : formatYuan(model.billableYuan)}
+                    {formatYuan(model.billableYuan)}
                   </td>
                 </tr>
               ))}
@@ -14158,76 +13998,6 @@ function BillingModelTable({ models, periodLabel }: { models: BillingModelTableR
       )}
     </section>
   );
-}
-
-function codexUsageDescription(usage: CodexSubscriptionUsage | null, loading: boolean, error: string): string {
-  if (loading && !usage) return '正在从 GPT 同步。';
-  if (error && !usage) return `GPT 读取失败：${error}`;
-  if (usage?.generatedAt) return `来自 GPT · 更新 ${formatLicenseDate(usage.generatedAt)}`;
-  return '来自 GPT。';
-}
-
-function codexRateLimitSnapshot(usage: CodexSubscriptionUsage | null): CodexRateLimitSnapshot | null {
-  if (!usage) return null;
-  const byId = usage.rateLimitsByLimitId || {};
-  return byId.codex
-    || Object.values(byId).find((entry) => entry?.limitId === 'codex')
-    || Object.values(byId).find((entry) => entry?.limitId?.startsWith('codex'))
-    || usage.rateLimits
-    || null;
-}
-
-function codexUsageRows(snapshot: CodexRateLimitSnapshot | null): Array<{ key: string; label: string; remainingPercent: number; resetsAtLabel: string }> {
-  if (!snapshot) return [];
-  return [
-    ['primary', snapshot.primary],
-    ['secondary', snapshot.secondary],
-  ].flatMap(([key, window]) => {
-    const row = codexUsageRow(key as string, window as CodexRateLimitWindow | null | undefined);
-    return row ? [row] : [];
-  });
-}
-
-function codexUsageRow(key: string, window: CodexRateLimitWindow | null | undefined): { key: string; label: string; remainingPercent: number; resetsAtLabel: string } | null {
-  const usedPercent = Number(window?.usedPercent);
-  if (!Number.isFinite(usedPercent)) return null;
-  return {
-    key,
-    label: formatCodexWindowDuration(window?.windowDurationMins),
-    remainingPercent: clampPercent(100 - usedPercent),
-    resetsAtLabel: formatCodexRateLimitReset(window?.resetsAt),
-  };
-}
-
-function formatCodexWindowDuration(minutes?: number | null): string {
-  const raw = Number(minutes);
-  const safe = Number.isFinite(raw) ? Math.max(0, Math.round(raw)) : 0;
-  if (safe === 300) return '5 小时';
-  if (safe === 10080) return '1 周';
-  if (safe > 0 && safe % 10080 === 0) return `${safe / 10080} 周`;
-  if (safe > 0 && safe % 1440 === 0) return `${safe / 1440} 天`;
-  if (safe > 0 && safe % 60 === 0) return `${safe / 60} 小时`;
-  return safe > 0 ? `${safe} 分钟` : '窗口';
-}
-
-function formatCodexRateLimitReset(value?: number | null): string {
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0) return '待同步';
-  const date = new Date(seconds * 1000);
-  if (Number.isNaN(date.getTime())) return '待同步';
-  const now = new Date();
-  if (date.toDateString() === now.toDateString()) {
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
-  }
-  if (date.getFullYear() === now.getFullYear()) {
-    return `${date.getMonth() + 1}月${date.getDate()}日`;
-  }
-  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
-}
-
-function clampPercent(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function BillingLedgerList({ entries, pagination, loading, periodLabel, onPageChange }: {
@@ -14270,37 +14040,6 @@ function BillingLedgerList({ entries, pagination, loading, periodLabel, onPageCh
       )}
     </section>
   );
-}
-
-function defaultBillingModeForSession(session: ClientLicenseSession | null): string {
-  const hasSubscription = Boolean(session?.tenant.codexSubscriptionEnabled || session?.tenant.subscriptionPlan);
-  const hasGatewayModels = Boolean(session?.models.some((model) => model.mode === 'gateway_api' && model.enabled));
-  if (hasSubscription && hasGatewayModels) return 'hybrid';
-  if (hasSubscription) return 'subscription';
-  return 'gateway_api';
-}
-
-function formatBillingMode(mode?: string | null): string {
-  if (mode === 'hybrid') return '订阅 + 按量';
-  if (mode === 'subscription') return '订阅';
-  if (mode === 'gateway_api') return '按量付费';
-  return mode || '未设置';
-}
-
-function formatPlanLabel(plan?: string | null): string {
-  if (!plan) return '未设置';
-  const labels: Record<string, string> = {
-    monthly: '月付',
-    yearly: '年付',
-    pro: '专业版',
-    team: '团队版',
-    enterprise: '企业版',
-  };
-  return labels[plan] || plan;
-}
-
-function formatExpiryLabel(value?: string | null): string {
-  return value ? `到期 ${formatLicenseDate(value)}` : '持续有效';
 }
 
 function formatUsageBreakdown(usage: BillingUsageTotals): string {

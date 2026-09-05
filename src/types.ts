@@ -39,6 +39,8 @@ export interface ToolBlock {
   fileChanges?: ToolFileChange[];
   startedAt?: number;
   finishedAt?: number;
+  /** Execution time reported by the tool runtime, in milliseconds. */
+  durationMs?: number;
   completionUnconfirmed?: boolean;
 }
 
