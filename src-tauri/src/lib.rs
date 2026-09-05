@@ -18,18 +18,24 @@ use tokio::io::{
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
+mod agent_network;
 mod builtin_skills;
+mod gateway_progress;
 mod keychain;
 mod local_store;
 mod managed_skills;
+mod report_branding;
 mod skill_codec;
+mod steering;
 
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
 const TERMINAL_EVENT: &str = "terminal-event";
 const BROWSER_WEBVIEW_EVENT: &str = "browser-webview-event";
 const CODEX_DEVICE_AUTHORIZATION_MARKER: &str = ".alpha-studio-device-authorized";
+const CODEX_INSTALLER_URL: &str = "https://chatgpt.com/codex/install.sh";
+const CODEX_INSTALLER_MAX_BYTES: usize = 2 * 1024 * 1024;
 #[cfg(target_os = "windows")]
 const CODEX_EXECUTABLE_NAME: &str = "codex.exe";
 #[cfg(not(target_os = "windows"))]
@@ -42,6 +48,7 @@ static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
 #[derive(Default)]
 struct CodexProcessState {
     children: Arc<Mutex<HashMap<String, Child>>>,
+    steering: Arc<Mutex<HashMap<String, steering::SteerSession>>>,
     // Run ids the user explicitly stopped. The driver checks this when its turn
     // ends so a user-initiated kill is reported as a single `stopped` event
     // rather than surfacing the torn-down stdio pipe as an `error`.
@@ -79,6 +86,15 @@ pub struct CodexLoginResult {
     codex_home: String,
 }
 
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexUpdateResult {
+    previous_version: String,
+    version: String,
+    path: String,
+    updated: bool,
+}
+
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexModelsRequest {
@@ -108,6 +124,7 @@ pub struct CodexModelCatalogItem {
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexChatRequest {
+    agent_data_relay: Option<agent_network::RelayConfig>,
     conversation_id: String,
     prompt: String,
     developer_instructions: Option<String>,
@@ -666,9 +683,119 @@ async fn codex_check(app: AppHandle) -> Result<CodexCheckResult, String> {
 }
 
 #[tauri::command]
+async fn codex_update(app: AppHandle) -> Result<CodexUpdateResult, String> {
+    let previous_version = check_codex(Some(&app)).version;
+    let runtime_root = managed_codex_runtime_root(&app)?;
+    let install_dir = runtime_root.join("bin");
+    let installer_home = runtime_root.join("installer-home");
+    fs::create_dir_all(&install_dir)
+        .map_err(|error| format!("Failed to create the Harness update directory: {error}"))?;
+    fs::create_dir_all(&installer_home)
+        .map_err(|error| format!("Failed to create the Harness installer directory: {error}"))?;
+
+    install_latest_codex_cli(&install_dir, &installer_home).await?;
+
+    let path = install_dir
+        .join(CODEX_EXECUTABLE_NAME)
+        .to_string_lossy()
+        .to_string();
+    let version = codex_version(&path).ok_or_else(|| {
+        "Harness update finished, but the new runtime could not be verified.".to_string()
+    })?;
+    Ok(CodexUpdateResult {
+        updated: previous_version != version,
+        previous_version,
+        version,
+        path,
+    })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn install_latest_codex_cli(install_dir: &Path, installer_home: &Path) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|error| format!("Failed to prepare the Harness updater: {error}"))?;
+    let response = client
+        .get(CODEX_INSTALLER_URL)
+        .send()
+        .await
+        .map_err(|error| format!("Failed to download the official Harness installer: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("The official Harness installer returned an error: {error}"))?;
+    let installer = response
+        .bytes()
+        .await
+        .map_err(|error| format!("Failed to read the official Harness installer: {error}"))?;
+    if installer.is_empty() || installer.len() > CODEX_INSTALLER_MAX_BYTES {
+        return Err("The downloaded Harness installer had an unexpected size.".to_string());
+    }
+    let installer_text = String::from_utf8_lossy(&installer);
+    if !installer_text.starts_with("#!/bin/sh")
+        || !installer_text.contains("https://releases.openai.com/codex")
+        || !installer_text.contains("CODEX_INSTALL_DIR")
+    {
+        return Err(
+            "The downloaded Harness installer did not match the expected official format."
+                .to_string(),
+        );
+    }
+
+    let install_dir_text = install_dir.to_string_lossy().to_string();
+    let installer_home_text = installer_home.to_string_lossy().to_string();
+    // Keep the managed bin directory at the front so the official installer
+    // does not add Alpha Studio's private runtime to the user's shell profile.
+    let installer_path = format!("{install_dir_text}:/usr/bin:/bin:/usr/sbin:/sbin");
+    let mut child = Command::new("/bin/sh")
+        .arg("-s")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("CODEX_INSTALL_DIR", &install_dir_text)
+        .env("CODEX_HOME", &installer_home_text)
+        .env("CODEX_NON_INTERACTIVE", "true")
+        .env("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM", "true")
+        .env("PATH", installer_path)
+        .env("NO_COLOR", "1")
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("Failed to start the Harness updater: {error}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to open the Harness updater input.".to_string())?;
+    stdin
+        .write_all(installer.as_ref())
+        .await
+        .map_err(|error| format!("Failed to send the installer to the Harness updater: {error}"))?;
+    drop(stdin);
+
+    let output = tokio::time::timeout(Duration::from_secs(600), child.wait_with_output())
+        .await
+        .map_err(|_| "Timed out while updating Harness.".to_string())?
+        .map_err(|error| format!("Failed while waiting for the Harness updater: {error}"))?;
+    if !output.status.success() {
+        let detail = first_non_empty_line(&output.stderr)
+            .or_else(|| first_non_empty_line(&output.stdout))
+            .unwrap_or_else(|| "unknown installer error".to_string());
+        return Err(format!("Harness update failed: {detail}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+async fn install_latest_codex_cli(
+    _install_dir: &Path,
+    _installer_home: &Path,
+) -> Result<(), String> {
+    Err("Manual Harness updates are currently available on macOS and Linux.".to_string())
+}
+
+#[tauri::command]
 async fn codex_login(app: AppHandle) -> Result<CodexLoginResult, String> {
     let (path, _) = resolve_codex_binary(Some(&app)).ok_or_else(|| {
-        "No working GPT engine was found. Reinstall Alpha Studio or install/repair Codex CLI."
+        "No working Harness runtime was found. Reinstall Alpha Studio or repair Harness."
             .to_string()
     })?;
     let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
@@ -883,7 +1010,36 @@ async fn codex_chat_start(
     let cwd = resolve_cwd(request.cwd.as_deref())?;
     let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
     let runtime_skills_root = codex_home.join("skills").to_string_lossy().into_owned();
+    let report_branding_instructions = report_branding::instructions()?;
     let sandbox_mode = sanitize_sandbox_mode(request.sandbox_mode.as_deref());
+    let agent_proxy = agent_network::start(
+        request.agent_data_relay.clone(),
+        &codex_home,
+        Path::new(&cwd),
+        {
+            let app = app.clone();
+            let run_id = run_id.clone();
+            let conversation_id = request.conversation_id.clone();
+            Arc::new(move || {
+                emit_event(
+                    &app,
+                    event(
+                        "activity",
+                        &run_id,
+                        &conversation_id,
+                        None,
+                        None,
+                        Some("network".to_string()),
+                        None,
+                        Some("外部数据连接已切换至服务端".to_string()),
+                        None,
+                    ),
+                )
+            })
+        },
+    )
+    .await
+    .unwrap_or(None);
     let adapter_shutdown = if let Some(provider) = provider_config.as_mut() {
         if let Some(adapter) = provider.adapter.clone() {
             let handle = start_chat_completions_adapter(
@@ -909,7 +1065,15 @@ async fn codex_chat_start(
     // gives the UI a live, incremental response.
     let mut command = Command::new(&check.path);
     let service_tier = sanitize_service_tier(request.service_tier.as_deref());
-    for arg in codex_app_server_args(provider_config.as_ref(), service_tier.as_deref()) {
+    let mut app_server_args =
+        codex_app_server_args(provider_config.as_ref(), service_tier.as_deref());
+    if let Some(proxy) = &agent_proxy {
+        proxy.configure(&mut app_server_args);
+    }
+    if is_alpha_studio_skill_turn(request.selected_skill.as_ref(), &request.prompt) {
+        append_alpha_studio_skill_runtime_overrides(&mut app_server_args);
+    }
+    for arg in app_server_args {
         command.arg(arg);
     }
     if let Some(provider) = &provider_config {
@@ -949,6 +1113,14 @@ async fn codex_chat_start(
         children.insert(run_id.clone(), child);
     }
 
+    let (steer_sender, steer_receiver) = mpsc::channel(16);
+    state.steering.lock().await.insert(
+        run_id.clone(),
+        steering::SteerSession {
+            conversation_id: request.conversation_id.clone(),
+            sender: steer_sender,
+        },
+    );
     emit_event(
         &app,
         CodexChatEvent {
@@ -989,6 +1161,7 @@ async fn codex_chat_start(
         app: app.clone(),
         children: state.children.clone(),
         stopped: state.stopped.clone(),
+        steering_sessions: state.steering.clone(),
         run_id: run_id.clone(),
         conversation_id: request.conversation_id.clone(),
         thread_id: request
@@ -1006,21 +1179,25 @@ async fn codex_chat_start(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
-        developer_instructions: request
-            .developer_instructions
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
+        developer_instructions: Some(format!(
+            "{}\n\n{}",
+            request
+                .developer_instructions
+                .as_deref()
+                .unwrap_or_default(),
+            report_branding_instructions
+        )),
         selected_skill: request.selected_skill.clone(),
         attachments: request.attachments.clone().unwrap_or_default(),
         reasoning_effort: sanitize_reasoning_effort(request.reasoning_effort.as_deref()),
         prompt: request.prompt.clone(),
         stderr_buffer,
         adapter_shutdown,
+        gateway_provider: provider_config.filter(|provider| provider.id == "alpha-gateway"),
+        agent_proxy,
     };
 
-    tokio::spawn(driver.run(stdin, stdout));
+    tokio::spawn(driver.run(stdin, stdout, steer_receiver));
 
     Ok(CodexChatStartResult { run_id })
 }
@@ -1028,9 +1205,11 @@ async fn codex_chat_start(
 /// Drives one Codex turn over the `codex app-server` JSON-RPC stdio protocol and
 /// forwards streamed notifications to the frontend as `CodexChatEvent`s.
 struct CodexDriver {
+    agent_proxy: Option<agent_network::AgentProxy>,
     app: AppHandle,
     children: Arc<Mutex<HashMap<String, Child>>>,
     stopped: Arc<Mutex<HashSet<String>>>,
+    steering_sessions: Arc<Mutex<HashMap<String, steering::SteerSession>>>,
     run_id: String,
     conversation_id: String,
     thread_id: Option<String>,
@@ -1045,13 +1224,37 @@ struct CodexDriver {
     prompt: String,
     stderr_buffer: Arc<Mutex<String>>,
     adapter_shutdown: Option<oneshot::Sender<()>>,
+    gateway_provider: Option<ModelProviderConfig>,
 }
 
 impl CodexDriver {
-    async fn run(mut self, stdin: tokio::process::ChildStdin, stdout: tokio::process::ChildStdout) {
+    async fn run(
+        mut self,
+        stdin: tokio::process::ChildStdin,
+        stdout: tokio::process::ChildStdout,
+        steer_receiver: mpsc::Receiver<steering::SteerCommand>,
+    ) {
+        let progress_monitor = self.gateway_provider.as_ref().and_then(|provider| {
+            provider.api_key.as_ref().map(|api_key| {
+                gateway_progress::monitor(
+                    self.app.clone(),
+                    self.run_id.clone(),
+                    self.conversation_id.clone(),
+                    provider.base_url.clone(),
+                    api_key.clone(),
+                )
+            })
+        });
         let mut stdin = stdin;
         let mut reader = BufReader::new(stdout).lines();
-        let outcome = self.drive(&mut stdin, &mut reader).await;
+        let mut steering = steering::Steering::new(steer_receiver);
+        let outcome = self.drive(&mut stdin, &mut reader, &mut steering).await;
+        self.steering_sessions.lock().await.remove(&self.run_id);
+        steering.close();
+        if let Some(proxy) = &self.agent_proxy {
+            proxy.stop();
+        }
+        drop(progress_monitor);
 
         // The app-server keeps running after the turn ends, so stop it now that
         // we are done streaming this turn.
@@ -1193,6 +1396,7 @@ impl CodexDriver {
         &self,
         stdin: &mut tokio::process::ChildStdin,
         reader: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+        steering: &mut steering::Steering,
     ) -> Result<(), String> {
         // 1. Handshake.
         initialize_codex_app_server(stdin, reader).await?;
@@ -1279,7 +1483,14 @@ impl CodexDriver {
         // 4. Stream turn notifications until the turn finishes.
         let mut streamed: HashSet<String> = HashSet::new();
         loop {
-            let line = match reader.next_line().await {
+            let next_line = tokio::select! {
+                line = reader.next_line() => line,
+                Some(command) = steering.receiver.recv(), if steering.turn_id.is_some() => {
+                    steering.submit(stdin, command, &thread_id, &self.cwd).await?;
+                    continue;
+                }
+            };
+            let line = match next_line {
                 Ok(Some(line)) => line,
                 Ok(None) => return Err("GPT service closed during the turn".to_string()),
                 Err(e) => return Err(format!("Failed to read from GPT service: {e}")),
@@ -1301,14 +1512,29 @@ impl CodexDriver {
                 // Reply with the method-specific protocol shape so the app-server
                 // does not remain blocked waiting for a response it can decode.
                 if let Some(request_id) = message.get("id").filter(|id| !id.is_null()) {
+                    let params = message.get("params").unwrap_or(&Value::Null);
+                    if let Some(chat_event) = app_server_request_start_event(
+                        method,
+                        params,
+                        &self.run_id,
+                        &self.conversation_id,
+                    ) {
+                        emit_event(&self.app, chat_event);
+                    }
                     answer_app_server_request(stdin, request_id, method).await?;
                     continue;
                 }
 
-                if method == "turn/completed" {
-                    return Ok(());
-                }
                 let params = message.get("params").unwrap_or(&Value::Null);
+                if !notification_matches_thread(params, &thread_id) {
+                    continue;
+                }
+                if method == "turn/started" {
+                    steering.turn_id = params
+                        .pointer("/turn/id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
                 for chat_event in map_app_server_notification(
                     method,
                     params,
@@ -1318,16 +1544,54 @@ impl CodexDriver {
                 ) {
                     emit_event(&self.app, chat_event);
                 }
+                if method == "turn/completed" {
+                    return Ok(());
+                }
                 if method == "error" && !is_retryable_app_server_error(params) {
                     return Ok(());
                 }
             } else if message.get("id").is_some() {
+                if steering
+                    .response(stdin, &message, &thread_id, |message_id| {
+                        emit_event(
+                            &self.app,
+                            event(
+                                "message_steered",
+                                &self.run_id,
+                                &self.conversation_id,
+                                Some(thread_id.clone()),
+                                Some(message_id.to_string()),
+                                None,
+                                None,
+                                None,
+                                None,
+                            ),
+                        );
+                    })
+                    .await?
+                {
+                    continue;
+                }
                 if let Some(error) = message.get("error") {
                     return Err(jsonrpc_error_message(error));
+                }
+                if message.get("id").and_then(Value::as_u64) == Some(3) {
+                    steering.turn_id = message
+                        .pointer("/result/turn/id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .or_else(|| steering.turn_id.clone());
                 }
             }
         }
     }
+}
+
+fn notification_matches_thread(params: &Value, thread_id: &str) -> bool {
+    params
+        .get("threadId")
+        .and_then(Value::as_str)
+        .is_none_or(|event_thread| event_thread == thread_id)
 }
 
 fn build_turn_input(
@@ -1738,9 +2002,6 @@ where
 
 fn app_server_request_result(method: &str) -> Option<Value> {
     match method {
-        // Current v2 approval methods use `accept`, while the legacy methods
-        // below use `approved`. Sending the legacy value to a v2 request makes
-        // the server reject the response and leaves the turn waiting forever.
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
             Some(json!({ "decision": "accept" }))
         }
@@ -1777,6 +2038,47 @@ fn app_server_request_result(method: &str) -> Option<Value> {
     }
 }
 
+fn app_server_request_start_event(
+    method: &str,
+    params: &Value,
+    run_id: &str,
+    conversation_id: &str,
+) -> Option<CodexChatEvent> {
+    let (title, text) = match method {
+        "item/commandExecution/requestApproval" | "execCommandApproval" => {
+            let text = command_text(params, &["command", "cmd", "text"]);
+            let title = text
+                .as_deref()
+                .and_then(command_activity_title_from_text)
+                .unwrap_or("command_execution")
+                .to_string();
+            (title, text)
+        }
+        "item/fileChange/requestApproval" | "applyPatchApproval" => (
+            "fileChange".to_string(),
+            extract_file_change_details(params)
+                .or_else(|| first_string(params, &["patch", "diff", "input"])),
+        ),
+        _ => return None,
+    };
+    let item_id = first_string(params, &["itemId", "item_id", "call_id", "callId", "id"])?;
+    Some(event(
+        "tool_started",
+        run_id,
+        conversation_id,
+        params
+            .get("threadId")
+            .or_else(|| params.get("thread_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        Some(item_id),
+        Some(title),
+        text,
+        None,
+        Some(params.clone()),
+    ))
+}
+
 fn jsonrpc_error_message(error: &Value) -> String {
     first_string(error, &["message"]).unwrap_or_else(|| error.to_string())
 }
@@ -1794,6 +2096,54 @@ fn map_app_server_notification(
     streamed: &mut HashSet<String>,
 ) -> Vec<CodexChatEvent> {
     match method {
+        "turn/started" => vec![event(
+            "activity",
+            run_id,
+            conversation_id,
+            None,
+            None,
+            None,
+            None,
+            Some("等待模型响应".to_string()),
+            None,
+        )],
+        "turn/completed" => {
+            let turn = params.get("turn").unwrap_or(&Value::Null);
+            match turn.get("status").and_then(Value::as_str) {
+                Some("failed") => vec![event(
+                    "error",
+                    run_id,
+                    conversation_id,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(
+                        turn.get("error")
+                            .and_then(|error| first_string(error, &["message"]))
+                            .unwrap_or_else(|| {
+                                "GPT task failed without error details.".to_string()
+                            }),
+                    ),
+                    Some(turn.clone()),
+                )],
+                Some("interrupted") => vec![event(
+                    "stopped",
+                    run_id,
+                    conversation_id,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )],
+                _ => Vec::new(),
+            }
+        }
+        // Current v2 approval methods use `accept`, while the legacy methods
+        // below use `approved`. Sending the legacy value to a v2 request makes
+        // the server reject the response and leaves the turn waiting forever.
         "item/agentMessage/delta" => {
             let Some(delta) = params.get("delta").and_then(Value::as_str) else {
                 return Vec::new();
@@ -1863,11 +2213,90 @@ fn map_app_server_notification(
                 None,
             )]
         }
+        "item/fileChange/outputDelta" => {
+            let Some(delta) = params.get("delta").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            if delta.is_empty() {
+                return Vec::new();
+            }
+            vec![event(
+                "tool_delta",
+                run_id,
+                conversation_id,
+                None,
+                params
+                    .get("itemId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                Some("fileChange".to_string()),
+                Some(delta.to_string()),
+                None,
+                Some(params.clone()),
+            )]
+        }
+        "item/fileChange/patchUpdated" => {
+            let Some(changes) = params.get("changes") else {
+                return Vec::new();
+            };
+            let Ok(text) = serde_json::to_string(changes) else {
+                return Vec::new();
+            };
+            vec![event(
+                "tool_delta",
+                run_id,
+                conversation_id,
+                None,
+                params
+                    .get("itemId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                Some("fileChange".to_string()),
+                Some(text),
+                Some("replace".to_string()),
+                Some(params.clone()),
+            )]
+        }
+        "item/mcpToolCall/progress" => {
+            let Some(message) = params.get("message").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            if message.trim().is_empty() {
+                return Vec::new();
+            }
+            vec![event(
+                "tool_delta",
+                run_id,
+                conversation_id,
+                None,
+                params
+                    .get("itemId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                Some("mcpToolCall".to_string()),
+                Some(format!("{message}\n")),
+                None,
+                Some(params.clone()),
+            )]
+        }
         "item/started" => {
             let Some(item) = params.get("item") else {
                 return Vec::new();
             };
             let item_type = normalized_item_type(item);
+            if matches!(item_type.as_str(), "reasoning" | "thought" | "analysis") {
+                return vec![event(
+                    "activity",
+                    run_id,
+                    conversation_id,
+                    None,
+                    first_string(item, &["id", "itemId"]),
+                    Some("reasoning".to_string()),
+                    None,
+                    Some("正在推理".to_string()),
+                    Some(params.clone()),
+                )];
+            }
             if is_context_compaction_item(&item_type) {
                 return vec![event(
                     "tool_started",
@@ -2027,7 +2456,7 @@ fn map_app_server_notification(
                 None,
                 None,
                 Some(message),
-                None,
+                Some(params.clone()),
             )]
         }
         _ => Vec::new(),
@@ -2045,6 +2474,32 @@ fn is_retryable_app_server_error(params: &Value) -> bool {
                 .and_then(Value::as_bool)
         })
         .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn codex_chat_steer(
+    state: State<'_, CodexProcessState>,
+    request: steering::SteerRequest,
+) -> Result<steering::SteerResult, String> {
+    let session = state.steering.lock().await.get(&request.run_id).cloned();
+    let Some(session) = session else {
+        return Ok(steering::SteerResult { accepted: false });
+    };
+    if session.conversation_id != request.conversation_id {
+        return Err("引导消息与当前运行的对话不匹配。".to_string());
+    }
+    let (reply, response) = oneshot::channel();
+    if session
+        .sender
+        .send(steering::SteerCommand { request, reply })
+        .await
+        .is_err()
+    {
+        return Ok(steering::SteerResult { accepted: false });
+    }
+    response
+        .await
+        .map_err(|_| "未能确认引导消息是否送达。".to_string())?
 }
 
 #[tauri::command]
@@ -4084,6 +4539,23 @@ fn codex_app_server_args(
     args
 }
 
+fn is_alpha_studio_skill_turn(selected_skill: Option<&CodexSelectedSkill>, prompt: &str) -> bool {
+    selected_skill.is_some_and(|skill| skill.id.trim().starts_with("alpha-studio-"))
+        || prompt.contains("$alpha-studio-")
+}
+
+fn append_alpha_studio_skill_runtime_overrides(args: &mut Vec<String>) {
+    // Alpha Studio's managed research skills use local skill files, native web
+    // search, and the product's own market-data backend. Remote plugin discovery,
+    // ChatGPT Apps, and tool suggestions are optional for these turns. Disabling
+    // them prevents an unreachable chatgpt.com connector endpoint from adding a
+    // retry delay before every model/tool step while leaving local plugins intact.
+    for feature in ["remote_plugin", "apps", "tool_suggest"] {
+        args.push("--disable".to_string());
+        args.push(feature.to_string());
+    }
+}
+
 fn push_config_arg(args: &mut Vec<String>, key: &str, value: &str) {
     args.push("--config".to_string());
     args.push(format!("{key}={}", toml_string(value)));
@@ -5347,7 +5819,7 @@ fn check_codex(app: Option<&AppHandle>) -> CodexCheckResult {
             logged_in: false,
             account_email: None,
             error: Some(
-                "No working GPT engine was found. Reinstall Alpha Studio or install/repair Codex CLI."
+                "No working Harness runtime was found. Reinstall Alpha Studio or repair Harness."
                     .to_string(),
             ),
         },
@@ -5494,6 +5966,9 @@ fn resolve_codex_binary(app: Option<&AppHandle>) -> Option<(String, String)> {
 fn codex_binary_candidates(app: Option<&AppHandle>) -> Vec<String> {
     let mut candidates = Vec::new();
     if let Some(app) = app {
+        if let Ok(runtime_root) = managed_codex_runtime_root(app) {
+            candidates.push(managed_codex_binary_path(&runtime_root));
+        }
         if let Ok(resource_dir) = app.path().resource_dir() {
             candidates.extend(codex_bundled_binary_candidates(&resource_dir));
         }
@@ -5518,6 +5993,23 @@ fn codex_binary_candidates(app: Option<&AppHandle>) -> Vec<String> {
         }
     }
     deduped
+}
+
+fn managed_codex_runtime_root(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("codex-runtime"))
+        .map_err(|error| {
+            format!("Failed to locate the Alpha Studio application data directory: {error}")
+        })
+}
+
+fn managed_codex_binary_path(runtime_root: &Path) -> String {
+    runtime_root
+        .join("bin")
+        .join(CODEX_EXECUTABLE_NAME)
+        .to_string_lossy()
+        .to_string()
 }
 
 fn codex_bundled_binary_candidates(resource_dir: &Path) -> Vec<String> {
@@ -6901,6 +7393,22 @@ fn normalized_item_type(item: &Value) -> String {
 }
 
 fn item_title(item: &Value) -> Option<String> {
+    let item_type = normalized_item_type(item);
+    if item_type.contains("command") || item_type.contains("exec") || item_type.contains("shell") {
+        if let Some(title) = command_action_title(item).or_else(|| {
+            first_string(item, &["command", "cmd"])
+                .as_deref()
+                .and_then(command_activity_title_from_text)
+        }) {
+            return Some(title.to_string());
+        }
+    }
+    if item_type.contains("websearch") {
+        return Some(web_activity_title(item).to_string());
+    }
+    if let Some(title) = named_web_tool_activity_title(item) {
+        return Some(title.to_string());
+    }
     first_string(item, &["title", "name", "tool", "toolName", "type"]).map(|value| {
         match value.as_str() {
             "command_execution" | "commandExecution" | "exec" | "shell" => "execute".to_string(),
@@ -6910,22 +7418,236 @@ fn item_title(item: &Value) -> Option<String> {
 }
 
 fn extract_tool_input(item: &Value) -> Option<String> {
-    first_string(
-        item,
-        &["command", "query", "path", "input", "arguments", "args"],
-    )
-    // Web search items (web_search_call) carry the query under `action`.
-    .or_else(|| {
-        item.get("action")
-            .and_then(|action| first_string(action, &["query", "url", "command"]))
-    })
-    .or_else(|| {
-        item.get("input")
-            .or_else(|| item.get("arguments"))
-            .or_else(|| item.get("args"))
-            .map(|value| value.to_string())
-    })
-    .or_else(|| extract_file_change_details(item))
+    extract_command_action_input(item)
+        .or_else(|| extract_web_activity_input(item))
+        .or_else(|| {
+            first_string(
+                item,
+                &["command", "query", "path", "input", "arguments", "args"],
+            )
+        })
+        // Web search items (web_search_call) carry the query under `action`.
+        .or_else(|| {
+            item.get("action")
+                .and_then(|action| first_string(action, &["query", "url", "command"]))
+        })
+        .or_else(|| {
+            item.get("input")
+                .or_else(|| item.get("arguments"))
+                .or_else(|| item.get("args"))
+                .map(|value| value.to_string())
+        })
+        .or_else(|| extract_file_change_details(item))
+}
+
+fn command_action_title(item: &Value) -> Option<&'static str> {
+    let actions = item.get("commandActions")?.as_array()?;
+    let mut recognized: Option<&'static str> = None;
+    for action in actions {
+        let action_type = first_string(action, &["type"])?;
+        let title = match action_type.replace(['_', '-'], "").to_lowercase().as_str() {
+            "read" => Some("fileRead"),
+            "listfiles" => Some("fileList"),
+            "search" => Some("fileSearch"),
+            _ => None,
+        };
+        let Some(title) = title else { continue };
+        if recognized.is_some_and(|existing| existing != title) {
+            return None;
+        }
+        recognized = Some(title);
+    }
+    recognized
+}
+
+fn command_activity_title_from_text(command: &str) -> Option<&'static str> {
+    let normalized = command
+        .to_lowercase()
+        .replace(['\'', '"', ';', '&', '|', '(', ')'], " ");
+    let padded = format!(" {normalized} ");
+    if [" curl ", " wget ", " httpie "]
+        .iter()
+        .any(|token| padded.contains(token))
+    {
+        return Some("webFetch");
+    }
+    if padded.contains(" rg --files ") || padded.contains(" fd ") || padded.contains(" find ") {
+        return Some("fileSearch");
+    }
+    if [" rg ", " grep ", " ag "]
+        .iter()
+        .any(|token| padded.contains(token))
+    {
+        return Some("fileSearch");
+    }
+    if [
+        " sed -n ", " cat ", " head ", " tail ", " wc ", " stat ", " bat ",
+    ]
+    .iter()
+    .any(|token| padded.contains(token))
+    {
+        return Some("fileRead");
+    }
+    if padded.contains(" ls ") || padded.contains(" tree ") {
+        return Some("fileList");
+    }
+    None
+}
+
+fn web_activity_title(item: &Value) -> &'static str {
+    let action_type = item
+        .get("action")
+        .and_then(|action| first_string(action, &["type"]))
+        .unwrap_or_default()
+        .replace(['_', '-'], "")
+        .to_lowercase();
+    match action_type.as_str() {
+        "openpage" => "webFetch",
+        "findinpage" => "webFind",
+        _ => "webSearch",
+    }
+}
+
+fn named_web_tool_activity_title(item: &Value) -> Option<&'static str> {
+    let tool = first_string(item, &["tool", "toolName", "name"])?
+        .replace(['_', '-', '.'], "")
+        .to_lowercase();
+    if !tool.contains("web") && !tool.contains("browser") {
+        return None;
+    }
+    let arguments = item
+        .get("arguments")
+        .or_else(|| item.get("args"))
+        .or_else(|| item.get("input"));
+    arguments.and_then(web_arguments_activity_title)
+}
+
+fn web_arguments_activity_title(arguments: &Value) -> Option<&'static str> {
+    if let Some(text) = arguments.as_str() {
+        return serde_json::from_str::<Value>(text)
+            .ok()
+            .as_ref()
+            .and_then(web_arguments_activity_title);
+    }
+    let arguments = arguments.as_object()?;
+    if [
+        "search_query",
+        "searchQuery",
+        "image_query",
+        "imageQuery",
+        "q",
+        "query",
+    ]
+    .iter()
+    .any(|key| arguments.contains_key(*key))
+    {
+        return Some("webSearch");
+    }
+    if ["find", "find_in_page", "findInPage"]
+        .iter()
+        .any(|key| arguments.contains_key(*key))
+    {
+        return Some("webFind");
+    }
+    if ["open", "click", "screenshot", "url"]
+        .iter()
+        .any(|key| arguments.contains_key(*key))
+    {
+        return Some("webFetch");
+    }
+    None
+}
+
+fn extract_command_action_input(item: &Value) -> Option<String> {
+    let title = command_action_title(item)?;
+    let actions = item.get("commandActions")?.as_array()?;
+    let matching = actions.iter().filter(|action| {
+        let action_type = first_string(action, &["type"])
+            .unwrap_or_default()
+            .replace(['_', '-'], "")
+            .to_lowercase();
+        matches!(
+            (title, action_type.as_str()),
+            ("fileRead", "read") | ("fileList", "listfiles") | ("fileSearch", "search")
+        )
+    });
+
+    let mut queries = Vec::new();
+    let mut paths = Vec::new();
+    for action in matching {
+        if let Some(query) = first_string(action, &["query"]) {
+            if !queries.contains(&query) {
+                queries.push(query);
+            }
+        }
+        if let Some(path) = first_string(action, &["path"]) {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    if paths.is_empty() && matches!(title, "fileList" | "fileSearch") {
+        if let Some(cwd) = first_string(item, &["cwd"]) {
+            paths.push(cwd);
+        }
+    }
+    match (queries.as_slice(), paths.as_slice()) {
+        ([query], []) => Some(query.clone()),
+        ([], [path]) => Some(path.clone()),
+        ([], []) => None,
+        _ => serde_json::to_string(&json!({ "queries": queries, "paths": paths })).ok(),
+    }
+}
+
+fn extract_web_activity_input(item: &Value) -> Option<String> {
+    if !normalized_item_type(item).contains("websearch") {
+        return None;
+    }
+    let title = web_activity_title(item);
+    let action = item.get("action");
+    if title == "webFetch" {
+        return action.and_then(|value| first_string(value, &["url"]));
+    }
+    if title == "webFind" {
+        let url = action.and_then(|value| first_string(value, &["url"]));
+        let pattern = action.and_then(|value| first_string(value, &["pattern"]));
+        return match (url, pattern) {
+            (Some(url), Some(pattern)) => {
+                serde_json::to_string(&json!({ "pattern": pattern, "url": url })).ok()
+            }
+            (Some(url), None) => Some(url),
+            (None, Some(pattern)) => Some(pattern),
+            (None, None) => None,
+        };
+    }
+
+    let mut queries = Vec::new();
+    for query in [
+        first_string(item, &["query"]),
+        action.and_then(|value| first_string(value, &["query"])),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !queries.contains(&query) {
+            queries.push(query);
+        }
+    }
+    if let Some(items) = action
+        .and_then(|value| value.get("queries"))
+        .and_then(Value::as_array)
+    {
+        for query in items.iter().filter_map(Value::as_str).map(str::trim) {
+            if !query.is_empty() && !queries.iter().any(|existing| existing == query) {
+                queries.push(query.to_string());
+            }
+        }
+    }
+    match queries.as_slice() {
+        [] => None,
+        [query] => Some(query.clone()),
+        _ => serde_json::to_string(&json!({ "queries": queries })).ok(),
+    }
 }
 
 fn extract_tool_output(item: &Value) -> Option<String> {
@@ -7065,6 +7787,7 @@ pub fn run() {
         .manage(TerminalState::default())
         .invoke_handler(tauri::generate_handler![
             codex_check,
+            codex_update,
             codex_login,
             codex_revoke_authorization,
             codex_subscription_usage,
@@ -7075,6 +7798,8 @@ pub fn run() {
             project_folder_create,
             project_folder_rename,
             clipboard_attachment_save,
+            report_branding::report_branding_load,
+            report_branding::report_branding_save,
             local_store::local_store_info,
             local_store::local_store_load,
             local_store::local_store_commit,
@@ -7084,6 +7809,7 @@ pub fn run() {
             local_store::market_cache_get,
             local_store::market_cache_put,
             codex_chat_start,
+            codex_chat_steer,
             codex_chat_stop,
             coworkers_sync,
             list_open_apps,
@@ -7540,6 +8266,19 @@ mod tests {
     }
 
     #[test]
+    fn managed_codex_runtime_uses_its_private_bin_directory() {
+        let runtime_root =
+            PathBuf::from("/Users/demo/Library/Application Support/Alpha Studio/codex-runtime");
+        let expected = runtime_root
+            .join("bin")
+            .join(CODEX_EXECUTABLE_NAME)
+            .to_string_lossy()
+            .to_string();
+
+        assert_eq!(managed_codex_binary_path(&runtime_root), expected);
+    }
+
+    #[test]
     fn parses_thread_started() {
         let event = parse_codex_json_event(
             r#"{"type":"thread.started","thread_id":"abc"}"#,
@@ -7608,7 +8347,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(started.event_type, "tool_started");
-        assert_eq!(started.title.as_deref(), Some("execute"));
+        assert_eq!(started.title.as_deref(), Some("fileList"));
         assert_eq!(started.text.as_deref(), Some("ls"));
 
         let completed = parse_codex_json_event(
@@ -7630,7 +8369,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(started.event_type, "tool_started");
-        assert_eq!(started.title.as_deref(), Some("web.run"));
+        assert_eq!(started.title.as_deref(), Some("webSearch"));
         assert_eq!(started.text.as_deref(), Some("{\"q\":\"test\"}"));
     }
 
@@ -7643,7 +8382,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(started.event_type, "tool_started");
-        assert_eq!(started.title.as_deref(), Some("web_search_call"));
+        assert_eq!(started.title.as_deref(), Some("webSearch"));
         assert_eq!(started.text.as_deref(), Some("hangzhou weather"));
 
         let completed = parse_codex_json_event(
@@ -7886,7 +8625,7 @@ mod tests {
         );
         assert_eq!(started.len(), 1);
         assert_eq!(started[0].event_type, "tool_started");
-        assert_eq!(started[0].title.as_deref(), Some("execute"));
+        assert_eq!(started[0].title.as_deref(), Some("fileList"));
         assert_eq!(started[0].text.as_deref(), Some("ls -la"));
 
         let delta = map_app_server_notification(
@@ -7911,6 +8650,202 @@ mod tests {
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].event_type, "tool_failed");
         assert_eq!(failed[0].text.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn app_server_exposes_semantic_search_file_read_and_web_activity_at_start() {
+        let mut streamed = HashSet::new();
+        let file_read = map_app_server_notification(
+            "item/started",
+            &serde_json::json!({
+                "item": {
+                    "id": "read-1",
+                    "type": "commandExecution",
+                    "command": "sed -n '1,120p' /tmp/report.md",
+                    "status": "inProgress",
+                    "commandActions": [{
+                        "type": "read",
+                        "command": "sed -n '1,120p' /tmp/report.md",
+                        "name": "report.md",
+                        "path": "/tmp/report.md"
+                    }]
+                }
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(file_read.len(), 1);
+        assert_eq!(file_read[0].event_type, "tool_started");
+        assert_eq!(file_read[0].title.as_deref(), Some("fileRead"));
+        assert_eq!(file_read[0].text.as_deref(), Some("/tmp/report.md"));
+
+        let file_search = map_app_server_notification(
+            "item/started",
+            &serde_json::json!({
+                "item": {
+                    "id": "search-1",
+                    "type": "commandExecution",
+                    "command": "rg context src",
+                    "status": "inProgress",
+                    "commandActions": [{
+                        "type": "search",
+                        "command": "rg context src",
+                        "query": "context",
+                        "path": "/tmp/project/src"
+                    }]
+                }
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(file_search.len(), 1);
+        assert_eq!(file_search[0].title.as_deref(), Some("fileSearch"));
+        assert_eq!(
+            serde_json::from_str::<Value>(file_search[0].text.as_deref().expect("search target"))
+                .unwrap(),
+            serde_json::json!({ "queries": ["context"], "paths": ["/tmp/project/src"] }),
+        );
+
+        let web_search = map_app_server_notification(
+            "item/started",
+            &serde_json::json!({
+                "item": {
+                    "id": "web-search-1",
+                    "type": "webSearch",
+                    "query": "A股 机器人政策",
+                    "action": { "type": "search", "query": "A股 机器人政策" }
+                }
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(web_search.len(), 1);
+        assert_eq!(web_search[0].title.as_deref(), Some("webSearch"));
+        assert_eq!(web_search[0].text.as_deref(), Some("A股 机器人政策"));
+
+        let web_read = map_app_server_notification(
+            "item/started",
+            &serde_json::json!({
+                "item": {
+                    "id": "web-read-1",
+                    "type": "webSearch",
+                    "query": "",
+                    "action": { "type": "openPage", "url": "https://example.com/report" }
+                }
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(web_read.len(), 1);
+        assert_eq!(web_read[0].title.as_deref(), Some("webFetch"));
+        assert_eq!(
+            web_read[0].text.as_deref(),
+            Some("https://example.com/report")
+        );
+    }
+
+    #[test]
+    fn app_server_forwards_mcp_progress_while_a_tool_is_running() {
+        let mut streamed = HashSet::new();
+        let events = map_app_server_notification(
+            "item/mcpToolCall/progress",
+            &serde_json::json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "mcp-1",
+                "message": "正在读取第 2 页"
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "tool_delta");
+        assert_eq!(events[0].item_id.as_deref(), Some("mcp-1"));
+        assert_eq!(events[0].text.as_deref(), Some("正在读取第 2 页\n"));
+    }
+
+    #[test]
+    fn app_server_maps_approval_requests_to_eager_tool_starts() {
+        let command = app_server_request_start_event(
+            "item/commandExecution/requestApproval",
+            &serde_json::json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "command-1",
+                "command": "npm test"
+            }),
+            "run-1",
+            "conv-1",
+        )
+        .expect("command start event");
+        assert_eq!(command.event_type, "tool_started");
+        assert_eq!(command.item_id.as_deref(), Some("command-1"));
+        assert_eq!(command.title.as_deref(), Some("command_execution"));
+        assert_eq!(command.text.as_deref(), Some("npm test"));
+
+        let read = app_server_request_start_event(
+            "item/commandExecution/requestApproval",
+            &serde_json::json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "read-1",
+                "command": "sed -n '1,120p' /tmp/report.md"
+            }),
+            "run-1",
+            "conv-1",
+        )
+        .expect("file read start event");
+        assert_eq!(read.title.as_deref(), Some("fileRead"));
+
+        let file_change = app_server_request_start_event(
+            "item/fileChange/requestApproval",
+            &serde_json::json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "edit-1"
+            }),
+            "run-1",
+            "conv-1",
+        )
+        .expect("file change start event");
+        assert_eq!(file_change.event_type, "tool_started");
+        assert_eq!(file_change.item_id.as_deref(), Some("edit-1"));
+        assert_eq!(file_change.title.as_deref(), Some("fileChange"));
+    }
+
+    #[test]
+    fn app_server_streams_file_change_details_before_completion() {
+        let mut streamed = HashSet::new();
+        let changes = serde_json::json!([
+            { "path": "/tmp/src/App.tsx", "kind": "update", "diff": "@@ -1 +1 @@" }
+        ]);
+        let events = map_app_server_notification(
+            "item/fileChange/patchUpdated",
+            &serde_json::json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "edit-1",
+                "changes": changes
+            }),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "tool_delta");
+        assert_eq!(events[0].item_id.as_deref(), Some("edit-1"));
+        assert_eq!(events[0].title.as_deref(), Some("fileChange"));
+        assert_eq!(events[0].message.as_deref(), Some("replace"));
+        assert_eq!(
+            serde_json::from_str::<Value>(events[0].text.as_deref().expect("changes")).unwrap(),
+            changes,
+        );
     }
 
     #[test]
@@ -7988,6 +8923,50 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "error");
         assert_eq!(events[0].message.as_deref(), Some("rate limited"));
+    }
+
+    #[test]
+    fn app_server_reports_reasoning_without_waiting_for_summary_text() {
+        let events = map_app_server_notification(
+            "item/started",
+            &json!({"item": {"id": "reason-1", "type": "reasoning"}}),
+            "run-1",
+            "conv-1",
+            &mut HashSet::new(),
+        );
+        assert_eq!(events[0].event_type, "activity");
+        assert_eq!(events[0].message.as_deref(), Some("正在推理"));
+    }
+
+    #[test]
+    fn app_server_preserves_failed_terminal_turn_and_structured_error() {
+        let error = json!({"message": "429 Too Many Requests", "codexErrorInfo": {"responseTooManyFailedAttempts": {"httpStatusCode": 429}}, "additionalDetails": "gateway queue timeout"});
+        let events = map_app_server_notification(
+            "turn/completed",
+            &json!({"threadId": "parent", "turn": {"status": "failed", "error": error}}),
+            "run-1",
+            "conv-1",
+            &mut HashSet::new(),
+        );
+        assert_eq!(events[0].event_type, "error");
+        assert_eq!(events[0].raw.as_ref().unwrap()["error"], error);
+        assert!(!notification_matches_thread(
+            &json!({"threadId": "child"}),
+            "parent"
+        ));
+        assert!(notification_matches_thread(
+            &json!({"threadId": "parent"}),
+            "parent"
+        ));
+        let retried = map_app_server_notification(
+            "error",
+            &json!({"error": error, "willRetry": true}),
+            "run-1",
+            "conv-1",
+            &mut HashSet::new(),
+        );
+        assert_eq!(retried[0].event_type, "status");
+        assert_eq!(retried[0].raw.as_ref().unwrap()["error"], error);
     }
 
     #[test]
@@ -8120,6 +9099,39 @@ mod tests {
                 "app-server".to_string(),
                 "--config".to_string(),
                 "service_tier=\"fast\"".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn alpha_studio_skill_turns_disable_optional_remote_discovery() {
+        let selected_skill = CodexSelectedSkill {
+            id: "alpha-studio-daily-theme-research".to_string(),
+            title: "Alpha Studio 盘前主题".to_string(),
+            _description: None,
+        };
+        assert!(is_alpha_studio_skill_turn(
+            Some(&selected_skill),
+            "生成今日报告"
+        ));
+        assert!(is_alpha_studio_skill_turn(
+            None,
+            "使用 $alpha-studio-daily-theme-research 生成今日报告"
+        ));
+        assert!(!is_alpha_studio_skill_turn(None, "普通代码审查"));
+
+        let mut args = codex_app_server_args(None, None);
+        append_alpha_studio_skill_runtime_overrides(&mut args);
+        assert_eq!(
+            args,
+            vec![
+                "app-server",
+                "--disable",
+                "remote_plugin",
+                "--disable",
+                "apps",
+                "--disable",
+                "tool_suggest",
             ]
         );
     }
@@ -9058,6 +10070,7 @@ mod tests {
         provider_wire_api: Option<&str>,
     ) -> CodexChatRequest {
         CodexChatRequest {
+            agent_data_relay: None,
             conversation_id: "conv-1".to_string(),
             prompt: "hello".to_string(),
             codex_thread_id: None,

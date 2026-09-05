@@ -150,6 +150,9 @@ OpenAI-compatible provider configuration.
 See [Managed Skill releases](./docs/managed-skills.md) for the protected build,
 admin publishing, client synchronization, offline fallback, and rollback flow.
 
+See [Agent data network routing](./docs/agent-data-network.md) for process-scoped
+direct connections and authenticated server fallback using the original CLI tools.
+
 Customer and operator references:
 
 - [Customer guide](./docs/customer-guide.md)

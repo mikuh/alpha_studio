@@ -12,9 +12,9 @@ import {
   CONTEXT_COMPACTION_TOOL_TITLE,
   finalizePendingToolBlocks,
 } from './codexEvents';
-import { buildCodingInstructions, buildReviewPrompt } from './prompt';
+import { buildCodingInstructions, buildCoworkerOrchestrationLines, buildReviewPrompt } from './prompt';
 import { coworkerSelectionsByIds } from './coworkers';
-import { checkCodex, isTauriRuntime, listCodexModels, localTextFileRead, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
+import { checkCodex, isTauriRuntime, listCodexModels, localTextFileRead, loadModelConfig as loadModelConfigFile, saveModelConfig as saveModelConfigFile, startCodexChat, steerCodexChat, stopCodexChat, subscribeCodexEvents } from './codexBridge';
 import { DEFAULT_WORK_MODE_ID, activeDomain, isWorkModeId, type WorkModeId } from './domain';
 import { reloadLocalStoreSnapshot, scheduleLocalStoreCommit } from './localStore';
 import { executeResearchChatCommand } from './researchChat';
@@ -262,7 +262,28 @@ const hotChatState = import.meta.hot?.data?.alphaStudioChatState as PersistedCha
 
 export const useChatStore = create<ChatState>()(
   persist(
-    (set, get) => {
+    (set, get, api) => {
+      const steeringConversations = new Set<string>();
+      const waitForSteeringRun = (conversationId: string): Promise<string | undefined> => {
+        const current = () => get().conversations.find((item) => item.id === conversationId);
+        const conversation = current();
+        if (!conversation || conversation.archivedAt || conversation.status !== 'streaming' || conversation.runId) {
+          return Promise.resolve(conversation?.runId);
+        }
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            unsubscribe();
+            reject(new Error('当前对话尚未准备好接收引导消息，请稍后重试。'));
+          }, 30_000);
+          const unsubscribe = api.subscribe(() => {
+            const latest = current();
+            if (latest && !latest.archivedAt && latest.status === 'streaming' && !latest.runId) return;
+            clearTimeout(timer);
+            unsubscribe();
+            resolve(latest?.runId);
+          });
+        });
+      };
       // Opens an authorization prompt and resolves once the user decides in the UI.
       const requestAuthorization = (
         request: Omit<AuthorizationRequest, 'id'>,
@@ -378,6 +399,7 @@ export const useChatStore = create<ChatState>()(
       };
 
       const startNextQueuedMessage = (conversationId: string) => {
+        if (steeringConversations.has(conversationId)) return;
         const conversation = get().conversations.find((item) => item.id === conversationId);
         if (!conversation || conversation.archivedAt || conversation.status === 'streaming') return;
         const next = conversation.guidedQueuedMessages?.[0] ?? conversation.queuedMessages?.[0];
@@ -1174,7 +1196,7 @@ export const useChatStore = create<ChatState>()(
           automationRun,
         };
 
-        if (conversation.status === 'streaming') {
+        if (conversation.status === 'streaming' || steeringConversations.has(conversationId)) {
           enqueueMessage(conversationId, queuedMessage);
           return;
         }
@@ -1183,6 +1205,7 @@ export const useChatStore = create<ChatState>()(
       },
 
       removeQueuedMessage: (conversationId: string, queuedMessageId: string) => {
+        if (steeringConversations.has(conversationId)) return;
         set((state) => ({
           conversations: state.conversations.map((conversation) =>
             conversation.id === conversationId
@@ -1193,6 +1216,7 @@ export const useChatStore = create<ChatState>()(
       },
 
       updateQueuedMessage: (conversationId: string, queuedMessageId: string, patch: Pick<QueuedChatMessage, 'text'>) => {
+        if (steeringConversations.has(conversationId)) return;
         const text = patch.text.trim();
         set((state) => ({
           conversations: state.conversations.map((conversation) => {
@@ -1211,6 +1235,7 @@ export const useChatStore = create<ChatState>()(
       },
 
       reorderQueuedMessage: (conversationId: string, queuedMessageId: string, beforeQueuedMessageId: string | null) => {
+        if (steeringConversations.has(conversationId)) return;
         if (queuedMessageId === beforeQueuedMessageId) return;
         set((state) => ({
           conversations: state.conversations.map((conversation) =>
@@ -1222,25 +1247,56 @@ export const useChatStore = create<ChatState>()(
       },
 
       sendQueuedMessageNow: async (conversationId: string, queuedMessageId: string) => {
+        if (steeringConversations.has(conversationId)) return;
         const conversation = get().conversations.find((item) => item.id === conversationId);
         if (!conversation || conversation.archivedAt) return;
         const queuedMessage = conversation.queuedMessages?.find((item) => item.id === queuedMessageId);
         if (!queuedMessage) return;
         if (conversation.status === 'streaming') {
-          set((state) => ({
-            conversations: state.conversations.map((item) => {
-              if (item.id !== conversationId) return item;
-              return {
-                ...item,
-                queuedMessages: (item.queuedMessages ?? []).filter((queued) => queued.id !== queuedMessageId),
-                guidedQueuedMessages: [
-                  ...(item.guidedQueuedMessages ?? []),
-                  queuedMessage,
-                ],
-                updatedAt: Date.now(),
-              };
-            }),
-          }));
+          steeringConversations.add(conversationId);
+          let accepted = false;
+          let started = false;
+          try {
+            const runId = isTauriRuntime() ? await waitForSteeringRun(conversationId) : conversation.runId;
+            const latest = get().conversations.find((item) => item.id === conversationId);
+            if (!latest || latest.archivedAt || !latest.queuedMessages?.some((item) => item.id === queuedMessageId)) return;
+            if (latest.status !== 'streaming') {
+              await startPreparedMessage(conversationId, queuedMessage, queuedMessageId);
+              started = true;
+              return;
+            }
+            let prompt = addThemeAbilityContext(
+              promptWithSelectedTextContexts(promptWithAttachments(queuedMessage.text.trim(), queuedMessage.attachments), queuedMessage.selectedTextContexts),
+              queuedMessage.selectedSkill?.id,
+              get().conversations,
+            );
+            if (queuedMessage.coworkers?.length) {
+              prompt += `\n\n${buildCoworkerOrchestrationLines(queuedMessage.coworkers).join('\n')}`;
+            }
+            const result = isTauriRuntime()
+              ? await steerCodexChat({ runId: runId!, conversationId, messageId: queuedMessageId, prompt, selectedSkill: queuedMessage.selectedSkill, attachments: queuedMessage.attachments })
+              : { accepted: true };
+            if (result.accepted) {
+              accepted = true;
+              // The native event normally arrives first, before later deltas.
+              // Applying the acknowledgement again is intentionally idempotent.
+              get().handleCodexEvent({ type: 'message_steered', runId: runId ?? '', conversationId, itemId: queuedMessageId });
+              set({ error: null });
+            } else {
+              // The turn can finish between the click and turn/steer. Keep this
+              // message first and resume immediately; no manual stop is needed.
+              get().handleCodexEvent({ type: 'completed', runId: runId ?? '', conversationId });
+              await startPreparedMessage(conversationId, queuedMessage, queuedMessageId);
+              started = true;
+            }
+          } catch (error) {
+            set({ error: `引导发送失败，消息已保留在队列中：${stringifyError(error)}` });
+          } finally {
+            steeringConversations.delete(conversationId);
+            if ((accepted || started) && get().conversations.find((item) => item.id === conversationId)?.status === 'idle') {
+              startNextQueuedMessage(conversationId);
+            }
+          }
           return;
         }
         await startPreparedMessage(conversationId, queuedMessage, queuedMessageId);
@@ -1515,8 +1571,12 @@ export const useChatStore = create<ChatState>()(
 
           let subscriptionUsage = state.subscriptionUsage;
           const conversation = state.conversations[conversationIndex];
+          if (event.runId && conversation.lastFinishedRunId === event.runId && event.type !== 'message_steered') return state;
           const wasStreaming = conversation.status === 'streaming';
           let next = applyCodexEventToConversation(conversation, event);
+          if (wasStreaming && next.status !== 'streaming' && event.runId) {
+            next = { ...next, lastFinishedRunId: event.runId };
+          }
           if (event.type === 'token_usage' && next.codexTokenUsage) {
             const profileId = conversation.activeModelProfileId || state.selectedModelProfileId;
             const profile = state.modelProfiles.find((item) => item.id === profileId);

@@ -2,14 +2,16 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
+  <meta name="report-brand-name" content="元流涌现">
+  <meta name="author" content="元流涌现">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{REPORT_TITLE}}</title>
   <link rel="stylesheet" href="./report-style.css">
 </head>
 <body>
   <!--
-    Alpha Studio Research 报告模板 · 使用说明
-    - 导出时与 report-style.css、alpha-studio-logo.png 放在同一目录，封面 ./alpha-studio-logo.png 才能正确显示。
+    客户品牌研究报告模板 · 使用说明
+    - 保留 data-report-brand 标记；成稿后运行 scripts/apply_report_branding.py 应用本轮客户品牌并嵌入 Logo，再导出 PDF。
     - 保持每个 page 区块（section.page）与底部 footer 不变，validate_report.py 依此统计页数。
     - 默认商务版式：白底/浅灰底、深色文字、克制蓝色强调、低饱和标签，避免装饰性大色块。
     - 表格 / 仪表盘 / 名单等占位符请用真实内容替换，沿用下列样式类：
@@ -34,7 +36,7 @@
   <section class="page cover">
     <div class="cover-inner">
       <div class="cover-top">
-        <div class="brand"><img class="brand-mark" src="./alpha-studio-logo.png" alt="Alpha Studio Research logo"><span>Alpha Studio Research</span></div>
+        <div class="brand"><img class="brand-mark" data-report-brand="logo" src="./neostream-logo.png" alt="元流涌现 Logo"><span><span data-report-brand="name">元流涌现</span></span></div>
         <div class="doc-meta">Report ID: {{REPORT_ID}}<br>Confidentiality: Research Use<br>Generated: {{REPORT_DATE}}</div>
       </div>
       <div class="cover-main">
@@ -50,7 +52,7 @@
         </div>
       </div>
       <div class="cover-bottom">
-        <div class="signature">Prepared by<b>Alpha Studio Research 团队</b><p class="small muted">Alpha Studio · 主题策略、事件驱动与短线资金行为研究</p></div>
+        <div class="signature">Prepared by<b><span data-report-brand="name">元流涌现</span> 团队</b><p class="small muted"><span data-report-brand="name">元流涌现</span> · 主题策略、事件驱动与短线资金行为研究</p></div>
         <div class="cover-contents">
           <div class="cover-contents-title">本期内容 · In This Report</div>
           <ol>
@@ -65,7 +67,7 @@
         </div>
       </div>
     </div>
-    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">Alpha Studio Research 团队</span><span class="footer-page">1 / 8</span></div>
+    <div class="footer"><span class="footer-brand"><b><span data-report-brand="name">元流涌现</span></b><em>Protected</em></span><span class="footer-topic"><span data-report-brand="name">元流涌现</span> 团队</span><span class="footer-page">1 / 8</span></div>
   </section>
 
   <section class="page">
@@ -85,7 +87,7 @@
       <h2>情绪指标仪表盘</h2>
       {{SENTIMENT_INDICATOR_DASHBOARD}}
     </div>
-    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">市场情绪、执行闸门与进攻路径</span><span class="footer-page">2 / 8</span></div>
+    <div class="footer"><span class="footer-brand"><b><span data-report-brand="name">元流涌现</span></b><em>Protected</em></span><span class="footer-topic">市场情绪、执行闸门与进攻路径</span><span class="footer-page">2 / 8</span></div>
   </section>
 
   <section class="page">
@@ -99,7 +101,7 @@
       <h2>全球线索到A股题材映射</h2>
       {{GLOBAL_TO_A_SHARE_MAP}}
     </div>
-    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">隔夜全球线索与A股传导</span><span class="footer-page">3 / 8</span></div>
+    <div class="footer"><span class="footer-brand"><b><span data-report-brand="name">元流涌现</span></b><em>Protected</em></span><span class="footer-topic">隔夜全球线索与A股传导</span><span class="footer-page">3 / 8</span></div>
   </section>
 
   <section class="page">
@@ -118,7 +120,7 @@
       <h2>题材全景图</h2>
       {{THEME_PANORAMA_TABLE}}
     </div>
-    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">数据质量、新闻催化与题材全景</span><span class="footer-page">4 / 8</span></div>
+    <div class="footer"><span class="footer-brand"><b><span data-report-brand="name">元流涌现</span></b><em>Protected</em></span><span class="footer-topic">数据质量、新闻催化与题材全景</span><span class="footer-page">4 / 8</span></div>
   </section>
 
   <section class="page">
@@ -131,7 +133,7 @@
       <h2>生命周期操作映射</h2>
       {{LIFECYCLE_ACTION_TABLE}}
     </div>
-    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">题材分级、生命周期与资金类型</span><span class="footer-page">5 / 8</span></div>
+    <div class="footer"><span class="footer-brand"><b><span data-report-brand="name">元流涌现</span></b><em>Protected</em></span><span class="footer-topic">题材分级、生命周期与资金类型</span><span class="footer-page">5 / 8</span></div>
   </section>
 
   <section class="page">
@@ -142,7 +144,7 @@
       <div class="callout teal"><span class="callout-label">角色逻辑</span>{{ROLE_LOGIC_SUMMARY}}</div>
       <div class="callout"><span class="callout-label">持有复核</span>{{ROLE_HOLDING_REVIEW}}</div>
     </div>
-    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">核心标的角色与底层叙事</span><span class="footer-page">6 / 8</span></div>
+    <div class="footer"><span class="footer-brand"><b><span data-report-brand="name">元流涌现</span></b><em>Protected</em></span><span class="footer-topic">核心标的角色与底层叙事</span><span class="footer-page">6 / 8</span></div>
   </section>
 
   <section class="page">
@@ -156,7 +158,7 @@
       {{HOLDING_REVIEW_TABLE}}
       <div class="callout"><span class="callout-label">仓位纪律</span>{{POSITION_DISCIPLINE}}</div>
     </div>
-    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">盘中触发、建仓加仓与风险纪律</span><span class="footer-page">7 / 8</span></div>
+    <div class="footer"><span class="footer-brand"><b><span data-report-brand="name">元流涌现</span></b><em>Protected</em></span><span class="footer-topic">盘中触发、建仓加仓与风险纪律</span><span class="footer-page">7 / 8</span></div>
   </section>
 
   <section class="page compact-page">
@@ -166,7 +168,7 @@
       {{SOURCE_LIST}}
       <div class="callout gold"><span class="callout-label">风险提示</span>本报告为公开信息整理和模型化研究，不构成证券投资咨询、个性化投资建议或收益承诺。研究概率与观察权重仅用于决策框架，不代表确定收益。</div>
     </div>
-    <div class="footer"><span class="footer-brand"><b>Alpha Studio Research</b><em>Protected</em></span><span class="footer-topic">Alpha Studio Research 团队</span><span class="footer-page">8 / 8</span></div>
+    <div class="footer"><span class="footer-brand"><b><span data-report-brand="name">元流涌现</span></b><em>Protected</em></span><span class="footer-topic"><span data-report-brand="name">元流涌现</span> 团队</span><span class="footer-page">8 / 8</span></div>
   </section>
 </body>
 </html>

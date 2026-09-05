@@ -43,7 +43,7 @@ use crate::{
     },
     market::{CapitalFlowSnapshot, MarketSnapshot},
     money::{decimal_json, deserialize_decimal, has_supported_scale},
-    state::AppState,
+    state::{AppState, GatewayRunPermit},
     tokens::{AdminTokenClaims, DeviceTokenClaims, RunTokenClaims},
 };
 
@@ -63,6 +63,16 @@ const FAST_MODE_COST_MULTIPLIER: u64 = 2;
 // instead of surfacing a false 429 to the client.
 const GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 const GATEWAY_REQUEST_LEASE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
+fn gateway_request_wait_timeout(provider: &ProviderConfig) -> Duration {
+    // Queue time is not inference time. Allow one complete upstream request
+    // (including its bounded retries and settlement) between queue advances.
+    let retries = u64::from(provider.max_retries.min(5));
+    Duration::from_millis(provider.request_timeout_ms.clamp(1_000, 900_000))
+        .saturating_mul((retries + 1) as u32)
+        .saturating_add(Duration::from_secs(retries * 5 + 30))
+        .max(GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT)
+}
 
 pub async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
@@ -2373,6 +2383,17 @@ pub async fn gateway_models(
     })))
 }
 
+pub async fn gateway_run_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Value>> {
+    let claims = state.run_tokens.verify(bearer_token(&headers)?)?;
+    ensure_gateway_run_available(&state.db, &claims).await?;
+    Ok(Json(
+        json!({ "status": state.gateway_run_queue.status(&claims.run_id).await }),
+    ))
+}
+
 pub async fn gateway_responses(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2390,14 +2411,21 @@ pub async fn gateway_responses(
     let request_pricing = pricing_for_gateway_request(&route.pricing, &body);
     let provider = load_provider_config(&state, &route).await?;
     let gateway_request_id = format!("gwreq_{}", Uuid::new_v4().simple());
+    let wait_timeout = gateway_request_wait_timeout(&provider);
     let queue_started = std::time::Instant::now();
     let run_permit = state
         .gateway_run_queue
-        .acquire(&claims.run_id, GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT)
+        .acquire(&claims.run_id, wait_timeout)
         .await
         .ok_or_else(|| {
+            tracing::warn!(
+                run_id = %claims.run_id,
+                request_id = ?headers.get("x-request-id"),
+                wait_ms = queue_started.elapsed().as_millis(),
+                "gateway queue made no progress before its request deadline"
+            );
             ApiError::TooManyRequests(
-                "the model request waited too long in the per-run FIFO queue".to_string(),
+                "Alpha Studio gateway queue timed out waiting for another request in this task; this is not an upstream model rate limit".to_string(),
             )
         })?;
     if queue_started.elapsed() >= GATEWAY_REQUEST_LEASE_RETRY_INTERVAL {
@@ -2407,7 +2435,8 @@ pub async fn gateway_responses(
             "waited in per-run gateway request queue"
         );
     }
-    let remaining_budget = start_gateway_request(&state.db, &claims, &gateway_request_id).await?;
+    let remaining_budget =
+        start_gateway_request(&state.db, &claims, &gateway_request_id, wait_timeout).await?;
     if let Err(error) =
         enforce_request_budget(&mut body, remaining_budget, &route, &request_pricing)
     {
@@ -2564,6 +2593,8 @@ pub async fn gateway_responses(
     }
 }
 
+// Keep the stream's request, accounting context, and queue permit together.
+#[allow(clippy::too_many_arguments)]
 fn stream_upstream_response(
     upstream: reqwest::Response,
     request: UpstreamRequest,
@@ -2573,7 +2604,7 @@ fn stream_upstream_response(
     gateway_request_id: String,
     pricing: Pricing,
     started: chrono::DateTime<Utc>,
-    run_permit: tokio::sync::OwnedSemaphorePermit,
+    run_permit: GatewayRunPermit,
 ) -> Response {
     let upstream_status = upstream.status().as_u16();
     let format = request.response_format;
@@ -2595,6 +2626,9 @@ fn stream_upstream_response(
             match chunk {
                 Ok(chunk) => {
                     let frames = decoder.push(&chunk);
+                    if frames.iter().any(|frame| frame.data.is_some()) {
+                        run_permit.record_output();
+                    }
                     if let Some(adapter) = adapter.as_mut() {
                         for frame in frames {
                             let Some(data) = frame.data else {
@@ -2639,6 +2673,9 @@ fn stream_upstream_response(
                             };
                             if terminal {
                                 terminal_output.extend_from_slice(&output);
+                                // Responses has a semantic terminal event; it
+                                // need not send [DONE] or close the HTTP body.
+                                saw_done = true;
                             } else {
                                 let _ = sender.send(Ok(Bytes::from(output))).await;
                             }
@@ -3234,6 +3271,7 @@ async fn start_gateway_request(
     pool: &PgPool,
     claims: &RunTokenClaims,
     gateway_request_id: &str,
+    wait_timeout: Duration,
 ) -> ApiResult<Decimal> {
     let waiting_since = std::time::Instant::now();
     let mut waited_for_previous_request = false;
@@ -3284,7 +3322,7 @@ async fn start_gateway_request(
         // If it remains available, the only transient blocker is another active
         // request for this same run.
         ensure_gateway_run_available(pool, claims).await?;
-        if waiting_since.elapsed() >= GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT {
+        if waiting_since.elapsed() >= wait_timeout {
             return Err(ApiError::TooManyRequests(
                 "the previous model request did not settle before the next request arrived"
                     .to_string(),
@@ -3611,6 +3649,8 @@ fn resolve_usage_charge<'a>(
     }
 }
 
+// Settlement receives the complete measured usage and its request context.
+#[allow(clippy::too_many_arguments)]
 async fn settle_and_record_usage(
     pool: &PgPool,
     claims: &RunTokenClaims,
@@ -4774,8 +4814,8 @@ mod tests {
         resolve_usage_charge, settle_and_record_usage, start_gateway_request,
         stream_upstream_response, validate_client_agreement_acceptance,
         validate_offline_payment_request, ClientAgreementAcceptance, MeteringStatus, ModelRoute,
-        OfflinePaymentRequest, FAST_MODE_COST_MULTIPLIER, GATEWAY_RUN_TTL_SECONDS,
-        GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP,
+        OfflinePaymentRequest, FAST_MODE_COST_MULTIPLIER, GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT,
+        GATEWAY_RUN_TTL_SECONDS, GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP,
     };
     use crate::{
         billing::{GatewayUsage, Pricing},
@@ -4783,6 +4823,24 @@ mod tests {
         state::GatewayRunQueue,
         tokens::RunTokenClaims,
     };
+
+    #[test]
+    fn queue_deadline_covers_provider_inference_retries_and_settlement() {
+        let mut provider = crate::gateway::ProviderConfig {
+            request_timeout_ms: 300_000,
+            max_retries: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::gateway_request_wait_timeout(&provider),
+            Duration::from_secs(330)
+        );
+        provider.max_retries = 2;
+        assert_eq!(
+            super::gateway_request_wait_timeout(&provider),
+            Duration::from_secs(940)
+        );
+    }
 
     #[test]
     fn bounds_billing_ledger_pagination() {
@@ -5181,9 +5239,14 @@ mod tests {
         };
 
         for request_id in ["gwreq_tool_choice", "gwreq_after_tool"] {
-            let remaining = start_gateway_request(&pool, &claims, request_id)
-                .await
-                .unwrap();
+            let remaining = start_gateway_request(
+                &pool,
+                &claims,
+                request_id,
+                GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT,
+            )
+            .await
+            .unwrap();
             assert!(remaining > Decimal::ZERO);
             settle_and_record_usage(
                 &pool,
@@ -5204,14 +5267,25 @@ mod tests {
         // delivered its final usage frame. The second acquisition must wait for
         // settlement rather than fail with a transient 429.
         let overlapping_owner = "gwreq_overlap_owner";
-        start_gateway_request(&pool, &claims, overlapping_owner)
-            .await
-            .unwrap();
+        start_gateway_request(
+            &pool,
+            &claims,
+            overlapping_owner,
+            GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT,
+        )
+        .await
+        .unwrap();
         let waiting_pool = pool.clone();
         let waiting_claims = claims.clone();
         let waiting_started = std::time::Instant::now();
         let waiting_request = tokio::spawn(async move {
-            start_gateway_request(&waiting_pool, &waiting_claims, "gwreq_overlap_waiter").await
+            start_gateway_request(
+                &waiting_pool,
+                &waiting_claims,
+                "gwreq_overlap_waiter",
+                GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT,
+            )
+            .await
         });
         tokio::time::sleep(Duration::from_millis(250)).await;
         settle_and_record_usage(
@@ -5392,12 +5466,12 @@ mod tests {
 
     #[tokio::test]
     async fn withholds_native_terminal_frames_from_a_shared_network_chunk() {
-        let app = Router::new().route(
-            "/",
-            get(|| async {
-                let stream = futures_util::stream::once(async {
-                    Ok::<Bytes, Infallible>(Bytes::from_static(
-                        br#"event: response.output_text.delta
+        for include_done in [true, false] {
+            let app = Router::new().route(
+                "/",
+                get(move || async move {
+                    let stream = futures_util::stream::once(async move {
+                        let bytes = br#"event: response.output_text.delta
 data: {"type":"response.output_text.delta","delta":"ready"}
 
 event: response.completed
@@ -5405,98 +5479,105 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":8,"output
 
 data: [DONE]
 
-"#,
-                    ))
-                });
-                Response::builder()
-                    .header("content-type", "text/event-stream")
-                    .body(Body::from_stream(stream))
-                    .unwrap()
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let upstream = reqwest::Client::new()
-            .get(format!("http://{address}/"))
-            .send()
-            .await
-            .unwrap();
-        let request = UpstreamRequest {
-            url: format!("http://{address}/"),
-            headers: Vec::new(),
-            query_params: Vec::new(),
-            response_format: UpstreamResponseFormat::Responses,
-            stream_response: true,
-            namespace_tool_compat: false,
-            request_timeout_ms: 1_000,
-            max_retries: 0,
-        };
-        let pool = PgPoolOptions::new()
-            .acquire_timeout(Duration::from_millis(25))
-            .connect_lazy("postgresql://postgres:postgres@127.0.0.1:1/unused")
-            .unwrap();
-        let run_queue = GatewayRunQueue::default();
-        let run_permit = run_queue
-            .acquire("run_test", Duration::from_secs(1))
-            .await
-            .unwrap();
-        let response = stream_upstream_response(
-            upstream,
-            request,
-            json!({ "stream": true }),
-            pool,
-            RunTokenClaims::new(
-                "tenant_test".to_string(),
-                "user_test".to_string(),
-                "device_test".to_string(),
-                "run_test".to_string(),
-                "model_test".to_string(),
-                Decimal::ONE,
-                60,
-            ),
-            "gwreq_test".to_string(),
-            Pricing {
-                input_yuan_per_million: Decimal::ZERO,
-                output_yuan_per_million: Decimal::ZERO,
-                reasoning_yuan_per_million: Decimal::ZERO,
-                cached_input_yuan_per_million: Decimal::ZERO,
-                markup_bps: 0,
-            },
-            Utc::now(),
-            run_permit,
-        );
-        let mut body = response.into_body().into_data_stream();
-        let first = tokio::time::timeout(Duration::from_millis(150), body.next())
-            .await
-            .expect("native delta was buffered with settlement")
-            .expect("gateway stream ended before the native delta")
-            .unwrap();
-        let first = String::from_utf8(first.to_vec()).unwrap();
-        assert!(first.contains("response.output_text.delta"));
-        assert!(first.contains("ready"));
-        assert!(!first.contains("response.completed"));
-        assert!(!first.contains("[DONE]"));
-        assert!(run_queue
-            .acquire("run_test", Duration::from_millis(20))
-            .await
-            .is_none());
+"#;
+                        let text = std::str::from_utf8(bytes).unwrap();
+                        Ok::<Bytes, Infallible>(Bytes::from(if include_done {
+                            text.to_string()
+                        } else {
+                            text.replace("data: [DONE]\n\n", "")
+                        }))
+                    })
+                    .chain(futures_util::stream::pending());
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from_stream(stream))
+                        .unwrap()
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let upstream = reqwest::Client::new()
+                .get(format!("http://{address}/"))
+                .send()
+                .await
+                .unwrap();
+            let request = UpstreamRequest {
+                url: format!("http://{address}/"),
+                headers: Vec::new(),
+                query_params: Vec::new(),
+                response_format: UpstreamResponseFormat::Responses,
+                stream_response: true,
+                namespace_tool_compat: false,
+                request_timeout_ms: 1_000,
+                max_retries: 0,
+            };
+            let pool = PgPoolOptions::new()
+                .acquire_timeout(Duration::from_millis(25))
+                .connect_lazy("postgresql://postgres:postgres@127.0.0.1:1/unused")
+                .unwrap();
+            let run_queue = GatewayRunQueue::default();
+            let run_permit = run_queue
+                .acquire("run_test", Duration::from_secs(1))
+                .await
+                .unwrap();
+            let response = stream_upstream_response(
+                upstream,
+                request,
+                json!({ "stream": true }),
+                pool,
+                RunTokenClaims::new(
+                    "tenant_test".to_string(),
+                    "user_test".to_string(),
+                    "device_test".to_string(),
+                    "run_test".to_string(),
+                    "model_test".to_string(),
+                    Decimal::ONE,
+                    60,
+                ),
+                "gwreq_test".to_string(),
+                Pricing {
+                    input_yuan_per_million: Decimal::ZERO,
+                    output_yuan_per_million: Decimal::ZERO,
+                    reasoning_yuan_per_million: Decimal::ZERO,
+                    cached_input_yuan_per_million: Decimal::ZERO,
+                    markup_bps: 0,
+                },
+                Utc::now(),
+                run_permit,
+            );
+            let mut body = response.into_body().into_data_stream();
+            let first = tokio::time::timeout(Duration::from_millis(150), body.next())
+                .await
+                .expect("native delta was buffered with settlement")
+                .expect("gateway stream ended before the native delta")
+                .unwrap();
+            let first = String::from_utf8(first.to_vec()).unwrap();
+            assert!(first.contains("response.output_text.delta"));
+            assert!(first.contains("ready"));
+            assert!(!first.contains("response.completed"));
+            assert!(!first.contains("[DONE]"));
+            assert!(run_queue
+                .acquire("run_test", Duration::from_millis(20))
+                .await
+                .is_none());
 
-        let mut rest = String::new();
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while let Some(chunk) = body.next().await {
-                rest.push_str(std::str::from_utf8(&chunk.unwrap()).unwrap());
-            }
-        })
-        .await
-        .expect("gateway stream did not publish native completion after settlement");
-        assert!(rest.contains("response.completed"));
-        assert!(rest.contains("data: [DONE]"));
-        assert!(run_queue
-            .acquire("run_test", Duration::from_millis(20))
+            let mut rest = String::new();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while let Some(chunk) = body.next().await {
+                    rest.push_str(std::str::from_utf8(&chunk.unwrap()).unwrap());
+                }
+            })
             .await
-            .is_some());
+            .expect("gateway stream did not publish native completion after settlement");
+            assert!(rest.contains("response.completed"));
+            assert_eq!(rest.contains("data: [DONE]"), include_done);
+            assert!(run_queue
+                .acquire("run_test", Duration::from_millis(20))
+                .await
+                .is_some());
 
-        server.abort();
+            server.abort();
+        }
     }
 }

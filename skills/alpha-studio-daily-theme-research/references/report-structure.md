@@ -18,7 +18,7 @@ Unless the user explicitly asks for a quick brief, generate the standard daily r
 Use this default order for the standard daily report:
 
 1. Cover / header (page 1)
-   - Alpha Studio Research team, report date, coverage period, risk label.
+   - Configured customer research team (default: 元流涌现), report date, coverage period, risk label.
 2. One-line strategy and market dashboard (page 2)
    - Example: "Market sentiment is active; focus on confirmed fermentation themes, avoid climax back-row."
    - Required 今日执行闸门 before the dashboard: one global state (`完全不做` / `只观察` / `触发后轻仓试错` / `只做主线核心` / `持有/减仓优先`), plus `今日只做`, `今日不做`, `触发再做`, and `失效动作`.
@@ -135,12 +135,12 @@ Format:
 
 ## Printable HTML/PDF
 
-Always build on `assets/alpha-studio-report-template.html` + `assets/report-style.css` + `assets/alpha-studio-logo.png`. The stylesheet defines a clean business research look: white/light-gray paper, charcoal text, restrained corporate-blue accents, neutral table structure, low-saturation tags, and A-share red/green price conventions. Do not hand-roll a new visual style or inline ad-hoc CSS; fill the template and reuse its classes. Export all three files to the same folder so the cover logo (`./alpha-studio-logo.png`) resolves.
+Always build on `assets/alpha-studio-report-template.html` + `assets/report-style.css` + `assets/neostream-logo.png`. The stylesheet defines a clean business research look: white/light-gray paper, charcoal text, restrained corporate-blue accents, neutral table structure, low-saturation tags, and A-share red/green price conventions. Do not hand-roll a new visual style or inline ad-hoc CSS; fill the template and reuse its classes. Keep the stylesheet beside the report. Retain all `data-report-brand` markers, then run `scripts/apply_report_branding.py` with the supplied `--branding-json` before validation and PDF export; without a supplied config, use 元流涌现 defaults. The helper embeds the logo for offline delivery.
 
 Structure rules:
 - Keep every `section.page` and its bottom `.footer` (page numbers) intact — the validator counts them. Standard daily report = 8 pages only when content fits cleanly; use 9-10 pages when market dashboard, overnight/global maps, continuity, sources, or role tables would otherwise overflow.
 - Keep the per-page header (`.page-head` with `.eyebrow` + `.page-kicker`) and wrap page content in `.page-body`. Footer stays pinned at the bottom of each page.
-- Every page footer must include the Alpha Studio Research text brand lock (`.footer-brand`) and a compact numeric page mark such as `1 / 8`. Do not put the logo image in the footer; keep the logo on the cover so footer alignment remains clean while copied pages remain visibly attributable.
+- Every page footer must include the configured customer name (default: 元流涌现) as the text brand lock (`.footer-brand`) and a compact numeric page mark such as `1 / 8`. Do not put the logo image in the footer; keep the logo on the cover so footer alignment remains clean while copied pages remain visibly attributable.
 - Separate cover page; one A4 page per `section.page`.
 - Use compact print styles (`compact-page`) for the source/disclaimer page and for dense execution/risk tables that have been checked by the validator.
 - Keep the report business-like: no decorative gradients, oversized empty hero areas, warm/gold-dominant color blocks, or marketing copy. Use tables, metric grids, and callouts to organize decisions and evidence.

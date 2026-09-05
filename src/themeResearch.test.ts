@@ -143,6 +143,9 @@ describe('themeResearch', () => {
     expect(prompt).toContain('executionGate');
     expect(prompt).toContain('上一期主题连续跟踪');
     expect(prompt).toContain('数据口径');
+    expect(prompt).toContain('不要为了相同字段重复请求东方财富或腾讯');
+    expect(prompt).toContain('外部来源不可达时最多做一次有界重试');
+    expect(prompt).toContain('不要在任务运行时执行 pip/npm 安装');
     expect(prompt).toContain('持仓');
     expect(prompt).toContain('自选');
   });

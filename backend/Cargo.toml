@@ -13,10 +13,11 @@ name = "alpha-studio-backend"
 path = "src/main.rs"
 
 [dependencies]
+alpha-agent-network = { path = "../crates/agent-network" }
 aes-gcm = "0.10"
 anyhow = "1"
 async-stream = "0.3"
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 jsonwebtoken = "9"
@@ -41,4 +42,6 @@ uuid = { version = "1", features = ["serde", "v4"] }
 rust_decimal = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
+tokio-tungstenite = "0.24"
+tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }

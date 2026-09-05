@@ -1,12 +1,15 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Weak},
+    sync::{
+        atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
+        Arc, Weak,
+    },
     time::Duration,
 };
 
 use reqwest::Client;
 use sqlx::{PgPool, Row};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     config::AppConfig,
@@ -18,36 +21,119 @@ use crate::{
 
 #[derive(Clone, Default)]
 pub struct GatewayRunQueue {
-    gates: Arc<Mutex<HashMap<String, Weak<Semaphore>>>>,
+    gates: Arc<Mutex<HashMap<String, Weak<GatewayRunGate>>>>,
+}
+
+struct GatewayRunGate {
+    semaphore: Arc<Semaphore>,
+    progress: watch::Sender<u64>,
+    waiting: AtomicUsize,
+    active: AtomicBool,
+    last_output_at: AtomicI64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayRunStatus {
+    active: bool,
+    waiting_requests: usize,
+    last_output_at: i64,
+}
+
+struct GatewayWaiter(Arc<GatewayRunGate>);
+
+impl Drop for GatewayWaiter {
+    fn drop(&mut self) {
+        self.0.waiting.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+pub struct GatewayRunPermit {
+    permit: Option<OwnedSemaphorePermit>,
+    gate: Arc<GatewayRunGate>,
+}
+
+impl GatewayRunPermit {
+    pub fn record_output(&self) {
+        self.gate
+            .last_output_at
+            .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+    }
+}
+
+impl Drop for GatewayRunPermit {
+    fn drop(&mut self) {
+        // Release the slot before waking waiters. The acquisition future stays
+        // enqueued while observing progress, preserving semaphore FIFO order.
+        self.gate.active.store(false, Ordering::Relaxed);
+        self.permit.take();
+        self.gate
+            .progress
+            .send_modify(|generation| *generation += 1);
+    }
 }
 
 impl GatewayRunQueue {
-    pub async fn acquire(
-        &self,
-        run_id: &str,
-        wait_timeout: Duration,
-    ) -> Option<OwnedSemaphorePermit> {
+    pub async fn status(&self, run_id: &str) -> Option<GatewayRunStatus> {
+        let gate = self
+            .gates
+            .lock()
+            .await
+            .get(run_id)
+            .and_then(Weak::upgrade)?;
+        Some(GatewayRunStatus {
+            active: gate.active.load(Ordering::Relaxed),
+            waiting_requests: gate.waiting.load(Ordering::Relaxed),
+            last_output_at: gate.last_output_at.load(Ordering::Relaxed),
+        })
+    }
+
+    pub async fn acquire(&self, run_id: &str, wait_timeout: Duration) -> Option<GatewayRunPermit> {
         let gate = {
             let mut gates = self.gates.lock().await;
             gates.retain(|_, gate| gate.strong_count() > 0);
             if let Some(gate) = gates.get(run_id).and_then(Weak::upgrade) {
                 gate
             } else {
-                let gate = Arc::new(Semaphore::new(1));
+                let gate = Arc::new(GatewayRunGate {
+                    semaphore: Arc::new(Semaphore::new(1)),
+                    progress: watch::channel(0).0,
+                    waiting: AtomicUsize::new(0),
+                    active: AtomicBool::new(false),
+                    last_output_at: AtomicI64::new(0),
+                });
                 gates.insert(run_id.to_string(), Arc::downgrade(&gate));
                 gate
             }
         };
 
-        tokio::time::timeout(wait_timeout, gate.acquire_owned())
-            .await
-            .ok()
-            .and_then(Result::ok)
+        gate.waiting.fetch_add(1, Ordering::Relaxed);
+        let _waiter = GatewayWaiter(gate.clone());
+        let mut progress = gate.progress.subscribe();
+        let acquisition = gate.semaphore.clone().acquire_owned();
+        tokio::pin!(acquisition);
+        loop {
+            tokio::select! {
+                biased;
+                permit = &mut acquisition => {
+                    gate.active.store(permit.is_ok(), Ordering::Relaxed);
+                    gate.last_output_at.store(0, Ordering::Relaxed);
+                    return permit.ok().map(|permit| GatewayRunPermit {
+                        permit: Some(permit), gate,
+                    });
+                }
+                changed = progress.changed() => {
+                    if changed.is_err() { return None; }
+                }
+                _ = tokio::time::sleep(wait_timeout) => return None,
+            }
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct AppState {
+    pub agent_data_relay: crate::agent_network::RelayLimits,
     pub config: Arc<AppConfig>,
     pub db: PgPool,
     pub redis: Option<redis::Client>,
@@ -75,6 +161,7 @@ impl AppState {
             MarketDataHub::new(config.market_refresh_seconds, config.market_snapshot_limit);
         let capital_flow = MarketCapitalFlowHub::new(config.market_refresh_seconds);
         Self {
+            agent_data_relay: crate::agent_network::RelayLimits::default(),
             config: Arc::new(config),
             db,
             redis,
@@ -222,5 +309,87 @@ mod tests {
             .acquire("run_timeout", Duration::from_millis(20))
             .await
             .is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gateway_queue_deadline_restarts_when_a_predecessor_finishes() {
+        let queue = GatewayRunQueue::default();
+        let owner = queue
+            .acquire("run_progress", Duration::from_secs(180))
+            .await
+            .unwrap();
+        let first_queue = queue.clone();
+        let first = tokio::spawn(async move {
+            let permit = first_queue
+                .acquire("run_progress", Duration::from_secs(180))
+                .await
+                .unwrap();
+            permit.record_output();
+            tokio::time::sleep(Duration::from_secs(178)).await;
+            drop(permit);
+        });
+        tokio::task::yield_now().await;
+        let last_queue = queue.clone();
+        let last = tokio::spawn(async move {
+            last_queue
+                .acquire("run_progress", Duration::from_secs(180))
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(
+            queue.status("run_progress").await.unwrap().waiting_requests,
+            2
+        );
+
+        tokio::time::advance(Duration::from_secs(10)).await;
+        drop(owner);
+        tokio::task::yield_now().await;
+        let status = queue.status("run_progress").await.unwrap();
+        assert!(status.active);
+        assert!(status.last_output_at > 0);
+        assert_eq!(status.waiting_requests, 1);
+        tokio::time::advance(Duration::from_secs(171)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !last.is_finished(),
+            "total queue time must not exhaust the head request's deadline"
+        );
+        tokio::time::advance(Duration::from_secs(7)).await;
+        first.await.unwrap();
+        let permit = last
+            .await
+            .unwrap()
+            .expect("healthy predecessor should unblock the queued request");
+        drop(permit);
+        assert!(queue.status("run_progress").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_queue_waiters_do_not_leave_phantom_progress() {
+        let queue = GatewayRunQueue::default();
+        let owner = queue
+            .acquire("run_cancel", Duration::from_secs(1))
+            .await
+            .unwrap();
+        let pending_queue = queue.clone();
+        let waiter = tokio::spawn(async move {
+            pending_queue
+                .acquire("run_cancel", Duration::from_secs(1))
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(
+            queue.status("run_cancel").await.unwrap().waiting_requests,
+            1
+        );
+        waiter.abort();
+        let _ = waiter.await;
+        assert_eq!(
+            queue.status("run_cancel").await.unwrap().waiting_requests,
+            0
+        );
+        assert!(queue.status("another_run").await.is_none());
+        drop(owner);
+        assert!(queue.status("run_cancel").await.is_none());
     }
 }

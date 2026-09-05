@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
+import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -33,19 +37,109 @@ INDEX_SECIDS = {
     "0.899050": "北证50",
 }
 
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 6.0
+DEFAULT_RETRIES = 1
+DEFAULT_COLLECTION_BUDGET_SECONDS = 25.0
+DEFAULT_WORKERS = 4
+RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
+PAGE_SIZE_HTTP_STATUS = {400, 413, 414, 422}
 
-def fetch_json(url: str, timeout: int = 15, retries: int = 2) -> dict:
+
+class FetchError(RuntimeError):
+    """Base class for bounded snapshot collection failures."""
+
+
+class FetchPageSizeError(FetchError):
+    """The endpoint rejected the requested response/page size."""
+
+
+class FetchUnavailableError(FetchError):
+    """The endpoint is unavailable and page-size fallback cannot help."""
+
+
+class FetchTransportError(FetchUnavailableError):
+    """DNS, TCP, TLS, or socket I/O failed."""
+
+
+class CollectionBudget:
+    def __init__(self, seconds: float):
+        self.deadline = time.monotonic() + max(0.1, seconds)
+
+    def request_timeout(self, preferred: float) -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise FetchUnavailableError("market-data collection budget exhausted")
+        return max(0.1, min(max(0.1, preferred), remaining))
+
+    def sleep(self, seconds: float) -> None:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise FetchUnavailableError("market-data collection budget exhausted")
+        time.sleep(min(seconds, remaining))
+
+
+class HostCircuitBreaker:
+    def __init__(self):
+        self._failed_hosts: set[str] = set()
+        self._lock = threading.Lock()
+
+    def ensure_available(self, url: str) -> None:
+        host = urllib.parse.urlparse(url).hostname or ""
+        with self._lock:
+            if host in self._failed_hosts:
+                raise FetchTransportError(f"host circuit is open for {host}")
+
+    def record_transport_failure(self, url: str) -> None:
+        host = urllib.parse.urlparse(url).hostname or ""
+        if not host:
+            return
+        with self._lock:
+            self._failed_hosts.add(host)
+
+
+def fetch_json(
+    url: str,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    retries: int = DEFAULT_RETRIES,
+    *,
+    budget: CollectionBudget | None = None,
+    circuit_breaker: HostCircuitBreaker | None = None,
+) -> dict:
     last_error: Exception | None = None
     request = urllib.request.Request(url, headers=HEADERS)
+    retries = max(0, retries)
     for attempt in range(retries + 1):
+        if circuit_breaker:
+            circuit_breaker.ensure_available(url)
+        request_timeout = budget.request_timeout(timeout) if budget else max(0.1, timeout)
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 return json.loads(response.read().decode("utf-8", "ignore"))
-        except Exception as exc:  # network/vendor endpoints can be flaky
+        except urllib.error.HTTPError as exc:
             last_error = exc
-            if attempt < retries:
-                time.sleep(0.8 * (attempt + 1))
-    raise RuntimeError(f"request failed after {retries + 1} attempts: {last_error}")
+            if exc.code in PAGE_SIZE_HTTP_STATUS:
+                raise FetchPageSizeError(f"HTTP {exc.code}") from exc
+            if exc.code not in RETRYABLE_HTTP_STATUS or attempt >= retries:
+                raise FetchUnavailableError(f"HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError) as exc:
+            last_error = exc
+            if attempt >= retries:
+                if circuit_breaker:
+                    circuit_breaker.record_transport_failure(url)
+                raise FetchTransportError(
+                    f"transport failed after {attempt + 1} attempt(s): {exc}"
+                ) from exc
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise FetchUnavailableError(f"invalid JSON response: {exc}") from exc
+        if attempt < retries:
+            delay = 0.5 * (attempt + 1)
+            if budget:
+                budget.sleep(delay)
+            else:
+                time.sleep(delay)
+    raise FetchUnavailableError(
+        f"request failed after {retries + 1} attempt(s): {last_error}"
+    )
 
 
 def build_url(base: str, params: dict) -> str:
@@ -53,7 +147,16 @@ def build_url(base: str, params: dict) -> str:
     return f"{base}?{urllib.parse.urlencode(params)}"
 
 
-def fetch_topic_pool(kind: str, requested_date: str, page_size: int) -> dict:
+def fetch_topic_pool(
+    kind: str,
+    requested_date: str,
+    page_size: int,
+    *,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    retries: int = DEFAULT_RETRIES,
+    budget: CollectionBudget | None = None,
+    circuit_breaker: HostCircuitBreaker | None = None,
+) -> dict:
     page_sizes = [page_size]
     for fallback in (1000, 200, 50):
         if fallback not in page_sizes and fallback < page_size:
@@ -72,7 +175,13 @@ def fetch_topic_pool(kind: str, requested_date: str, page_size: int) -> dict:
             },
         )
         try:
-            raw = fetch_json(url)
+            raw = fetch_json(
+                url,
+                timeout=timeout,
+                retries=retries,
+                budget=budget,
+                circuit_breaker=circuit_breaker,
+            )
             data = raw.get("data") or {}
             pool = data.get("pool") or []
             return {
@@ -85,8 +194,11 @@ def fetch_topic_pool(kind: str, requested_date: str, page_size: int) -> dict:
                 "page_size_used": size,
                 "endpoint": "push2ex.eastmoney.com",
             }
-        except Exception as exc:
+        except FetchPageSizeError as exc:
             errors.append(f"pagesize={size}: {exc}")
+        except FetchError as exc:
+            errors.append(f"pagesize={size}: {exc}")
+            break
     return {
         "kind": kind,
         "requested_date": requested_date,
@@ -99,7 +211,13 @@ def fetch_topic_pool(kind: str, requested_date: str, page_size: int) -> dict:
     }
 
 
-def fetch_indices() -> list[dict]:
+def fetch_indices(
+    *,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    retries: int = DEFAULT_RETRIES,
+    budget: CollectionBudget | None = None,
+    circuit_breaker: HostCircuitBreaker | None = None,
+) -> list[dict]:
     fields = "f12,f14,f2,f3,f4,f6,f17,f18,f104,f105,f106"
     url = build_url(
         "https://push2.eastmoney.com/api/qt/ulist.np/get",
@@ -110,11 +228,25 @@ def fetch_indices() -> list[dict]:
             "secids": ",".join(INDEX_SECIDS.keys()),
         },
     )
-    raw = fetch_json(url)
+    raw = fetch_json(
+        url,
+        timeout=timeout,
+        retries=retries,
+        budget=budget,
+        circuit_breaker=circuit_breaker,
+    )
     return (raw.get("data") or {}).get("diff") or []
 
 
-def fetch_boards(fs: str, limit: int) -> list[dict]:
+def fetch_boards(
+    fs: str,
+    limit: int,
+    *,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    retries: int = DEFAULT_RETRIES,
+    budget: CollectionBudget | None = None,
+    circuit_breaker: HostCircuitBreaker | None = None,
+) -> list[dict]:
     fields = "f12,f14,f2,f3,f4,f6,f104,f105,f106,f128,f140,f136"
     url = build_url(
         "https://push2.eastmoney.com/api/qt/clist/get",
@@ -131,7 +263,13 @@ def fetch_boards(fs: str, limit: int) -> list[dict]:
             "fields": fields,
         },
     )
-    raw = fetch_json(url, timeout=20)
+    raw = fetch_json(
+        url,
+        timeout=timeout,
+        retries=retries,
+        budget=budget,
+        circuit_breaker=circuit_breaker,
+    )
     return (raw.get("data") or {}).get("diff") or []
 
 
@@ -173,19 +311,63 @@ def summarize_pool(zt: dict, dt: dict, zb: dict) -> dict:
 
 
 def build_snapshot(args: argparse.Namespace) -> dict:
-    zt = fetch_topic_pool("ZT", args.date, args.page_size)
-    dt = fetch_topic_pool("DT", args.date, args.page_size)
-    zb = fetch_topic_pool("ZB", args.date, args.page_size)
+    request_timeout = min(30.0, max(0.5, float(args.request_timeout)))
+    retries = min(2, max(0, int(args.retries)))
+    budget = CollectionBudget(float(args.collection_budget))
+    circuit_breaker = HostCircuitBreaker()
+    workers = min(6, max(1, int(args.workers)))
+
+    pool_args = {
+        "timeout": request_timeout,
+        "retries": retries,
+        "budget": budget,
+        "circuit_breaker": circuit_breaker,
+    }
+    results: dict[str, object] = {}
+    task_errors: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="alpha-market") as executor:
+        futures = {
+            "ZT": executor.submit(fetch_topic_pool, "ZT", args.date, args.page_size, **pool_args),
+            "DT": executor.submit(fetch_topic_pool, "DT", args.date, args.page_size, **pool_args),
+            "ZB": executor.submit(fetch_topic_pool, "ZB", args.date, args.page_size, **pool_args),
+            "indices": executor.submit(fetch_indices, **pool_args),
+        }
+        if args.with_boards:
+            futures["industries"] = executor.submit(
+                fetch_boards, "m:90+t:2", args.board_limit, **pool_args
+            )
+            futures["concepts"] = executor.submit(
+                fetch_boards, "m:90+t:3", args.board_limit, **pool_args
+            )
+        for name, future in futures.items():
+            try:
+                results[name] = future.result()
+            except Exception as exc:
+                task_errors[name] = str(exc)
+
+    def failed_pool(kind: str) -> dict:
+        return {
+            "kind": kind,
+            "requested_date": args.date,
+            "vendor_qdate": None,
+            "total": None,
+            "pool_len": 0,
+            "pool": [],
+            "endpoint": "push2ex.eastmoney.com",
+            "error": task_errors.get(kind, "collection failed"),
+        }
+
+    zt = results.get("ZT") or failed_pool("ZT")
+    dt = results.get("DT") or failed_pool("DT")
+    zb = results.get("ZB") or failed_pool("ZB")
     errors = [
         f"{name}: {pool['error']}"
         for name, pool in {"ZT": zt, "DT": dt, "ZB": zb}.items()
         if pool.get("error")
     ]
-    try:
-        indices = fetch_indices()
-    except Exception as exc:
-        indices = []
-        errors.append(f"indices: {exc}")
+    indices = results.get("indices") or []
+    if "indices" in task_errors:
+        errors.append(f"indices: {task_errors['indices']}")
     snapshot = {
         "requested_date": args.date,
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -205,13 +387,13 @@ def build_snapshot(args: argparse.Namespace) -> dict:
         "summary": summarize_pool(zt, dt, zb),
     }
     if args.with_boards:
-        boards = {}
-        for name, fs in {"industries": "m:90+t:2", "concepts": "m:90+t:3"}.items():
-            try:
-                boards[name] = fetch_boards(fs, args.board_limit)
-            except Exception as exc:
-                boards[name] = []
-                errors.append(f"{name}_boards: {exc}")
+        boards = {
+            "industries": results.get("industries") or [],
+            "concepts": results.get("concepts") or [],
+        }
+        for name in ("industries", "concepts"):
+            if name in task_errors:
+                errors.append(f"{name}_boards: {task_errors[name]}")
         snapshot["boards"] = boards
     return snapshot
 
@@ -223,6 +405,30 @@ def main() -> None:
     parser.add_argument("--page-size", type=int, default=10000)
     parser.add_argument("--with-boards", action="store_true", help="Also fetch top industry/concept boards")
     parser.add_argument("--board-limit", type=int, default=30)
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        help="Per-attempt timeout in seconds (default: 6, clamped to 0.5-30)",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=DEFAULT_RETRIES,
+        help="Retries per request (default: 1, clamped to 0-2)",
+    )
+    parser.add_argument(
+        "--collection-budget",
+        type=float,
+        default=DEFAULT_COLLECTION_BUDGET_SECONDS,
+        help="Shared wall-clock budget for all market requests (default: 25 seconds)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help="Concurrent market requests (default: 4, clamped to 1-6)",
+    )
     args = parser.parse_args()
     snapshot = build_snapshot(args)
     text = json.dumps(snapshot, ensure_ascii=False, indent=2)

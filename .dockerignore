@@ -5,6 +5,7 @@ dist
 target
 src-tauri/target
 backend/target
+crates/**/target
 admin-web/node_modules
 admin-web/dist
 .env

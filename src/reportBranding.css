@@ -1,0 +1,12 @@
+.report-branding-settings { max-width: 720px; }
+.report-branding-description { color: var(--text-secondary); line-height: 1.7; margin: 0 0 24px; }
+.report-branding-settings fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.report-branding-field { display: flex; flex-direction: column; gap: 10px; margin-bottom: 24px; font-size: 13px; font-weight: 500; }
+.report-branding-field .settings-input { width: 100%; max-width: 460px; box-sizing: border-box; }
+.report-branding-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.report-branding-hint { color: #687589; font-size: 12px; font-weight: 400; }
+.report-branding-preview { background: #fff; color: #182334; border: 1px solid #dce2e9; border-top: 3px solid #244766; padding: 24px; margin: 0 0 24px; border-radius: 8px; }
+.report-branding-lockup { display: flex; align-items: center; gap: 16px; margin: 24px 0; }
+.report-branding-lockup img { width: 64px; height: 64px; object-fit: contain; flex-shrink: 0; }
+.report-branding-lockup strong { overflow-wrap: anywhere; font-size: 20px; }
+.report-branding-preview-title { font-size: 25px; font-weight: 600; margin-bottom: 12px; }

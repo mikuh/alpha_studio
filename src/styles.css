@@ -5757,6 +5757,26 @@ button {
   white-space: nowrap;
 }
 
+.command-status {
+  color: inherit;
+}
+
+.command-status.failed {
+  color: var(--warning);
+}
+
+.command-group-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.command-status-separator {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
 .event-target {
   flex: 1;
   min-width: 0;
@@ -5787,7 +5807,7 @@ button {
   color: var(--warning);
 }
 
-.tool-block.failed .event-verb {
+.tool-block.failed > .event-summary .event-verb {
   color: var(--warning);
 }
 
@@ -22469,11 +22489,21 @@ details[open] > .event-summary,
 }
 
 .composer-queue {
-  width: calc(100% - 26px);
-  margin: 0 13px -8px;
+  width: calc(100% - var(--cowork-radius-xl) * 2);
+  margin: 0 var(--cowork-radius-xl);
   border: 0;
   border-radius: var(--cowork-radius-lg) var(--cowork-radius-lg) 0 0;
   background: var(--bg-soft);
+}
+
+.composer-wrap.has-queue .composer-card {
+  border-top-left-radius: var(--cowork-radius-xl);
+  border-top-right-radius: var(--cowork-radius-xl);
+}
+
+.composer-queue button:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 
 .composer-queue-item + .composer-queue-item {
@@ -22816,6 +22846,33 @@ details[open] > .event-summary,
   border: 0;
   background: var(--text);
   color: var(--bg);
+}
+
+.codex-runtime-version {
+  font-family: var(--font-data);
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+.codex-runtime-update {
+  display: flex;
+  max-width: 420px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.codex-runtime-update .settings-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.codex-runtime-notice {
+  color: var(--success);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .settings-subtitle,
@@ -23743,6 +23800,14 @@ details[open] > .event-summary,
     justify-content: flex-start;
   }
 
+  .codex-runtime-update {
+    max-width: 100%;
+  }
+
+  .codex-runtime-update {
+    justify-content: flex-start;
+  }
+
   .automation-editor {
     margin: 0 8px 8px;
   }
@@ -24233,13 +24298,17 @@ button.plus-menu-item:hover,
   background: transparent;
 }
 
-/* Tool disclosures stay clickable without dedicating a noisy icon rail to them. */
+/* Quiet activity rows keep a visible disclosure affordance. */
 .message-list .event-chevron {
-  display: none;
+  display: block;
+  width: 13px;
+  height: 13px;
+  margin-left: 2px;
 }
 
 .message-list .command-group > .event-summary,
-.message-list .web-search-group > .event-summary {
+.message-list .web-search-group > .event-summary,
+.message-list .activity-group > .event-summary {
   width: fit-content;
   max-width: 100%;
   min-height: 34px;
@@ -24248,8 +24317,9 @@ button.plus-menu-item:hover,
 }
 
 .message-list .command-group[open] > .event-summary,
-.message-list .web-search-group[open] > .event-summary {
-  background: var(--bg-soft);
+.message-list .web-search-group[open] > .event-summary,
+.message-list .activity-group[open] > .event-summary {
+  background: transparent;
 }
 
 .message-list .command-group-items,
@@ -24262,6 +24332,125 @@ button.plus-menu-item:hover,
   background: transparent !important;
   box-shadow: none;
   padding: 2px 0 2px 12px;
+  max-height: 288px;
+  overflow: auto;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+
+.message-list .turn-duration {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 20px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 0 12px;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+.turn-outcome {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.turn-outcome.failed {
+  color: var(--warning);
+}
+
+.message-list .bubble > .markdown-content + .tool-block,
+.message-list .bubble > .markdown-content + .thinking-block,
+.message-list .bubble > .tool-block + .markdown-content,
+.message-list .bubble > .thinking-block + .markdown-content {
+  margin-top: 18px;
+}
+
+.message-list .event-summary {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 32px;
+  font-size: 12px;
+}
+
+.message-list .event-icon,
+.message-list .event-summary .event-icon,
+.message-list .event-summary .event-verb {
+  color: var(--text-muted);
+  font-weight: 450;
+}
+
+.message-list .event-summary .event-target {
+  flex: 0 1 auto;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.message-list .command-group-status {
+  flex-shrink: 1;
+  flex-wrap: wrap;
+  gap: 3px 6px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.message-list .tool-block.failed > .event-summary .event-verb,
+.message-list .event-summary .command-status.failed {
+  color: var(--warning);
+}
+
+.message-list .event-summary-static,
+.message-list .event-summary-static:hover {
+  cursor: default;
+  background: transparent;
+}
+
+.message-list .thinking-indicator {
+  margin-top: -18px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.message-list .thinking-shimmer {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+  animation: none;
+}
+
+.message-list .thinking-indicator::before {
+  display: block;
+  width: 5px;
+  height: 5px;
+  margin-top: 7px;
+  background: var(--accent);
+  animation: event-status-breathe 2.4s ease-in-out infinite;
+}
+
+.message-list .thinking-indicator.waiting::before,
+.message-list .thinking-indicator.stalled::before {
+  background: var(--warning);
+}
+
+@keyframes event-status-breathe {
+  0%, 100% { opacity: .45; transform: scale(.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-list .thinking-indicator::before,
+  .message-list .thinking-shimmer,
+  .message-list .spin,
+  .message-list .tool-block,
+  .message-list .thinking-block,
+  .message-list .markdown-content.streaming::after {
+    animation: none;
+  }
 }
 
 .message-list .command-group-items .tool-block.event-block,

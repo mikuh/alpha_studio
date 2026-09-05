@@ -414,8 +414,8 @@ fn validate_channel(channel: &str) -> Result<(), String> {
 }
 
 fn managed_skills_root() -> Result<PathBuf, String> {
-    let home = crate::home_dir()
-        .ok_or_else(|| "Failed to resolve HOME for managed Skills".to_string())?;
+    let home =
+        crate::home_dir().ok_or_else(|| "Failed to resolve HOME for managed Skills".to_string())?;
     Ok(PathBuf::from(home)
         .join(".alpha-studio")
         .join("managed-skills"))

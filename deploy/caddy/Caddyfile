@@ -31,6 +31,10 @@
     reverse_proxy api:8080
   }
 
+  handle /v1/run-status {
+    reverse_proxy api:8080
+  }
+
   handle /healthz {
     reverse_proxy api:8080
   }

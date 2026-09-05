@@ -17,6 +17,7 @@ pub struct AppConfig {
     pub admin_totp_secret: Vec<u8>,
     pub bind_addr: SocketAddr,
     pub market_data_enabled: bool,
+    pub agent_data_relay_enabled: bool,
     pub market_refresh_seconds: u64,
     pub market_snapshot_limit: usize,
     pub min_gateway_markup_bps: u64,
@@ -99,6 +100,7 @@ impl AppConfig {
             market_data_enabled: env_or("MARKET_DATA_ENABLED", "true")
                 .parse::<bool>()
                 .unwrap_or(true),
+            agent_data_relay_enabled: env_or("AGENT_DATA_RELAY_ENABLED", "true").parse()?,
             market_refresh_seconds: env_or("MARKET_REFRESH_SECONDS", "45")
                 .parse::<u64>()
                 .unwrap_or(45)

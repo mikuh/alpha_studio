@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as codexBridge from './codexBridge';
 import { AUTOMATION_TASKS_KEY } from './automation';
 import { DEFAULT_MODEL_PROFILE_ID, defaultModelProfiles } from './models';
 import {
@@ -685,6 +686,7 @@ describe('context compaction turns', () => {
 });
 
 describe('queued chat turns', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
   beforeEach(() => {
     vi.useFakeTimers();
     useChatStore.setState({
@@ -782,7 +784,7 @@ describe('queued chat turns', () => {
     expect(current.queuedMessages?.find((item) => item.id === 'queue-c')?.text).toBe('第四条编辑后');
   });
 
-  it('hides a guided queued message and sends it next while streaming', async () => {
+  it('sends a guided message into the active turn without stopping or waiting for completion', async () => {
     useChatStore.setState({
       conversations: [
         conversation('conv-queue', {
@@ -803,7 +805,9 @@ describe('queued chat turns', () => {
     await useChatStore.getState().sendQueuedMessageNow('conv-queue', 'queue-b');
 
     expect(useChatStore.getState().conversations[0].queuedMessages?.map((item) => item.id)).toEqual(['queue-a']);
-    expect(useChatStore.getState().conversations[0].guidedQueuedMessages?.map((item) => item.id)).toEqual(['queue-b']);
+    expect(useChatStore.getState().conversations[0].guidedQueuedMessages ?? []).toHaveLength(0);
+    expect(useChatStore.getState().conversations[0].runId).toBe('run-current');
+    expect(useChatStore.getState().conversations[0].messages[2]).toMatchObject({ role: 'user', blocks: [{ type: 'text', content: '第三条' }] });
 
     useChatStore.getState().handleCodexEvent({
       type: 'completed',
@@ -814,8 +818,97 @@ describe('queued chat turns', () => {
     const current = useChatStore.getState().conversations[0];
     expect(current.status).toBe('streaming');
     expect(current.guidedQueuedMessages ?? []).toHaveLength(0);
-    expect(current.queuedMessages?.map((item) => item.id)).toEqual(['queue-a']);
+    expect(current.queuedMessages ?? []).toHaveLength(0);
     expect(current.messages[2]).toMatchObject({ role: 'user', blocks: [{ type: 'text', content: '第三条' }] });
+    expect(current.messages[4]).toMatchObject({ role: 'user', blocks: [{ type: 'text', content: '第二条' }] });
+  });
+
+  it('uses the live steering bridge and preserves attachments, skills and selected context', async () => {
+    vi.spyOn(codexBridge, 'isTauriRuntime').mockReturnValue(true);
+    const steer = vi.spyOn(codexBridge, 'steerCodexChat').mockResolvedValue({ accepted: true });
+    const stop = vi.spyOn(codexBridge, 'stopCodexChat');
+    const start = vi.spyOn(codexBridge, 'startCodexChat');
+    const attachments: MessageAttachment[] = [{ id: 'image', name: '图.png', kind: 'image', ext: 'png', path: '/tmp/chart.png' }];
+    const selectedSkill = { id: 'chrome', title: 'Chrome' };
+    await useChatStore.getState().sendMessage('检查这张图', attachments, selectedSkill, undefined, [{ id: 'selection', text: '选中的研究上下文', sourceConversationId: 'conv-queue' }]);
+    const queued = useChatStore.getState().conversations[0].queuedMessages![0];
+
+    await useChatStore.getState().sendQueuedMessageNow('conv-queue', queued.id);
+
+    expect(steer).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-current', conversationId: 'conv-queue', messageId: queued.id, attachments, selectedSkill }));
+    expect(steer.mock.calls[0][0].prompt).toContain('选中的研究上下文');
+    expect(start).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    expect(useChatStore.getState().conversations[0].messages[2]).toMatchObject({ attachments, selectedSkill });
+  });
+
+  it('keeps a failed steering message visible and leaves the active turn running', async () => {
+    vi.spyOn(codexBridge, 'isTauriRuntime').mockReturnValue(true);
+    vi.spyOn(codexBridge, 'steerCodexChat').mockRejectedValue(new Error('connection lost'));
+    await useChatStore.getState().sendMessage('不要丢失');
+    const queued = useChatStore.getState().conversations[0].queuedMessages![0];
+
+    await useChatStore.getState().sendQueuedMessageNow('conv-queue', queued.id);
+
+    expect(useChatStore.getState().conversations[0]).toMatchObject({ status: 'streaming', runId: 'run-current', queuedMessages: [queued] });
+    expect(useChatStore.getState().conversations[0].messages).toHaveLength(2);
+    expect(useChatStore.getState().error).toContain('消息已保留在队列中');
+  });
+
+  it('waits for the native run to start before sending an early steering message', async () => {
+    vi.spyOn(codexBridge, 'isTauriRuntime').mockReturnValue(true);
+    const steer = vi.spyOn(codexBridge, 'steerCodexChat').mockResolvedValue({ accepted: true });
+    useChatStore.setState({ conversations: [conversation('conv-queue', {
+      status: 'streaming', messages: [textMessage('第一条'), { id: 'assistant-current', role: 'assistant', timestamp: 1, isStreaming: true, blocks: [] }],
+      queuedMessages: [{ id: 'early', text: '马上补充', createdAt: 2 }],
+    })] });
+    const pending = useChatStore.getState().sendQueuedMessageNow('conv-queue', 'early');
+    expect(steer).not.toHaveBeenCalled();
+    useChatStore.getState().handleCodexEvent({ type: 'started', runId: 'run-starting', conversationId: 'conv-queue' });
+    await pending;
+    expect(steer).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-starting', messageId: 'early' }));
+    expect(useChatStore.getState().conversations[0].queuedMessages).toHaveLength(0);
+  });
+
+  it('deduplicates clicks and does not drain the queue while a steering acknowledgement is in flight', async () => {
+    vi.spyOn(codexBridge, 'isTauriRuntime').mockReturnValue(true);
+    let acknowledge!: (result: { accepted: boolean }) => void;
+    const steer = vi.spyOn(codexBridge, 'steerCodexChat').mockImplementation(() => new Promise((resolve) => { acknowledge = resolve; }));
+    vi.spyOn(codexBridge, 'startCodexChat').mockResolvedValue({ runId: 'run-next' });
+    await useChatStore.getState().sendMessage('立即处理');
+    await useChatStore.getState().sendMessage('稍后处理');
+    const queued = useChatStore.getState().conversations[0].queuedMessages![0];
+    const pending = useChatStore.getState().sendQueuedMessageNow('conv-queue', queued.id);
+    await Promise.resolve();
+    await useChatStore.getState().sendQueuedMessageNow('conv-queue', queued.id);
+    useChatStore.getState().handleCodexEvent({ type: 'message_steered', runId: 'run-current', conversationId: 'conv-queue', itemId: queued.id });
+    useChatStore.getState().handleCodexEvent({ type: 'completed', runId: 'run-current', conversationId: 'conv-queue' });
+    expect(useChatStore.getState().conversations[0].queuedMessages).toHaveLength(1);
+    acknowledge({ accepted: true });
+    await pending;
+
+    expect(steer).toHaveBeenCalledTimes(1);
+    const messages = useChatStore.getState().conversations[0].messages;
+    expect(messages.filter((message) => message.id === `user-${queued.id}`)).toHaveLength(1);
+    expect(messages[4]).toMatchObject({ role: 'user', blocks: [{ type: 'text', content: '稍后处理' }] });
+  });
+
+  it('starts the selected message if the old turn already ended and ignores its late completion', async () => {
+    vi.spyOn(codexBridge, 'isTauriRuntime').mockReturnValue(true);
+    vi.spyOn(codexBridge, 'steerCodexChat').mockResolvedValue({ accepted: false });
+    vi.spyOn(codexBridge, 'startCodexChat').mockImplementation(async () => {
+      useChatStore.getState().handleCodexEvent({ type: 'completed', runId: 'run-current', conversationId: 'conv-queue' });
+      return { runId: 'run-next' };
+    });
+    await useChatStore.getState().sendMessage('普通队列');
+    await useChatStore.getState().sendMessage('优先引导');
+    const queued = useChatStore.getState().conversations[0].queuedMessages![1];
+    await useChatStore.getState().sendQueuedMessageNow('conv-queue', queued.id);
+
+    const current = useChatStore.getState().conversations[0];
+    expect(current).toMatchObject({ status: 'streaming', runId: 'run-next' });
+    expect(current.queuedMessages).toHaveLength(1);
+    expect(current.messages[2]).toMatchObject({ role: 'user', blocks: [{ type: 'text', content: '优先引导' }] });
   });
 
   it('sends a guided queued message immediately when idle', async () => {

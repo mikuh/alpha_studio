@@ -445,7 +445,7 @@ fn ensure_volcengine_history_item_status(item: &mut Value) {
         ) => true,
         _ => false,
     };
-    if requires_status && object.get("status").map_or(true, Value::is_null) {
+    if requires_status && object.get("status").is_none_or(Value::is_null) {
         object.insert("status".to_string(), json!("completed"));
     }
 }

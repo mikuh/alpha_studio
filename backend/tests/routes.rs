@@ -230,6 +230,26 @@ async fn run_creation_requires_a_signed_device_token() {
 }
 
 #[tokio::test]
+async fn gateway_progress_requires_a_valid_task_token() {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
+        .unwrap();
+    let app = build_router(AppState::new(test_config(), pool, None));
+    for authorization in [None, Some("Bearer invalid-token")] {
+        let mut request = Request::builder().uri("/v1/run-status");
+        if let Some(value) = authorization {
+            request = request.header("authorization", value);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[tokio::test]
 async fn cors_rejects_unlisted_browser_origins() {
     let pool = PgPoolOptions::new()
         .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
@@ -332,6 +352,7 @@ fn test_config() -> AppConfig {
         admin_totp_secret: b"12345678901234567890".to_vec(),
         bind_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
         market_data_enabled: false,
+        agent_data_relay_enabled: true,
         market_refresh_seconds: 45,
         market_snapshot_limit: 6000,
         min_gateway_markup_bps: 500,
@@ -340,4 +361,28 @@ fn test_config() -> AppConfig {
             "http://localhost:1421".to_string(),
         ],
     }
+}
+
+#[tokio::test]
+async fn agent_tunnel_requires_device_auth_before_opening_a_destination() {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = build_router(AppState::new(test_config(), pool, None));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for token in [None, Some("forged-device-token")] {
+        let mut request = client.get(format!("http://{address}/api/client/agent-network/tunnel?tenantId=t&deviceId=d&host=example.com&port=443"))
+            .header("connection", "upgrade").header("upgrade", "websocket")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==").header("sec-websocket-version", "13");
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        assert_eq!(request.send().await.unwrap().status().as_u16(), 401);
+    }
+    server.abort();
 }

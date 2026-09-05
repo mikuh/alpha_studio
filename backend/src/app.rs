@@ -16,7 +16,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::{observability, routes, skill_registry, state::AppState};
+use crate::{agent_network, observability, routes, skill_registry, state::AppState};
 
 pub fn build_router(state: AppState) -> Router {
     let allowed_origins = state
@@ -58,6 +58,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/market/stream", get(routes::market_stream))
         .route("/api/client/activate", post(routes::client_activate))
+        .route(
+            "/api/client/agent-network/tunnel",
+            get(agent_network::open_tunnel),
+        )
         .route(
             "/api/client/billing-summary",
             post(routes::client_billing_summary),
@@ -165,6 +169,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/responses", post(routes::gateway_responses))
         .route("/v1/models", get(routes::gateway_models))
+        .route("/v1/run-status", get(routes::gateway_run_status))
         .with_state(state.clone())
         .layer(CompressionLayer::new())
         .layer(cors)

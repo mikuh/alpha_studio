@@ -7,22 +7,40 @@ Optionally pass Markdown and structured input snapshots for stronger checks.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import re
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
+from apply_report_branding import NAME_PATTERN, read_branding
 
 
 class BasicHTMLValidator(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.errors: list[str] = []
+        self.brand_name = ""
+        self.author = ""
+        self.logos: list[dict] = []
+        self.stylesheets: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        attrs = dict(attrs)
+        if tag == "meta" and attrs.get("name") == "report-brand-name":
+            self.brand_name = attrs.get("content", "")
+        if tag == "meta" and attrs.get("name") == "author":
+            self.author = attrs.get("content", "")
+        if tag == "img" and attrs.get("data-report-brand") == "logo":
+            self.logos.append(attrs)
+        if tag == "link" and attrs.get("rel") == "stylesheet" and attrs.get("href"):
+            self.stylesheets.append(attrs["href"])
 
     def error(self, message: str) -> None:  # pragma: no cover - kept for parser API compatibility
         self.errors.append(message)
 
 
-def validate(path: Path, expected_pages: int | None) -> dict:
+def validate(path: Path, expected_pages: int | None, branding_path: Path | None = None) -> dict:
     text = path.read_text(encoding="utf-8")
     parser = BasicHTMLValidator()
     parser.feed(text)
@@ -33,8 +51,35 @@ def validate(path: Path, expected_pages: int | None) -> dict:
 
     if "TODO" in text:
         issues.append("report still contains TODO")
-    if "Alpha Studio Research" not in text:
-        issues.append("missing Alpha Studio Research branding")
+    styles = text
+    for href in parser.stylesheets:
+        stylesheet = path.parent / href
+        if stylesheet.is_file():
+            styles += "\n" + stylesheet.read_text(encoding="utf-8")
+    if re.search(r'content\s*:\s*[\"\'][^\"\']*alpha\s+studio', styles, flags=re.I):
+        issues.append("report stylesheet still contains an Alpha Studio watermark")
+    expected_name = read_branding(branding_path)[0] if branding_path else parser.brand_name
+    names = [unescape(strip_html(match.group(0))).strip() for match in re.finditer(NAME_PATTERN, text, flags=re.S | re.I)]
+    if not expected_name or not names or any(name != expected_name for name in names):
+        issues.append("missing or inconsistent report brand name")
+    if parser.brand_name != expected_name or parser.author != expected_name:
+        issues.append("report brand metadata does not match the configured name")
+    if not parser.logos:
+        issues.append("missing report brand logo")
+    for logo in parser.logos:
+        source = logo.get("src", "")
+        if not source.startswith(("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")):
+            if not source or not (path.parent / source).is_file():
+                issues.append("report brand logo is not available offline")
+        if logo.get("alt") != expected_name + " Logo":
+            issues.append("report logo alt text does not match the configured name")
+        if branding_path:
+            try:
+                actual = base64.b64decode(source.split(",", 1)[1], validate=True) if source.startswith("data:") else (path.parent / source).read_bytes()
+                if actual != read_branding(branding_path)[1].read_bytes():
+                    issues.append("report logo does not match the configured logo")
+            except (ValueError, OSError, IndexError):
+                issues.append("report logo data is invalid")
     if expected_pages is not None and pages != expected_pages:
         issues.append(f"expected {expected_pages} pages, found {pages}")
     if pages and len(footers) < pages - 1:
@@ -171,8 +216,9 @@ def validate_extended(
     inputs: Path | None,
     expected_pages: int | None,
     allow_placeholders: bool = False,
+    branding_path: Path | None = None,
 ) -> dict:
-    result = validate(html, expected_pages)
+    result = validate(html, expected_pages, branding_path)
     html_text = html.read_text(encoding="utf-8")
     md_text = markdown.read_text(encoding="utf-8") if markdown else ""
     combined = html_text + "\n" + md_text
@@ -313,6 +359,7 @@ def main() -> None:
     parser.add_argument("--markdown", help="Optional Markdown report for text-level checks")
     parser.add_argument("--inputs", help="Optional structured JSON snapshot for consistency checks")
     parser.add_argument("--expected-pages", type=int)
+    parser.add_argument("--branding-json", type=Path, help="Check name and logo against the app's per-turn branding.json")
     parser.add_argument("--allow-placeholders", action="store_true", help="Allow template placeholders and sparse sources")
     args = parser.parse_args()
     print(
@@ -323,6 +370,7 @@ def main() -> None:
                 Path(args.inputs) if args.inputs else None,
                 args.expected_pages,
                 args.allow_placeholders,
+                args.branding_json,
             ),
             ensure_ascii=False,
             indent=2,

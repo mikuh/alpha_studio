@@ -983,6 +983,12 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
   );
   const exposures = sectorExposure(input.summary).map((row) => `${row.sector} ${formatPercent(row.pct)}`);
   const marketQuotes = input.fullMarketQuotes.length ? input.fullMarketQuotes : Array.from(quotes.values());
+  const liveMarketQuotes = marketQuotes.filter((quote) => quote.source !== 'sample');
+  const marketSources = Array.from(new Set(liveMarketQuotes.map((quote) => quote.source)));
+  const marketDataDates = Array.from(new Set(liveMarketQuotes.map((quote) => quote.dataDate).filter(Boolean)));
+  const marketSnapshotScope = liveMarketQuotes.length
+    ? `Alpha Studio 云端行情快照，${liveMarketQuotes.length} 只，来源 ${marketSources.join(' / ')}${marketDataDates.length ? `，数据日期 ${marketDataDates.join(' / ')}` : ''}`
+    : '内置样例行情，未经过云端行情源校验';
   const gainers = topQuotes(marketQuotes, (a, b) => b.changePct - a.changePct, 10);
   const losers = topQuotes(marketQuotes, (a, b) => a.changePct - b.changePct, 8);
   const turnover = topQuotes(marketQuotes, (a, b) => b.turnover - a.turnover, 8);
@@ -991,20 +997,21 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
 
   return [
     '请使用 $alpha-studio-daily-theme-research skill 生成 Alpha Studio 右侧投研工作台的盘前主题研究。',
-    '该 skill 的研究规则、报告深度、模块顺序、评分/连续跟踪/产业链真实性/校验要求必须与 neostream-daily-theme-research 保持一致；只把名称与品牌替换为 Alpha Studio / Alpha Studio Research。',
+    '该 skill 的研究规则、报告深度、模块顺序、评分/连续跟踪/产业链真实性/校验要求必须与 neostream-daily-theme-research 保持一致；报告使用本轮客户品牌配置，未配置的名称和 Logo 使用元流涌现默认值。',
     '',
     '输出要求：',
     `1. 先输出一个 fenced JSON 代码块，schema 必须为 \`${PREMARKET_THEME_SCHEMA}\`。`,
-    '2. JSON 后继续输出完整 Markdown 研究报告，保留 Alpha Studio Research 的风格；默认是正式日报，不要压缩成 3-5 页骨架或只给卡片摘要。',
+    '2. JSON 后继续输出完整 Markdown 研究报告，采用客户品牌与商务研究报告风格；默认是正式日报，不要压缩成 3-5 页骨架或只给卡片摘要。',
     '3. JSON 用于工作台卡片，Markdown 用于完整报告归档。',
     '4. 必须根据当前生成时间判断是盘前、盘前延迟版、盘中更新还是复盘 + 次日前瞻；不要混用前收盘情绪和盘中数据。',
-    '5. 需要浏览或验证最新市场/新闻数据，并在 Markdown 报告里列出来源；如果当前上下文数据不足，执行闸门默认 `只观察`。',
+    '5. 政策、公告、新闻、隔夜全球线索仍需浏览或验证并在 Markdown 报告里列出来源。下方标为 Alpha Studio 云端行情快照的数据，视为工作台已完成供应商校验的结构化行情：可直接引用其来源与口径，不要为了相同字段重复请求东方财富或腾讯；只有样例、缺失或明显过期字段才补充获取。如果证据仍不足，执行闸门默认 `只观察`。',
     '6. 正式 Markdown 报告必须出现这些显式标题/标签：`今日执行闸门`、`今日资金进攻路径`、`今日进攻概率`、`情绪指标仪表盘`、`隔夜全球线索`、`全球线索到A股题材映射`、`上一期主题连续跟踪`、`题材分级与生命周期`、`题材持续时间与持有复核`、`龙头 / 中军 / 趋势核心 / 补涨矩阵`、`研究概率`、`观察权重`、`风险提示`。',
     '7. `今日资金进攻路径` 必须放在广义题材排名之前，包含主路径、备选路径、失效路径、今日进攻概率、资金为什么现在会选择该路径、只在什么条件下做。',
     '8. 每个 S/A/B 主题必须给出已运行天数、预计剩余窗口、默认持有协议、延长条件、缩短/退出条件；没有历史样本时写 `模型估计`。',
     '9. 股票角色矩阵必须保留一行多股的 `龙头 / 中军 / 趋势核心 / 补涨矩阵` 节奏，默认不要拆成 ROLE MATRIX I/II；使用 5 列紧凑表：`题材 / 角色 / 标的 / 角色逻辑 / 确认/失效`。不要把 `持有复核`、`今日处理` 做成角色矩阵列；这些内容放到表后的 callout 或单独 `角色限制` 表。产业链真实性只写股票名后的评级括号，如 `浪潮信息（A）`，表后一句解释 A/B/C/D。',
     '10. 结构化 JSON 使用工作台规范字段：`marketSentiment` 为字符串，`previousContinuity` 使用 `name/status/action/evidence`，`sourceNotes` 为字符串数组；数值运算符只用 `gt/gte/lt/lte/eq/contains`，行情标的字段用 `subjectCode`。',
     '11. 角色矩阵中的每只股票都必须通过 `triggerIds` 绑定到本主题已有的触发规则，并给出 `entryConditions` 与 `invalidationConditions`；这样工作台才能逐股显示“条件达成 / 等待触发 / 已失效”。',
+    '12. 本次是工作台内嵌日报，只需要 fenced JSON + Markdown；除非用户另行明确要求 HTML/PDF，不要创建渲染文件，也不要在任务运行时执行 pip/npm 安装。外部来源不可达时最多做一次有界重试，记录数据缺口并继续生成降级报告，不得让单一来源阻塞整份报告。',
     '',
     'JSON 结构必须使用这些字段：',
     JSON.stringify(
@@ -1104,7 +1111,7 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
     '',
     '当前本地上下文：',
     `- 生成时间：${generatedAt.toLocaleString('zh-CN', { hour12: false })}`,
-    '- 数据口径：右侧投研工作台提供本地自选、持仓、组合、指数/全市场快照；正式结论必须重新验证最新市场、公告和新闻来源。',
+    `- 数据口径：${marketSnapshotScope}。云端快照内已有的价格、涨跌幅、成交额可直接引用，不需要重复抓取；公告、政策、新闻和全球催化仍需独立核验。`,
     input.summary.valuationComplete
       ? `- 实盘记录：总资产 ${formatMoney(input.summary.totalAssets)}，现金 ${formatMoney(input.state.cash)}，仓位 ${formatPercent(input.summary.exposurePct)}，最大单票 ${formatPercent(input.summary.concentrationPct)}。`
       : `- 实盘记录：现金 ${formatMoney(input.state.cash)}；${input.summary.unpricedHoldings.length} 只持仓缺少可信行情，总资产、仓位与最大单票暂不可完整计算。`,
@@ -1117,7 +1124,7 @@ export function buildPremarketThemePrompt(input: PremarketThemePromptInput): str
     ...(watchlist.length ? watchlist.map((line) => `  - ${line}`) : ['  - 暂无自选真实行情']),
     '- 组合：',
     ...(portfolios.length ? portfolios.map((line) => `  - ${line}`) : ['  - 暂无组合']),
-    '- 市场快照（本地行情，仅作上下文，正式报告仍需验证来源）：',
+    `- 市场快照（${marketSnapshotScope}）：`,
     `  - 涨幅靠前：${gainers.join('；') || '暂无'}`,
     `  - 跌幅靠前：${losers.join('；') || '暂无'}`,
     `  - 成交额靠前：${turnover.join('；') || '暂无'}`,

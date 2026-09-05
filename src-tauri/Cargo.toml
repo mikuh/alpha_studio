@@ -1,6 +1,6 @@
 [package]
 name = "alpha-studio"
-version = "0.1.1"
+version = "0.1.2"
 description = "Alpha Studio - noncommercial local coding workspace"
 authors = ["Alpha Studio"]
 edition = "2021"
@@ -13,6 +13,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+alpha-agent-network = { path = "../crates/agent-network" }
+uuid = { version = "1", features = ["v4"] }
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+toml = "0.8"
 aes-gcm = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

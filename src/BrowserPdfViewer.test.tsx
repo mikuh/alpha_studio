@@ -13,9 +13,9 @@ const pdfMocks = vi.hoisted(() => {
   const document = {
     numPages: 10,
     getPage: vi.fn(() => Promise.resolve(page)),
-    destroy: vi.fn(() => Promise.resolve()),
   };
-  return { document, renderPage, WorkerMessageHandler };
+  const destroyLoadingTask = vi.fn(() => Promise.resolve());
+  return { document, renderPage, WorkerMessageHandler, destroyLoadingTask };
 });
 
 vi.mock('./codexBridge', () => ({
@@ -24,7 +24,7 @@ vi.mock('./codexBridge', () => ({
 
 vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
   GlobalWorkerOptions: { workerSrc: '' },
-  getDocument: vi.fn(() => ({ promise: Promise.resolve(pdfMocks.document) })),
+  getDocument: vi.fn(() => ({ promise: Promise.resolve(pdfMocks.document), destroy: pdfMocks.destroyLoadingTask })),
 }));
 
 vi.mock('pdfjs-dist/legacy/build/pdf.worker.min.mjs', () => ({
@@ -63,7 +63,7 @@ describe('BrowserPdfViewer', () => {
   });
 
   it('binds the page stage after loading and renders the first page into a sized canvas', async () => {
-    const { getByLabelText } = render(
+    const { getByLabelText, unmount } = render(
       <BrowserPdfViewer path="/tmp/report.pdf" revision={1} onOpenExternal={vi.fn()} />,
     );
 
@@ -78,6 +78,8 @@ describe('BrowserPdfViewer', () => {
     expect((globalThis as typeof globalThis & {
       pdfjsWorker?: { WorkerMessageHandler: unknown };
     }).pdfjsWorker?.WorkerMessageHandler).toBe(pdfMocks.WorkerMessageHandler);
+    unmount();
+    expect(pdfMocks.destroyLoadingTask).toHaveBeenCalledOnce();
   });
 
   it('updates the toolbar page while scrolling through the continuous document', async () => {

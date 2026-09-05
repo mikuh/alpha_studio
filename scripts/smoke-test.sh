@@ -19,6 +19,15 @@ admin_status="$(curl --silent --show-error --output /dev/null --write-out '%{htt
 metrics_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 "$base_url/metrics")"
 [[ "$metrics_status" == "404" ]] || { echo "public metrics endpoint returned HTTP $metrics_status" >&2; exit 1; }
 
+run_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 "$base_url/v1/run-status")"
+[[ "$run_status" == "401" ]] || { echo "run-status auth check returned HTTP $run_status" >&2; exit 1; }
+
+tunnel_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
+  "$base_url/api/client/agent-network/tunnel?tenantId=smoke&deviceId=smoke&host=example.com&port=443")"
+[[ "$tunnel_status" == "401" ]] || { echo "agent tunnel auth check returned HTTP $tunnel_status" >&2; exit 1; }
+
 request_headers="$(mktemp)"
 trap 'rm -f "$request_headers"' EXIT
 curl --fail --silent --show-error --output /dev/null --dump-header "$request_headers" --max-time 15 "$base_url/healthz"

@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { CoworkerAgentDefinition } from './coworkers';
 import type { ModelProfile } from './models';
-import type { ClientLicenseSession } from './license';
+import { loadClientLicenseSession, type ClientLicenseSession } from './license';
 import type {
   CodexChatEvent,
   CodexStatus,
@@ -49,11 +49,31 @@ export interface CodexChatStartResult {
   runId: string;
 }
 
+export interface CodexChatSteerRequest {
+  runId: string;
+  conversationId: string;
+  messageId: string;
+  prompt: string;
+  selectedSkill?: SkillSelection;
+  attachments?: MessageAttachment[];
+}
+
+export async function steerCodexChat(request: CodexChatSteerRequest): Promise<{ accepted: boolean }> {
+  return invoke('codex_chat_steer', { request });
+}
+
 export interface CodexAuthorizationResult {
   codexHome: string;
 }
 
 export type CodexLoginResult = CodexAuthorizationResult;
+
+export interface CodexUpdateResult {
+  previousVersion: string;
+  version: string;
+  path: string;
+  updated: boolean;
+}
 
 export interface CodexRateLimitWindow {
   usedPercent: number;
@@ -116,6 +136,13 @@ export async function checkCodex(): Promise<CodexStatus> {
   return invoke<CodexStatus>('codex_check');
 }
 
+export async function updateCodexCli(): Promise<CodexUpdateResult> {
+  if (!isTauriRuntime()) {
+    throw new Error('浏览器预览模式无法更新 Harness，请使用桌面客户端。');
+  }
+  return invoke<CodexUpdateResult>('codex_update');
+}
+
 export async function syncManagedSkills(
   session: ClientLicenseSession,
   channel = 'stable',
@@ -153,7 +180,17 @@ export async function fetchCodexSubscriptionUsage(): Promise<CodexSubscriptionUs
 }
 
 export async function startCodexChat(request: CodexChatStartRequest): Promise<CodexChatStartResult> {
-  return invoke<CodexChatStartResult>('codex_chat_start', { request });
+  const session = loadClientLicenseSession();
+  // Keep service credentials on the native side, outside prompts and tool arguments.
+  const agentDataRelay = session?.device.accessToken ? {
+    apiBaseUrl: session.apiBaseUrl,
+    tenantId: session.tenant.id,
+    deviceId: session.device.id,
+    accessToken: session.device.accessToken,
+  } : undefined;
+  return invoke<CodexChatStartResult>('codex_chat_start', {
+    request: { ...request, agentDataRelay },
+  });
 }
 
 export interface CoworkersSyncResult {

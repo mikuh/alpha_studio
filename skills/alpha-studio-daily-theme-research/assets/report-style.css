@@ -138,16 +138,6 @@ a { color: var(--teal); text-decoration: none; border-bottom: 1px solid rgba(31,
   position: relative;
   z-index: 1;
 }
-/* faint house wordmark, lower-right */
-.cover-inner::after {
-  content: "ALPHA STUDIO";
-  position: absolute;
-  right: 0; bottom: 52mm;
-  font-size: 20pt;
-  font-weight: 900;
-  letter-spacing: .42em;
-  color: rgba(31, 78, 121, .05);
-}
 .cover-top {
   display: flex;
   align-items: center;
@@ -166,6 +156,7 @@ a { color: var(--teal); text-decoration: none; border-bottom: 1px solid rgba(31,
 }
 .brand-mark {
   width: 13mm; height: 13mm;
+  flex-shrink: 0;
   object-fit: contain;
   display: block;
 }
@@ -493,6 +484,7 @@ tbody td:first-child { color: var(--ink); font-weight: 700; }
   align-items: center;
   gap: 2mm;
   min-width: 50mm;
+  max-width: 75mm;
   color: var(--ink);
   font-weight: 900;
   letter-spacing: .01em;
@@ -501,8 +493,11 @@ tbody td:first-child { color: var(--ink); font-weight: 700; }
   display: inline-block;
   color: var(--ink);
   font-size: 7.8pt;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
+.brand > span { max-width: 85mm; overflow-wrap: anywhere; }
+.signature [data-report-brand="name"] { overflow-wrap: anywhere; }
 .footer-brand em {
   color: var(--faint);
   font-size: 6.4pt;

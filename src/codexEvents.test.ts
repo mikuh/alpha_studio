@@ -23,6 +23,87 @@ function baseConversation(): Conversation {
 }
 
 describe('applyCodexEventToConversation', () => {
+  it('inserts an acknowledged steering message once and keeps subsequent output in the same run', () => {
+    const current = { ...baseConversation(), runId: 'run-1', queuedMessages: [{ id: 'q-1', text: '换个方向', createdAt: 2 }] };
+    const event = { type: 'message_steered' as const, runId: 'run-1', itemId: 'q-1' };
+    const steered = applyCodexEventToConversation(current, event);
+    expect(steered.messages[0].isStreaming).toBe(false);
+    expect(steered.messages[1]).toMatchObject({ role: 'user', blocks: [{ type: 'text', content: '换个方向' }] });
+    expect(steered.messages[2]).toMatchObject({ role: 'assistant', isStreaming: true });
+    expect(steered).toMatchObject({ runId: 'run-1', status: 'streaming', queuedMessages: [] });
+    expect(applyCodexEventToConversation(steered, event)).toBe(steered);
+    const next = applyCodexEventToConversation(steered, { type: 'text_delta', runId: 'run-1', text: '收到，调整方向。' });
+    expect(next.messages[2].blocks).toEqual([{ type: 'text', content: '收到，调整方向。' }]);
+  });
+
+  it('keeps tool results with the assistant that started them before steering', () => {
+    let current: Conversation = { ...baseConversation(), runId: 'run-1', queuedMessages: [{ id: 'q-1', text: '继续', createdAt: 2 }] };
+    current = applyCodexEventToConversation(current, { type: 'tool_started', runId: 'run-1', itemId: 'tool-1', title: 'exec' });
+    current = applyCodexEventToConversation(current, { type: 'message_steered', runId: 'run-1', itemId: 'q-1' });
+    current = applyCodexEventToConversation(current, { type: 'tool_delta', runId: 'run-1', itemId: 'tool-1', text: 'progress' });
+    current = applyCodexEventToConversation(current, { type: 'tool_completed', runId: 'run-1', itemId: 'tool-1', text: 'done' });
+    expect(current.messages[0].blocks[0]).toMatchObject({ type: 'tool', id: 'tool-1', status: 'completed', output: 'done' });
+    expect(current.messages[2].blocks).toEqual([]);
+    expect(current.status).toBe('streaming');
+  });
+
+  it('settles tools from earlier steering segments when the turn stops', () => {
+    let current: Conversation = { ...baseConversation(), runId: 'run-1', queuedMessages: [{ id: 'q-1', text: '继续', createdAt: 2 }] };
+    current = applyCodexEventToConversation(current, { type: 'tool_started', runId: 'run-1', itemId: 'tool-1', title: 'exec' });
+    current = applyCodexEventToConversation(current, { type: 'message_steered', runId: 'run-1', itemId: 'q-1' });
+    current = applyCodexEventToConversation(current, { type: 'stopped', runId: 'run-1' });
+    expect(current.messages[0].blocks[0]).toMatchObject({ type: 'tool', status: 'failed' });
+    expect(current.messages[2].isStreaming).toBe(false);
+    expect(current.status).toBe('idle');
+  });
+  it('records real gateway progress without adding transcript noise', () => {
+    const next = applyCodexEventToConversation({ ...baseConversation(), runId: 'run-1' }, {
+      type: 'activity', runId: 'run-1', title: 'gateway',
+      message: '模型正在生成结果，另有 2 个请求排队',
+    });
+    expect(next.updatedAt).toBeGreaterThan(1);
+    expect(next.runActivity?.label).toContain('2 个请求排队');
+    expect(next.messages[0].blocks).toEqual([]);
+    expect(next.status).toBe('streaming');
+  });
+
+  it('keeps reconnect status visible until substantive model progress resumes', () => {
+    const retrying = applyCodexEventToConversation({ ...baseConversation(), runId: 'run-1' }, {
+      type: 'status', runId: 'run-1', message: 'Reconnecting... 2/5',
+    });
+    const monitored = applyCodexEventToConversation(retrying, {
+      type: 'activity', runId: 'run-1', title: 'gateway', message: '等待模型响应',
+    });
+    expect(monitored.runActivity).toEqual({ kind: 'retrying', label: '正在重连模型（2/5）' });
+    const resumed = applyCodexEventToConversation(monitored, {
+      type: 'text_delta', runId: 'run-1', text: '继续',
+    });
+    expect(resumed.runActivity?.kind).toBe('working');
+    const done = applyCodexEventToConversation(resumed, { type: 'completed', runId: 'run-1' });
+    expect(done.runActivity).toBeUndefined();
+  });
+
+  it('rejects late progress and terminal events from a previous run', () => {
+    const conversation = { ...baseConversation(), runId: 'new-run' };
+    for (const type of ['activity', 'error', 'completed'] as const) {
+      expect(applyCodexEventToConversation(conversation, {
+        type, runId: 'old-run', conversationId: 'conv-1', message: 'old status',
+      })).toBe(conversation);
+    }
+  });
+
+  it('preserves upstream error details while finalizing a failed turn', () => {
+    const failed = applyCodexEventToConversation(baseConversation(), {
+      type: 'error', runId: 'run-1', message: 'exceeded retry limit, last status: 429',
+      raw: { error: { additionalDetails: 'Alpha Studio gateway queue timed out' } },
+    });
+    expect(failed.messages[0].blocks).toEqual([{
+      type: 'error', content: 'exceeded retry limit, last status: 429\nAlpha Studio gateway queue timed out',
+    }]);
+    expect(failed.status).toBe('error');
+    expect(failed.runActivity).toBeUndefined();
+  });
+
   it('stores the thread id for resume', () => {
     const next = applyCodexEventToConversation(baseConversation(), {
       type: 'thread_started',
@@ -291,6 +372,99 @@ describe('applyCodexEventToConversation', () => {
       status: 'completed',
       input: 'date',
       output: 'done',
+    });
+  });
+
+  it('keeps one live file-edit row from approval through completion', () => {
+    const approvalStarted = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_started',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'edit-1',
+      title: 'fileChange',
+    });
+    const itemStarted = applyCodexEventToConversation(approvalStarted, {
+      type: 'tool_started',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'edit-1',
+      title: 'fileChange',
+      text: JSON.stringify([{ path: '/tmp/report.md', kind: 'update' }]),
+    });
+
+    expect(itemStarted.messages[0].blocks).toHaveLength(1);
+    expect(itemStarted.messages[0].blocks[0]).toMatchObject({
+      type: 'tool',
+      id: 'edit-1',
+      title: 'fileChange',
+      status: 'in_progress',
+      input: '[{"path":"/tmp/report.md","kind":"update"}]',
+    });
+
+    const completed = applyCodexEventToConversation(itemStarted, {
+      type: 'tool_completed',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'edit-1',
+      title: 'fileChange',
+      text: JSON.stringify([{ path: '/tmp/report.md', kind: 'update' }]),
+    });
+    expect(completed.messages[0].blocks).toHaveLength(1);
+    expect(completed.messages[0].blocks[0]).toMatchObject({ status: 'completed' });
+  });
+
+  it('upgrades an eager command row with the semantic activity reported at item start', () => {
+    const approvalStarted = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_started',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'read-1',
+      title: 'command_execution',
+      text: "/bin/zsh -lc 'sed -n 1,120p /tmp/report.md'",
+    });
+    const itemStarted = applyCodexEventToConversation(approvalStarted, {
+      type: 'tool_started',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'read-1',
+      title: 'fileRead',
+      text: '/tmp/report.md',
+    });
+
+    expect(itemStarted.messages[0].blocks).toHaveLength(1);
+    expect(itemStarted.messages[0].blocks[0]).toMatchObject({
+      type: 'tool',
+      id: 'read-1',
+      title: 'fileRead',
+      status: 'in_progress',
+      input: '/tmp/report.md',
+    });
+  });
+
+  it('replaces live file-change snapshots instead of concatenating invalid JSON', () => {
+    const first = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_delta',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'edit-1',
+      title: 'fileChange',
+      text: JSON.stringify([{ path: '/tmp/one.md', kind: 'add' }]),
+      message: 'replace',
+    });
+    const second = applyCodexEventToConversation(first, {
+      type: 'tool_delta',
+      runId: 'run-1',
+      conversationId: 'conv-1',
+      itemId: 'edit-1',
+      title: 'fileChange',
+      text: JSON.stringify([{ path: '/tmp/two.md', kind: 'update' }]),
+      message: 'replace',
+    });
+
+    expect(second.messages[0].blocks[0]).toMatchObject({
+      type: 'tool',
+      status: 'in_progress',
+      output: '[{"path":"/tmp/two.md","kind":"update"}]',
     });
   });
 

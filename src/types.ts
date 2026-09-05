@@ -148,6 +148,8 @@ export interface ChatMessage {
   blocks: MessageBlock[];
   timestamp: number;
   isStreaming?: boolean;
+  finishedAt?: number;
+  finishReason?: 'completed' | 'stopped' | 'error';
   attachments?: MessageAttachment[];
   selectedSkill?: SkillSelection;
   selectedTextContexts?: SelectedTextContext[];
@@ -213,6 +215,8 @@ export interface Conversation {
   messages: ChatMessage[];
   queuedMessages?: QueuedChatMessage[];
   guidedQueuedMessages?: QueuedChatMessage[];
+  // Ignore late notifications while a replacement run is still starting.
+  lastFinishedRunId?: string;
   codexThreadId?: string;
   backgroundContext?: BackgroundContextSummary;
   codexTokenUsage?: CodexTokenUsage;
@@ -224,6 +228,7 @@ export interface Conversation {
   updatedAt: number;
   status: 'idle' | 'streaming' | 'error';
   runId?: string;
+  runActivity?: { label: string; kind: 'working' | 'reasoning' | 'retrying' };
   /** Turn finished while the user was elsewhere and hasn't been opened since. */
   unread?: boolean;
   pinned?: boolean;
@@ -275,6 +280,7 @@ export interface CodexChatEvent {
   type:
     | 'started'
     | 'thread_started'
+    | 'message_steered'
     | 'text_delta'
     | 'reasoning_delta'
     | 'tool_started'
@@ -284,6 +290,7 @@ export interface CodexChatEvent {
     | 'token_usage'
     | 'context_compacted'
     | 'status'
+    | 'activity'
     | 'completed'
     | 'error'
     | 'stopped';

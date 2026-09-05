@@ -9,6 +9,9 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   if (event.conversationId && event.conversationId !== conversation.id) {
     return conversation;
   }
+  if (event.type !== 'started' && conversation.runId && event.runId && event.runId !== conversation.runId) {
+    return conversation;
+  }
 
   const now = Date.now();
 
@@ -17,8 +20,18 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
       ...conversation,
       runId: event.runId,
       status: 'streaming',
+      runActivity: undefined,
       updatedAt: now,
     };
+  }
+
+  const activity = activityFromEvent(event);
+  if (activity && conversation.status === 'streaming'
+    && !(event.title === 'gateway' && conversation.runActivity?.kind === 'retrying')) {
+    conversation = { ...conversation, runActivity: activity };
+  }
+  if (event.type === 'activity') {
+    return conversation.status === 'streaming' ? { ...conversation, updatedAt: now } : conversation;
   }
 
   if (event.type === 'thread_started' && event.threadId) {
@@ -27,6 +40,53 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
       codexThreadId: event.threadId,
       updatedAt: now,
     };
+  }
+
+  if (event.type === 'message_steered' && event.itemId) {
+    const queued = conversation.queuedMessages?.find((message) => message.id === event.itemId);
+    if (!queued) return conversation;
+    return {
+      ...conversation,
+      queuedMessages: conversation.queuedMessages?.filter((message) => message.id !== queued.id),
+      messages: [
+        ...conversation.messages.map((message) => message.isStreaming
+          ? { ...message, isStreaming: false, finishedAt: now }
+          : message),
+        {
+          id: `user-${queued.id}`,
+          role: 'user',
+          timestamp: now,
+          blocks: queued.text.trim() ? [{ type: 'text', content: queued.text.trim() }] : [],
+          attachments: queued.attachments,
+          selectedSkill: queued.selectedSkill,
+          selectedTextContexts: queued.selectedTextContexts,
+          coworkers: queued.coworkers,
+        },
+        ...(conversation.status === 'streaming' ? [{
+          id: `assistant-${queued.id}`,
+          role: 'assistant' as const,
+          timestamp: now,
+          isStreaming: true,
+          blocks: [],
+        }] : []),
+      ],
+      updatedAt: now,
+    };
+  }
+
+  // A tool started before a steering message still belongs to its original
+  // assistant segment. Keep its later progress and result on that segment.
+  if (event.type.startsWith('tool_') && event.itemId) {
+    const ownerIndex = conversation.messages.findIndex((message) => message.role === 'assistant'
+      && !message.isStreaming
+      && message.blocks.some((block) => block.type === 'tool' && block.id === event.itemId));
+    if (ownerIndex >= 0) {
+      const owner = conversation.messages[ownerIndex];
+      const updated = applyCodexEventToConversation({ ...conversation, messages: [{ ...owner, isStreaming: true }] }, event);
+      const messages = conversation.messages.slice();
+      messages[ownerIndex] = { ...updated.messages[0], isStreaming: false };
+      return { ...conversation, messages, updatedAt: now };
+    }
   }
 
   if (event.type === 'token_usage') {
@@ -54,6 +114,16 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   // backend's own follow-up `error`/`completed` once the killed process tears
   // down its stdio, and prevents a stray `stopped` (which carries no
   // conversationId) from finalizing other conversations that are still running.
+  if (conversation.status === 'streaming' && ['stopped', 'completed', 'error'].includes(event.type)) {
+    conversation = {
+      ...conversation,
+      messages: conversation.messages.map((message) => {
+        if (message.role !== 'assistant') return message;
+        const blocks = finalizePendingToolBlocks(message.blocks, event.type === 'completed' ? 'completed' : 'failed');
+        return blocks === message.blocks ? message : { ...message, blocks };
+      }),
+    };
+  }
   if (event.type === 'stopped') {
     if (conversation.status !== 'streaming') return conversation;
     return finishStreaming(conversation, now, 'failed');
@@ -68,7 +138,7 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
     if (conversation.status !== 'streaming') return conversation;
     return appendToStreamingAssistant(conversation, now, {
       type: 'error',
-      content: event.message || event.text || 'GPT 返回了未知错误。',
+      content: codexErrorMessage(event),
     }, { status: 'error', runId: undefined, done: true });
   }
 
@@ -106,6 +176,31 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   }
 
   return conversation;
+}
+
+function activityFromEvent(event: CodexChatEvent): Conversation['runActivity'] {
+  if (event.type === 'status') {
+    const message = event.message || event.text || '正在重试模型连接';
+    const reconnect = /^Reconnecting\.\.\.\s+(\d+)\/(\d+)$/i.exec(message.trim());
+    return { kind: 'retrying', label: reconnect ? `正在重连模型（${reconnect[1]}/${reconnect[2]}）` : message };
+  }
+  if (event.type === 'activity') return {
+    kind: event.title === 'reasoning' ? 'reasoning' : 'working',
+    label: event.message || '正在处理',
+  };
+  if (event.type === 'reasoning_delta') return { kind: 'reasoning', label: '正在推理' };
+  if (event.type === 'text_delta') return { kind: 'working', label: '正在生成回复' };
+  if (event.type === 'tool_started' || event.type === 'tool_delta') return { kind: 'working', label: '正在执行工具' };
+  if (event.type === 'tool_completed' || event.type === 'tool_failed' || event.type === 'context_compacted') return { kind: 'working', label: '等待模型继续处理' };
+  return undefined;
+}
+
+function codexErrorMessage(event: CodexChatEvent): string {
+  const message = event.message || event.text || 'GPT 返回了未知错误。';
+  const raw = asRecord(event.raw);
+  const error = asRecord(raw?.error) ?? raw;
+  const details = typeof error?.additionalDetails === 'string' ? error.additionalDetails.trim() : '';
+  return details && !message.includes(details) ? `${message}\n${details}` : message;
 }
 
 function tokenUsageFromEvent(event: CodexChatEvent, updatedAt: number): CodexTokenUsage | null {
@@ -214,8 +309,23 @@ function appendToolStart(conversation: Conversation, now: number, event: CodexCh
   const toolId = event.itemId || `tool-${event.runId}`;
   const target = toolTargetFromEvent(event);
   return updateStreamingAssistant(conversation, now, (message) => {
-    const existing = message.blocks.some((block) => block.type === 'tool' && block.id === toolId);
-    if (existing) return message;
+    const existingIndex = message.blocks.findIndex((block) => block.type === 'tool' && block.id === toolId);
+    if (existingIndex >= 0) {
+      const existing = message.blocks[existingIndex];
+      if (existing.type !== 'tool' || existing.status !== 'in_progress') return message;
+      const nextTitle = event.title || existing.title;
+      const titleBecameMoreSpecific = Boolean(event.title && event.title !== existing.title);
+      const blocks = [...message.blocks];
+      blocks[existingIndex] = {
+        ...existing,
+        title: nextTitle,
+        target: existing.target || target,
+        input: titleBecameMoreSpecific && event.text
+          ? clampToolLog(event.text)
+          : existing.input || clampToolLog(event.text),
+      };
+      return { ...message, blocks };
+    }
     return {
       ...message,
       blocks: [
@@ -245,7 +355,9 @@ function appendToolDelta(conversation: Conversation, now: number, event: CodexCh
         return {
           ...block,
           target: block.target || target,
-          output: clampToolLog(`${block.output || ''}${event.text || ''}`),
+          output: event.message === 'replace'
+            ? clampToolLog(event.text)
+            : clampToolLog(`${block.output || ''}${event.text || ''}`),
         };
       }),
     };
@@ -423,6 +535,7 @@ function appendToStreamingAssistant(
       runId: options && Object.prototype.hasOwnProperty.call(options, 'runId')
         ? options.runId
         : conversation.runId,
+      runActivity: options?.done ? undefined : conversation.runActivity,
     },
     now,
     (message) => {
@@ -433,6 +546,7 @@ function appendToStreamingAssistant(
         ...message,
         blocks: [...blocks, block],
         isStreaming: options?.done ? false : message.isStreaming,
+        ...(options?.done ? { finishedAt: now, finishReason: 'error' as const } : {}),
       };
     },
   );
@@ -480,6 +594,7 @@ function finishStreaming(
       ...conversation,
       status: 'idle',
       runId: undefined,
+      runActivity: undefined,
     },
     now,
     (message) => {
@@ -496,6 +611,8 @@ function finishStreaming(
       return {
         ...message,
         isStreaming: false,
+        finishedAt: now,
+        finishReason: pendingToolStatus === 'completed' ? 'completed' : 'stopped',
         blocks: imageGenerationTurn && !hasImageResult && !hasMissingResultNotice
           ? [...blocks, { type: 'error', content: '图片生成已结束，但未收到可展示的图片结果。请重试。' }]
           : blocks,

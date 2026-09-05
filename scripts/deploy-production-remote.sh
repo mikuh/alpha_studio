@@ -90,6 +90,7 @@ compose() {
 }
 
 compose config --quiet
+compose run --no-deps --rm caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 compose build api admin-web
 
 backup_output="$(COMPOSE_PROJECT_NAME=alpha_studio bash scripts/db-backup.sh "$workspace_root/backups/postgres")"
@@ -122,7 +123,8 @@ cleanup() {
       cd "$target"
       if [[ -n "$old_api_rollback_tag" ]]; then docker image tag "$old_api_rollback_tag" alpha_studio-api:latest; fi
       if [[ -n "$old_admin_rollback_tag" ]]; then docker image tag "$old_admin_rollback_tag" alpha_studio-admin-web:latest; fi
-      COMPOSE_PROJECT_NAME=alpha_studio docker compose up -d >/dev/null 2>&1
+      compose up -d >/dev/null 2>&1
+      compose up -d --no-deps --force-recreate caddy >/dev/null 2>&1
     elif [[ "$services_stopped" == "1" ]]; then
       cd "$target"
       if [[ -n "$old_api_rollback_tag" ]]; then docker image tag "$old_api_rollback_tag" alpha_studio-api:latest; fi
@@ -161,6 +163,9 @@ mv -- "$release_dir" "$target"
 code_switched=1
 cd "$target"
 compose up -d --remove-orphans
+# Rebind the configuration after swapping release directories; an existing
+# container otherwise keeps the previous Caddyfile inode mounted.
+compose up -d --no-deps --force-recreate caddy
 
 healthy=0
 for _ in $(seq 1 30); do

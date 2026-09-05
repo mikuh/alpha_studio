@@ -1,0 +1,15 @@
+[package]
+name = "alpha-agent-network"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+url = "2"
+futures-util = { version = "0.3", features = ["sink"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["net", "time", "io-util", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "sync"] }

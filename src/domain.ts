@@ -202,7 +202,9 @@ export const financeResearchDomain: DomainConfig = {
   navigation: {
     personal: [
       { id: 'general', label: '显示偏好' },
+      { id: 'report-branding', label: '报告品牌' },
       { id: 'profile', label: '账户与授权' },
+      { id: 'runtime', label: 'Harness' },
       { id: 'usage', label: '使用情况和计费' },
     ],
     integrations: [],

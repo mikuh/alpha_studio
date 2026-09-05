@@ -35,6 +35,14 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (command === 'codex_check') {
       return Promise.resolve({ ...codexCatalogMockState.status });
     }
+    if (command === 'codex_update') {
+      return Promise.resolve({
+        previousVersion: 'codex-cli 0.146.1',
+        version: 'codex-cli 0.147.0',
+        path: '/managed/bin/codex',
+        updated: true,
+      });
+    }
     if (command === 'codex_models') return codexCatalogMockState.error ? Promise.reject(codexCatalogMockState.error) : Promise.resolve(codexCatalogMockState.models);
     if (command === 'codex_login') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
     if (command === 'codex_revoke_authorization') return Promise.resolve({ codexHome: '/Users/demo/.alpha-studio/codex-home' });
@@ -324,8 +332,12 @@ describe('right feature panel', () => {
     windowMockState.resizeHandler = null;
     Object.defineProperty(document, 'fullscreenElement', { value: null, configurable: true });
     window.localStorage.clear();
+    codexCatalogMockState.status.installed = true;
+    codexCatalogMockState.status.version = 'test';
+    codexCatalogMockState.status.path = '/usr/bin/codex';
     codexCatalogMockState.status.loggedIn = false;
     codexCatalogMockState.status.accountEmail = 'codex-demo@alpha.local';
+    codexCatalogMockState.status.error = 'Alpha Studio 的 GPT 尚未完成设备授权。';
     codexCatalogMockState.models = [];
     codexCatalogMockState.error = null;
     seedClientLicenseSession();
@@ -1317,6 +1329,205 @@ describe('right feature panel', () => {
     expect(container.querySelector('.context-window-indicator')).not.toBeInTheDocument();
   });
 
+  it('visibly distinguishes running and completed command events', () => {
+    useChatStore.setState({
+      conversations: [conversation({
+        status: 'streaming',
+        runId: 'run-command-status',
+        messages: [
+          { id: 'msg-1', role: 'user', timestamp: 1, blocks: [{ type: 'text', content: '运行检查' }] },
+          {
+            id: 'msg-2',
+            role: 'assistant',
+            timestamp: 2,
+            isStreaming: true,
+            blocks: [{
+              type: 'tool',
+              id: 'command-status-1',
+              title: 'command_execution',
+              status: 'in_progress',
+              input: 'npm test',
+            }],
+          },
+        ],
+      })],
+    });
+
+    const { container } = render(<App />);
+    const runningStatus = container.querySelector('.command-status');
+    expect(runningStatus).toHaveClass('in_progress');
+    expect(runningStatus).toHaveTextContent('正在运行');
+
+    act(() => {
+      useChatStore.getState().handleCodexEvent({
+        type: 'tool_completed',
+        runId: 'run-command-status',
+        conversationId: 'conv-right-panel',
+        itemId: 'command-status-1',
+        title: 'command_execution',
+        text: 'tests passed',
+      });
+    });
+
+    const completedStatus = container.querySelector('.command-status');
+    expect(completedStatus).toHaveClass('completed');
+    expect(completedStatus).toHaveTextContent('已运行');
+    expect(container.querySelector('.command-status.in_progress')).not.toBeInTheDocument();
+  });
+
+  it('visibly distinguishes editing and edited events from the moment an edit starts', () => {
+    useChatStore.setState({
+      conversations: [conversation({
+        status: 'streaming',
+        runId: 'run-file-edit-status',
+        messages: [
+          { id: 'msg-1', role: 'user', timestamp: 1, blocks: [{ type: 'text', content: '修改文件' }] },
+          {
+            id: 'msg-2',
+            role: 'assistant',
+            timestamp: 2,
+            isStreaming: true,
+            blocks: [{
+              type: 'tool',
+              id: 'file-edit-status-1',
+              title: 'fileChange',
+              status: 'in_progress',
+            }],
+          },
+        ],
+      })],
+    });
+
+    const { container } = render(<App />);
+    const runningEdit = container.querySelector('.tool-block.kind-file-edit');
+    expect(runningEdit).toHaveClass('in_progress');
+    expect(runningEdit).toHaveTextContent('正在编辑');
+    expect(runningEdit?.querySelector('.file-edit-empty')).not.toBeInTheDocument();
+
+    act(() => {
+      useChatStore.getState().handleCodexEvent({
+        type: 'tool_completed',
+        runId: 'run-file-edit-status',
+        conversationId: 'conv-right-panel',
+        itemId: 'file-edit-status-1',
+        title: 'fileChange',
+        text: JSON.stringify([{ path: '/Users/geb/codes/alpha_studio/src/App.tsx', kind: 'update' }]),
+      });
+    });
+
+    const completedEdit = container.querySelector('.tool-block.kind-file-edit');
+    expect(completedEdit).toHaveClass('completed');
+    expect(completedEdit).toHaveTextContent('已编辑');
+    expect(completedEdit).not.toHaveTextContent('正在编辑');
+  });
+
+  it('shows search, file-read, and web-read targets as soon as each activity starts', () => {
+    useChatStore.setState({
+      conversations: [conversation({
+        status: 'streaming',
+        runId: 'run-readable-activities',
+        messages: [
+          {
+            id: 'assistant-readable-activities',
+            role: 'assistant',
+            timestamp: 1,
+            isStreaming: true,
+            blocks: [
+              {
+                type: 'tool',
+                id: 'search-1',
+                title: 'fileSearch',
+                status: 'in_progress',
+                input: JSON.stringify({ queries: ['context compaction'], paths: ['/Users/geb/codes/alpha_studio/src'] }),
+              },
+              {
+                type: 'tool',
+                id: 'read-1',
+                title: 'fileRead',
+                status: 'in_progress',
+                input: '/Users/geb/codes/alpha_studio/src/App.tsx',
+              },
+              {
+                type: 'tool',
+                id: 'web-search-1',
+                title: 'webSearch',
+                status: 'in_progress',
+                input: JSON.stringify({ queries: ['A股 机器人政策'] }),
+              },
+              {
+                type: 'tool',
+                id: 'web-read-1',
+                title: 'webFetch',
+                status: 'in_progress',
+                input: 'https://example.com/articles/market',
+              },
+            ],
+          },
+        ],
+      })],
+    });
+
+    const { container } = render(<App />);
+    const search = container.querySelector('.tool-block.kind-search') as HTMLElement;
+    const read = container.querySelector('.tool-block.kind-file-read') as HTMLElement;
+    const webSearch = Array.from(container.querySelectorAll('.tool-block.kind-web'))
+      .find((element) => element.textContent?.includes('正在搜索网页')) as HTMLElement;
+    const webRead = Array.from(container.querySelectorAll('.tool-block.kind-web'))
+      .find((element) => element.textContent?.includes('正在读取网页')) as HTMLElement;
+
+    expect(search).toHaveTextContent('正在搜索');
+    expect(search).toHaveTextContent('context compaction · …/alpha_studio/src');
+    expect(read).toHaveTextContent('正在读取');
+    expect(read).toHaveTextContent('…/src/App.tsx');
+    expect(webSearch).toHaveTextContent('正在搜索网页');
+    expect(webSearch).toHaveTextContent('A股 机器人政策');
+    expect(webRead).toHaveTextContent('正在读取网页');
+    expect(webRead).toHaveTextContent('example.com/articles/market');
+    expect(container).not.toHaveTextContent('"queries"');
+
+    act(() => {
+      const handle = useChatStore.getState().handleCodexEvent;
+      handle({ type: 'tool_completed', runId: 'run-readable-activities', conversationId: 'conv-right-panel', itemId: 'search-1', title: 'fileSearch' });
+      handle({ type: 'tool_completed', runId: 'run-readable-activities', conversationId: 'conv-right-panel', itemId: 'read-1', title: 'fileRead' });
+      handle({ type: 'tool_completed', runId: 'run-readable-activities', conversationId: 'conv-right-panel', itemId: 'web-search-1', title: 'webSearch' });
+      handle({ type: 'tool_completed', runId: 'run-readable-activities', conversationId: 'conv-right-panel', itemId: 'web-read-1', title: 'webFetch' });
+    });
+
+    expect(search).toHaveTextContent('已搜索');
+    expect(read).toHaveTextContent('已读取');
+    expect(webSearch).toHaveTextContent('已搜索网页');
+    expect(webRead).toHaveTextContent('已读取网页');
+  });
+
+  it('reports mixed command group results with accurate per-state counts', () => {
+    useChatStore.setState({
+      conversations: [conversation({
+        messages: [
+          {
+            id: 'assistant-command-group',
+            role: 'assistant',
+            timestamp: 1,
+            blocks: Array.from({ length: 9 }, (_, index) => ({
+              type: 'tool' as const,
+              id: `command-group-${index}`,
+              title: 'command_execution',
+              status: index === 4 ? 'failed' as const : 'completed' as const,
+              input: `command ${index + 1}`,
+            })),
+          },
+        ],
+      })],
+    });
+
+    const { container } = render(<App />);
+    const groupStatus = container.querySelector('.command-group-status');
+    expect(groupStatus).toHaveAttribute('aria-label', '已运行 8 条，失败 1 条');
+    expect(groupStatus).toHaveTextContent('已运行 8 条');
+    expect(groupStatus).toHaveTextContent('失败 1 条');
+    expect(groupStatus).not.toHaveTextContent('失败 9 条');
+    expect(screen.queryByText('运行失败 9 条命令')).not.toBeInTheDocument();
+  });
+
   it('explains prolonged streaming silence and offers an inline stop action', async () => {
     const user = userEvent.setup();
     const now = Date.now();
@@ -1335,7 +1546,7 @@ describe('right feature panel', () => {
 
     const indicator = screen.getByRole('status', { name: '等待模型响应较久' });
     expect(indicator).toHaveAttribute('data-state', 'stalled');
-    expect(indicator).toHaveTextContent(/总计 7分4[4-5]秒/);
+    expect(screen.getByText(/已处理 7分4[4-5]秒/)).toBeInTheDocument();
     expect(indicator).toHaveTextContent(/5分(?:9|10)秒没有新进展/);
     expect(within(indicator).getByRole('button', { name: '停止当前任务' })).toBeInTheDocument();
 
@@ -1343,6 +1554,30 @@ describe('right feature panel', () => {
 
     await waitFor(() => expect(useChatStore.getState().conversations[0].status).toBe('idle'));
     expect(screen.queryByRole('status', { name: '等待模型响应较久' })).not.toBeInTheDocument();
+  });
+
+  it('shows live retry and gateway progress even after an assistant paragraph', () => {
+    const now = Date.now();
+    useChatStore.setState({
+      conversations: [conversation({
+        status: 'streaming', updatedAt: now, runId: 'run-progress',
+        messages: [{ id: 'msg-progress', role: 'assistant', timestamp: now - 60_000, isStreaming: true,
+          blocks: [{ type: 'text', content: '已完成部分分析，正在继续。' }] }],
+      })],
+    });
+    render(<App />);
+    act(() => useChatStore.getState().handleCodexEvent({
+      type: 'status', runId: 'run-progress', message: 'Reconnecting... 2/5',
+    }));
+    expect(screen.getByRole('status', { name: '正在重连模型（2/5）' })).toBeInTheDocument();
+    act(() => useChatStore.getState().handleCodexEvent({
+      type: 'reasoning_delta', runId: 'run-progress', text: '继续处理',
+    }));
+    expect(screen.queryByRole('status', { name: '正在重连模型（2/5）' })).not.toBeInTheDocument();
+    act(() => useChatStore.getState().handleCodexEvent({
+      type: 'activity', runId: 'run-progress', title: 'gateway', message: '模型正在生成结果，另有 2 个请求排队',
+    }));
+    expect(screen.getByRole('status', { name: '模型正在生成结果，另有 2 个请求排队' })).toBeInTheDocument();
   });
 
   it('returns the waiting indicator to normal as soon as new progress arrives', () => {
@@ -2066,7 +2301,7 @@ describe('right feature panel', () => {
     const dialog = screen.getByRole('dialog', { name: 'OpenAI Docs Skill' });
     expect(within(dialog).getByText(/Reference OpenAI docs/)).toBeInTheDocument();
     expect(within(dialog).getByRole('switch', { name: '禁用 OpenAI Docs' })).toHaveAttribute('aria-checked', 'true');
-    expect(within(dialog).getByText('系统 · 由 Codex 运行时提供')).toBeInTheDocument();
+    expect(within(dialog).getByText('系统 · 由 Harness 运行时提供')).toBeInTheDocument();
     expect(within(dialog).queryByRole('button', { name: '卸载' })).not.toBeInTheDocument();
 
     await user.click(within(dialog).getByRole('button', { name: '在对话中试用' }));
@@ -2710,6 +2945,7 @@ describe('right feature panel', () => {
     expect(within(settings).getByRole('heading', { name: '显示偏好' })).toBeInTheDocument();
     expect(within(settings).getByText('界面主题')).toBeInTheDocument();
     expect(within(settings).getByRole('button', { name: '账户与授权' })).toBeInTheDocument();
+    expect(within(settings).getByRole('button', { name: 'Harness' })).toBeInTheDocument();
     expect(within(settings).queryByText('金融数据')).not.toBeInTheDocument();
     expect(within(settings).getByRole('button', { name: '已归档对话' })).toBeInTheDocument();
     expect(within(settings).queryByRole('button', { name: '模型' })).not.toBeInTheDocument();
@@ -2718,6 +2954,43 @@ describe('right feature panel', () => {
     expect(within(settings).queryByRole('button', { name: '个性化' })).not.toBeInTheDocument();
     expect(within(settings).queryByRole('button', { name: '键盘快捷键' })).not.toBeInTheDocument();
     expect(within(settings).queryByRole('button', { name: '浏览器' })).not.toBeInTheDocument();
+  });
+
+  it('shows the active Harness version without exposing its runtime path and updates it on demand', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === 'codex_update') {
+        return Promise.resolve({
+          previousVersion: 'codex-cli 0.146.1',
+          version: 'codex-cli 0.147.0',
+          path: '/managed/bin/codex',
+          updated: true,
+        });
+      }
+      if (command === 'codex_check') return Promise.resolve({ ...codexCatalogMockState.status });
+      if (command === 'codex_models') return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(within(container.querySelector('.sidebar') as HTMLElement).getByRole('button', { name: '设置' }));
+    const settings = screen.getByRole('dialog', { name: '设置' });
+    await user.click(within(settings).getByRole('button', { name: 'Harness' }));
+
+    expect(within(settings).getByRole('heading', { name: 'Harness' })).toBeInTheDocument();
+    expect(within(settings).getByText('test')).toBeInTheDocument();
+    expect(within(settings).queryByText('/usr/bin/codex')).not.toBeInTheDocument();
+    expect(within(settings).queryByText('运行路径')).not.toBeInTheDocument();
+
+    codexCatalogMockState.status.version = 'codex-cli 0.147.0';
+    codexCatalogMockState.status.path = '/managed/bin/codex';
+    await user.click(within(settings).getByRole('button', { name: '检查并更新' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('codex_update'));
+    expect(await within(settings).findByText('已从 0.146.1 更新到 0.147.0。')).toBeInTheDocument();
+    expect(within(settings).getByText('0.147.0')).toBeInTheDocument();
+    expect(within(settings).queryByText('/managed/bin/codex')).not.toBeInTheDocument();
   });
 
   it('keeps client license details out of chat and allows logout from profile settings', async () => {
@@ -3174,7 +3447,9 @@ describe('right feature panel', () => {
     await user.click(within(queue).getByLabelText('引导发送队列消息 第二条修改'));
 
     expect(useChatStore.getState().conversations[0].queuedMessages?.map((item) => item.id)).toEqual(['queue-b']);
-    expect(useChatStore.getState().conversations[0].guidedQueuedMessages?.map((item) => item.id)).toEqual(['queue-a']);
+    expect(useChatStore.getState().conversations[0].guidedQueuedMessages ?? []).toHaveLength(0);
+    expect(useChatStore.getState().conversations[0].runId).toBe('run-current');
+    expect(useChatStore.getState().conversations[0].messages[2]).toMatchObject({ role: 'user', blocks: [{ type: 'text', content: '第二条修改' }] });
     expect(within(queue).queryByText('第二条修改')).not.toBeInTheDocument();
   });
 
@@ -4203,6 +4478,7 @@ describe('right feature panel', () => {
     const group = groupLabel.closest('details') as HTMLElement;
 
     expect(group).toHaveClass('web-search-group');
+    expect(group).toHaveTextContent('机器人 产业链 最新政策；国产算力 交换机 订单 等 3 项');
     expect(within(messageList).queryByText('机器人 产业链 最新政策')).not.toBeInTheDocument();
 
     await user.click(groupLabel);
@@ -4211,7 +4487,91 @@ describe('right feature panel', () => {
     expect(within(group).getByText('机器人 产业链 最新政策')).toBeInTheDocument();
     expect(within(group).getByText('国产算力 交换机 订单')).toBeInTheDocument();
     expect(within(group).getByText('CGT 征求意见 国家药监局')).toBeInTheDocument();
-    expect(group.querySelector('.event-chevron')).not.toBeInTheDocument();
+    expect(group.querySelector('.event-chevron')).toBeInTheDocument();
+  });
+
+  it('groups file reads between progress paragraphs and keeps disclosure choices during streaming', async () => {
+    const user = userEvent.setup();
+    const now = Date.now();
+    useChatStore.setState({
+      conversations: [conversation({ status: 'streaming', runId: 'run-read-group', updatedAt: now, messages: [{
+        id: 'assistant-reads', role: 'assistant', timestamp: now - 14_000, isStreaming: true,
+        blocks: [
+          { type: 'text', content: '先核对数据来源。' },
+          { type: 'tool', id: 'read-1', title: 'fileRead', status: 'completed', input: '/tmp/source.md', output: 'SOURCE CONTENT' },
+          { type: 'tool', id: 'read-2', title: 'fileRead', status: 'in_progress', input: '/tmp/report.md', output: 'REPORT CONTENT' },
+        ],
+      }] })],
+    });
+    const { container } = render(<App />);
+    const group = container.querySelector('.activity-group') as HTMLDetailsElement;
+    const summary = group.querySelector('summary')!;
+    expect(group.open).toBe(false);
+    expect(summary).toHaveTextContent('正在读取文件 1 次');
+    expect(summary).toHaveTextContent('已读取文件 1 次');
+    expect(screen.queryByText('REPORT CONTENT')).not.toBeInTheDocument();
+    await user.click(summary);
+    expect(group.open).toBe(true);
+    expect(within(group).getByText('/tmp/report.md')).toBeInTheDocument();
+    expect(screen.queryByText('REPORT CONTENT')).not.toBeInTheDocument();
+    await user.click(within(group).getByText('/tmp/report.md'));
+    expect(screen.getByText('REPORT CONTENT')).toBeInTheDocument();
+    act(() => useChatStore.getState().handleCodexEvent({ type: 'tool_delta', runId: 'run-read-group', itemId: 'read-2', text: ' UPDATED' }));
+    expect(screen.getByText('REPORT CONTENT UPDATED')).toBeInTheDocument();
+    await user.click(summary);
+    act(() => useChatStore.getState().handleCodexEvent({ type: 'tool_started', runId: 'run-read-group', itemId: 'read-3', title: 'fileRead', text: '/tmp/new.md' }));
+    expect(group.open).toBe(false);
+    expect(summary).toHaveTextContent('正在读取文件 2 次');
+    act(() => {
+      const handle = useChatStore.getState().handleCodexEvent;
+      handle({ type: 'tool_failed', runId: 'run-read-group', itemId: 'read-2', message: 'Read failed' });
+      handle({ type: 'text_delta', runId: 'run-read-group', text: '数据来源已核对。' });
+      handle({ type: 'tool_started', runId: 'run-read-group', itemId: 'read-4', title: 'fileRead' });
+    });
+    expect(summary).toHaveTextContent('读取失败 1 次');
+    expect(container.querySelectorAll('.activity-group')).toHaveLength(1);
+    expect(group.previousElementSibling).toHaveTextContent('先核对数据来源。');
+    expect(group.nextElementSibling).toHaveTextContent('数据来源已核对。');
+  });
+
+  it('keeps current activity visible when answer text streams and reasoning stays collapsed', () => {
+    const now = Date.now();
+    useChatStore.setState({ conversations: [conversation({ status: 'streaming', runId: 'live', updatedAt: now,
+      messages: [{ id: 'live-answer', role: 'assistant', timestamp: now, isStreaming: true, blocks: [] }],
+    })] });
+    const { container } = render(<App />);
+    expect(screen.getByText('已处理 0秒')).toBeInTheDocument();
+    act(() => useChatStore.getState().handleCodexEvent({ type: 'reasoning_delta', runId: 'live', text: 'Checking data sources\nMore reasoning details' }));
+    expect(container.querySelector('.thinking-block')).not.toHaveAttribute('open');
+    expect(screen.queryByText('More reasoning details')).not.toBeInTheDocument();
+    act(() => useChatStore.getState().handleCodexEvent({ type: 'text_delta', runId: 'live', text: '开始核对来源。' }));
+    expect(screen.getByRole('status', { name: '正在生成回复' })).toBeInTheDocument();
+  });
+
+  it('keeps web-search group counts accurate while searches are still changing state', () => {
+    useChatStore.setState({
+      conversations: [conversation({
+        status: 'streaming',
+        messages: [{
+          id: 'assistant-mixed-web-searches',
+          role: 'assistant',
+          timestamp: 1,
+          isStreaming: true,
+          blocks: [
+            { type: 'tool', id: 'web-complete', title: 'webSearch', status: 'completed', input: '机器人政策' },
+            { type: 'tool', id: 'web-running', title: 'webSearch', status: 'in_progress', input: '算力订单' },
+            { type: 'tool', id: 'web-failed', title: 'webSearch', status: 'failed', input: '医药政策' },
+          ],
+        }],
+      })],
+    });
+
+    const { container } = render(<App />);
+    const status = container.querySelector('.web-search-group-status');
+    expect(status).toHaveAttribute('aria-label', '正在搜索网页 1 次，已搜索网页 1 次，搜索失败 1 次');
+    expect(status).toHaveTextContent('正在搜索网页 1 次');
+    expect(status).toHaveTextContent('已搜索网页 1 次');
+    expect(status).toHaveTextContent('搜索失败 1 次');
   });
 
   it('shows edited file names and change details instead of an empty disclosure', async () => {

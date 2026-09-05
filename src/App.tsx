@@ -20,6 +20,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import officialSkillCatalog from '../skills/catalog.json';
+import { ReportBrandingSettings } from './ReportBrandingSettings';
+import { TurnDuration, formatTurnDuration as formatThinkingDuration } from './TurnDuration';
 import {
   Activity,
   AlertCircle,
@@ -61,6 +63,7 @@ import {
   FileSpreadsheet,
   FileText,
   Folder,
+  FolderSearch,
   FolderGit2,
   FolderInput,
   FolderOpen,
@@ -108,6 +111,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  ScanSearch,
   Search,
   Settings,
   ShieldCheck,
@@ -172,6 +176,7 @@ import {
   terminalStart,
   terminalStop,
   terminalWrite,
+  updateCodexCli,
   type CodexRateLimitSnapshot,
   type CodexRateLimitWindow,
   type CodexSubscriptionUsage,
@@ -341,7 +346,9 @@ interface RightDockTab {
 type Theme = 'light' | 'dark';
 type SettingsSection =
   | 'general'
+  | 'report-branding'
   | 'profile'
+  | 'runtime'
   | 'usage'
   | 'archived';
 
@@ -4049,7 +4056,13 @@ function webSearchSources(conversation?: Conversation | null): WebSearchSource[]
 
 function isWebSearchToolTitle(title: string): boolean {
   const normalized = title.trim().toLowerCase();
-  return ['web_search', 'websearch', 'web.run', 'web.search', 'browse_search'].some((key) => normalized.includes(key));
+  return ['web_search', 'websearch', 'web.search', 'browse_search', 'search_query', 'image_query'].some((key) => normalized.includes(key));
+}
+
+function isWebPageToolTitle(title: string): boolean {
+  const normalized = title.trim().toLowerCase();
+  return ['webfetch', 'web_fetch', 'webopen', 'web_open', 'openpage', 'open_page', 'webfind', 'web_find', 'findinpage', 'find_in_page']
+    .some((key) => normalized.includes(key));
 }
 
 function isSpawnAgentToolTitle(title: string): boolean {
@@ -7212,7 +7225,7 @@ function SkillDetailDialog({
             {installed && skill.category === 'official' ? (
               <span className="skill-detail-notice">官方 · 随客户端自动安装</span>
             ) : installed && skill.category === 'system' ? (
-              <span className="skill-detail-notice">系统 · 由 Codex 运行时提供</span>
+              <span className="skill-detail-notice">系统 · 由 Harness 运行时提供</span>
             ) : installed ? (
               <button type="button" className="skill-danger-btn" onClick={() => onInstall(false)}>卸载</button>
             ) : (
@@ -7322,7 +7335,6 @@ function ChatArea({
           <div>
             <strong>{previewRuntime ? '浏览器预览模式' : 'AI 引擎暂不可用'}</strong>
             <span>{previewRuntime ? '这里会模拟分析事件流；桌面应用会连接本地 AI 运行环境。' : codexStatus?.error || '请确认本地 AI 运行环境已安装并完成设备授权。'}</span>
-            {codexStatus?.path && <code>{codexStatus.path}</code>}
           </div>
         </div>
       )}
@@ -7459,7 +7471,6 @@ function EmptyState({
 }
 
 const MESSAGE_SCROLL_BOTTOM_TOLERANCE_PX = 80;
-const STREAM_ACTIVITY_IDLE_MS = 420;
 const INITIAL_RENDERED_MESSAGE_COUNT = 48;
 const MESSAGE_HISTORY_BATCH_SIZE = 48;
 
@@ -7480,8 +7491,6 @@ function MessageList({
     Math.max(0, conversation.messages.length - INITIAL_RENDERED_MESSAGE_COUNT)
   ));
   const streaming = conversation.status === 'streaming';
-  const answerLength = streaming ? streamingAnswerLength(conversation) : 0;
-  const typing = useActiveTyping(answerLength, streaming);
   const latestMessage = conversation.messages[conversation.messages.length - 1];
   const effectiveVisibleStart = Math.min(
     visibleStart,
@@ -7596,10 +7605,10 @@ function MessageList({
             index={effectiveVisibleStart + index}
           />
         ))}
-        {streaming && !typing && (
+        {streaming && (
           <ThinkingIndicator
-            startedAt={streamingAssistant?.timestamp ?? conversation.updatedAt}
             lastActivityAt={conversation.updatedAt}
+            activity={visibleRunActivity(conversation.runActivity, streamingAssistant)}
             onStop={() => useChatStore.getState().stopConversation(conversation.id)}
           />
         )}
@@ -7636,61 +7645,25 @@ function findStreamingAssistant(messages: ChatMessage[]): ChatMessage | undefine
   return undefined;
 }
 
-// Total characters of answer text in the last (streaming) assistant message.
-function streamingAnswerLength(conversation: Conversation): number {
-  const last = conversation.messages[conversation.messages.length - 1];
-  if (!last || last.role !== 'assistant') return 0;
-  let length = 0;
-  for (const block of last.blocks) {
-    if (block.type === 'text') length += block.content.length;
-  }
-  return length;
-}
-
-// True while answer tokens are actively streaming in. We hide the "正在思考"
-// indicator during active typing and only bring it back once the text output
-// pauses for a beat (e.g. the model resumes reasoning or runs a tool) while the
-// turn is still in progress.
-function useActiveTyping(answerLength: number, streaming: boolean): boolean {
-  const [typing, setTyping] = useState(false);
-  const previousLength = useRef(answerLength);
-  useEffect(() => {
-    if (!streaming) {
-      previousLength.current = answerLength;
-      setTyping(false);
-      return;
-    }
-    const grew = answerLength > previousLength.current;
-    previousLength.current = answerLength;
-    if (!grew) return;
-    setTyping(true);
-    const timer = window.setTimeout(() => setTyping(false), STREAM_ACTIVITY_IDLE_MS);
-    return () => window.clearTimeout(timer);
-  }, [answerLength, streaming]);
-  return typing;
+function visibleRunActivity(activity: Conversation['runActivity'], message?: ChatMessage): Conversation['runActivity'] {
+  if (activity && activity.label !== '正在执行工具' && activity.label !== '等待模型继续处理') return activity;
+  const running = message?.blocks.slice().reverse().find((block) => block.type === 'tool' && block.status === 'in_progress');
+  if (running?.type !== 'tool') return activity;
+  const tool = toolPresentation(running.title);
+  const target = running.target || toolActivityTarget(running, tool.kind);
+  return { kind: 'working', label: `${tool.running}${target ? ` ${target}` : ''}` };
 }
 
 const LONG_WAIT_SECONDS = 60;
 const POSSIBLY_STALLED_SECONDS = 180;
 
-function formatThinkingDuration(seconds: number): string {
-  const safeSeconds = Math.max(0, Math.floor(seconds));
-  if (safeSeconds < 60) return `${safeSeconds}秒`;
-  const minutes = Math.floor(safeSeconds / 60);
-  const remainingSeconds = safeSeconds % 60;
-  if (minutes < 60) return `${minutes}分${remainingSeconds > 0 ? `${remainingSeconds}秒` : ''}`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return `${hours}小时${remainingMinutes > 0 ? `${remainingMinutes}分` : ''}`;
-}
-
 function ThinkingIndicator({
-  startedAt,
   lastActivityAt,
+  activity,
   onStop,
 }: {
-  startedAt: number;
   lastActivityAt: number;
+  activity?: Conversation['runActivity'];
   onStop: () => void | Promise<void>;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -7701,23 +7674,24 @@ function ThinkingIndicator({
     return () => window.clearInterval(timer);
   }, []);
 
-  const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
   const inactiveSeconds = Math.max(0, Math.floor((now - lastActivityAt) / 1000));
   const state = inactiveSeconds >= POSSIBLY_STALLED_SECONDS
     ? 'stalled'
     : inactiveSeconds >= LONG_WAIT_SECONDS
       ? 'waiting'
       : 'active';
-  const label = state === 'stalled'
+  const label = activity?.kind === 'retrying'
+    ? activity.label
+    : state === 'stalled'
     ? '等待模型响应较久'
     : state === 'waiting'
       ? '任务仍在运行'
-      : '正在处理';
+      : activity?.label || '正在处理';
   const detail = state === 'stalled'
     ? `${formatThinkingDuration(inactiveSeconds)}没有新进展，可能正在长推理或等待连接。`
     : state === 'waiting'
       ? `${formatThinkingDuration(inactiveSeconds)}没有新进展，复杂任务可能仍在处理。`
-      : null;
+      : activity?.kind === 'retrying' ? '连接暂时中断，正在等待重试结果。' : null;
 
   return (
     <div
@@ -7730,9 +7704,11 @@ function ThinkingIndicator({
       <div className="thinking-copy" aria-hidden="true">
         <div className="thinking-primary">
           <span className="thinking-shimmer">{label}</span>
-          <span className="thinking-elapsed">总计 {formatThinkingDuration(totalSeconds)}</span>
         </div>
         {detail && <span className="thinking-detail">{detail}</span>}
+        {state !== 'active' && activity && activity.kind !== 'retrying' && (
+          <span className="thinking-detail">最近状态：{activity.label}</span>
+        )}
       </div>
       {state === 'stalled' && (
         <button type="button" className="thinking-stop" onClick={() => void onStop()} aria-label="停止当前任务">
@@ -7795,9 +7771,6 @@ const MessageBubble = memo(function MessageBubble({
     setEditing(false);
     void editUserMessageAndResend(conversationId, message.id, trimmed, attachments);
   };
-  if (message.role === 'assistant' && message.blocks.length === 0 && message.isStreaming) {
-    return null;
-  }
   return (
     <article
       className={`message ${message.role} ${message.isStreaming ? 'streaming' : ''} ${editing ? 'editing' : ''}`}
@@ -7821,6 +7794,7 @@ const MessageBubble = memo(function MessageBubble({
           ) : null}
           {(message.role !== 'user' || message.blocks.length > 0 || message.selectedSkill || message.coworkers?.length) && (
             <div className="bubble">
+              {message.role === 'assistant' && <TurnDuration message={message} />}
               {message.role === 'user'
                 ? (
                     <>
@@ -7843,6 +7817,10 @@ const MessageBubble = memo(function MessageBubble({
 	                          ? (unit.blocks.length === 1
 	                              ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
 	                              : <WebSearchGroup key={`web-group-${unit.startIndex}`} blocks={unit.blocks} />)
+	                        : unit.type === 'activity-group'
+	                          ? (unit.blocks.length === 1
+	                              ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
+	                              : <ActivityGroup key={`activity-group-${unit.startIndex}`} blocks={unit.blocks} kind={unit.kind} />)
 	                        : unit.block.type === 'file_result'
 	                          ? null
 	                          : unit.block.type === 'image_result' && !shouldRenderPersistedImageResult(unit.block, message.blocks)
@@ -8076,37 +8054,39 @@ function MessageEditBubble({ initialValue, initialAttachments, onCancel, onSubmi
 }
 
 // A disclosure whose body is mounted only while open. Keeping the body out of
-// the DOM when collapsed avoids a WKWebView bug where content updated inside a
-// closed <details> (e.g. command output that lands exactly as the row
-// auto-collapses on completion) renders blank until the row is toggled again.
+// the DOM when collapsed avoids a WKWebView bug where output updated inside a
+// closed <details> renders blank until the row is toggled again. A user's
+// disclosure choice stays in control as output and tool status change.
 function EventDetails({
   className,
-  forceOpen = false,
   defaultOpen = false,
   summary,
   children,
 }: {
   className: string;
-  forceOpen?: boolean;
   defaultOpen?: boolean;
   summary: ReactNode;
   children?: ReactNode;
 }) {
-  const [userOpen, setUserOpen] = useState(defaultOpen);
-  const open = forceOpen || userOpen;
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <details
       className={className}
       open={open}
       onToggle={(event) => {
-        // While forced open (in progress) ignore collapse attempts; the next
-        // render restores the open state.
-        if (forceOpen) return;
         const next = event.currentTarget.open;
-        if (next !== userOpen) setUserOpen(next);
+        if (next !== open) setOpen(next);
       }}
     >
-      <summary className="event-summary">{summary}</summary>
+      <summary
+        className={`event-summary${children ? '' : ' event-summary-static'}`}
+        aria-expanded={children ? open : undefined}
+        tabIndex={children ? undefined : -1}
+        onClick={(event) => { if (!children) event.preventDefault(); }}
+      >
+        {summary}
+        {children && <ChevronDown size={13} className="event-chevron" aria-hidden="true" />}
+      </summary>
       {open && children}
     </details>
   );
@@ -8120,12 +8100,11 @@ function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: 
     return (
       <EventDetails
         className={`thinking-block ${streaming ? 'is-active' : ''}`}
-        forceOpen={streaming}
         summary={(
           <>
             <span className="event-icon">{streaming ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}</span>
             <span className="event-verb">{streaming ? '正在推理' : '推理过程'}</span>
-            <span className="event-target" />
+            <span className="event-target">{firstLine(block.content).replace(/[*#`]/g, '')}</span>
           </>
         )}
       >
@@ -8224,25 +8203,36 @@ function ToolBlockView({ block, groupedIndex }: { block: Extract<MessageBlock, {
   const inferredTarget = inferredSpawnAgentToolTarget(block);
   const editDetails = tool.kind === 'file-edit' ? fileEditDetails(block) : null;
   const editTarget = editDetails ? fileEditTarget(editDetails) : '';
-  const target = block.target || inferredTarget || editTarget || firstLine(block.input);
-  const targetIsRawInput = Boolean(!block.target && !inferredTarget && !editTarget && target);
+  const activityTarget = toolActivityTarget(block, tool.kind);
+  const target = block.target || inferredTarget || editTarget || activityTarget || firstLine(block.input);
+  const rawInput = block.input?.trim() || '';
+  const targetTitle = rawInput && !rawInput.startsWith('{') && !rawInput.startsWith('[') ? firstLine(rawInput) : target;
+  const targetIsRawInput = Boolean(!block.target && !inferredTarget && !editTarget && !activityTarget && target);
   const isCommand = tool.kind === 'command';
-  const plainBody = isCommand ? '' : cleanCommandOutput(block.output || block.input || '');
+  const plainBody = isCommand ? '' : cleanCommandOutput(block.output || (!running ? block.input || '' : ''));
+  const fileEditHasDetails = Boolean(editDetails && (
+    editDetails.files.length > 0
+    || editDetails.additions > 0
+    || editDetails.deletions > 0
+    || editDetails.diff
+    || editDetails.raw
+  ));
   const hasBody = tool.kind === 'file-edit'
-    ? true
+    ? !running || fileEditHasDetails
     : isCommand
       ? Boolean(block.input || block.output)
       : Boolean(plainBody) && plainBody !== target;
   return (
     <EventDetails
       className={`tool-block event-block ${block.status} kind-${tool.kind} ${groupedIndex === undefined ? '' : 'grouped-item'}`}
-      forceOpen={running}
       defaultOpen={tool.kind === 'image'}
       summary={(
         <>
           <span className="event-icon">{tool.icon}</span>
-          <span className="event-verb">{groupedIndex === undefined ? verb : `搜索 ${String(groupedIndex + 1).padStart(2, '0')}`}</span>
-          <span className={`event-target ${targetIsRawInput ? 'mono' : ''}`}>{target}</span>
+          {isCommand
+            ? <CommandStatus status={block.status} />
+            : <span className="event-verb">{groupedIndex === undefined ? verb : `搜索 ${String(groupedIndex + 1).padStart(2, '0')}`}</span>}
+          <span className={`event-target ${targetIsRawInput ? 'mono' : ''}`} title={targetTitle || undefined}>{target}</span>
           {(running || failed) && <span className="event-trailing">
             {running ? <Loader2 size={12} className="spin" /> : failed ? <AlertCircle size={12} className="event-fail" /> : null}
           </span>}
@@ -8262,6 +8252,104 @@ function ToolBlockView({ block, groupedIndex }: { block: Extract<MessageBlock, {
       )}
     </EventDetails>
   );
+}
+
+interface ToolActivityHints {
+  queries: string[];
+  paths: string[];
+  urls: string[];
+  references: string[];
+}
+
+function toolActivityTarget(
+  block: Extract<MessageBlock, { type: 'tool' }>,
+  kind: ToolKind,
+): string {
+  const input = cleanCommandOutput(block.input || '').trim();
+  if (!input) return '';
+  const parsed = parseJsonValue(input);
+  const hints = parsed === null ? { queries: [], paths: [], urls: [], references: [] } : collectToolActivityHints(parsed);
+  const plainUrl = input.match(/https?:\/\/[^\s<>'"`\])}]+/i)?.[0] || '';
+  const hintedUrls = uniqueActivityValues([...(hints.urls || []), plainUrl]);
+  const urls = hintedUrls.filter((value) => /^https?:\/\//i.test(value));
+  const resourceUris = hintedUrls.filter((value) => !/^https?:\/\//i.test(value));
+  const queries = uniqueActivityValues(hints.queries).map((value) => compactActivityText(value));
+  const paths = uniqueActivityValues(hints.paths).map((value) => shortenPath(value));
+  const references = uniqueActivityValues(hints.references).map((value) => compactActivityText(value));
+
+  if (isWebSearchToolTitle(block.title)) {
+    return summarizeActivityValues(queries) || (urls[0] ? shortWebUrl(urls[0]) : compactPlainActivityInput(input));
+  }
+  if (isWebPageToolTitle(block.title) || kind === 'web') {
+    const webTarget = urls[0] ? shortWebUrl(urls[0]) : '';
+    if (queries[0] && webTarget) return `${queries[0]} · ${webTarget}`;
+    return webTarget
+      || summarizeActivityValues(queries)
+      || (references[0] ? `页面 ${summarizeActivityValues(references)}` : '')
+      || compactPlainActivityInput(input);
+  }
+  if (kind === 'search') {
+    const queryTarget = summarizeActivityValues(queries);
+    const pathTarget = summarizeActivityValues(paths);
+    if (queryTarget && pathTarget) return `${queryTarget} · ${pathTarget}`;
+    return queryTarget || pathTarget || compactPlainActivityInput(input);
+  }
+  if (kind === 'file-read') {
+    return summarizeActivityValues(paths)
+      || summarizeActivityValues(resourceUris.map((value) => compactActivityText(value)))
+      || compactPlainActivityInput(input, true);
+  }
+  return '';
+}
+
+function collectToolActivityHints(value: unknown): ToolActivityHints {
+  const hints: ToolActivityHints = { queries: [], paths: [], urls: [], references: [] };
+  const visit = (entry: unknown, key = '') => {
+    if (Array.isArray(entry)) {
+      entry.forEach((item) => visit(item, key));
+      return;
+    }
+    if (entry && typeof entry === 'object') {
+      Object.entries(entry as Record<string, unknown>).forEach(([childKey, child]) => visit(child, childKey));
+      return;
+    }
+    if (typeof entry !== 'string') return;
+    const text = entry.trim();
+    if (!text) return;
+    const normalizedKey = key.replace(/[_.-]/g, '').toLowerCase();
+    if (/^(?:q|query|queries|searchquery|pattern)$/.test(normalizedKey)) hints.queries.push(text);
+    if (/^(?:path|paths|filepath|filename|files)$/.test(normalizedKey)) hints.paths.push(text);
+    if (/^(?:url|urls|uri|href)$/.test(normalizedKey)) hints.urls.push(text);
+    if (/^(?:ref|refid|reference)$/.test(normalizedKey)) hints.references.push(text);
+    const nested = parseJsonValue(text);
+    if (nested !== null) visit(nested, key);
+  };
+  visit(value);
+  return hints;
+}
+
+function compactActivityText(value: string): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  return compact.length > 72 ? `${compact.slice(0, 71)}…` : compact;
+}
+
+function compactPlainActivityInput(value: string, preferPath = false): string {
+  const compact = firstLine(value);
+  if (!compact || compact.startsWith('{') || compact.startsWith('[')) return '';
+  if (/^https?:\/\//i.test(compact)) return shortWebUrl(compact);
+  if (preferPath && (/^(?:\/|~\/|[A-Za-z]:[\\/])/.test(compact))) return shortenPath(compact);
+  return compactActivityText(compact);
+}
+
+function summarizeActivityValues(values: string[]): string {
+  if (values.length === 0) return '';
+  if (values.length === 1) return values[0];
+  if (values.length === 2) return `${values[0]}；${values[1]}`;
+  return `${values[0]}；${values[1]} 等 ${values.length} 项`;
+}
+
+function uniqueActivityValues(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 type FileEditKind = 'add' | 'update' | 'delete' | 'rename' | 'unknown';
@@ -8499,22 +8587,67 @@ function CommandCard({ command, output, status }: { command?: string; output?: s
   );
 }
 
+function CommandStatus({
+  status,
+  suffix = '',
+}: {
+  status: Extract<MessageBlock, { type: 'tool' }>['status'];
+  suffix?: string;
+}) {
+  const label = status === 'in_progress' ? '正在运行' : status === 'failed' ? '运行失败' : '已运行';
+  return (
+    <span
+      className={`event-verb command-status ${status}`}
+      role="status"
+      aria-label={`${label}${suffix}`}
+      aria-live="polite"
+    >
+      {label}{suffix}
+    </span>
+  );
+}
+
+function CommandGroupStatus({ blocks }: { blocks: Array<Extract<MessageBlock, { type: 'tool' }>> }) {
+  if (blocks.length === 1) return <CommandStatus status={blocks[0].status} />;
+  const counts = {
+    in_progress: blocks.filter((block) => block.status === 'in_progress').length,
+    completed: blocks.filter((block) => block.status === 'completed').length,
+    failed: blocks.filter((block) => block.status === 'failed').length,
+  };
+  const segments = [
+    { status: 'in_progress' as const, label: '正在运行', count: counts.in_progress },
+    { status: 'completed' as const, label: '已运行', count: counts.completed },
+    { status: 'failed' as const, label: '失败', count: counts.failed },
+  ].filter((segment) => segment.count > 0);
+  const announcement = segments.map((segment) => `${segment.label} ${segment.count} 条`).join('，');
+  return (
+    <span className="event-verb command-group-status" role="status" aria-label={announcement} aria-live="polite">
+      {segments.map((segment, index) => (
+        <Fragment key={segment.status}>
+          {index > 0 && <span className="command-status-separator" aria-hidden="true">·</span>}
+          <span className={`command-status ${segment.status}`} aria-hidden="true">
+            <span>{segment.label} {segment.count} 条</span>
+          </span>
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
 function CommandGroup({ blocks }: { blocks: Array<Extract<MessageBlock, { type: 'tool' }>> }) {
   const anyRunning = blocks.some((block) => block.status === 'in_progress');
   const anyFailed = blocks.some((block) => block.status === 'failed');
-  const verb = anyRunning ? '正在运行' : '已运行';
   const state = anyRunning ? 'in_progress' : anyFailed ? 'failed' : 'completed';
   return (
     <EventDetails
       className={`tool-block event-block command-group ${state}`}
-      forceOpen={anyRunning}
       summary={(
         <>
           <span className="event-icon command-group-icon"><SquareTerminal size={15} /></span>
-          <span className="event-verb">{verb} {blocks.length} 条命令</span>
+          <CommandGroupStatus blocks={blocks} />
           <span className="event-target" />
           {(anyRunning || anyFailed) && <span className="event-trailing">
-            {anyRunning ? <Loader2 size={12} className="spin" /> : anyFailed ? <AlertCircle size={12} className="event-fail" /> : null}
+            {anyRunning ? <Loader2 size={12} className="spin" /> : <AlertCircle size={12} className="event-fail" />}
           </span>}
         </>
       )}
@@ -8530,18 +8663,18 @@ function WebSearchGroup({ blocks }: { blocks: Array<Extract<MessageBlock, { type
   const anyRunning = blocks.some((block) => block.status === 'in_progress');
   const anyFailed = blocks.some((block) => block.status === 'failed');
   const state = anyRunning ? 'in_progress' : anyFailed ? 'failed' : 'completed';
-  const verb = anyRunning ? '正在搜索网页' : anyFailed ? '网页搜索失败' : '已搜索网页';
+  const targets = uniqueActivityValues(blocks.map((block) => toolActivityTarget(block, 'web')).filter(Boolean));
+  const target = summarizeActivityValues(targets);
   return (
     <EventDetails
       className={`tool-block event-block web-search-group ${state}`}
-      forceOpen={anyRunning}
       summary={(
         <>
           <span className="event-icon web-search-group-icon"><Globe size={15} /></span>
-          <span className="event-verb">{verb} {blocks.length} 次</span>
-          <span className="event-target" />
+          <WebSearchGroupStatus blocks={blocks} />
+          <span className="event-target" title={target || undefined}>{target}</span>
           {(anyRunning || anyFailed) && <span className="event-trailing">
-            {anyRunning ? <Loader2 size={12} className="spin" /> : anyFailed ? <AlertCircle size={12} className="event-fail" /> : null}
+            {anyRunning ? <Loader2 size={12} className="spin" /> : <AlertCircle size={12} className="event-fail" />}
           </span>}
         </>
       )}
@@ -8553,10 +8686,87 @@ function WebSearchGroup({ blocks }: { blocks: Array<Extract<MessageBlock, { type
   );
 }
 
+function WebSearchGroupStatus({ blocks }: { blocks: Array<Extract<MessageBlock, { type: 'tool' }>> }) {
+  const segments = [
+    { status: 'in_progress' as const, label: '正在搜索网页', count: blocks.filter((block) => block.status === 'in_progress').length },
+    { status: 'completed' as const, label: '已搜索网页', count: blocks.filter((block) => block.status === 'completed').length },
+    { status: 'failed' as const, label: '搜索失败', count: blocks.filter((block) => block.status === 'failed').length },
+  ].filter((segment) => segment.count > 0);
+  const announcement = segments.map((segment) => `${segment.label} ${segment.count} 次`).join('，');
+  return (
+    <span className="event-verb command-group-status web-search-group-status" role="status" aria-label={announcement} aria-live="polite">
+      {segments.map((segment, index) => (
+        <Fragment key={segment.status}>
+          {index > 0 && <span className="command-status-separator" aria-hidden="true">·</span>}
+          <span className={`command-status ${segment.status}`} aria-hidden="true">
+            <span>{segment.label} {segment.count} 次</span>
+          </span>
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
+type ActivityGroupKind = 'file-read' | 'search' | 'web-read';
+
+const ACTIVITY_GROUP_LABELS = {
+  'file-read': { running: '正在读取文件', completed: '已读取文件', failed: '读取失败' },
+  search: { running: '正在搜索文件', completed: '已搜索文件', failed: '搜索失败' },
+  'web-read': { running: '正在读取网页', completed: '已读取网页', failed: '读取失败' },
+};
+
+function ActivityGroup({ blocks, kind }: { blocks: Array<Extract<MessageBlock, { type: 'tool' }>>; kind: ActivityGroupKind }) {
+  const labels = ACTIVITY_GROUP_LABELS[kind];
+  const segments = [
+    { status: 'in_progress', label: labels.running, count: blocks.filter((block) => block.status === 'in_progress').length },
+    { status: 'completed', label: labels.completed, count: blocks.filter((block) => block.status === 'completed').length },
+    { status: 'failed', label: labels.failed, count: blocks.filter((block) => block.status === 'failed').length },
+  ].filter((segment) => segment.count > 0);
+  const running = blocks.some((block) => block.status === 'in_progress');
+  const failed = blocks.some((block) => block.status === 'failed');
+  const announcement = segments.map((segment) => `${segment.label} ${segment.count} 次`).join('，');
+  const state = running ? 'in_progress' : failed ? 'failed' : 'completed';
+  return (
+    <EventDetails
+      className={`tool-block event-block activity-group ${state}`}
+      summary={(
+        <>
+          <span className="event-icon">{toolPresentation(blocks[0].title).icon}</span>
+          <span className="event-verb command-group-status" role="status" aria-label={announcement} aria-live="polite">
+            {segments.map((segment, index) => (
+              <Fragment key={segment.status}>
+                {index > 0 && <span className="command-status-separator" aria-hidden="true">·</span>}
+                <span className={`command-status ${segment.status}`} aria-hidden="true">{segment.label} {segment.count} 次</span>
+              </Fragment>
+            ))}
+          </span>
+          <span className="event-target" />
+          {(running || failed) && <span className="event-trailing">
+            {running && <Loader2 size={12} className="spin" />}
+            {failed && <AlertCircle size={12} className="event-fail" />}
+          </span>}
+        </>
+      )}
+    >
+      <div className="tool-group-items" role="region" aria-label="活动明细" tabIndex={0}>
+        {blocks.map((block) => <ToolBlockView key={block.id} block={block} />)}
+      </div>
+    </EventDetails>
+  );
+}
+
+function activityGroupKind(block: MessageBlock): ActivityGroupKind | null {
+  if (block.type !== 'tool') return null;
+  const tool = toolPresentation(block.title);
+  if (tool.kind === 'file-read' || tool.kind === 'search') return tool.kind;
+  return tool.kind === 'web' && tool.done === '已读取网页' ? 'web-read' : null;
+}
+
 type RenderUnit =
   | { type: 'block'; block: MessageBlock; index: number }
   | { type: 'command-group'; blocks: Array<Extract<MessageBlock, { type: 'tool' }>>; startIndex: number }
-  | { type: 'web-search-group'; blocks: Array<Extract<MessageBlock, { type: 'tool' }>>; startIndex: number };
+  | { type: 'web-search-group'; blocks: Array<Extract<MessageBlock, { type: 'tool' }>>; startIndex: number }
+  | { type: 'activity-group'; kind: ActivityGroupKind; blocks: Array<Extract<MessageBlock, { type: 'tool' }>>; startIndex: number };
 
 function buildRenderUnits(blocks: MessageBlock[]): RenderUnit[] {
   const units: RenderUnit[] = [];
@@ -8567,6 +8777,7 @@ function buildRenderUnits(blocks: MessageBlock[]): RenderUnit[] {
       index += 1;
       continue;
     }
+    const activityKind = activityGroupKind(blocks[index]);
     if (isCommandBlock(blocks[index])) {
       const group: Array<Extract<MessageBlock, { type: 'tool' }>> = [];
       const startIndex = index;
@@ -8583,6 +8794,14 @@ function buildRenderUnits(blocks: MessageBlock[]): RenderUnit[] {
         index += 1;
       }
       units.push({ type: 'web-search-group', blocks: group, startIndex });
+    } else if (activityKind) {
+      const group: Array<Extract<MessageBlock, { type: 'tool' }>> = [];
+      const startIndex = index;
+      while (index < blocks.length && activityGroupKind(blocks[index]) === activityKind) {
+        group.push(blocks[index] as Extract<MessageBlock, { type: 'tool' }>);
+        index += 1;
+      }
+      units.push({ type: 'activity-group', kind: activityKind, blocks: group, startIndex });
     } else {
       units.push({ type: 'block', block: blocks[index], index });
       index += 1;
@@ -8842,11 +9061,12 @@ function ComposerImpl({
     <div className={`composer-wrap ${bottom ? 'bottom' : ''} ${queuedMessages.length > 0 ? 'has-queue' : ''}`}>
       {queuedMessages.length > 0 && (
         <ComposerQueue
+          key={conversation.id}
           queuedMessages={queuedMessages}
           onRemove={(id) => removeQueuedMessage(conversation.id, id)}
           onUpdate={(id, text) => updateQueuedMessage(conversation.id, id, { text })}
           onReorder={(id, beforeId) => reorderQueuedMessage(conversation.id, id, beforeId)}
-          onGuide={(id) => void sendQueuedMessageNow(conversation.id, id)}
+          onGuide={(id) => sendQueuedMessageNow(conversation.id, id)}
         />
       )}
       <div
@@ -9021,8 +9241,9 @@ function ComposerQueue({
   onRemove: (id: string) => void;
   onUpdate: (id: string, text: string) => void;
   onReorder: (id: string, beforeId: string | null) => void;
-  onGuide: (id: string) => void;
+  onGuide: (id: string) => Promise<void>;
 }) {
+  const [sendingId, setSendingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState('');
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
@@ -9077,7 +9298,7 @@ function ComposerQueue({
             <div
               key={message.id}
               className={`composer-queue-item ${draggingId === message.id ? 'dragging' : ''} ${dragOverId === message.id ? 'drag-over' : ''} ${isEditing ? 'editing' : ''}`}
-              draggable={!isEditing}
+              draggable={!isEditing && sendingId === null}
               onDragStart={(event) => {
                 setDraggingId(message.id);
                 event.dataTransfer.effectAllowed = 'move';
@@ -9145,16 +9366,23 @@ function ComposerQueue({
                     <button
                       type="button"
                       className="composer-queue-guide"
-                      onClick={() => onGuide(message.id)}
+                      disabled={sendingId !== null}
+                      onClick={async () => {
+                        setSendingId(message.id);
+                        setMenuOpenId(null);
+                        try { await onGuide(message.id); }
+                        finally { setSendingId(null); }
+                      }}
                       aria-label={`引导发送队列消息 ${preview}`}
-                      title="优先发送"
+                      title="立即发送到当前对话"
                     >
                       <CornerDownRight size={15} />
-                      引导
+                      {sendingId === message.id ? '发送中…' : '引导'}
                     </button>
                     <button
                       type="button"
                       className="composer-queue-remove"
+                      disabled={sendingId !== null}
                       onClick={() => onRemove(message.id)}
                       aria-label={`删除队列消息 ${preview}`}
                       title="删除"
@@ -9165,6 +9393,7 @@ function ComposerQueue({
                       <button
                         type="button"
                         className="composer-queue-more"
+                        disabled={sendingId !== null}
                         onClick={() => setMenuOpenId((id) => (id === message.id ? null : message.id))}
                         aria-label={`更多队列操作 ${preview}`}
                         aria-haspopup="menu"
@@ -11390,6 +11619,10 @@ function ReviewBody({ message, cwd }: { message: ChatMessage; cwd: string }) {
             ? (unit.blocks.length === 1
                 ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
                 : <WebSearchGroup key={`web-group-${unit.startIndex}`} blocks={unit.blocks} />)
+          : unit.type === 'activity-group'
+            ? (unit.blocks.length === 1
+                ? <BlockRenderer key={`tool-${unit.startIndex}`} block={unit.blocks[0]} />
+                : <ActivityGroup key={`activity-group-${unit.startIndex}`} blocks={unit.blocks} kind={unit.kind} />)
           : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={streaming && unit.index === lastBlockIndex} />,
       )}
       {parsed.prose && (
@@ -12756,9 +12989,11 @@ function SettingsNavGroup({
 }
 
 function SettingsContent({ domain, section, theme, onThemeChange }: { domain: DomainConfig; section: SettingsSection; theme: Theme; onThemeChange: (theme: Theme) => void }) {
+  if (section === 'report-branding') return <ReportBrandingSettings />;
   if (section === 'archived') return <ArchivedSettings />;
   if (section === 'usage') return <UsageSettings />;
   if (section === 'profile') return <ProfileSettings />;
+  if (section === 'runtime') return <CodexRuntimeSettings />;
   if (section === 'general') {
     return (
       <SettingsGroup>
@@ -12773,6 +13008,62 @@ function SettingsContent({ domain, section, theme, onThemeChange }: { domain: Do
     );
   }
 	return null;
+}
+
+function CodexRuntimeSettings() {
+  const codexStatus = useChatStore((state) => state.codexStatus);
+  const isCheckingCodex = useChatStore((state) => state.isCheckingCodex);
+  const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
+  const hasActiveTask = useChatStore((state) => state.conversations.some((conversation) => conversation.status === 'streaming'));
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+
+  const handleUpdate = async () => {
+    setIsUpdating(true);
+    setNotice('');
+    setError('');
+    try {
+      const result = await updateCodexCli();
+      await refreshCodexStatus({ forceModelRefetch: true });
+      setNotice(result.updated
+        ? `已从 ${formatHarnessVersion(result.previousVersion) || '旧版本'} 更新到 ${formatHarnessVersion(result.version)}。`
+        : `当前已是最新版本 ${formatHarnessVersion(result.version)}。`);
+    } catch (updateError) {
+      setError(stringifyError(updateError));
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const version = isCheckingCodex && !codexStatus
+    ? '正在检测…'
+    : formatHarnessVersion(codexStatus?.version) || '未检测到 Harness';
+  const updateDisabled = isUpdating || isCheckingCodex || hasActiveTask || !isTauriRuntime();
+  const updateDescription = hasActiveTask
+    ? '当前有任务正在运行；任务结束后即可更新，避免中断正在使用的 Harness。'
+    : '从官方发布源检查并安装最新版。更新将用于之后启动的任务，内置版本仍作为兜底。';
+
+  return (
+    <SettingsGroup>
+      <SettingsRow title="当前版本" description="Alpha Studio 目前使用的 Harness 版本。">
+        <span className="settings-static codex-runtime-version">{version}</span>
+      </SettingsRow>
+      <SettingsRow title="手动更新" description={updateDescription}>
+        <div className="codex-runtime-update">
+          <button className="settings-btn primary" type="button" onClick={() => void handleUpdate()} disabled={updateDisabled}>
+            {isUpdating ? <><Loader2 size={13} className="spin" />正在更新…</> : <><Download size={13} />检查并更新</>}
+          </button>
+          {notice && <span className="codex-runtime-notice" role="status">{notice}</span>}
+          {error && <span className="settings-inline-error" role="alert" title={error}>{error}</span>}
+        </div>
+      </SettingsRow>
+    </SettingsGroup>
+  );
+}
+
+function formatHarnessVersion(version: string | null | undefined): string {
+  return version?.trim().replace(/^codex(?:-cli)?\s*/i, '').trim() || '';
 }
 
 const EMPTY_MODEL_DRAFT: ModelProfileDraft = {
@@ -12821,13 +13112,13 @@ function ModelSettings() {
   const requiresBaseUrl = normalizedDraft.providerId !== 'openai';
   const canSave = Boolean(normalizedDraft.label && normalizedDraft.model && (!requiresBaseUrl || normalizedDraft.baseUrl));
   const codexRuntimeTitle = codexRuntimeReady
-    ? `${selectedUsesGateway && !codexStatus?.loggedIn ? '本地 AI 运行环境可用于按量模型' : '本地 AI 运行环境已就绪'}${codexStatus?.version ? ` · ${codexStatus.version}` : ''}`
+    ? `${selectedUsesGateway && !codexStatus?.loggedIn ? '本地 AI 运行环境可用于按量模型' : '本地 AI 运行环境已就绪'}${codexStatus?.version ? ` · ${formatHarnessVersion(codexStatus.version)}` : ''}`
     : '本地 AI 运行环境未就绪';
   const codexRuntimeDescription = codexStatus?.installed && selectedUsesGateway && !codexStatus.loggedIn
     ? '按量模型无需 GPT 订阅设备授权。'
     : codexStatus?.loggedIn
-      ? codexStatus.path
-      : (codexStatus?.error || codexStatus?.path || '请确认本地 AI 运行环境已安装并完成设备授权。');
+      ? 'Harness 已连接，可以使用订阅模型。'
+      : (codexStatus?.error || '请确认本地 AI 运行环境已安装并完成设备授权。');
 
   const beginCreate = (template: 'blank' | 'deepseek' | 'claude') => {
     setEditingId(null);
@@ -14125,7 +14416,9 @@ function ArchiveRow({ title, meta, onRestore, onDelete }: { title: string; meta:
 function settingsIcon(section: SettingsSection): ReactNode {
   const icons: Record<SettingsSection, ReactNode> = {
     general: <SlidersHorizontal size={15} />,
+    'report-branding': <FileChartColumn size={15} />,
     profile: <UserCircle size={15} />,
+    runtime: <Terminal size={15} />,
     usage: <History size={15} />,
     archived: <Archive size={15} />,
   };
@@ -14190,11 +14483,14 @@ function toolPresentation(title: string): { kind: ToolKind; icon: ReactNode; run
   }
   if (has('exec', 'shell', 'command', 'bash', 'execute', 'terminal')) return { kind: 'command', icon: <Terminal size={14} />, running: '正在运行', done: '已运行', failed: '运行失败' };
   if (isWebSearchToolTitle(title)) return { kind: 'web', icon: <Globe size={14} />, running: '正在搜索网页', done: '已搜索网页', failed: '网页搜索失败' };
+  if (has('webfind', 'web_find', 'findinpage', 'find_in_page')) return { kind: 'web', icon: <ScanSearch size={14} />, running: '正在页内查找', done: '已完成页内查找', failed: '页内查找失败' };
+  if (isWebPageToolTitle(title)) return { kind: 'web', icon: <Globe size={14} />, running: '正在读取网页', done: '已读取网页', failed: '网页读取失败' };
   if (isSpawnAgentToolTitle(title)) return { kind: 'generic', icon: <Users size={14} />, running: '正在调用同事', done: '已调用同事', failed: '同事调用失败' };
   if (has('search', 'grep', 'glob', 'ripgrep', 'find', 'query')) return { kind: 'search', icon: <Search size={14} />, running: '正在搜索', done: '已搜索', failed: '搜索失败' };
   if (has('write', 'edit', 'patch', 'apply', 'filechange', 'file_change', 'diff', 'create', 'update')) return { kind: 'file-edit', icon: <FileCode2 size={14} />, running: '正在编辑', done: '已编辑', failed: '编辑失败' };
+  if (has('filelist', 'file_list', 'listfiles', 'list_files', 'readdirectory', 'read_directory')) return { kind: 'file-read', icon: <FolderSearch size={14} />, running: '正在查看文件', done: '已查看文件', failed: '查看文件失败' };
   if (has('read', 'open', 'cat', 'file', 'view')) return { kind: 'file-read', icon: <FileText size={14} />, running: '正在读取', done: '已读取', failed: '读取失败' };
-  if (has('web', 'browser', 'fetch', 'http', 'url', 'navigate')) return { kind: 'web', icon: <Globe size={14} />, running: '正在访问网页', done: '已访问网页', failed: '访问失败' };
+  if (has('web', 'browser', 'fetch', 'http', 'url', 'navigate')) return { kind: 'web', icon: <Globe size={14} />, running: '正在读取网页', done: '已读取网页', failed: '网页读取失败' };
   if (has('mcp', 'tool')) return { kind: 'generic', icon: <Plug size={14} />, running: '正在调用工具', done: '已调用工具', failed: '调用失败' };
   return { kind: 'generic', icon: <Workflow size={14} />, running: '正在执行', done: title.trim() || '已完成', failed: '执行失败' };
 }

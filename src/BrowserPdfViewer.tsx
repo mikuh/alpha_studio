@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ChevronLeft, ChevronRight, ExternalLink, Loader2, Minus, Plus } from 'lucide-react';
-import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { localPdfFileRead } from './codexBridge';
 
 type BrowserPdfViewerProps = {
@@ -140,7 +140,7 @@ export function BrowserPdfViewer({ path, revision, onOpenExternal }: BrowserPdfV
 
   useEffect(() => {
     let disposed = false;
-    let loadedDocument: PDFDocumentProxy | null = null;
+    let loadingTask: PDFDocumentLoadingTask | null = null;
     setStatus('loading');
     setError('');
     setDocument(null);
@@ -152,6 +152,7 @@ export function BrowserPdfViewer({ path, revision, onOpenExternal }: BrowserPdfV
       localPdfFileRead(path),
     ])
       .then(async ([pdfjs, pdfWorker, file]) => {
+        if (disposed) return;
         if (!file.data) throw new Error('无法读取 PDF 文件内容。');
         // WKWebView cannot reliably import PDF.js' emitted `.mjs` module as a
         // module Worker from Tauri's custom application protocol. Registering
@@ -160,13 +161,9 @@ export function BrowserPdfViewer({ path, revision, onOpenExternal }: BrowserPdfV
         (globalThis as PdfJsWorkerGlobal).pdfjsWorker = {
           WorkerMessageHandler: pdfWorker.WorkerMessageHandler,
         };
-        const loadingTask = pdfjs.getDocument({ data: base64Bytes(file.data) });
+        loadingTask = pdfjs.getDocument({ data: base64Bytes(file.data) });
         const pdf = await loadingTask.promise;
-        if (disposed) {
-          await pdf.destroy();
-          return;
-        }
-        loadedDocument = pdf;
+        if (disposed) return;
         setDocument(pdf);
         setStatus('ready');
       })
@@ -178,7 +175,7 @@ export function BrowserPdfViewer({ path, revision, onOpenExternal }: BrowserPdfV
 
     return () => {
       disposed = true;
-      if (loadedDocument) void loadedDocument.destroy();
+      if (loadingTask) void loadingTask.destroy();
     };
   }, [path, revision]);
 
