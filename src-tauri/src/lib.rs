@@ -29,6 +29,7 @@ mod managed_skills;
 mod report_branding;
 mod skill_codec;
 mod steering;
+mod text_stream;
 
 const CODEX_CHAT_EVENT: &str = "codex-chat-event";
 const TERMINAL_EVENT: &str = "terminal-event";
@@ -1481,7 +1482,7 @@ impl CodexDriver {
         .await?;
 
         // 4. Stream turn notifications until the turn finishes.
-        let mut streamed: HashSet<String> = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         loop {
             let next_line = tokio::select! {
                 line = reader.next_line() => line,
@@ -2085,15 +2086,15 @@ fn jsonrpc_error_message(error: &Value) -> String {
 
 /// Translates a single `codex app-server` JSON-RPC notification into zero or more
 /// `CodexChatEvent`s the frontend already understands. Agent message and
-/// reasoning items are streamed via their `*/delta` notifications; the matching
-/// `item/completed` is only forwarded as a fallback when no deltas were seen, to
-/// avoid duplicating the streamed text.
+/// reasoning items stream via their `*/delta` notifications; authoritative
+/// completion snapshots repair their own item without duplicating its prefix
+/// or suppressing a different message in the same turn.
 fn map_app_server_notification(
     method: &str,
     params: &Value,
     run_id: &str,
     conversation_id: &str,
-    streamed: &mut HashSet<String>,
+    streamed: &mut text_stream::TextStreams,
 ) -> Vec<CodexChatEvent> {
     match method {
         "turn/started" => vec![event(
@@ -2144,23 +2145,21 @@ fn map_app_server_notification(
         // Current v2 approval methods use `accept`, while the legacy methods
         // below use `approved`. Sending the legacy value to a v2 request makes
         // the server reject the response and leaves the turn waiting forever.
-        "item/agentMessage/delta" => {
+        "item/agentMessage/delta" | "item/plan/delta" => {
             let Some(delta) = params.get("delta").and_then(Value::as_str) else {
                 return Vec::new();
             };
             if delta.is_empty() {
                 return Vec::new();
             }
-            streamed.insert("message:*".to_string());
-            if let Some(item_id) = params.get("itemId").and_then(Value::as_str) {
-                streamed.insert(format!("message:{item_id}"));
-            }
+            let item_id = params.get("itemId").and_then(Value::as_str);
+            streamed.delta("message", item_id, delta);
             vec![event(
                 "text_delta",
                 run_id,
                 conversation_id,
                 None,
-                None,
+                item_id.map(str::to_string),
                 None,
                 Some(delta.to_string()),
                 None,
@@ -2174,16 +2173,14 @@ fn map_app_server_notification(
             if delta.is_empty() {
                 return Vec::new();
             }
-            streamed.insert("reasoning:*".to_string());
-            if let Some(item_id) = params.get("itemId").and_then(Value::as_str) {
-                streamed.insert(format!("reasoning:{item_id}"));
-            }
+            let item_id = params.get("itemId").and_then(Value::as_str);
+            streamed.delta("reasoning", item_id, delta);
             vec![event(
                 "reasoning_delta",
                 run_id,
                 conversation_id,
                 None,
-                None,
+                item_id.map(str::to_string),
                 None,
                 Some(delta.to_string()),
                 None,
@@ -2347,20 +2344,15 @@ fn map_app_server_notification(
 
             if matches!(
                 item_type.as_str(),
-                "agentmessage" | "assistantmessage" | "message"
+                "agentmessage" | "assistantmessage" | "message" | "plan"
             ) {
-                let already = streamed.contains("message:*")
-                    || item_id
-                        .as_ref()
-                        .map(|id| streamed.contains(&format!("message:{id}")))
-                        .unwrap_or(false);
-                if already {
-                    return Vec::new();
-                }
                 let text = extract_text_content(item);
                 if text.is_empty() {
                     return Vec::new();
                 }
+                let Some(item_id) = streamed.complete("message", item_id.as_deref(), &text) else {
+                    return Vec::new();
+                };
                 return vec![event(
                     "text_delta",
                     run_id,
@@ -2369,24 +2361,25 @@ fn map_app_server_notification(
                     item_id,
                     None,
                     Some(text),
-                    None,
+                    Some("replace".into()),
                     None,
                 )];
             }
 
             if matches!(item_type.as_str(), "reasoning" | "thought" | "analysis") {
-                let already = streamed.contains("reasoning:*")
-                    || item_id
-                        .as_ref()
-                        .map(|id| streamed.contains(&format!("reasoning:{id}")))
-                        .unwrap_or(false);
-                if already {
-                    return Vec::new();
-                }
-                let text = extract_text_content(item);
+                // Repair only the readable summary, not the separate raw
+                // reasoning content that may also be present on this item.
+                let text = item
+                    .get("summary")
+                    .map(extract_text_content)
+                    .unwrap_or_default();
                 if text.is_empty() {
                     return Vec::new();
                 }
+                let Some(item_id) = streamed.complete("reasoning", item_id.as_deref(), &text)
+                else {
+                    return Vec::new();
+                };
                 return vec![event(
                     "reasoning_delta",
                     run_id,
@@ -2395,7 +2388,7 @@ fn map_app_server_notification(
                     item_id,
                     None,
                     Some(text),
-                    None,
+                    Some("replace".into()),
                     None,
                 )];
             }
@@ -4493,6 +4486,18 @@ fn codex_app_server_args(
     };
 
     push_config_arg(&mut args, "model_provider", &provider.id);
+    if provider.id == "alpha-gateway" {
+        // The gateway owns bounded, provider-wide retries and metering. A
+        // second client retry loop multiplies 429 bursts and can replay a
+        // partially billed stream under a different request id.
+        for setting in ["request_max_retries", "stream_max_retries"] {
+            push_raw_config_arg(
+                &mut args,
+                &format!("model_providers.{}.{}", provider.id, setting),
+                "0",
+            );
+        }
+    }
     push_config_arg(
         &mut args,
         &format!("model_providers.{}.name", provider.id),
@@ -7315,8 +7320,19 @@ fn parse_item_completed_event(
         let status = first_string(item, &["status", "outcome"])
             .unwrap_or_default()
             .to_lowercase();
-        let failed =
-            status.contains("fail") || status.contains("error") || item.get("error").is_some();
+        let failed = status.contains("fail")
+            || status.contains("error")
+            || matches!(
+                status.as_str(),
+                "declined" | "denied" | "cancelled" | "canceled"
+            )
+            || item.get("error").is_some_and(|error| !error.is_null())
+            || item.get("success").and_then(Value::as_bool) == Some(false)
+            || item
+                .get("exitCode")
+                .or_else(|| item.get("exit_code"))
+                .and_then(Value::as_i64)
+                .is_some_and(|code| code != 0);
         let output = extract_tool_output(item)
             // Fall back to the query/args so web/file search still shows what was searched.
             .or_else(|| extract_tool_input(item))
@@ -8456,8 +8472,8 @@ mod tests {
     }
 
     #[test]
-    fn app_server_streams_agent_message_delta_and_suppresses_completed() {
-        let mut streamed = HashSet::new();
+    fn app_server_streams_agent_message_delta_and_repairs_missing_tail() {
+        let mut streamed = text_stream::TextStreams::default();
         let delta = map_app_server_notification(
             "item/agentMessage/delta",
             &serde_json::json!({ "threadId": "t", "turnId": "u", "itemId": "item_0", "delta": "Hello" }),
@@ -8469,7 +8485,8 @@ mod tests {
         assert_eq!(delta[0].event_type, "text_delta");
         assert_eq!(delta[0].text.as_deref(), Some("Hello"));
 
-        // The matching item.completed must not re-emit the full text.
+        // An authoritative snapshot repairs a missing tail without appending
+        // the already visible prefix for a second time.
         let completed = map_app_server_notification(
             "item/completed",
             &serde_json::json!({ "item": { "id": "item_0", "type": "agentMessage", "text": "Hello world" } }),
@@ -8477,12 +8494,15 @@ mod tests {
             "conv-1",
             &mut streamed,
         );
-        assert!(completed.is_empty());
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].item_id.as_deref(), Some("item_0"));
+        assert_eq!(completed[0].message.as_deref(), Some("replace"));
+        assert_eq!(completed[0].text.as_deref(), Some("Hello world"));
     }
 
     #[test]
-    fn app_server_suppresses_completed_message_after_any_delta_when_id_is_missing() {
-        let mut streamed = HashSet::new();
+    fn app_server_recovers_missing_completion_id_by_matching_its_prefix() {
+        let mut streamed = text_stream::TextStreams::default();
         let delta = map_app_server_notification(
             "item/agentMessage/delta",
             &serde_json::json!({ "threadId": "t", "turnId": "u", "itemId": "item_0", "delta": "你好。" }),
@@ -8500,12 +8520,14 @@ mod tests {
             &mut streamed,
         );
 
-        assert!(completed.is_empty());
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].item_id.as_deref(), Some("item_0"));
+        assert_eq!(completed[0].message.as_deref(), Some("replace"));
     }
 
     #[test]
     fn app_server_falls_back_to_completed_message_without_deltas() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let completed = map_app_server_notification(
             "item/completed",
             &serde_json::json!({ "item": { "id": "item_0", "type": "agentMessage", "text": "Final" } }),
@@ -8519,8 +8541,80 @@ mod tests {
     }
 
     #[test]
+    fn app_server_preserves_later_messages_and_streams_revised_plans() {
+        let mut streamed = text_stream::TextStreams::default();
+        map_app_server_notification(
+            "item/agentMessage/delta",
+            &json!({"itemId":"commentary","delta":"Checking sources."}),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        let final_message = map_app_server_notification(
+            "item/completed",
+            &json!({"item":{"id":"final","type":"agentMessage","text":"Final result"}}),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(final_message[0].text.as_deref(), Some("Final result"));
+        assert_eq!(final_message[0].item_id.as_deref(), Some("final"));
+        let plan = map_app_server_notification(
+            "item/plan/delta",
+            &json!({"itemId":"plan-1","delta":"Draft plan"}),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(plan[0].text.as_deref(), Some("Draft plan"));
+        let revised = map_app_server_notification(
+            "item/completed",
+            &json!({"item":{"id":"plan-1","type":"plan","text":"Revised plan"}}),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(revised[0].message.as_deref(), Some("replace"));
+        assert_eq!(revised[0].text.as_deref(), Some("Revised plan"));
+        let duplicate = map_app_server_notification(
+            "item/completed",
+            &json!({"item":{"id":"plan-1","type":"plan","text":"Revised plan"}}),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert!(duplicate.is_empty());
+    }
+
+    #[test]
+    fn reasoning_snapshot_repairs_only_the_public_summary() {
+        let mut streamed = text_stream::TextStreams::default();
+        let events = map_app_server_notification(
+            "item/completed",
+            &json!({"item": {
+                "id":"reasoning-1", "type":"reasoning", "summary":["可展示的摘要"], "content":["private reasoning payload"]
+            }}),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].text.as_deref(), Some("可展示的摘要"));
+        let hidden = map_app_server_notification(
+            "item/completed",
+            &json!({"item": {
+                "id":"reasoning-2", "type":"reasoning", "summary":[], "content":["private reasoning payload"]
+            }}),
+            "run-1",
+            "conv-1",
+            &mut streamed,
+        );
+        assert!(hidden.is_empty());
+    }
+
+    #[test]
     fn app_server_maps_reasoning_delta() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let events = map_app_server_notification(
             "item/reasoning/summaryTextDelta",
             &serde_json::json!({ "itemId": "r0", "delta": "thinking" }),
@@ -8535,7 +8629,7 @@ mod tests {
 
     #[test]
     fn app_server_maps_thread_token_usage() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let events = map_app_server_notification(
             "thread/tokenUsage/updated",
             &serde_json::json!({
@@ -8581,7 +8675,7 @@ mod tests {
 
     #[test]
     fn app_server_maps_context_compaction_items() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let started = map_app_server_notification(
             "item/started",
             &serde_json::json!({
@@ -8615,7 +8709,7 @@ mod tests {
 
     #[test]
     fn app_server_maps_command_execution_lifecycle() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let started = map_app_server_notification(
             "item/started",
             &serde_json::json!({ "item": { "id": "c1", "type": "commandExecution", "command": "ls -la", "status": "inProgress" } }),
@@ -8654,7 +8748,7 @@ mod tests {
 
     #[test]
     fn app_server_exposes_semantic_search_file_read_and_web_activity_at_start() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let file_read = map_app_server_notification(
             "item/started",
             &serde_json::json!({
@@ -8750,7 +8844,7 @@ mod tests {
 
     #[test]
     fn app_server_forwards_mcp_progress_while_a_tool_is_running() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let events = map_app_server_notification(
             "item/mcpToolCall/progress",
             &serde_json::json!({
@@ -8820,7 +8914,7 @@ mod tests {
 
     #[test]
     fn app_server_streams_file_change_details_before_completion() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let changes = serde_json::json!([
             { "path": "/tmp/src/App.tsx", "kind": "update", "diff": "@@ -1 +1 @@" }
         ]);
@@ -8849,8 +8943,39 @@ mod tests {
     }
 
     #[test]
+    fn app_server_respects_file_and_command_failure_outcomes() {
+        for (item, expected) in [
+            (
+                json!({"type":"mcpToolCall", "status":"completed", "error":null}),
+                "tool_completed",
+            ),
+            (
+                json!({"type":"fileChange", "status":"declined"}),
+                "tool_failed",
+            ),
+            (
+                json!({"type":"commandExecution", "status":"completed", "exitCode":1}),
+                "tool_failed",
+            ),
+            (
+                json!({"type":"dynamicToolCall", "status":"completed", "success":false}),
+                "tool_failed",
+            ),
+        ] {
+            let events = map_app_server_notification(
+                "item/completed",
+                &json!({"item":item}),
+                "run-1",
+                "conv-1",
+                &mut text_stream::TextStreams::default(),
+            );
+            assert_eq!(events[0].event_type, expected);
+        }
+    }
+
+    #[test]
     fn app_server_preserves_file_change_details() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let changes = serde_json::json!([
             { "path": "/tmp/src/App.tsx", "kind": "update" },
             { "path": "/tmp/src/styles.css", "kind": "update" }
@@ -8880,7 +9005,7 @@ mod tests {
 
     #[test]
     fn app_server_maps_native_image_generation_completion() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let events = map_app_server_notification(
             "item/completed",
             &serde_json::json!({
@@ -8912,7 +9037,7 @@ mod tests {
 
     #[test]
     fn app_server_maps_error_notification() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let events = map_app_server_notification(
             "error",
             &serde_json::json!({ "error": { "message": "rate limited" }, "willRetry": false, "threadId": "t", "turnId": "u" }),
@@ -8932,7 +9057,7 @@ mod tests {
             &json!({"item": {"id": "reason-1", "type": "reasoning"}}),
             "run-1",
             "conv-1",
-            &mut HashSet::new(),
+            &mut text_stream::TextStreams::default(),
         );
         assert_eq!(events[0].event_type, "activity");
         assert_eq!(events[0].message.as_deref(), Some("正在推理"));
@@ -8946,7 +9071,7 @@ mod tests {
             &json!({"threadId": "parent", "turn": {"status": "failed", "error": error}}),
             "run-1",
             "conv-1",
-            &mut HashSet::new(),
+            &mut text_stream::TextStreams::default(),
         );
         assert_eq!(events[0].event_type, "error");
         assert_eq!(events[0].raw.as_ref().unwrap()["error"], error);
@@ -8963,7 +9088,7 @@ mod tests {
             &json!({"error": error, "willRetry": true}),
             "run-1",
             "conv-1",
-            &mut HashSet::new(),
+            &mut text_stream::TextStreams::default(),
         );
         assert_eq!(retried[0].event_type, "status");
         assert_eq!(retried[0].raw.as_ref().unwrap()["error"], error);
@@ -8971,7 +9096,7 @@ mod tests {
 
     #[test]
     fn app_server_maps_retryable_error_as_status_notification() {
-        let mut streamed = HashSet::new();
+        let mut streamed = text_stream::TextStreams::default();
         let events = map_app_server_notification(
             "error",
             &serde_json::json!({ "error": { "message": "Reconnecting... 2/5" }, "willRetry": true, "threadId": "t", "turnId": "u" }),
@@ -9085,6 +9210,27 @@ mod tests {
                 "model_auto_compact_token_limit=28800",
             ]
         );
+    }
+
+    #[test]
+    fn alpha_gateway_has_a_single_retry_owner() {
+        let provider = ModelProviderConfig {
+            id: "alpha-gateway".into(),
+            base_url: "http://127.0.0.1:3030/gateway".into(),
+            api_key: Some("test-run-token".into()),
+            wire_api: Some("responses".into()),
+            adapter: None,
+            show_raw_reasoning: false,
+            context_window_tokens: None,
+            max_output_tokens: None,
+        };
+        let args = codex_app_server_args(Some(&provider), None);
+        for setting in ["request_max_retries", "stream_max_retries"] {
+            assert!(args.contains(&format!("model_providers.alpha-gateway.{setting}=0")));
+        }
+        assert!(!codex_app_server_args(None, None)
+            .iter()
+            .any(|arg| arg.contains("max_retries")));
     }
 
     #[test]

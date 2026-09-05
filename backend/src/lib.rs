@@ -6,6 +6,8 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod gateway;
+pub mod gateway_admission;
+pub mod gateway_output;
 pub mod gateway_stream;
 pub mod license;
 pub mod market;

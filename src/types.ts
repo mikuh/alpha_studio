@@ -15,11 +15,15 @@ export interface AuthorizationRequest {
 export interface TextBlock {
   type: 'text';
   content: string;
+  itemId?: string;
+  runId?: string;
 }
 
 export interface ThinkingBlock {
   type: 'thinking';
   content: string;
+  itemId?: string;
+  runId?: string;
 }
 
 export interface ToolBlock {
@@ -30,6 +34,42 @@ export interface ToolBlock {
   target?: string;
   input?: string;
   output?: string;
+  command?: string;
+  cwd?: string;
+  fileChanges?: ToolFileChange[];
+  startedAt?: number;
+  finishedAt?: number;
+  completionUnconfirmed?: boolean;
+}
+
+export interface ToolFileChange {
+  path: string;
+  kind: 'add' | 'update' | 'delete' | 'rename' | 'unknown';
+  diff?: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface ModelRequestProgress {
+  id: string;
+  subagent: boolean;
+  kind: 'reply' | 'tool_input' | 'reasoning' | 'search';
+  characters: number;
+  preview: string;
+  toolName?: string;
+  updatedAt: number;
+}
+
+export interface GatewayActivity {
+  active: boolean;
+  waitingRequests: number;
+  lastOutputAt: number;
+  observedAt: number;
+  activeRequests?: number;
+  activeSubagents?: number;
+  cooldownUntil?: number;
+  maxParallelSubagents?: number;
+  requestProgress?: ModelRequestProgress[];
 }
 
 export interface ErrorBlock {
@@ -229,6 +269,7 @@ export interface Conversation {
   status: 'idle' | 'streaming' | 'error';
   runId?: string;
   runActivity?: { label: string; kind: 'working' | 'reasoning' | 'retrying' };
+  gatewayActivity?: GatewayActivity;
   /** Turn finished while the user was elsewhere and hasn't been opened since. */
   unread?: boolean;
   pinned?: boolean;

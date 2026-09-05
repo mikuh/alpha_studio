@@ -21,9 +21,8 @@ pub fn monitor(
     ProgressMonitor(tokio::spawn(async move {
         let client = reqwest::Client::new();
         let url = format!("{}/run-status", base_url.trim_end_matches('/'));
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut previous = Value::Null;
         loop {
             interval.tick().await;
             let Ok(response) = client
@@ -47,26 +46,24 @@ pub fn monitor(
                 continue;
             };
             let status = payload.get("status").cloned().unwrap_or(Value::Null);
-            if status == previous {
-                continue;
-            }
-            previous = status.clone();
-            if let Some(message) = activity_message(&status) {
-                super::emit_event(
-                    &app,
-                    super::event(
-                        "activity",
-                        &run_id,
-                        &conversation_id,
-                        None,
-                        None,
-                        Some("gateway".to_string()),
-                        None,
-                        Some(message),
-                        None,
-                    ),
-                );
-            }
+            // The timestamp of a successful observation is separate from the
+            // last output timestamp; the UI can expire stale queue telemetry.
+            // Emit the idle transition too; otherwise the last queue count
+            // remains visible throughout subsequent local tool execution.
+            super::emit_event(
+                &app,
+                super::event(
+                    "activity",
+                    &run_id,
+                    &conversation_id,
+                    None,
+                    None,
+                    Some("gateway".to_string()),
+                    None,
+                    activity_message(&status),
+                    Some(serde_json::json!({ "status": status })),
+                ),
+            );
         }
     }))
 }
@@ -75,24 +72,16 @@ fn activity_message(status: &Value) -> Option<String> {
     if status.get("active").and_then(Value::as_bool) != Some(true) {
         return None;
     }
-    let waiting = status
-        .get("waitingRequests")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
     let output = status
         .get("lastOutputAt")
         .and_then(Value::as_i64)
         .unwrap_or(0);
     let message = if output > 0 {
-        "模型正在生成结果"
+        "模型服务已响应"
     } else {
         "等待模型响应"
     };
-    Some(if waiting > 0 {
-        format!("{message}，另有 {waiting} 个请求排队")
-    } else {
-        message.to_string()
-    })
+    Some(message.to_string())
 }
 
 #[cfg(test)]
@@ -105,7 +94,7 @@ mod tests {
         assert_eq!(
             activity_message(&json!({"active": true, "waitingRequests": 2, "lastOutputAt": 123}))
                 .as_deref(),
-            Some("模型正在生成结果，另有 2 个请求排队")
+            Some("模型服务已响应")
         );
         assert_eq!(
             activity_message(&json!({"active": true, "waitingRequests": 0, "lastOutputAt": 0}))

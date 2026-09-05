@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
-        Arc, Weak,
+        atomic::{AtomicI64, AtomicUsize, Ordering},
+        Arc, Mutex as StdMutex, Weak,
     },
     time::Duration,
 };
@@ -25,11 +25,13 @@ pub struct GatewayRunQueue {
 }
 
 struct GatewayRunGate {
-    semaphore: Arc<Semaphore>,
+    lanes: Mutex<HashMap<String, Weak<Semaphore>>>,
+    subagents: Arc<Semaphore>,
     progress: watch::Sender<u64>,
     waiting: AtomicUsize,
-    active: AtomicBool,
+    active: AtomicUsize,
     last_output_at: AtomicI64,
+    output: StdMutex<HashMap<String, crate::gateway_output::RequestProgress>>,
 }
 
 #[derive(serde::Serialize)]
@@ -38,9 +40,10 @@ pub struct GatewayRunStatus {
     active: bool,
     waiting_requests: usize,
     last_output_at: i64,
+    request_progress: Vec<crate::gateway_output::RequestProgress>,
 }
 
-struct GatewayWaiter(Arc<GatewayRunGate>);
+pub struct GatewayWaiter(Arc<GatewayRunGate>);
 
 impl Drop for GatewayWaiter {
     fn drop(&mut self) {
@@ -50,10 +53,36 @@ impl Drop for GatewayWaiter {
 
 pub struct GatewayRunPermit {
     permit: Option<OwnedSemaphorePermit>,
+    subagent_permit: Option<OwnedSemaphorePermit>,
     gate: Arc<GatewayRunGate>,
+    lane_key: String,
 }
 
 impl GatewayRunPermit {
+    pub fn record_model_data(&self, data: &str) {
+        if let Ok(mut output) = self.gate.output.lock() {
+            let progress = output.entry(self.lane_key.clone()).or_insert_with(|| {
+                crate::gateway_output::RequestProgress::new(self.lane_key.clone())
+            });
+            if progress.observe(data) {
+                self.record_output();
+            }
+        }
+    }
+
+    pub fn record_model_sse(&self, output: &str) {
+        for frame in crate::gateway_stream::SseDecoder::default().push(output.as_bytes()) {
+            if let Some(data) = frame.data {
+                self.record_model_data(&data);
+            }
+        }
+    }
+
+    pub fn waiting_for_admission(&self) -> GatewayWaiter {
+        self.gate.waiting.fetch_add(1, Ordering::Relaxed);
+        GatewayWaiter(self.gate.clone())
+    }
+
     pub fn record_output(&self) {
         self.gate
             .last_output_at
@@ -65,8 +94,12 @@ impl Drop for GatewayRunPermit {
     fn drop(&mut self) {
         // Release the slot before waking waiters. The acquisition future stays
         // enqueued while observing progress, preserving semaphore FIFO order.
-        self.gate.active.store(false, Ordering::Relaxed);
+        self.gate.active.fetch_sub(1, Ordering::Relaxed);
+        if let Ok(mut output) = self.gate.output.lock() {
+            output.remove(&self.lane_key);
+        }
         self.permit.take();
+        self.subagent_permit.take();
         self.gate
             .progress
             .send_modify(|generation| *generation += 1);
@@ -81,14 +114,38 @@ impl GatewayRunQueue {
             .await
             .get(run_id)
             .and_then(Weak::upgrade)?;
+        let mut request_progress: Vec<_> = gate
+            .output
+            .lock()
+            .ok()?
+            .values()
+            .filter(|p| p.updated_at > 0)
+            .cloned()
+            .collect();
+        request_progress.sort_by(|a, b| a.id.cmp(&b.id));
         Some(GatewayRunStatus {
-            active: gate.active.load(Ordering::Relaxed),
+            active: gate.active.load(Ordering::Relaxed) > 0,
             waiting_requests: gate.waiting.load(Ordering::Relaxed),
             last_output_at: gate.last_output_at.load(Ordering::Relaxed),
+            request_progress,
         })
     }
 
     pub async fn acquire(&self, run_id: &str, wait_timeout: Duration) -> Option<GatewayRunPermit> {
+        self.acquire_lane(
+            run_id,
+            &crate::gateway_admission::RequestLane::Main,
+            wait_timeout,
+        )
+        .await
+    }
+
+    pub async fn acquire_lane(
+        &self,
+        run_id: &str,
+        lane: &crate::gateway_admission::RequestLane,
+        wait_timeout: Duration,
+    ) -> Option<GatewayRunPermit> {
         let gate = {
             let mut gates = self.gates.lock().await;
             gates.retain(|_, gate| gate.strong_count() > 0);
@@ -96,11 +153,15 @@ impl GatewayRunQueue {
                 gate
             } else {
                 let gate = Arc::new(GatewayRunGate {
-                    semaphore: Arc::new(Semaphore::new(1)),
+                    lanes: Mutex::new(HashMap::new()),
+                    subagents: Arc::new(Semaphore::new(
+                        crate::gateway_admission::MAX_SUBAGENT_REQUESTS,
+                    )),
                     progress: watch::channel(0).0,
                     waiting: AtomicUsize::new(0),
-                    active: AtomicBool::new(false),
+                    active: AtomicUsize::new(0),
                     last_output_at: AtomicI64::new(0),
+                    output: StdMutex::new(HashMap::new()),
                 });
                 gates.insert(run_id.to_string(), Arc::downgrade(&gate));
                 gate
@@ -110,16 +171,34 @@ impl GatewayRunQueue {
         gate.waiting.fetch_add(1, Ordering::Relaxed);
         let _waiter = GatewayWaiter(gate.clone());
         let mut progress = gate.progress.subscribe();
-        let acquisition = gate.semaphore.clone().acquire_owned();
+        let lane_gate = {
+            let mut lanes = gate.lanes.lock().await;
+            lanes.retain(|_, lane| lane.strong_count() > 0);
+            if let Some(existing) = lanes.get(&lane.key()).and_then(Weak::upgrade) {
+                existing
+            } else {
+                let semaphore = Arc::new(Semaphore::new(1));
+                lanes.insert(lane.key(), Arc::downgrade(&semaphore));
+                semaphore
+            }
+        };
+        let acquisition = async {
+            let permit = lane_gate.acquire_owned().await.ok()?;
+            let subagent_permit = if lane.is_subagent() {
+                Some(gate.subagents.clone().acquire_owned().await.ok()?)
+            } else {
+                None
+            };
+            Some((permit, subagent_permit))
+        };
         tokio::pin!(acquisition);
         loop {
             tokio::select! {
                 biased;
                 permit = &mut acquisition => {
-                    gate.active.store(permit.is_ok(), Ordering::Relaxed);
-                    gate.last_output_at.store(0, Ordering::Relaxed);
-                    return permit.ok().map(|permit| GatewayRunPermit {
-                        permit: Some(permit), gate,
+                    return permit.map(|(permit, subagent_permit)| {
+                        if gate.active.fetch_add(1, Ordering::Relaxed) == 0 { gate.last_output_at.store(0, Ordering::Relaxed); }
+                        GatewayRunPermit { permit: Some(permit), subagent_permit, gate: gate.clone(), lane_key: lane.key() }
                     });
                 }
                 changed = progress.changed() => {
@@ -258,6 +337,80 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::GatewayRunQueue;
+
+    #[tokio::test]
+    async fn live_previews_are_scoped_to_their_active_agent_and_ignore_keepalives() {
+        use crate::gateway_admission::RequestLane;
+        let queue = GatewayRunQueue::default();
+        let main = queue
+            .acquire("preview", Duration::from_secs(1))
+            .await
+            .unwrap();
+        let child = queue
+            .acquire_lane(
+                "preview",
+                &RequestLane::Subagent("child".into()),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        main.record_model_data(r#"{"type":"response.created"}"#);
+        assert_eq!(queue.status("preview").await.unwrap().last_output_at, 0);
+        child.record_model_sse(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Child progress\"}\n\n",
+        );
+        let status = queue.status("preview").await.unwrap();
+        assert_eq!(status.request_progress.len(), 1);
+        assert_eq!(status.request_progress[0].preview, "Child progress");
+        assert!(status.request_progress[0].subagent);
+        drop(child);
+        assert!(queue
+            .status("preview")
+            .await
+            .unwrap()
+            .request_progress
+            .is_empty());
+        drop(main);
+        assert!(queue.status("preview").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn spawned_agents_can_overlap_but_each_lane_and_fanout_are_bounded() {
+        use crate::gateway_admission::RequestLane;
+        let queue = GatewayRunQueue::default();
+        let wait = Duration::from_millis(20);
+        let main = queue.acquire("parallel", wait).await.unwrap();
+        let admission = main.waiting_for_admission();
+        assert_eq!(queue.status("parallel").await.unwrap().waiting_requests, 1);
+        drop(admission);
+        assert_eq!(queue.status("parallel").await.unwrap().waiting_requests, 0);
+        let a = queue
+            .acquire_lane("parallel", &RequestLane::Subagent("a".into()), wait)
+            .await
+            .unwrap();
+        let b = queue
+            .acquire_lane("parallel", &RequestLane::Subagent("b".into()), wait)
+            .await
+            .unwrap();
+        assert!(queue.acquire("parallel", wait).await.is_none());
+        assert!(queue
+            .acquire_lane("parallel", &RequestLane::Subagent("a".into()), wait)
+            .await
+            .is_none());
+        assert!(queue
+            .acquire_lane("parallel", &RequestLane::Subagent("c".into()), wait)
+            .await
+            .is_none());
+        drop(a);
+        let c = queue
+            .acquire_lane("parallel", &RequestLane::Subagent("c".into()), wait)
+            .await
+            .unwrap();
+        drop(main);
+        assert!(queue.status("parallel").await.unwrap().active);
+        drop((b, c));
+        assert!(queue.status("parallel").await.is_none());
+    }
 
     #[tokio::test]
     async fn gateway_run_queue_serves_waiters_in_arrival_order() {

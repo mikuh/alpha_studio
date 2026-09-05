@@ -1,5 +1,6 @@
-import type { ChatMessage, CodexChatEvent, CodexTokenUsage, CodexTokenUsageBreakdown, Conversation, FileResultBlock, ImageResultBlock, MessageBlock, ToolBlock } from './types';
+import type { ChatMessage, CodexChatEvent, CodexTokenUsage, CodexTokenUsageBreakdown, Conversation, FileResultBlock, ImageResultBlock, MessageBlock, ModelRequestProgress, ToolBlock } from './types';
 import { COWORKER_CATALOG, coworkerById } from './coworkers';
+import { isFileWriteCommand, toolEventMetadata } from './toolActivity';
 
 export const CONTEXT_COMPACTION_TOOL_TITLE = 'context_compaction';
 export const CODEX_CONTEXT_COMPACTION_TARGET = 'GPT 已压缩历史上下文';
@@ -21,13 +22,43 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
       runId: event.runId,
       status: 'streaming',
       runActivity: undefined,
+      gatewayActivity: undefined,
       updatedAt: now,
     };
   }
 
+  // Gateway telemetry describes this run's internal HTTP requests. It must not
+  // replace native tool/reasoning activity or become a transcript message.
+  if (event.type === 'activity' && event.title === 'gateway') {
+    if (conversation.status !== 'streaming') return conversation;
+    const raw = asRecord(event.raw);
+    const status = asRecord(raw?.status) ?? raw;
+    const legacyWaiting = /(?:另有\s*)?(\d+)\s*个请求排队/.exec(event.message ?? '');
+    const active = status ? status.active === true : Boolean(event.message);
+    const lastOutputAt = numericValue(status?.lastOutputAt) ?? 0;
+    const waitingRequests = numericValue(status?.waitingRequests) ?? Number(legacyWaiting?.[1] ?? 0);
+    const hasNewOutput = lastOutputAt > (conversation.gatewayActivity?.lastOutputAt ?? 0);
+    return {
+      ...conversation,
+      gatewayActivity: active || waitingRequests > 0 ? {
+        active, waitingRequests, lastOutputAt, observedAt: now,
+        activeRequests: numericValue(status?.activeRequests) ?? undefined,
+        activeSubagents: numericValue(status?.activeSubagents) ?? undefined,
+        cooldownUntil: numericValue(status?.cooldownUntil) ?? undefined,
+        maxParallelSubagents: numericValue(status?.maxParallelSubagents) ?? undefined,
+        requestProgress: modelRequestProgress(status?.requestProgress),
+      } : undefined,
+      // Queue changes and successful polling aren't evidence of model progress.
+      updatedAt: hasNewOutput ? now : conversation.updatedAt,
+    };
+  }
+
+  if (event.type.startsWith('tool_')) {
+    const command = toolEventMetadata(event).command;
+    if (command && isFileWriteCommand(command)) event = { ...event, title: 'fileWrite', text: event.type === 'tool_started' ? command : event.text };
+  }
   const activity = activityFromEvent(event);
-  if (activity && conversation.status === 'streaming'
-    && !(event.title === 'gateway' && conversation.runActivity?.kind === 'retrying')) {
+  if (activity && conversation.status === 'streaming') {
     conversation = { ...conversation, runActivity: activity };
   }
   if (event.type === 'activity') {
@@ -149,12 +180,12 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
 
   if (event.type === 'text_delta' && event.text) {
     if (conversation.status !== 'streaming') return conversation;
-    return appendTextDelta(conversation, now, event.text);
+    return appendStreamText(conversation, now, event, 'text');
   }
 
   if (event.type === 'reasoning_delta' && event.text) {
     if (conversation.status !== 'streaming') return conversation;
-    return appendThinkingDelta(conversation, now, event.text);
+    return appendStreamText(conversation, now, event, 'thinking');
   }
 
   if (event.type === 'tool_started') {
@@ -176,6 +207,22 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   }
 
   return conversation;
+}
+
+function modelRequestProgress(value: unknown): ModelRequestProgress[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 3).flatMap(entry => {
+    const row = asRecord(entry);
+    if (!row || typeof row.id !== 'string' || !['reply', 'tool_input', 'reasoning', 'search'].includes(String(row.kind))) return [];
+    const subagent = row.subagent === true;
+    return [{
+      id: row.id, subagent, kind: row.kind as ModelRequestProgress['kind'],
+      characters: Math.max(0, numericValue(row.characters) ?? 0),
+      preview: subagent && row.kind === 'reply' && typeof row.preview === 'string' ? row.preview.slice(-1800) : '',
+      toolName: typeof row.toolName === 'string' ? row.toolName.slice(0, 100) : undefined,
+      updatedAt: numericValue(row.updatedAt) ?? 0,
+    }];
+  });
 }
 
 function activityFromEvent(event: CodexChatEvent): Conversation['runActivity'] {
@@ -244,33 +291,29 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-// Codex app-server streams the assistant message as pure token deltas, so we
-// append every chunk verbatim. (The old snapshot-style dedup would drop legit
-// repeated tokens like "." or " the".)
-function appendTextDelta(conversation: Conversation, now: number, text: string): Conversation {
-  return updateStreamingAssistant(conversation, now, (message) => {
+// Deltas append verbatim, including repeated tokens. Only an explicit native
+// completion snapshot replaces its own item; other messages are independent.
+function appendStreamText(conversation: Conversation, now: number, event: CodexChatEvent, type: 'text' | 'thinking'): Conversation {
+  const text = event.text ?? '';
+  const matches = (block: MessageBlock) => block.type === type && event.itemId
+    && block.itemId === event.itemId && block.runId === event.runId;
+  const owner = event.itemId ? conversation.messages.findIndex(message => message.role === 'assistant' && message.blocks.some(matches)) : -1;
+  const update = (message: ChatMessage): ChatMessage => {
     const blocks = [...message.blocks];
     const last = blocks[blocks.length - 1];
-    if (last?.type === 'text') {
-      blocks[blocks.length - 1] = { ...last, content: last.content + text };
+    const index = event.itemId ? blocks.findIndex(matches) : last?.type === type && !last.itemId ? blocks.length - 1 : -1;
+    const previous = blocks[index];
+    if (previous && (previous.type === 'text' || previous.type === 'thinking')) {
+      const replace = event.message === 'replace' && (Boolean(event.itemId) || text.startsWith(previous.content));
+      blocks[index] = { ...previous, content: replace ? text : previous.content + text };
     } else {
-      blocks.push({ type: 'text', content: text });
+      blocks.push({ type, content: text, ...(event.itemId ? { itemId: event.itemId, runId: event.runId } : {}) });
     }
     return { ...message, blocks };
-  });
-}
-
-function appendThinkingDelta(conversation: Conversation, now: number, text: string): Conversation {
-  return updateStreamingAssistant(conversation, now, (message) => {
-    const blocks = [...message.blocks];
-    const last = blocks[blocks.length - 1];
-    if (last?.type === 'thinking') {
-      blocks[blocks.length - 1] = { ...last, content: last.content + text };
-    } else {
-      blocks.push({ type: 'thinking', content: text });
-    }
-    return { ...message, blocks };
-  });
+  };
+  if (owner >= 0) return { ...conversation, updatedAt: now,
+    messages: conversation.messages.map((message, index) => index === owner ? update(message) : message) };
+  return updateStreamingAssistant(conversation, now, update);
 }
 
 function completeContextCompactionBlock(conversation: Conversation, now: number, event: CodexChatEvent): Conversation {
@@ -323,6 +366,7 @@ function appendToolStart(conversation: Conversation, now: number, event: CodexCh
         input: titleBecameMoreSpecific && event.text
           ? clampToolLog(event.text)
           : existing.input || clampToolLog(event.text),
+        ...toolEventMetadata(event),
       };
       return { ...message, blocks };
     }
@@ -337,6 +381,8 @@ function appendToolStart(conversation: Conversation, now: number, event: CodexCh
           status: 'in_progress',
           ...(target ? { target } : {}),
           input: clampToolLog(event.text),
+          startedAt: now,
+          ...toolEventMetadata(event),
         },
       ],
     };
@@ -355,6 +401,7 @@ function appendToolDelta(conversation: Conversation, now: number, event: CodexCh
         return {
           ...block,
           target: block.target || target,
+          ...toolEventMetadata(event),
           output: event.message === 'replace'
             ? clampToolLog(event.text)
             : clampToolLog(`${block.output || ''}${event.text || ''}`),
@@ -377,6 +424,9 @@ function completeTool(conversation: Conversation, now: number, event: CodexChatE
       return {
         ...block,
         status: 'completed' as const,
+        ...(block.startedAt !== undefined ? { finishedAt: now } : {}),
+        completionUnconfirmed: undefined,
+        ...toolEventMetadata(event),
         target: block.target || target,
         // Image generation can return a multi-megabyte data URL nested inside a
         // generic `wait` result. Keep the image in a dedicated renderable block
@@ -410,6 +460,9 @@ function failTool(conversation: Conversation, now: number, event: CodexChatEvent
         return {
           ...block,
           status: 'failed',
+          ...(block.startedAt !== undefined ? { finishedAt: now } : {}),
+          completionUnconfirmed: undefined,
+          ...toolEventMetadata(event),
           target: block.target || target,
           output: clampToolLog(event.message || event.text || block.output),
         };
@@ -536,6 +589,7 @@ function appendToStreamingAssistant(
         ? options.runId
         : conversation.runId,
       runActivity: options?.done ? undefined : conversation.runActivity,
+      gatewayActivity: options?.done ? undefined : conversation.gatewayActivity,
     },
     now,
     (message) => {
@@ -595,6 +649,7 @@ function finishStreaming(
       status: 'idle',
       runId: undefined,
       runActivity: undefined,
+      gatewayActivity: undefined,
     },
     now,
     (message) => {
@@ -634,7 +689,9 @@ export function finalizePendingToolBlocks(
   const next = blocks.map((block) => {
     if (block.type !== 'tool' || block.status !== 'in_progress') return block;
     changed = true;
-    return { ...block, status };
+    // A completed turn alone cannot confirm that a pending file write succeeded.
+    const unconfirmedWrite = status === 'completed' && /file.?change|file.?write|apply.?patch|write.?file/i.test(block.title);
+    return { ...block, status, ...(unconfirmedWrite ? { completionUnconfirmed: true } : {}) };
   });
   return changed ? next : blocks;
 }

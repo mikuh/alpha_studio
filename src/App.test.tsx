@@ -1421,6 +1421,63 @@ describe('right feature panel', () => {
     expect(completedEdit).not.toHaveTextContent('正在编辑');
   });
 
+  it('keeps file progress visible above the internal queue and opens confirmed files', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    const now = Date.now();
+    useChatStore.setState({ conversations: [conversation({
+      cwd: '/tmp', status: 'streaming', updatedAt: now, runId: 'run-file-queue',
+      messages: [{ id: 'assistant-file-queue', role: 'assistant', timestamp: now, isStreaming: true, blocks: [] }],
+    })] });
+    render(<App />);
+    const changes = [{ path: 'report.md', kind: { type: 'add' }, diff: '@@ -0,0 +1 @@\n+report' }];
+    act(() => {
+      useChatStore.getState().handleCodexEvent({ type: 'tool_started', runId: 'run-file-queue', itemId: 'edit', title: 'fileChange', raw: { item: { changes } } });
+      useChatStore.getState().handleCodexEvent({ type: 'activity', runId: 'run-file-queue', title: 'gateway', raw: { status: { active: true, waitingRequests: 3, lastOutputAt: now } } });
+    });
+    expect(screen.getByRole('status', { name: '正在编辑 report.md · +1' })).toBeInTheDocument();
+    const queue = screen.getByText('任务内有 3 个模型请求等待');
+    await user.click(queue);
+    expect(screen.getByText(/不是你追加的消息；无需重复发送/)).toBeVisible();
+    expect(screen.queryByRole('button', { name: '预览 report.md' })).not.toBeInTheDocument();
+    act(() => {
+      useChatStore.getState().handleCodexEvent({ type: 'tool_completed', runId: 'run-file-queue', itemId: 'edit', title: 'fileChange', raw: { item: { changes } } });
+      useChatStore.getState().handleCodexEvent({ type: 'activity', runId: 'run-file-queue', title: 'gateway', raw: { status: null } });
+    });
+    expect(screen.queryByText('任务内有 3 个模型请求等待')).not.toBeInTheDocument();
+    await user.click(screen.getByText('已编辑'));
+    expect(screen.getByText('新增')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '预览 report.md' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('local_text_file_read', expect.objectContaining({ request: expect.objectContaining({ path: '/tmp/report.md' }) })));
+  });
+
+  it('expires stale queue counts and preserves long running tool context', () => {
+    const now = Date.now();
+    useChatStore.setState({ conversations: [conversation({
+      status: 'streaming', updatedAt: now - 240_000, runId: 'run-stale',
+      gatewayActivity: { active: true, waitingRequests: 4, lastOutputAt: 0, observedAt: now - 25_000 },
+      runActivity: { kind: 'working', label: '正在执行工具' },
+      messages: [{ id: 'assistant-stale', role: 'assistant', timestamp: now - 240_000, isStreaming: true,
+        blocks: [{ type: 'tool', id: 'write', title: 'fileWrite', status: 'in_progress', command: 'python3 report.py' }] }],
+    })] });
+    render(<App />);
+    expect(screen.queryByText('任务内有 4 个模型请求等待')).not.toBeInTheDocument();
+    const status = screen.getByRole('status', { name: '操作仍在进行，暂未收到新进展' });
+    expect(status).toHaveTextContent('工具尚未返回新的执行结果');
+    expect(status).toHaveTextContent('最近状态：正在运行写入脚本');
+  });
+
+  it('does not present non-file create/update tools as file edits', () => {
+    useChatStore.setState({ conversations: [conversation({ messages: [{ id: 'assistant-other-tools', role: 'assistant', timestamp: 1,
+      blocks: [
+        { type: 'tool', id: 'plan', title: 'update_plan', status: 'completed' },
+        { type: 'tool', id: 'thread', title: 'create_thread', status: 'completed' },
+      ] }],
+    })] });
+    const { container } = render(<App />);
+    expect(container.querySelector('.kind-file-edit')).not.toBeInTheDocument();
+  });
+
   it('shows search, file-read, and web-read targets as soon as each activity starts', () => {
     useChatStore.setState({
       conversations: [conversation({
@@ -1575,9 +1632,75 @@ describe('right feature panel', () => {
     }));
     expect(screen.queryByRole('status', { name: '正在重连模型（2/5）' })).not.toBeInTheDocument();
     act(() => useChatStore.getState().handleCodexEvent({
-      type: 'activity', runId: 'run-progress', title: 'gateway', message: '模型正在生成结果，另有 2 个请求排队',
+      type: 'activity', runId: 'run-progress', title: 'gateway', raw: { status: { active: true, waitingRequests: 2, lastOutputAt: now } },
     }));
-    expect(screen.getByRole('status', { name: '模型正在生成结果，另有 2 个请求排队' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: '正在推理' })).toBeInTheDocument();
+    expect(screen.getByText('任务内有 2 个模型请求等待')).toBeInTheDocument();
+  });
+
+  it('renders the first text chunk immediately and reconciles completion snapshots in place', () => {
+    const now = Date.now();
+    useChatStore.setState({ conversations: [conversation({ status: 'streaming', updatedAt: now, runId: 'run-live',
+      messages: [{ id: 'msg-live', role: 'assistant', timestamp: now, isStreaming: true, blocks: [] }],
+    })] });
+    render(<App />);
+    act(() => useChatStore.getState().handleCodexEvent({ type: 'text_delta', runId: 'run-live', itemId: 'reply', text: '第一条可见结论' }));
+    expect(screen.getByText('第一条可见结论')).toBeVisible();
+    expect(useChatStore.getState().conversations[0].status).toBe('streaming');
+    act(() => useChatStore.getState().handleCodexEvent({ type: 'text_delta', runId: 'run-live', itemId: 'reply', text: '第一条可见结论，补齐尾部。', message: 'replace' }));
+    expect(screen.getAllByText('第一条可见结论，补齐尾部。')).toHaveLength(1);
+    expect(screen.queryByText('第一条可见结论')).not.toBeInTheDocument();
+  });
+
+  it('shows live child prose and tool preparation without presenting arguments as completed work', () => {
+    const now = Date.now();
+    useChatStore.setState({ conversations: [conversation({ status: 'streaming', updatedAt: now, runId: 'run-live',
+      messages: [{ id: 'msg-live', role: 'assistant', timestamp: now, isStreaming: true, blocks: [] }],
+    })] });
+    render(<App />);
+    act(() => useChatStore.getState().handleCodexEvent({ type: 'activity', title: 'gateway', runId: 'run-live', raw: { status: {
+      active: true, waitingRequests: 0, lastOutputAt: now, requestProgress: [
+        { id: 'main', subagent: false, kind: 'tool_input', toolName: 'apply_patch', characters: 1234, preview: 'private arguments', updatedAt: now },
+        { id: 'child-1', subagent: true, kind: 'reply', characters: 22, preview: '已找到三条公告，正在核对发布日期。', updatedAt: now },
+      ],
+    } } }));
+    expect(screen.getByLabelText('子任务实时进展')).toHaveTextContent('已找到三条公告，正在核对发布日期。');
+    expect(screen.getByLabelText('工具准备进度')).toHaveTextContent('已生成 1,234 字符');
+    expect(screen.getByLabelText('工具准备进度')).toHaveTextContent('准备完成后才会执行');
+    expect(screen.getByRole('status', { name: '正在准备文件修改' })).toBeInTheDocument();
+    expect(screen.queryByText('private arguments')).not.toBeInTheDocument();
+    act(() => useChatStore.getState().handleCodexEvent({ type: 'activity', title: 'gateway', runId: 'run-live', raw: { status: null } }));
+    expect(screen.queryByLabelText('子任务实时进展')).not.toBeInTheDocument();
+  });
+
+  it('explains parallel subagent requests and a shared rate-limit cooldown', () => {
+    const now = Date.now();
+    useChatStore.setState({ conversations: [conversation({
+      status: 'streaming', updatedAt: now, runId: 'run-parallel',
+      messages: [{ id: 'msg-parallel', role: 'assistant', timestamp: now, isStreaming: true, blocks: [] }],
+    })] });
+    render(<App />);
+    act(() => useChatStore.getState().handleCodexEvent({
+      type: 'activity', runId: 'run-parallel', title: 'gateway', raw: { status: {
+        active: true, waitingRequests: 1, lastOutputAt: 0, activeRequests: 2,
+        activeSubagents: 2, maxParallelSubagents: 2, cooldownUntil: now + 60_000,
+      } },
+    }));
+    expect(screen.getByText('2 个子任务请求正在处理')).toBeInTheDocument();
+    expect(screen.getByText(/同一 agent 的请求按顺序处理，独立子任务最多 2 个并行/)).toBeInTheDocument();
+    expect(screen.getByText(/模型服务限流，统一等待 .*后再尝试/)).toBeInTheDocument();
+    act(() => useChatStore.getState().handleCodexEvent({
+      type: 'activity', runId: 'run-parallel', title: 'gateway', raw: { status: {
+        active: true, waitingRequests: 2, activeRequests: 0, activeSubagents: 0,
+        lastOutputAt: now, cooldownUntil: now + 60_000,
+      } },
+    }));
+    expect(screen.getByRole('status', { name: '等待模型服务恢复' })).toBeInTheDocument();
+    act(() => useChatStore.getState().handleCodexEvent({
+      type: 'activity', runId: 'run-parallel', title: 'gateway', raw: { status: null },
+    }));
+    expect(screen.queryByText(/模型服务限流/)).not.toBeInTheDocument();
+    expect(screen.queryByText('2 个子任务请求正在处理')).not.toBeInTheDocument();
   });
 
   it('returns the waiting indicator to normal as soon as new progress arrives', () => {

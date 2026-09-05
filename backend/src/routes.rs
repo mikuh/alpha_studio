@@ -32,6 +32,7 @@ use crate::{
         normalize_upstream_error_body, normalize_upstream_success_body_for_request,
         ProviderApiFormat, ProviderAuthType, ProviderConfig, UpstreamRequest,
     },
+    gateway_admission::{self, RequestLane},
     gateway_stream::{
         inspect_responses_stream_data, is_terminal_responses_stream_data,
         restore_namespace_tools_in_sse_frame, NativeStreamEvent, ResponsesStreamAdapter,
@@ -58,9 +59,7 @@ const GATEWAY_RUN_TTL_SECONDS: i64 = 48 * 60 * 60;
 const GATEWAY_TASK_FULL_WINDOW_REQUEST_CAP: u64 = 64;
 const MAX_GATEWAY_TASK_BUDGET_YUAN: u64 = 10_000;
 const FAST_MODE_COST_MULTIPLIER: u64 = 2;
-// A Codex run can fan out several model requests at once. Queue them fairly per
-// run and leave enough headroom for high-reasoning GPT streams and agent bursts
-// instead of surfacing a false 429 to the client.
+// Each agent is serial; independent spawned agents use bounded parallel lanes.
 const GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 const GATEWAY_REQUEST_LEASE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -70,7 +69,8 @@ fn gateway_request_wait_timeout(provider: &ProviderConfig) -> Duration {
     let retries = u64::from(provider.max_retries.min(5));
     Duration::from_millis(provider.request_timeout_ms.clamp(1_000, 900_000))
         .saturating_mul((retries + 1) as u32)
-        .saturating_add(Duration::from_secs(retries * 5 + 30))
+        .saturating_add(gateway_admission::MAX_RETRY_WAIT)
+        .saturating_add(Duration::from_secs(30))
         .max(GATEWAY_REQUEST_LEASE_WAIT_TIMEOUT)
 }
 
@@ -2389,9 +2389,37 @@ pub async fn gateway_run_status(
 ) -> ApiResult<Json<Value>> {
     let claims = state.run_tokens.verify(bearer_token(&headers)?)?;
     ensure_gateway_run_available(&state.db, &claims).await?;
-    Ok(Json(
-        json!({ "status": state.gateway_run_queue.status(&claims.run_id).await }),
-    ))
+    let mut status = serde_json::to_value(state.gateway_run_queue.status(&claims.run_id).await)
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    let dispatched = sqlx::query(
+        r#"
+        select count(*) as total,
+          count(*) filter (where dispatching and dispatch_expires_at > now()) as active,
+          count(*) filter (where dispatching and dispatch_expires_at > now() and lane <> 'main') as subagents,
+          count(*) filter (where not dispatching) as waiting,
+          coalesce(extract(epoch from max(c.cooldown_until) filter (where c.cooldown_until > now())) * 1000, 0)::bigint as cooldown_until
+        from gateway_request_leases l
+        left join gateway_provider_cooldowns c on c.provider_key=l.provider_key
+        where l.run_id=$1
+        "#,
+    )
+    .bind(&claims.run_id)
+    .fetch_one(&state.db)
+    .await?;
+    if dispatched.get::<i64, _>("total") > 0 || status.is_object() {
+        if !status.is_object() {
+            status = json!({"active":true,"waitingRequests":0,"lastOutputAt":0});
+        }
+        status["waitingRequests"] = json!(
+            status["waitingRequests"].as_u64().unwrap_or(0)
+                + dispatched.get::<i64, _>("waiting") as u64
+        );
+        status["activeRequests"] = json!(dispatched.get::<i64, _>("active"));
+        status["activeSubagents"] = json!(dispatched.get::<i64, _>("subagents"));
+        status["cooldownUntil"] = json!(dispatched.get::<i64, _>("cooldown_until"));
+        status["maxParallelSubagents"] = json!(gateway_admission::MAX_SUBAGENT_REQUESTS);
+    }
+    Ok(Json(json!({ "status": status })))
 }
 
 pub async fn gateway_responses(
@@ -2411,11 +2439,19 @@ pub async fn gateway_responses(
     let request_pricing = pricing_for_gateway_request(&route.pricing, &body);
     let provider = load_provider_config(&state, &route).await?;
     let gateway_request_id = format!("gwreq_{}", Uuid::new_v4().simple());
+    let lane = RequestLane::from_codex(&headers, &body);
+    // Hash credentials; never persist or log raw provider secrets as keys.
+    let provider_key = hex::encode(Sha256::digest(format!(
+        "{}\0{}\0{}",
+        provider.provider,
+        provider.base_url.trim_end_matches('/'),
+        provider.api_key
+    )));
     let wait_timeout = gateway_request_wait_timeout(&provider);
     let queue_started = std::time::Instant::now();
     let run_permit = state
         .gateway_run_queue
-        .acquire(&claims.run_id, wait_timeout)
+        .acquire_lane(&claims.run_id, &lane, wait_timeout)
         .await
         .ok_or_else(|| {
             tracing::warn!(
@@ -2424,9 +2460,7 @@ pub async fn gateway_responses(
                 wait_ms = queue_started.elapsed().as_millis(),
                 "gateway queue made no progress before its request deadline"
             );
-            ApiError::TooManyRequests(
-                "Alpha Studio gateway queue timed out waiting for another request in this task; this is not an upstream model rate limit".to_string(),
-            )
+            ApiError::GatewayBusy("任务内请求仍在等待前序操作，尚未发送给模型服务。".to_string())
         })?;
     if queue_started.elapsed() >= GATEWAY_REQUEST_LEASE_RETRY_INTERVAL {
         tracing::info!(
@@ -2435,8 +2469,27 @@ pub async fn gateway_responses(
             "waited in per-run gateway request queue"
         );
     }
-    let remaining_budget =
-        start_gateway_request(&state.db, &claims, &gateway_request_id, wait_timeout).await?;
+    enforce_request_budget(&mut body, claims.budget_yuan, &route, &request_pricing)?;
+    let reservation = request_safety_charge_yuan(
+        estimate_request_input_tokens(&body, route.context_window_tokens)?,
+        body["max_output_tokens"]
+            .as_u64()
+            .unwrap_or(route.max_output_tokens),
+        &request_pricing,
+    );
+    let remaining_budget = {
+        let _waiting = run_permit.waiting_for_admission();
+        gateway_admission::reserve_request(
+            &state.db,
+            &claims,
+            &gateway_request_id,
+            &lane,
+            Some(reservation),
+            Some(&provider_key),
+            wait_timeout,
+        )
+        .await?
+    };
     if let Err(error) =
         enforce_request_budget(&mut body, remaining_budget, &route, &request_pricing)
     {
@@ -2460,6 +2513,9 @@ pub async fn gateway_responses(
         &upstream_request,
         &body,
         &gateway_request_id,
+        &state.db,
+        &provider_key,
+        wait_timeout,
     )
     .await
     {
@@ -2479,6 +2535,28 @@ pub async fn gateway_responses(
                 .await?;
             } else {
                 release_gateway_request(&state.db, &claims, &gateway_request_id, None).await?;
+            }
+            if let Some(body) = error.rate_limit_body {
+                let mut normalized = normalize_upstream_error_body(&provider.provider, 429, body);
+                normalized["error"]["source"] = json!("upstream");
+                if let Some(id) = error
+                    .headers
+                    .get("x-request-id")
+                    .and_then(|value| value.to_str().ok())
+                {
+                    normalized["error"]["upstream_request_id"] = json!(id);
+                }
+                let mut response =
+                    (StatusCode::TOO_MANY_REQUESTS, Json(normalized)).into_response();
+                for name in ["retry-after", "x-request-id"] {
+                    if let Some(value) = error.headers.get(name) {
+                        response.headers_mut().insert(name, value.clone());
+                    }
+                }
+                return Ok(response);
+            }
+            if error.waiting {
+                return Err(ApiError::GatewayBusy(error.message));
             }
             return Err(ApiError::Upstream(error.message));
         }
@@ -2594,6 +2672,7 @@ pub async fn gateway_responses(
 }
 
 // Keep the stream's request, accounting context, and queue permit together.
+
 #[allow(clippy::too_many_arguments)]
 fn stream_upstream_response(
     upstream: reqwest::Response,
@@ -2626,9 +2705,6 @@ fn stream_upstream_response(
             match chunk {
                 Ok(chunk) => {
                     let frames = decoder.push(&chunk);
-                    if frames.iter().any(|frame| frame.data.is_some()) {
-                        run_permit.record_output();
-                    }
                     if let Some(adapter) = adapter.as_mut() {
                         for frame in frames {
                             let Some(data) = frame.data else {
@@ -2636,10 +2712,14 @@ fn stream_upstream_response(
                             };
                             match adapter.ingest(&data) {
                                 Ok(output) if adapter.is_finished() => {
+                                    run_permit.record_model_sse(&output);
                                     terminal_output.extend_from_slice(output.as_bytes());
                                     saw_done = true;
                                 }
-                                Ok(output) => send_stream_bytes(&sender, output).await,
+                                Ok(output) => {
+                                    run_permit.record_model_sse(&output);
+                                    send_stream_bytes(&sender, output).await;
+                                }
                                 Err(error) => {
                                     failed = true;
                                     failure_message = Some(error.clone());
@@ -2657,6 +2737,7 @@ fn stream_upstream_response(
                                 .map(is_terminal_responses_stream_data)
                                 .unwrap_or(false);
                             if let Some(data) = frame.data.as_deref() {
+                                run_permit.record_model_data(data);
                                 match inspect_responses_stream_data(data) {
                                     Some(NativeStreamEvent::Completed(value)) => usage = value,
                                     Some(NativeStreamEvent::Failed) => failed = true,
@@ -2705,9 +2786,13 @@ fn stream_upstream_response(
                     if let Some(data) = frame.data.as_deref() {
                         match adapter.ingest(data) {
                             Ok(output) if adapter.is_finished() => {
+                                run_permit.record_model_sse(&output);
                                 terminal_output.extend_from_slice(output.as_bytes());
                             }
-                            Ok(output) => send_stream_bytes(&sender, output).await,
+                            Ok(output) => {
+                                run_permit.record_model_sse(&output);
+                                send_stream_bytes(&sender, output).await;
+                            }
                             Err(error) => {
                                 failed = true;
                                 failure_message = Some(error.clone());
@@ -2722,6 +2807,7 @@ fn stream_upstream_response(
                         .map(is_terminal_responses_stream_data)
                         .unwrap_or(false);
                     if let Some(data) = frame.data.as_deref() {
+                        run_permit.record_model_data(data);
                         if let Some(event) = inspect_responses_stream_data(data) {
                             match event {
                                 NativeStreamEvent::Completed(value) => usage = value,
@@ -2829,6 +2915,21 @@ fn native_stream_failure(message: &str) -> String {
 struct UpstreamPostError {
     message: String,
     may_have_incurred_cost: bool,
+    waiting: bool,
+    rate_limit_body: Option<Value>,
+    headers: HeaderMap,
+}
+
+impl UpstreamPostError {
+    fn local(message: String, cost: bool, waiting: bool) -> Self {
+        Self {
+            message,
+            may_have_incurred_cost: cost,
+            waiting,
+            rate_limit_body: None,
+            headers: HeaderMap::new(),
+        }
+    }
 }
 
 async fn send_upstream_post(
@@ -2836,46 +2937,115 @@ async fn send_upstream_post(
     request: &UpstreamRequest,
     body: &Value,
     idempotency_key: &str,
+    pool: &PgPool,
+    provider_key: &str,
+    wait_timeout: Duration,
 ) -> Result<reqwest::Response, UpstreamPostError> {
-    let mut last_error = None;
-    let mut may_have_incurred_cost = false;
+    let deadline = tokio::time::Instant::now() + wait_timeout;
+    let mut retry_wait_left = gateway_admission::MAX_RETRY_WAIT;
     for attempt in 0..=request.max_retries {
+        gateway_admission::acquire_dispatch(pool, provider_key, idempotency_key, deadline)
+            .await
+            .map_err(|error| {
+                UpstreamPostError::local(
+                    error.to_string(),
+                    false,
+                    matches!(error, ApiError::GatewayBusy(_)),
+                )
+            })?;
         let mut builder = client
             .post(&request.url)
             .header("content-type", "application/json")
             .header("idempotency-key", idempotency_key)
-            .timeout(Duration::from_millis(request.request_timeout_ms))
+            .timeout(
+                Duration::from_millis(request.request_timeout_ms)
+                    .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+            )
             .query(&request.query_params)
             .json(body);
         for (name, value) in &request.headers {
             builder = builder.header(name, value);
         }
         match builder.send().await {
-            Ok(response) => {
-                // A POST retry can buy the same inference twice when a provider does not
-                // honor idempotency keys. Only 429 is unambiguously safe to retry.
-                if attempt < request.max_retries && response.status().as_u16() == 429 {
-                    let delay = retry_delay(response.headers(), attempt);
-                    tokio::time::sleep(delay).await;
-                    continue;
+            Ok(response) if response.status().as_u16() == 429 => {
+                let headers = response.headers().clone();
+                let text = response.text().await.unwrap_or_default();
+                let mut error_body = serde_json::from_str::<Value>(&text)
+                    .unwrap_or_else(|_| json!({"error":{"message":text}}));
+                let permanent = is_quota_error(&error_body);
+                let delay = retry_delay(&headers, attempt);
+                gateway_admission::record_rate_limit(pool, provider_key, idempotency_key, delay)
+                    .await
+                    .map_err(|error| UpstreamPostError::local(error.to_string(), false, false))?;
+                tracing::warn!(request_id=idempotency_key, upstream_request_id=?headers.get("x-request-id"), attempt, permanent, wait_ms=delay.as_millis(), "upstream model rate limited; shared cooldown applied");
+                if permanent
+                    || attempt == request.max_retries
+                    || delay > retry_wait_left
+                    || tokio::time::Instant::now() + delay >= deadline
+                {
+                    if let Some(error) = error_body.get_mut("error").and_then(Value::as_object_mut)
+                    {
+                        error.insert("source".into(), json!("upstream"));
+                        if let Some(id) = headers.get("x-request-id").and_then(|v| v.to_str().ok())
+                        {
+                            error.insert("upstream_request_id".into(), json!(id));
+                        }
+                    }
+                    return Err(UpstreamPostError {
+                        message: "upstream model rate limit".into(),
+                        may_have_incurred_cost: false,
+                        waiting: false,
+                        rate_limit_body: Some(error_body),
+                        headers,
+                    });
                 }
-                return Ok(response);
+                retry_wait_left = retry_wait_left.saturating_sub(delay);
+                // acquire_dispatch observes the shared cooldown on the next
+                // attempt. Recovery dispatch is serialized for 60 seconds.
             }
+            Ok(response) => return Ok(response),
             Err(error) => {
-                let retryable = error.is_connect();
-                may_have_incurred_cost |= error.is_timeout();
-                last_error = Some(error.to_string());
-                if attempt >= request.max_retries || !retryable {
-                    break;
+                // Never replay a possibly billable timeout, partial stream or
+                // server error. Only a connection failure is safe to retry.
+                if !error.is_connect() || attempt == request.max_retries {
+                    return Err(UpstreamPostError::local(
+                        error.to_string(),
+                        !error.is_connect(),
+                        false,
+                    ));
                 }
-                tokio::time::sleep(retry_delay(&HeaderMap::new(), attempt)).await;
+                let delay = retry_delay(&HeaderMap::new(), attempt);
+                gateway_admission::record_rate_limit(pool, provider_key, idempotency_key, delay)
+                    .await
+                    .map_err(|error| UpstreamPostError::local(error.to_string(), false, false))?;
+                if delay > retry_wait_left || tokio::time::Instant::now() + delay >= deadline {
+                    return Err(UpstreamPostError::local(error.to_string(), false, false));
+                }
+                retry_wait_left = retry_wait_left.saturating_sub(delay);
             }
         }
     }
-    Err(UpstreamPostError {
-        message: last_error.unwrap_or_else(|| "upstream request failed".to_string()),
-        may_have_incurred_cost,
-    })
+    Err(UpstreamPostError::local(
+        "upstream request attempts exhausted".into(),
+        false,
+        false,
+    ))
+}
+
+fn is_quota_error(body: &Value) -> bool {
+    [body.pointer("/error/code"), body.pointer("/error/type")]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|code| {
+            matches!(
+                code,
+                "insufficient_quota"
+                    | "billing_hard_limit_reached"
+                    | "billing_not_active"
+                    | "credit_balance_too_low"
+            )
+        })
 }
 
 async fn send_upstream_get(
@@ -2883,6 +3053,7 @@ async fn send_upstream_get(
     request: &UpstreamRequest,
 ) -> Result<reqwest::Response, String> {
     let mut last_error = None;
+    let mut retry_wait_left = gateway_admission::MAX_RETRY_WAIT;
     for attempt in 0..=request.max_retries {
         let mut builder = client
             .get(&request.url)
@@ -2895,6 +3066,10 @@ async fn send_upstream_get(
             Ok(response) => {
                 if attempt < request.max_retries && is_retryable_status(response.status()) {
                     let delay = retry_delay(response.headers(), attempt);
+                    if delay > retry_wait_left {
+                        return Ok(response);
+                    }
+                    retry_wait_left = retry_wait_left.saturating_sub(delay);
                     tokio::time::sleep(delay).await;
                     continue;
                 }
@@ -2906,7 +3081,12 @@ async fn send_upstream_get(
                 if attempt >= request.max_retries || !retryable {
                     break;
                 }
-                tokio::time::sleep(retry_delay(&HeaderMap::new(), attempt)).await;
+                let delay = retry_delay(&HeaderMap::new(), attempt);
+                if delay > retry_wait_left {
+                    break;
+                }
+                retry_wait_left = retry_wait_left.saturating_sub(delay);
+                tokio::time::sleep(delay).await;
             }
         }
     }
@@ -2921,9 +3101,22 @@ fn retry_delay(headers: &HeaderMap, attempt: u32) -> Duration {
     let retry_after = headers
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|seconds| Duration::from_secs(seconds.min(5)));
-    retry_after.unwrap_or_else(|| Duration::from_millis(250 * 2_u64.pow(attempt.min(4))))
+        .and_then(|value| {
+            value
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .map(|seconds| Duration::from_secs(u64::from(seconds)))
+                .or_else(|| {
+                    chrono::DateTime::parse_from_rfc2822(value)
+                        .ok()
+                        .and_then(|date| (date.with_timezone(&Utc) - Utc::now()).to_std().ok())
+                })
+        });
+    let jitter = Duration::from_millis((Uuid::new_v4().as_u128() % 251) as u64);
+    retry_after
+        .unwrap_or_else(|| Duration::from_secs(2_u64.pow(attempt.min(5))))
+        .saturating_add(jitter)
 }
 
 #[derive(Debug)]
@@ -3243,7 +3436,10 @@ async fn client_device_summary(
     }))
 }
 
-async fn ensure_gateway_run_available(pool: &PgPool, claims: &RunTokenClaims) -> ApiResult<()> {
+pub(crate) async fn ensure_gateway_run_available(
+    pool: &PgPool,
+    claims: &RunTokenClaims,
+) -> ApiResult<()> {
     let row = sqlx::query(
         r#"
         select r.tenant_id, r.user_id, r.device_id, r.model_id, r.status, r.budget_yuan
@@ -3267,70 +3463,23 @@ async fn ensure_gateway_run_available(pool: &PgPool, claims: &RunTokenClaims) ->
     validate_run_claim_bindings(&row, claims)
 }
 
+#[cfg(test)]
 async fn start_gateway_request(
     pool: &PgPool,
     claims: &RunTokenClaims,
     gateway_request_id: &str,
     wait_timeout: Duration,
 ) -> ApiResult<Decimal> {
-    let waiting_since = std::time::Instant::now();
-    let mut waited_for_previous_request = false;
-    loop {
-        let row = sqlx::query(
-            r#"
-            update model_runs r
-            set status = 'running',
-                started_at = coalesce(r.started_at, now()),
-                active_request_id = $7,
-                request_count = r.request_count + 1,
-                last_activity_at = now()
-            from tenants t, devices d
-            where r.id = $1 and r.tenant_id = $2 and r.user_id = $3
-              and r.device_id = $4 and r.model_id = $5
-              and r.budget_yuan = $6
-              and r.status in ('created', 'running')
-              and r.active_request_id is null
-              and r.accumulated_billable_yuan < r.budget_yuan
-              and t.id = r.tenant_id and t.status = 'active' and t.balance_yuan > 0
-              and d.id = r.device_id and d.tenant_id = r.tenant_id
-              and d.status = 'active' and d.lease_expires_at > now()
-            returning r.budget_yuan - r.accumulated_billable_yuan as remaining_budget_yuan
-            "#,
-        )
-        .bind(&claims.run_id)
-        .bind(&claims.tenant_id)
-        .bind(&claims.user_id)
-        .bind(&claims.device_id)
-        .bind(&claims.model_id)
-        .bind(claims.budget_yuan)
-        .bind(gateway_request_id)
-        .fetch_optional(pool)
-        .await?;
-        if let Some(row) = row {
-            if waited_for_previous_request {
-                tracing::info!(
-                    run_id = %claims.run_id,
-                    wait_ms = waiting_since.elapsed().as_millis(),
-                    "waited for previous gateway request settlement"
-                );
-            }
-            return Ok(row.get::<Decimal, _>("remaining_budget_yuan"));
-        }
-
-        // Revalidate after a failed atomic acquisition so an exhausted budget,
-        // revoked device, or expired run fails immediately instead of waiting.
-        // If it remains available, the only transient blocker is another active
-        // request for this same run.
-        ensure_gateway_run_available(pool, claims).await?;
-        if waiting_since.elapsed() >= wait_timeout {
-            return Err(ApiError::TooManyRequests(
-                "the previous model request did not settle before the next request arrived"
-                    .to_string(),
-            ));
-        }
-        waited_for_previous_request = true;
-        tokio::time::sleep(GATEWAY_REQUEST_LEASE_RETRY_INTERVAL).await;
-    }
+    gateway_admission::reserve_request(
+        pool,
+        claims,
+        gateway_request_id,
+        &RequestLane::Main,
+        None,
+        None,
+        wait_timeout,
+    )
+    .await
 }
 
 async fn release_gateway_request(
@@ -3339,37 +3488,29 @@ async fn release_gateway_request(
     gateway_request_id: &str,
     upstream_status: Option<u16>,
 ) -> ApiResult<()> {
-    let released = sqlx::query(
-        r#"
-        update model_runs
-        set active_request_id = null,
-            last_activity_at = now(),
-            upstream_status = coalesce($8, upstream_status)
-        where id = $1 and tenant_id = $2 and user_id = $3 and device_id = $4
-          and model_id = $5 and budget_yuan = $6 and active_request_id = $7
-          and status = 'running'
-        "#,
-    )
-    .bind(&claims.run_id)
-    .bind(&claims.tenant_id)
-    .bind(&claims.user_id)
-    .bind(&claims.device_id)
-    .bind(&claims.model_id)
-    .bind(claims.budget_yuan)
-    .bind(gateway_request_id)
-    .bind(upstream_status.map(i32::from))
-    .execute(pool)
-    .await?;
-    if released.rows_affected() == 1 {
-        Ok(())
-    } else {
-        Err(ApiError::Unauthorized(
-            "run token does not own the active model request".to_string(),
-        ))
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query("select tenant_id, user_id, device_id, model_id, budget_yuan, active_request_id from model_runs where id=$1 for update")
+        .bind(&claims.run_id).fetch_one(&mut *tx).await?;
+    validate_run_claim_bindings(&row, claims)?;
+    let removed = sqlx::query("delete from gateway_request_leases where id=$1 and run_id=$2")
+        .bind(gateway_request_id)
+        .bind(&claims.run_id)
+        .execute(&mut *tx)
+        .await?;
+    if removed.rows_affected() == 0
+        && row.get::<Option<String>, _>("active_request_id").as_deref() != Some(gateway_request_id)
+    {
+        return Err(ApiError::Unauthorized(
+            "run token does not own the active model request".into(),
+        ));
     }
+    sqlx::query("update model_runs set active_request_id=(select id from gateway_request_leases where run_id=$1 order by created_at,id limit 1), last_activity_at=now(), upstream_status=coalesce($2,upstream_status) where id=$1")
+        .bind(&claims.run_id).bind(upstream_status.map(i32::from)).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
-fn validate_run_claim_bindings(
+pub(crate) fn validate_run_claim_bindings(
     row: &sqlx::postgres::PgRow,
     claims: &RunTokenClaims,
 ) -> ApiResult<()> {
@@ -3692,13 +3833,18 @@ async fn settle_and_record_usage(
             "run is not in a billable state".to_string(),
         ));
     }
-    if run
-        .try_get::<Option<String>, _>("active_request_id")?
-        .as_deref()
-        != Some(gateway_request_id)
+    let owns_lease: bool = sqlx::query_scalar(
+        "select exists(select 1 from gateway_request_leases where id=$1 and run_id=$2)",
+    )
+    .bind(gateway_request_id)
+    .bind(&claims.run_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !owns_lease
+        && run.get::<Option<String>, _>("active_request_id").as_deref() != Some(gateway_request_id)
     {
         return Err(ApiError::Forbidden(
-            "model request lease does not match this settlement".to_string(),
+            "model request lease does not match this settlement".into(),
         ));
     }
     let settlement_key = format!("settlement:{}:{}", claims.run_id, gateway_request_id);
@@ -3805,20 +3951,24 @@ async fn settle_and_record_usage(
     }
     let accumulated_billable_yuan =
         run.get::<Decimal, _>("accumulated_billable_yuan") + billable_yuan;
+    sqlx::query("delete from gateway_request_leases where id=$1 and run_id=$2")
+        .bind(gateway_request_id)
+        .bind(&claims.run_id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
         r#"
         update model_runs
         set accumulated_billable_yuan = $2,
-            active_request_id = null,
+            active_request_id = (select id from gateway_request_leases where run_id=$1 order by created_at,id limit 1),
             last_activity_at = now(),
             upstream_status = $3
-        where id = $1 and active_request_id = $4
+        where id = $1
         "#,
     )
     .bind(&claims.run_id)
     .bind(accumulated_billable_yuan)
     .bind(upstream_status as i32)
-    .bind(gateway_request_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -4791,6 +4941,10 @@ fn normalized_codex_tenant_ids(
 }
 
 #[cfg(test)]
+#[path = "gateway_request_tests.rs"]
+mod gateway_request_tests;
+
+#[cfg(test)]
 mod tests {
     use std::{convert::Infallible, time::Duration};
 
@@ -4833,12 +4987,12 @@ mod tests {
         };
         assert_eq!(
             super::gateway_request_wait_timeout(&provider),
-            Duration::from_secs(330)
+            Duration::from_secs(510)
         );
         provider.max_retries = 2;
         assert_eq!(
             super::gateway_request_wait_timeout(&provider),
-            Duration::from_secs(940)
+            Duration::from_secs(1110)
         );
     }
 

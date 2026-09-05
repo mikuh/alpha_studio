@@ -22,6 +22,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import officialSkillCatalog from '../skills/catalog.json';
 import { ReportBrandingSettings } from './ReportBrandingSettings';
 import { TurnDuration, formatTurnDuration as formatThinkingDuration } from './TurnDuration';
+import { fileChangeKind, isFileWriteCommand } from './toolActivity';
 import {
   Activity,
   AlertCircle,
@@ -948,6 +949,7 @@ interface SkillRuntimeContextValue {
 const SkillRuntimeContext = createContext<SkillRuntimeContextValue | null>(null);
 const BrowserDockContext = createContext<((url: string) => void) | null>(null);
 const FileDockContext = createContext<((path: string) => void) | null>(null);
+const MessageWorkspaceContext = createContext('');
 
 function defaultSkillStatus(catalog: readonly SkillCatalogItem[] = DEFAULT_SKILL_CATALOG): SkillStatusMap {
   return Object.fromEntries(
@@ -7501,7 +7503,6 @@ function MessageList({
     () => conversation.messages.slice(effectiveVisibleStart),
     [conversation.messages, effectiveVisibleStart],
   );
-  const streamingAssistant = streaming ? findStreamingAssistant(conversation.messages) : undefined;
   const [selectionMenu, setSelectionMenu] = useState<{
     context: SelectedTextContext;
     left: number;
@@ -7608,7 +7609,8 @@ function MessageList({
         {streaming && (
           <ThinkingIndicator
             lastActivityAt={conversation.updatedAt}
-            activity={visibleRunActivity(conversation.runActivity, streamingAssistant)}
+            activity={visibleRunActivity(conversation.runActivity, conversation.messages, conversation.gatewayActivity)}
+            gateway={conversation.gatewayActivity}
             onStop={() => useChatStore.getState().stopConversation(conversation.id)}
           />
         )}
@@ -7637,21 +7639,52 @@ function MessageList({
   );
 }
 
-function findStreamingAssistant(messages: ChatMessage[]): ChatMessage | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role === 'assistant' && message.isStreaming) return message;
+function visibleRunActivity(activity: Conversation['runActivity'], messages: ChatMessage[], gateway?: Conversation['gatewayActivity']): Conversation['runActivity'] {
+  if (activity?.kind === 'retrying') return activity;
+  // Include tools that began before an in-flight steering message.
+  const running = messages.flatMap(message => message.role === 'assistant' ? message.blocks : [])
+    .filter((block): block is Extract<MessageBlock, { type: 'tool' }> => block.type === 'tool' && block.status === 'in_progress');
+  const current = [...running].reverse().find(block => toolPresentation(block.title).kind === 'file-edit' || block.title === 'fileWrite') ?? running[running.length - 1];
+  if (current) {
+    const tool = toolPresentation(current.title);
+    const target = current.target || (tool.kind === 'file-edit' ? fileEditTarget(fileEditDetails(current)) : toolActivityTarget(current, tool.kind));
+    return { kind: 'working', label: `${tool.running}${target ? ` ${target}` : ''}${running.length > 1 ? ` · 另有 ${running.length - 1} 项操作进行中` : ''}` };
   }
-  return undefined;
+  const progress = gateway && Date.now() - gateway.observedAt < 20_000 ? gateway.requestProgress?.find(item => !item.subagent) : undefined;
+  if (progress?.kind === 'tool_input') return { kind: 'working', label: preparingToolLabel(progress.toolName) };
+  if (progress?.kind === 'reasoning') return { kind: 'reasoning', label: '模型正在推理' };
+  if (activity && activity.label !== '正在执行工具' && activity.label !== '等待模型继续处理') return activity;
+  if (gateway?.active) return { kind: 'working', label: gateway.lastOutputAt > 0 ? '模型服务已响应' : '等待模型响应' };
+  return activity;
 }
 
-function visibleRunActivity(activity: Conversation['runActivity'], message?: ChatMessage): Conversation['runActivity'] {
-  if (activity && activity.label !== '正在执行工具' && activity.label !== '等待模型继续处理') return activity;
-  const running = message?.blocks.slice().reverse().find((block) => block.type === 'tool' && block.status === 'in_progress');
-  if (running?.type !== 'tool') return activity;
-  const tool = toolPresentation(running.title);
-  const target = running.target || toolActivityTarget(running, tool.kind);
-  return { kind: 'working', label: `${tool.running}${target ? ` ${target}` : ''}` };
+function preparingToolLabel(name?: string): string {
+  if (/apply_patch|file.?write|write_file|edit_file/i.test(name ?? '')) return '正在准备文件修改';
+  if (/exec|shell|terminal|python/i.test(name ?? '')) return '正在生成执行脚本';
+  if (/search|browse/i.test(name ?? '')) return '正在准备检索';
+  return '正在准备工具调用';
+}
+
+function LiveModelOutput({ progress }: { progress: NonNullable<NonNullable<Conversation['gatewayActivity']>['requestProgress']>[number] }) {
+  const [expanded, setExpanded] = useState(false);
+  const characters = Array.from(progress.preview);
+  const preview = expanded ? progress.preview : characters.slice(-220).join('');
+  const label = progress.kind === 'tool_input' ? preparingToolLabel(progress.toolName)
+    : progress.kind === 'reply' ? '正在输出阶段性内容'
+    : progress.kind === 'search' ? '正在检索资料' : '正在推理';
+  return (
+    <section className="live-model-output" aria-label={progress.subagent ? '子任务实时进展' : '工具准备进度'} aria-live="off">
+      <div className="live-model-output-head">
+        <span>{progress.subagent ? <Users size={13} /> : <Code2 size={13} />}{progress.subagent ? '子任务' : '下一步'} · {label}</span>
+        {progress.characters > 0 && <span>已生成 {progress.characters.toLocaleString('zh-CN')} 字符</span>}
+      </div>
+      {preview && <p className="live-model-output-preview">{!expanded && characters.length > 220 ? '…' : ''}{preview}</p>}
+      {characters.length > 220 && <button type="button" className="live-model-output-expand" onClick={() => setExpanded(value => !value)}>{expanded ? '收起' : '展开最近内容'}</button>}
+      <span className="live-model-output-note">{progress.kind === 'tool_input'
+        ? '模型正在生成工具参数，准备完成后才会执行。'
+        : progress.kind === 'reply' ? '子任务的阶段性输出，主任务随后汇总。' : '有可展示的内容时会在这里更新。'}</span>
+    </section>
+  );
 }
 
 const LONG_WAIT_SECONDS = 60;
@@ -7660,10 +7693,12 @@ const POSSIBLY_STALLED_SECONDS = 180;
 function ThinkingIndicator({
   lastActivityAt,
   activity,
+  gateway,
   onStop,
 }: {
   lastActivityAt: number;
   activity?: Conversation['runActivity'];
+  gateway?: Conversation['gatewayActivity'];
   onStop: () => void | Promise<void>;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -7675,6 +7710,11 @@ function ThinkingIndicator({
   }, []);
 
   const inactiveSeconds = Math.max(0, Math.floor((now - lastActivityAt) / 1000));
+  const gatewayFresh = gateway && now - gateway.observedAt < 20_000;
+  const waitingRequests = gatewayFresh ? gateway.waitingRequests : 0;
+  const cooldownSeconds = gatewayFresh ? Math.max(0, Math.ceil(((gateway.cooldownUntil ?? 0) - now) / 1000)) : 0;
+  const localOperation = activity?.label.startsWith('正在') && /文件|编辑|脚本|运行|工具|搜索|读取/.test(activity.label);
+  const cooling = cooldownSeconds > 0 && gateway?.activeRequests === 0 && !localOperation;
   const state = inactiveSeconds >= POSSIBLY_STALLED_SECONDS
     ? 'stalled'
     : inactiveSeconds >= LONG_WAIT_SECONDS
@@ -7682,18 +7722,22 @@ function ThinkingIndicator({
       : 'active';
   const label = activity?.kind === 'retrying'
     ? activity.label
+    : cooling ? '等待模型服务恢复'
     : state === 'stalled'
-    ? '等待模型响应较久'
+    ? localOperation ? '操作仍在进行，暂未收到新进展' : '等待模型响应较久'
     : state === 'waiting'
       ? '任务仍在运行'
       : activity?.label || '正在处理';
-  const detail = state === 'stalled'
-    ? `${formatThinkingDuration(inactiveSeconds)}没有新进展，可能正在长推理或等待连接。`
+  const detail = cooling ? null : state === 'stalled'
+    ? `${formatThinkingDuration(inactiveSeconds)}没有新进展，${localOperation ? '工具尚未返回新的执行结果。' : '可能正在长推理或等待连接。'}`
     : state === 'waiting'
       ? `${formatThinkingDuration(inactiveSeconds)}没有新进展，复杂任务可能仍在处理。`
       : activity?.kind === 'retrying' ? '连接暂时中断，正在等待重试结果。' : null;
 
   return (
+    <>
+      {gatewayFresh && gateway.requestProgress?.filter(progress => progress.subagent || progress.kind === 'tool_input')
+        .map(progress => <LiveModelOutput key={progress.id} progress={progress} />)}
     <div
       className={`thinking-indicator ${state}`}
       role="status"
@@ -7701,14 +7745,23 @@ function ThinkingIndicator({
       aria-label={label}
       data-state={state}
     >
-      <div className="thinking-copy" aria-hidden="true">
+      <div className="thinking-copy">
         <div className="thinking-primary">
           <span className="thinking-shimmer">{label}</span>
         </div>
         {detail && <span className="thinking-detail">{detail}</span>}
-        {state !== 'active' && activity && activity.kind !== 'retrying' && (
+        {!cooling && state !== 'active' && activity && activity.kind !== 'retrying' && (
           <span className="thinking-detail">最近状态：{activity.label}</span>
         )}
+        {waitingRequests > 0 && (
+          <details className="gateway-queue-details">
+            <summary><Clock3 size={12} aria-hidden="true" />任务内有 {waitingRequests} 个模型请求等待<ChevronDown size={12} aria-hidden="true" /></summary>
+            <p>同一 agent 的请求按顺序处理，独立子任务最多 {gateway?.maxParallelSubagents ?? 2} 个并行。当前有 {waitingRequests} 个请求等待名额、预算结算或限流冷却，不是你追加的消息；无需重复发送。</p>
+          </details>
+        )}
+        {gatewayFresh && (gateway.activeSubagents ?? 0) > 0 && <span className="thinking-detail">{gateway.activeSubagents} 个子任务请求正在处理</span>}
+        {cooldownSeconds > 0 && <span className="thinking-detail">模型服务限流，统一等待 {formatThinkingDuration(cooldownSeconds)}后再尝试。</span>}
+        {gateway && !gatewayFresh && gateway.waitingRequests > 0 && <span className="thinking-detail">连接状态暂未更新，等待下一次确认。</span>}
       </div>
       {state === 'stalled' && (
         <button type="button" className="thinking-stop" onClick={() => void onStop()} aria-label="停止当前任务">
@@ -7716,6 +7769,7 @@ function ThinkingIndicator({
         </button>
       )}
     </div>
+    </>
   );
 }
 
@@ -7772,6 +7826,7 @@ const MessageBubble = memo(function MessageBubble({
     void editUserMessageAndResend(conversationId, message.id, trimmed, attachments);
   };
   return (
+    <MessageWorkspaceContext.Provider value={conversationCwd}>
     <article
       className={`message ${message.role} ${message.isStreaming ? 'streaming' : ''} ${editing ? 'editing' : ''}`}
       data-message-id={message.id}
@@ -7864,6 +7919,7 @@ const MessageBubble = memo(function MessageBubble({
         </div>
       )}
     </article>
+    </MessageWorkspaceContext.Provider>
   );
 });
 
@@ -8196,19 +8252,20 @@ function MarkdownText({ content, streaming, variant = 'assistant' }: { content: 
 }
 
 function ToolBlockView({ block, groupedIndex }: { block: Extract<MessageBlock, { type: 'tool' }>; groupedIndex?: number }) {
-  const tool = toolPresentation(block.title);
+  const writeCommand = block.command || (/command|exec|shell|fileRead/i.test(block.title) ? block.input : '') || '';
+  const tool = toolPresentation(isFileWriteCommand(writeCommand) ? 'fileWrite' : block.title);
   const running = block.status === 'in_progress';
   const failed = block.status === 'failed';
-  const verb = running ? tool.running : failed ? tool.failed : tool.done;
+  const verb = block.completionUnconfirmed ? '写入结果未确认' : running ? tool.running : failed ? tool.failed : tool.done;
   const inferredTarget = inferredSpawnAgentToolTarget(block);
   const editDetails = tool.kind === 'file-edit' ? fileEditDetails(block) : null;
   const editTarget = editDetails ? fileEditTarget(editDetails) : '';
   const activityTarget = toolActivityTarget(block, tool.kind);
-  const target = block.target || inferredTarget || editTarget || activityTarget || firstLine(block.input);
+  const target = block.target || inferredTarget || editTarget || activityTarget || (tool.kind === 'file-write' ? '' : firstLine(block.input));
   const rawInput = block.input?.trim() || '';
   const targetTitle = rawInput && !rawInput.startsWith('{') && !rawInput.startsWith('[') ? firstLine(rawInput) : target;
   const targetIsRawInput = Boolean(!block.target && !inferredTarget && !editTarget && !activityTarget && target);
-  const isCommand = tool.kind === 'command';
+  const isCommand = tool.kind === 'command' || tool.kind === 'file-write';
   const plainBody = isCommand ? '' : cleanCommandOutput(block.output || (!running ? block.input || '' : ''));
   const fileEditHasDetails = Boolean(editDetails && (
     editDetails.files.length > 0
@@ -8220,7 +8277,7 @@ function ToolBlockView({ block, groupedIndex }: { block: Extract<MessageBlock, {
   const hasBody = tool.kind === 'file-edit'
     ? !running || fileEditHasDetails
     : isCommand
-      ? Boolean(block.input || block.output)
+      ? Boolean(block.command || block.input || block.output)
       : Boolean(plainBody) && plainBody !== target;
   return (
     <EventDetails
@@ -8229,10 +8286,11 @@ function ToolBlockView({ block, groupedIndex }: { block: Extract<MessageBlock, {
       summary={(
         <>
           <span className="event-icon">{tool.icon}</span>
-          {isCommand
+          {tool.kind === 'command'
             ? <CommandStatus status={block.status} />
             : <span className="event-verb">{groupedIndex === undefined ? verb : `搜索 ${String(groupedIndex + 1).padStart(2, '0')}`}</span>}
           <span className={`event-target ${targetIsRawInput ? 'mono' : ''}`} title={targetTitle || undefined}>{target}</span>
+          {block.finishedAt && block.startedAt && <span className="event-duration">{formatThinkingDuration(Math.max(0, Math.floor((block.finishedAt - block.startedAt) / 1000)))}</span>}
           {(running || failed) && <span className="event-trailing">
             {running ? <Loader2 size={12} className="spin" /> : failed ? <AlertCircle size={12} className="event-fail" /> : null}
           </span>}
@@ -8242,9 +8300,12 @@ function ToolBlockView({ block, groupedIndex }: { block: Extract<MessageBlock, {
       {hasBody && (
         <div className="event-body">
           {isCommand ? (
-            <CommandCard command={block.input} output={block.output} status={block.status} />
+            <>
+              {tool.kind === 'file-write' && <p className="file-write-note">{block.completionUnconfirmed ? '未收到脚本的完成事件，请查看输出文件确认结果。' : running ? '正在执行包含文件写入的命令，完成后可检查输出文件。' : failed ? '写入命令未成功完成，文件可能只写入了部分内容。' : '写入命令已执行完毕，实际文件内容可在文件面板查看。'}</p>}
+              <CommandCard command={block.command || block.input} output={block.output} status={block.status} unconfirmed={block.completionUnconfirmed} />
+            </>
           ) : editDetails ? (
-            <FileEditCard details={editDetails} />
+            <FileEditCard details={editDetails} canOpen={!running && !failed && !block.completionUnconfirmed} cwd={block.cwd} unconfirmed={block.completionUnconfirmed} />
           ) : (
             <pre className="event-output">{plainBody}</pre>
           )}
@@ -8368,6 +8429,15 @@ interface FileEditDetails {
 }
 
 function fileEditDetails(block: Extract<MessageBlock, { type: 'tool' }>): FileEditDetails {
+  if (block.fileChanges) {
+    return {
+      files: block.fileChanges.map(({ path, kind }) => ({ path, kind })),
+      additions: block.fileChanges.reduce((sum, file) => sum + file.additions, 0),
+      deletions: block.fileChanges.reduce((sum, file) => sum + file.deletions, 0),
+      diff: block.fileChanges.filter(file => file.diff).map(file => `${file.path}\n${file.diff}`).join('\n\n'),
+      raw: '',
+    };
+  }
   const sources = [...new Set([block.output, block.input].map(cleanCommandOutput).filter(Boolean))];
   const files = new Map<string, FileEditKind>();
   let additions = 0;
@@ -8407,9 +8477,10 @@ function fileEditDetails(block: Extract<MessageBlock, { type: 'tool' }>): FileEd
     Object.entries(record).forEach(([childKey, child]) => inspect(child, childKey));
   };
 
+  // The completed output replaces the proposal; don't count both copies.
+  const structured = sources.map(parseJsonValue).find(value => value !== null);
+  if (structured) inspect(structured);
   sources.forEach((source) => {
-    const parsed = parseJsonValue(source);
-    if (parsed !== null) inspect(parsed);
     for (const match of source.matchAll(/^\*\*\*\s+(Add|Update|Delete) File:\s*(.+)$/gm)) {
       rememberFile(match[2], match[1]);
     }
@@ -8447,16 +8518,11 @@ function numberValue(value: unknown): number | null {
 }
 
 function normalizeFileEditKind(value: unknown): FileEditKind {
-  const normalized = String(value || '').toLowerCase();
-  if (/add|create|new/.test(normalized)) return 'add';
-  if (/delete|remove/.test(normalized)) return 'delete';
-  if (/rename|move/.test(normalized)) return 'rename';
-  if (/update|edit|modify|change|write/.test(normalized)) return 'update';
-  return 'unknown';
+  return fileChangeKind(value);
 }
 
 function looksLikeDiff(value: string): boolean {
-  return /^diff --git\s/m.test(value) || /^\*\*\*\s+(?:Begin Patch|Add File:|Update File:|Delete File:)/m.test(value);
+  return /^diff --git\s/m.test(value) || /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m.test(value) || /^\*\*\*\s+(?:Begin Patch|Add File:|Update File:|Delete File:)/m.test(value);
 }
 
 function diffLineStats(value: string): { additions: number; deletions: number } {
@@ -8488,11 +8554,14 @@ function fileEditKindLabel(kind: FileEditKind): string {
   return '变更';
 }
 
-function FileEditCard({ details }: { details: FileEditDetails }) {
+function FileEditCard({ details, canOpen, cwd, unconfirmed }: { details: FileEditDetails; canOpen: boolean; cwd?: string; unconfirmed?: boolean }) {
+  const openFile = useFileDockOpener();
+  const messageCwd = useContext(MessageWorkspaceContext);
   const stats = fileEditStatsLabel(details);
   const showRaw = !details.diff && details.files.length === 0 && details.raw;
   return (
     <div className="file-edit-card">
+      {unconfirmed && <div className="file-edit-empty"><Info size={14} /><span>未收到写入完成事件。以下为计划变更，请在文件面板确认实际结果。</span></div>}
       <div className="file-edit-card-head">
         <span><FileDiff size={13} />变更明细</span>
         <span className="file-edit-card-stats">
@@ -8508,7 +8577,9 @@ function FileEditCard({ details }: { details: FileEditDetails }) {
           {details.files.map((file) => (
             <div className="file-edit-file" key={file.path} title={file.path}>
               <FileCode2 size={13} />
-              <span className="file-edit-file-path">{shortenPath(file.path)}</span>
+              {canOpen && file.kind !== 'delete' && openFile ? (
+                <button type="button" className="file-edit-file-path file-edit-open" aria-label={`预览 ${file.path}`} onClick={() => openFile(/^(?:\/|[A-Za-z]:[\\/])/.test(file.path) ? file.path : `${cwd || messageCwd}/${file.path}`)}>{shortenPath(file.path)}</button>
+              ) : <span className="file-edit-file-path">{shortenPath(file.path)}</span>}
               <span className={`file-edit-kind ${file.kind}`}>{fileEditKindLabel(file.kind)}</span>
             </div>
           ))}
@@ -8562,10 +8633,10 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function CommandCard({ command, output, status }: { command?: string; output?: string; status: 'in_progress' | 'completed' | 'failed' }) {
+function CommandCard({ command, output, status, unconfirmed }: { command?: string; output?: string; status: 'in_progress' | 'completed' | 'failed'; unconfirmed?: boolean }) {
   const cleaned = cleanCommandOutput(output);
   const copyText = [command ? `$ ${command}` : '', cleaned].filter(Boolean).join('\n');
-  const statusBadge = status === 'failed'
+  const statusBadge = unconfirmed ? <span className="cc-status"><Info size={12} />未确认</span> : status === 'failed'
     ? <span className="cc-status fail"><AlertCircle size={12} />失败</span>
     : status === 'completed'
       ? <span className="cc-status ok"><Check size={12} />成功</span>
@@ -14469,11 +14540,12 @@ function sortConversations(conversations: Conversation[], sort: ProjectSort): Co
   });
 }
 
-type ToolKind = 'command' | 'file-read' | 'file-edit' | 'search' | 'web' | 'log' | 'image' | 'generic';
+type ToolKind = 'command' | 'file-write' | 'file-read' | 'file-edit' | 'search' | 'web' | 'log' | 'image' | 'generic';
 
 function toolPresentation(title: string): { kind: ToolKind; icon: ReactNode; running: string; done: string; failed: string } {
   const normalized = title.trim().toLowerCase();
   const has = (...keys: string[]) => keys.some((key) => normalized.includes(key));
+  if (normalized === 'filewrite') return { kind: 'file-write', icon: <FileCode2 size={14} />, running: '正在运行写入脚本', done: '已运行写入脚本', failed: '写入脚本失败' };
   if (has('context_compaction', 'contextcompaction', 'context compaction')) {
     return { kind: 'generic', icon: <Workflow size={14} />, running: '正在自动压缩上下文', done: '已自动压缩上下文', failed: '自动压缩上下文失败' };
   }
@@ -14487,7 +14559,7 @@ function toolPresentation(title: string): { kind: ToolKind; icon: ReactNode; run
   if (isWebPageToolTitle(title)) return { kind: 'web', icon: <Globe size={14} />, running: '正在读取网页', done: '已读取网页', failed: '网页读取失败' };
   if (isSpawnAgentToolTitle(title)) return { kind: 'generic', icon: <Users size={14} />, running: '正在调用同事', done: '已调用同事', failed: '同事调用失败' };
   if (has('search', 'grep', 'glob', 'ripgrep', 'find', 'query')) return { kind: 'search', icon: <Search size={14} />, running: '正在搜索', done: '已搜索', failed: '搜索失败' };
-  if (has('write', 'edit', 'patch', 'apply', 'filechange', 'file_change', 'diff', 'create', 'update')) return { kind: 'file-edit', icon: <FileCode2 size={14} />, running: '正在编辑', done: '已编辑', failed: '编辑失败' };
+  if (has('filechange', 'file_change', 'apply_patch', 'applypatch', 'write_file', 'writefile', 'edit_file', 'editfile', 'file_edit') || /^(?:write|edit|patch|apply|diff)$/.test(normalized)) return { kind: 'file-edit', icon: <FileCode2 size={14} />, running: '正在编辑', done: '已编辑', failed: '编辑失败' };
   if (has('filelist', 'file_list', 'listfiles', 'list_files', 'readdirectory', 'read_directory')) return { kind: 'file-read', icon: <FolderSearch size={14} />, running: '正在查看文件', done: '已查看文件', failed: '查看文件失败' };
   if (has('read', 'open', 'cat', 'file', 'view')) return { kind: 'file-read', icon: <FileText size={14} />, running: '正在读取', done: '已读取', failed: '读取失败' };
   if (has('web', 'browser', 'fetch', 'http', 'url', 'navigate')) return { kind: 'web', icon: <Globe size={14} />, running: '正在读取网页', done: '已读取网页', failed: '网页读取失败' };

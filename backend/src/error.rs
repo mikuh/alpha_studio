@@ -16,6 +16,8 @@ pub enum ApiError {
     #[error("{0}")]
     TooManyRequests(String),
     #[error("{0}")]
+    GatewayBusy(String),
+    #[error("{0}")]
     Internal(String),
     #[error("{0}")]
     Upstream(String),
@@ -36,13 +38,19 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::GatewayBusy(_) => StatusCode::CONFLICT,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Upstream(_) => StatusCode::BAD_GATEWAY,
             ApiError::Jwt(_) => StatusCode::UNAUTHORIZED,
             ApiError::Sqlx(_) | ApiError::Reqwest(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let message = self.to_string();
-        (status, Json(json!({ "error": { "message": message } }))).into_response()
+        let mut body = json!({ "error": { "message": message } });
+        if matches!(self, ApiError::GatewayBusy(_)) {
+            body["error"]["code"] = json!("gateway_queue_timeout");
+            body["error"]["source"] = json!("gateway_queue");
+        }
+        (status, Json(body)).into_response()
     }
 }
 

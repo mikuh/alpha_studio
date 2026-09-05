@@ -23,6 +23,46 @@ function baseConversation(): Conversation {
 }
 
 describe('applyCodexEventToConversation', () => {
+  it('separates queue heartbeats from real progress and clears telemetry at idle and completion', () => {
+    const running = applyCodexEventToConversation(baseConversation(), { type: 'tool_started', runId: 'run-1', itemId: 'edit', title: 'fileChange' });
+    const heartbeat = { type: 'activity' as const, runId: 'run-1', title: 'gateway', raw: { status: { active: true, waitingRequests: 3, lastOutputAt: 0 } } };
+    const queued = applyCodexEventToConversation(running, heartbeat);
+    expect(queued.updatedAt).toBe(running.updatedAt);
+    expect(queued.runActivity).toEqual(running.runActivity);
+    expect(queued.messages).toBe(running.messages);
+    const noQueue = applyCodexEventToConversation(queued, { ...heartbeat, raw: { status: null } });
+    expect(noQueue.gatewayActivity).toBeUndefined();
+    expect(noQueue.updatedAt).toBe(running.updatedAt);
+    expect(applyCodexEventToConversation(queued, { type: 'completed', runId: 'run-1' }).gatewayActivity).toBeUndefined();
+    expect(applyCodexEventToConversation(queued, { type: 'stopped', runId: 'run-1' }).gatewayActivity).toBeUndefined();
+    expect(applyCodexEventToConversation(queued, { type: 'error', runId: 'run-1' }).gatewayActivity).toBeUndefined();
+  });
+
+  it('requires a native tool completion to confirm a file write', () => {
+    const started = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_started', runId: 'run-1', itemId: 'edit', title: 'fileChange',
+      raw: { item: { changes: [{ path: '/tmp/report.html', kind: { type: 'add' }, diff: '@@ -0,0 +1 @@\n+hello' }] } },
+    });
+    const finished = applyCodexEventToConversation(started, { type: 'completed', runId: 'run-1' });
+    expect(finished.messages[0].blocks[0]).toMatchObject({ completionUnconfirmed: true });
+    const confirmed = applyCodexEventToConversation(started, { type: 'tool_completed', runId: 'run-1', itemId: 'edit', title: 'fileChange' });
+    expect(confirmed.messages[0].blocks[0]).toMatchObject({ status: 'completed', fileChanges: [{ path: '/tmp/report.html', kind: 'add', additions: 1, deletions: 0 }] });
+    expect(confirmed.messages[0].blocks[0]).not.toHaveProperty('completionUnconfirmed', true);
+  });
+
+  it('keeps a write script and its failure in one row with the original command', () => {
+    const command = "cat > /tmp/report.html <<'EOF'\nhello\nEOF";
+    const started = applyCodexEventToConversation(baseConversation(), {
+      type: 'tool_started', runId: 'run-1', itemId: 'write', title: 'fileRead',
+      raw: { item: { command, cwd: '/tmp' } },
+    });
+    expect(started.messages[0].blocks[0]).toMatchObject({ title: 'fileWrite', command, input: command, status: 'in_progress' });
+    const failed = applyCodexEventToConversation(started, {
+      type: 'tool_failed', runId: 'run-1', itemId: 'write', title: 'commandExecution', text: 'disk full',
+    });
+    expect(failed.messages[0].blocks).toHaveLength(1);
+    expect(failed.messages[0].blocks[0]).toMatchObject({ title: 'fileWrite', command, status: 'failed', output: 'disk full' });
+  });
   it('inserts an acknowledged steering message once and keeps subsequent output in the same run', () => {
     const current = { ...baseConversation(), runId: 'run-1', queuedMessages: [{ id: 'q-1', text: '换个方向', createdAt: 2 }] };
     const event = { type: 'message_steered' as const, runId: 'run-1', itemId: 'q-1' };
@@ -56,13 +96,27 @@ describe('applyCodexEventToConversation', () => {
     expect(current.messages[2].isStreaming).toBe(false);
     expect(current.status).toBe('idle');
   });
+  it('merges native snapshots into their own message while preserving other streamed replies', () => {
+    let next: Conversation = { ...baseConversation(), runId: 'run-1' };
+    next = applyCodexEventToConversation(next, { type: 'text_delta', runId: 'run-1', itemId: 'commentary', text: '第一段' });
+    next = applyCodexEventToConversation(next, { type: 'text_delta', runId: 'run-1', itemId: 'final', text: '报告' });
+    next = applyCodexEventToConversation(next, { type: 'text_delta', runId: 'run-1', itemId: 'commentary', text: '第一段完整', message: 'replace' });
+    next = applyCodexEventToConversation(next, { type: 'text_delta', runId: 'run-1', itemId: 'final', text: '报告已完成', message: 'replace' });
+    expect(next.messages[0].blocks).toMatchObject([
+      { type: 'text', itemId: 'commentary', content: '第一段完整' },
+      { type: 'text', itemId: 'final', content: '报告已完成' },
+    ]);
+    expect(next.status).toBe('streaming');
+  });
+
   it('records real gateway progress without adding transcript noise', () => {
     const next = applyCodexEventToConversation({ ...baseConversation(), runId: 'run-1' }, {
       type: 'activity', runId: 'run-1', title: 'gateway',
-      message: '模型正在生成结果，另有 2 个请求排队',
+      raw: { status: { active: true, waitingRequests: 2, lastOutputAt: 123 } },
     });
     expect(next.updatedAt).toBeGreaterThan(1);
-    expect(next.runActivity?.label).toContain('2 个请求排队');
+    expect(next.gatewayActivity).toMatchObject({ waitingRequests: 2, lastOutputAt: 123 });
+    expect(next.runActivity).toBeUndefined();
     expect(next.messages[0].blocks).toEqual([]);
     expect(next.status).toBe('streaming');
   });
@@ -771,6 +825,7 @@ describe('applyCodexEventToConversation', () => {
         id: 'pdf-read-1',
         title: 'command_execution',
         status: 'completed',
+        command: 'python read_pdfs.py /var/folders/demo/T/tmp.1gyXXKvaSo/abnormal.pdf /var/folders/demo/T/tmp.1gyXXKvaSo/reduction.pdf',
         output: [
           'Script completed',
           'Output:',
@@ -866,6 +921,7 @@ describe('applyCodexEventToConversation', () => {
         id: 'skill-read',
         title: 'command_execution',
         status: 'completed',
+        command: "sed -n '1,240p' /Users/geb/.codex/skills/.system/imagegen/SKILL.md",
         output: 'Read skill instructions.',
       },
     ]);

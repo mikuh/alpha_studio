@@ -41,7 +41,7 @@ Codex CLI -> POST /v1/responses -> Alpha Studio adapter -> 上游模型服务
 - `queryParams`：字符串到字符串的 JSON 对象，适合 Azure 的 `api-version`。
 - 密钥、Token、密码等凭据只能填写在受 KMS 密文保护的 `API Key` 字段；后台会拒绝把它们放入明文 `customHeaders` 或 `queryParams`。
 - `requestTimeoutMs`：1 秒到 15 分钟。
-- `maxRetries`：0 到 5。只对连接/超时错误和 408、429、500、502、503、504 重试；POST 会携带稳定的 `idempotency-key`。
+- `maxRetries`：0 到 5。模型 POST 仅重试可确认未产生推理成本的连接失败和暂时性 429，并保持同一个 `idempotency-key`；不会重发超时、部分流或 5xx。额度不足的 429 直接返回。只读模型发现 GET 保留对连接/超时和 408、429、500、502、503、504 的重试。
 - `contextWindowTokens`：模型的总上下文窗口。桌面端会将非 OpenAI 模型的窗口传给 Codex，并在约 90% 时提前压缩历史；未配置的非 OpenAI 路由按 64k 保守迁移。火山方舟 GLM-5.2、DeepSeek V4 Pro 与 Flash 按官方 1024k 窗口配置。
 - `maxOutputTokens`：模型最大回答长度。网关结合上下文窗口、最大回答和定价自动抬高内部任务安全预算，避免固定 5 元上限先于模型窗口拒绝合法输入。
 - `supportedReasoningEfforts` / `defaultReasoningEffort`：管理后台会优先按已核验的具体模型锁定真实选项；未知自定义模型才允许手动配置。网关模型可使用的标准超集是 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。`ultra` 是 Codex 编排模式，不是标准模型 effort，不能配置到网关路由。
@@ -125,9 +125,37 @@ model_provider = "alpha-gateway"
 [model_providers.alpha-gateway]
 base_url = "https://YOUR_ALPHA_STUDIO_HOST/v1"
 wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
 ```
 
-Run token 作为 Bearer API key 使用，并绑定客户、设备、任务、模型和累计消费安全上限，默认有效期为 48 小时以支持跨日 agent 任务。创建任务时只检查账户余额大于 0，不冻结或预扣余额；`GET /v1/models` 只返回该 token 对应的模型，`POST /v1/responses` 不能借 token 切换到其他模型。同一 token 可以按顺序发起多次上游推理，以覆盖工具调用后的续写；服务端禁止同一任务并发占用请求租约，每次响应独立记录真实 Token 用量并扣费，同时从任务累计安全上限中扣减。余额小于等于 0、设备撤销、token 过期或任务预算耗尽时，后续模型请求会被拒绝。
+Run token 作为 Bearer API key 使用，并绑定客户、设备、任务、模型和累计消费安全上限，默认有效期为 48 小时以支持跨日 agent 任务。创建任务时只检查账户余额大于 0，不冻结或预扣余额；`GET /v1/models` 只返回该 token 对应的模型，`POST /v1/responses` 不能借 token 切换到其他模型。同一 token 可以覆盖主任务和子任务的多次推理，每次响应独立记录真实 Token 用量并扣费，同时从任务累计安全上限中扣减。余额小于等于 0、设备撤销、token 过期或任务预算耗尽时，后续模型请求会被拒绝。
+
+### 子任务并发与限流
+
+每个 agent 的模型请求串行。主流程有一个名额，独立 spawned subagent 最多同时占用两个名额。身份依据内置 Codex 0.146.1 实际发送的 `client_metadata.thread_id`、`x-openai-subagent=collab_spawn` 和 `x-codex-parent-thread-id`；缺少有效身份、review、compaction 等请求走主流程串行通道。这是模型请求调度上限，不会将所有工具强制改成串行。
+
+PostgreSQL 的 `gateway_request_leases` 在事务中锁住任务并为每个请求占用单独的预算额度。额度只用于任务安全限制，不扣钱包；额度被其他请求占用时等待结算，不立即报预算耗尽。真正结算仍按任务行锁串行执行，重复回调不能重复扣费。
+
+共享供应商凭据的通道最多同时派发三个模型请求，跨后端实例生效。通道键只存供应商标识、Base URL 和 API Key 的哈希。429 会设置数据库共享冷却期，遵守完整 `Retry-After`（秒数或 HTTP 日期），追加最多 250 毫秒随机等待；未提供等待时间时采用指数退避。冷却结束后的 60 秒只允许一个请求试运行。单次调用的自动重试等待预算为 180 秒，重试次数仍受 `maxRetries` 限制；超过预算则保留真实上游 429、请求 ID 和 `Retry-After` 返回，不提前再试。
+
+Alpha Gateway 由后端统一负责重试，桌面端关闭该 provider 的 Codex HTTP/流重试，避免两层重试叠加。其他 provider 的客户端配置不受影响。本地等待超时使用 HTTP 409，带 `error.code=gateway_queue_timeout` 和 `error.source=gateway_queue`；真实上游 429 带 `source=upstream`，有上游请求 ID 时一并保留。并发上限无法保证供应商永不返回 429，仍需匹配其 RPM/TPM 和账户额度。
+
+`GET /v1/run-status` 增加 `activeRequests`、`activeSubagents`、`cooldownUntil`（Unix 毫秒）、`maxParallelSubagents`。界面分别展示实际工具操作、子任务请求数、内部等待和限流倒计时，20 秒未更新的遥测不再当作实时状态。数据库提供跨实例派发数量与冷却状态；同一进程内的早期等待数和最近输出时间仍为进程本地信息，多实例若需完整遥测应按 run 路由。
+
+### 实时内容与进度
+
+主任务正文通过 Codex app-server 的 `item/agentMessage/delta` 直接逐段渲染，计划通过 `item/plan/delta` 同样展示，不等待整个任务完成。完成事件按当前 run 和消息 item ID 回写权威快照，可修复遗漏的末尾内容；前面有过流式输出不再导致后续独立消息被误删。摘要完成事件只补充公开 summary，不从 content 字段额外展开原始推理。
+
+网关只把语义进展计入 `lastOutputAt`。连接建立、心跳、用量帧和 `[DONE]` 不再代表“正在输出正文”。`requestProgress` 分别报告回复、工具参数准备、推理和检索阶段。工具参数只统计生成字符数，不返回参数内容；界面写明准备完成后才会执行，生成参数不等于文件已写入。
+
+子任务正文在独立进度卡中显示最近 900 个字符，并标记为尚未汇总的阶段性输出；默认展示末尾 220 个字符，可展开最近内容。该预览仅存于当前 API 进程内存，受任务 token 保护，随请求结束清除，不写入数据库或日志，不含提示词、工具参数、原始推理或加密字段。主任务正文不进入网关预览，避免重复展示。桌面每 2 秒读取一次这条轻量状态接口，主回复仍由原生增量事件实时发送；状态查询不会触发模型请求或消耗模型重试额度。
+
+新增预览同样需要多实例部署按 run 路由才能完整显示。停止任务、请求结束或遥测超过 20 秒未更新后，界面清除实时预览；正式回复仍保留在对话中。
+
+升级须先应用 `0025_gateway_agent_request_leases.sql`，发布后端，再更新桌面客户端。`active_request_id` 保留为兼容标记，有任一新请求尚未结算时旧后端仍会等待；但混用版本期间，旧实例不能参与新的供应商全局限额，因此应排空旧请求后切换。回滚同样须先排空新版本请求，保留新增表，不直接删除在途租约。
+
+后端异常退出时，供应商派发名额在请求总时限加 30 秒结算余量后失效，避免长期阻塞其他任务；该任务的预算租约仍保留，防止把成本不明的请求当成免费失败并重放。此类任务需按上游用量完成对账后处理遗留租约。
 
 若上游成功响应缺失 usage、流在发出后中断、请求超时，或上游在可能已产生推理成本后返回 5xx，网关只对已确认的 Token 用量计费，不用单次消费上限猜测扣费；用量不可靠的记录会标记为 `usage_unavailable` 并进入对账待核对。启用按量模型前，输入与输出成本价必须为正数，所有价格与加价率必须为有限非负数；部署级 `MIN_GATEWAY_MARKUP_BPS`（默认 500，即 5%）还会阻止低于安全毛利线的路由启用或调用。
 
@@ -141,6 +169,9 @@ Run token 作为 Bearer API key 使用，并绑定客户、设备、任务、模
 ## 参考
 
 - [Codex custom model providers](https://developers.openai.com/codex/config-advanced/#custom-model-providers)
+- [Codex subagents](https://developers.openai.com/codex/subagents)
+- [Codex app-server events](https://learn.chatgpt.com/docs/app-server#item-deltas)
+- [OpenAI rate limits and retries](https://developers.openai.com/api/docs/guides/rate-limits#retrying-with-exponential-backoff)
 - [CC Switch provider presets, model discovery and local routing](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/en/2-providers/2.1-add.md)
 - [Anthropic Messages API](https://docs.anthropic.com/en/api/messages)
 - [Anthropic effort and adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/effort)
