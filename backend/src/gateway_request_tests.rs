@@ -297,3 +297,201 @@ async fn provider_capacity_is_shared_across_runs_and_crash_slots_expire() {
             .unwrap();
     assert!(reserved);
 }
+
+#[tokio::test]
+async fn active_streams_outlive_first_byte_timeout_and_truncated_streams_fail_explicitly() {
+    for scenario in ["active", "idle", "truncated"] {
+        let Some((pool, claims)) = test_run().await else {
+            return;
+        };
+        let key = claims.run_id.clone();
+        let request_id = format!("{key}-stream");
+        reserve_request(
+            &pool,
+            &claims,
+            &request_id,
+            &RequestLane::Main,
+            Some(Decimal::ONE),
+            Some(&key),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        let app = axum::Router::new().route("/", axum::routing::post(move || async move {
+            let body = async_stream::stream! {
+                for _ in 0..5 {
+                    yield Ok::<Bytes, Infallible>(Bytes::from_static(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"part\"}\n\n"));
+                    if scenario == "truncated" { return; }
+                    tokio::time::sleep(Duration::from_millis(if scenario == "idle" { 300 } else { 40 })).await;
+                }
+                yield Ok(Bytes::from_static(b"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":5}}}\n\n"));
+            };
+            Response::builder().header("content-type", "text/event-stream").body(Body::from_stream(body)).unwrap()
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let request = UpstreamRequest {
+            url: format!("http://{address}/"),
+            headers: vec![],
+            query_params: vec![],
+            response_format: UpstreamResponseFormat::Responses,
+            stream_response: true,
+            namespace_tool_compat: false,
+            request_timeout_ms: 120,
+            max_retries: 0,
+        };
+        let upstream = send_upstream_post(
+            &reqwest::Client::new(),
+            &request,
+            &json!({}),
+            &request_id,
+            &pool,
+            &key,
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+        let queue = crate::state::GatewayRunQueue::default();
+        let permit = queue.acquire(&key, Duration::from_secs(1)).await.unwrap();
+        let response = stream_upstream_response(
+            upstream,
+            request,
+            json!({}),
+            pool.clone(),
+            claims.clone(),
+            request_id,
+            Pricing {
+                input_yuan_per_million: Decimal::ZERO,
+                output_yuan_per_million: Decimal::ZERO,
+                reasoning_yuan_per_million: Decimal::ZERO,
+                cached_input_yuan_per_million: Decimal::ZERO,
+                markup_bps: 0,
+            },
+            Utc::now(),
+            permit,
+        );
+        let body = tokio::time::timeout(
+            Duration::from_secs(3),
+            axum::body::to_bytes(response.into_body(), 65536),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("response.output_text.delta"));
+        if scenario == "active" {
+            assert!(text.contains("response.completed"), "{text}");
+            assert!(!text.contains("response.failed"), "{text}");
+        } else {
+            assert!(text.contains("response.failed"), "{scenario}: {text}");
+            assert!(!text.contains("response.completed"), "{text}");
+            let note: String =
+                sqlx::query_scalar("select metering_status from usage_events where run_id=$1")
+                    .bind(&key)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(note, "usage_unavailable");
+        }
+        server.abort();
+        sqlx::query("delete from tenants where id=$1")
+            .bind(&claims.tenant_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn one_progress_connection_pushes_live_previews_and_idle_without_other_runs() {
+    let Some((pool, claims)) = test_run().await else {
+        return;
+    };
+    let config = crate::config::AppConfig {
+        app_environment: "test".into(),
+        database_url: String::new(),
+        redis_url: String::new(),
+        app_base_url: "http://localhost:8080".into(),
+        jwt_secret: "test-jwt".into(),
+        run_token_secret: "test-run".into(),
+        authorization_code_encryption_key: "test-auth-key".into(),
+        provider_kms_master_key: "test-kms-key".into(),
+        admin_email: "admin@test.local".into(),
+        admin_password: "test-password".into(),
+        admin_totp_secret: vec![1; 20],
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        market_data_enabled: false,
+        agent_data_relay_enabled: false,
+        market_refresh_seconds: 60,
+        market_snapshot_limit: 100,
+        min_gateway_markup_bps: 0,
+        cors_allowed_origins: vec![],
+    };
+    let state = AppState::new(config, pool.clone(), None);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        format!("Bearer {}", state.run_tokens.issue(claims.clone()).unwrap())
+            .parse()
+            .unwrap(),
+    );
+    let response = gateway_run_events(State(state.clone()), headers)
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let mut stream = response.into_body().into_data_stream();
+    let first = stream.next().await.unwrap().unwrap();
+    assert!(std::str::from_utf8(&first)
+        .unwrap()
+        .contains("\"status\":null"));
+    let unrelated = state
+        .gateway_run_queue
+        .acquire("other-run", Duration::from_secs(1))
+        .await
+        .unwrap();
+    unrelated.record_model_data(
+        r#"{"type":"response.output_text.delta","delta":"other-private-output"}"#,
+    );
+    let main = state
+        .gateway_run_queue
+        .acquire(&claims.run_id, Duration::from_secs(1))
+        .await
+        .unwrap();
+    main.record_model_data(r#"{"type":"response.output_item.added","item":{"id":"item-a","call_id":"call-a","type":"function_call","name":"exec_command"}}"#);
+    main.record_model_data(r#"{"type":"response.function_call_arguments.delta","item_id":"item-a","delta":"{\"cmd\":\"python"}"#);
+    let first = tokio::time::timeout(Duration::from_millis(800), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = std::str::from_utf8(&first).unwrap();
+    assert!(text.contains("python"), "{text}");
+    assert!(text.contains("call-a"));
+    assert!(!text.contains("other-private-output"));
+    main.record_model_data(r#"{"type":"response.function_call_arguments.delta","item_id":"item-a","delta":" report.py"}"#);
+    let next = tokio::time::timeout(Duration::from_millis(800), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = std::str::from_utf8(&next).unwrap();
+    assert!(text.contains("event: progress"), "{text}");
+    assert!(text.contains("python report.py"));
+    drop(main);
+    let idle = tokio::time::timeout(Duration::from_millis(800), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(std::str::from_utf8(&idle)
+        .unwrap()
+        .contains("\"status\":null"));
+    drop(stream);
+    drop(unrelated);
+    sqlx::query("delete from tenants where id=$1")
+        .bind(&claims.tenant_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+}

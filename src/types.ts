@@ -57,6 +57,8 @@ export interface ModelRequestProgress {
   characters: number;
   preview: string;
   toolName?: string;
+  itemId?: string;
+  callId?: string;
   updatedAt: number;
 }
 

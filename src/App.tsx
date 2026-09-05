@@ -23,6 +23,8 @@ import officialSkillCatalog from '../skills/catalog.json';
 import { ReportBrandingSettings } from './ReportBrandingSettings';
 import { TurnDuration, formatTurnDuration as formatThinkingDuration } from './TurnDuration';
 import { fileChangeKind, isFileWriteCommand } from './toolActivity';
+import { ModelProgressRows, preparingToolLabel } from './ModelProgress';
+import { modelErrorPresentation } from './modelErrors';
 import {
   Activity,
   AlertCircle,
@@ -7494,6 +7496,7 @@ function MessageList({
   ));
   const streaming = conversation.status === 'streaming';
   const latestMessage = conversation.messages[conversation.messages.length - 1];
+  const gateway = visibleGatewayActivity(conversation);
   const effectiveVisibleStart = Math.min(
     visibleStart,
     Math.max(0, conversation.messages.length - INITIAL_RENDERED_MESSAGE_COUNT),
@@ -7603,6 +7606,7 @@ function MessageList({
             conversationId={conversation.id}
             conversationCwd={conversation.cwd}
             conversationStatus={conversation.status}
+            gatewayProgress={streaming && message.id === latestMessage?.id && message.role === 'assistant' ? gateway : undefined}
             index={effectiveVisibleStart + index}
           />
         ))}
@@ -7610,7 +7614,7 @@ function MessageList({
           <ThinkingIndicator
             lastActivityAt={conversation.updatedAt}
             activity={visibleRunActivity(conversation.runActivity, conversation.messages, conversation.gatewayActivity)}
-            gateway={conversation.gatewayActivity}
+            gateway={gateway}
             onStop={() => useChatStore.getState().stopConversation(conversation.id)}
           />
         )}
@@ -7639,6 +7643,15 @@ function MessageList({
   );
 }
 
+function visibleGatewayActivity(conversation: Conversation): Conversation['gatewayActivity'] {
+  const gateway = conversation.gatewayActivity;
+  if (!gateway?.requestProgress?.length) return gateway;
+  const startedIds = new Set(conversation.messages.flatMap(message => message.blocks)
+    .flatMap(block => block.type === 'tool' ? [block.id] : []));
+  return { ...gateway, requestProgress: gateway.requestProgress.filter(progress =>
+    ![progress.itemId, progress.callId].some(id => id && startedIds.has(id))) };
+}
+
 function visibleRunActivity(activity: Conversation['runActivity'], messages: ChatMessage[], gateway?: Conversation['gatewayActivity']): Conversation['runActivity'] {
   if (activity?.kind === 'retrying') return activity;
   // Include tools that began before an in-flight steering message.
@@ -7656,35 +7669,6 @@ function visibleRunActivity(activity: Conversation['runActivity'], messages: Cha
   if (activity && activity.label !== '正在执行工具' && activity.label !== '等待模型继续处理') return activity;
   if (gateway?.active) return { kind: 'working', label: gateway.lastOutputAt > 0 ? '模型服务已响应' : '等待模型响应' };
   return activity;
-}
-
-function preparingToolLabel(name?: string): string {
-  if (/apply_patch|file.?write|write_file|edit_file/i.test(name ?? '')) return '正在准备文件修改';
-  if (/exec|shell|terminal|python/i.test(name ?? '')) return '正在生成执行脚本';
-  if (/search|browse/i.test(name ?? '')) return '正在准备检索';
-  return '正在准备工具调用';
-}
-
-function LiveModelOutput({ progress }: { progress: NonNullable<NonNullable<Conversation['gatewayActivity']>['requestProgress']>[number] }) {
-  const [expanded, setExpanded] = useState(false);
-  const characters = Array.from(progress.preview);
-  const preview = expanded ? progress.preview : characters.slice(-220).join('');
-  const label = progress.kind === 'tool_input' ? preparingToolLabel(progress.toolName)
-    : progress.kind === 'reply' ? '正在输出阶段性内容'
-    : progress.kind === 'search' ? '正在检索资料' : '正在推理';
-  return (
-    <section className="live-model-output" aria-label={progress.subagent ? '子任务实时进展' : '工具准备进度'} aria-live="off">
-      <div className="live-model-output-head">
-        <span>{progress.subagent ? <Users size={13} /> : <Code2 size={13} />}{progress.subagent ? '子任务' : '下一步'} · {label}</span>
-        {progress.characters > 0 && <span>已生成 {progress.characters.toLocaleString('zh-CN')} 字符</span>}
-      </div>
-      {preview && <p className="live-model-output-preview">{!expanded && characters.length > 220 ? '…' : ''}{preview}</p>}
-      {characters.length > 220 && <button type="button" className="live-model-output-expand" onClick={() => setExpanded(value => !value)}>{expanded ? '收起' : '展开最近内容'}</button>}
-      <span className="live-model-output-note">{progress.kind === 'tool_input'
-        ? '模型正在生成工具参数，准备完成后才会执行。'
-        : progress.kind === 'reply' ? '子任务的阶段性输出，主任务随后汇总。' : '有可展示的内容时会在这里更新。'}</span>
-    </section>
-  );
 }
 
 const LONG_WAIT_SECONDS = 60;
@@ -7734,11 +7718,13 @@ function ThinkingIndicator({
       ? `${formatThinkingDuration(inactiveSeconds)}没有新进展，复杂任务可能仍在处理。`
       : activity?.kind === 'retrying' ? '连接暂时中断，正在等待重试结果。' : null;
 
+  const progressRows = gatewayFresh ? gateway.requestProgress?.filter(progress => progress.subagent || progress.kind === 'tool_input') ?? [] : [];
+  const hasMainPreparation = progressRows.some(progress => !progress.subagent && progress.kind === 'tool_input');
+  const hideRepeatedStatus = hasMainPreparation && state === 'active' && activity?.kind !== 'retrying' && !cooling;
+  const hasExtraStatus = detail || waitingRequests > 0 || (gatewayFresh && (gateway.activeSubagents ?? 0) > 0) || cooldownSeconds > 0;
   return (
     <>
-      {gatewayFresh && gateway.requestProgress?.filter(progress => progress.subagent || progress.kind === 'tool_input')
-        .map(progress => <LiveModelOutput key={progress.id} progress={progress} />)}
-    <div
+    {(!hideRepeatedStatus || hasExtraStatus) && <div
       className={`thinking-indicator ${state}`}
       role="status"
       aria-live="polite"
@@ -7746,9 +7732,9 @@ function ThinkingIndicator({
       data-state={state}
     >
       <div className="thinking-copy">
-        <div className="thinking-primary">
+        {!hideRepeatedStatus && <div className="thinking-primary">
           <span className="thinking-shimmer">{label}</span>
-        </div>
+        </div>}
         {detail && <span className="thinking-detail">{detail}</span>}
         {!cooling && state !== 'active' && activity && activity.kind !== 'retrying' && (
           <span className="thinking-detail">最近状态：{activity.label}</span>
@@ -7768,7 +7754,7 @@ function ThinkingIndicator({
           停止任务
         </button>
       )}
-    </div>
+    </div>}
     </>
   );
 }
@@ -7778,12 +7764,14 @@ const MessageBubble = memo(function MessageBubble({
   conversationId,
   conversationCwd,
   conversationStatus,
+  gatewayProgress,
   index,
 }: {
   message: ChatMessage;
   conversationId: string;
   conversationCwd: string;
   conversationStatus: Conversation['status'];
+  gatewayProgress?: Conversation['gatewayActivity'];
   index: number;
 }) {
   const editUserMessageAndResend = useChatStore((state) => state.editUserMessageAndResend);
@@ -7882,6 +7870,7 @@ const MessageBubble = memo(function MessageBubble({
 	                            ? null
 	                          : <BlockRenderer key={`${unit.block.type}-${unit.index}`} block={unit.block} streaming={Boolean(message.isStreaming) && unit.index === lastBlockIndex} />,
 	                    )}
+              {gatewayProgress && <ModelProgressRows gateway={gatewayProgress} />}
               {generatedFiles.length > 0 && (
                 <GeneratedFileResultView
                   grouped
@@ -8177,7 +8166,11 @@ function BlockRenderer({ block, streaming }: { block: MessageBlock; streaming?: 
   if (block.type === 'file_result') {
     return <GeneratedFileResultView block={block} />;
   }
-  return <div className="error-block"><AlertCircle size={16} /><span>{block.content}</span></div>;
+  const error = modelErrorPresentation(block.content);
+  return <div className="error-block"><AlertCircle size={16} /><div>
+    <span>{error.message}</span>
+    {error.detail && <details className="model-error-details"><summary>技术详情</summary><pre>{error.detail}</pre></details>}
+  </div></div>;
 }
 
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm];

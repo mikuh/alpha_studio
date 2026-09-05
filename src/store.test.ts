@@ -10,6 +10,7 @@ import {
   isDraftConversation,
   migratePersistedState,
   parseDailyThemeReportCompletion,
+  persistedChatState,
   promptWithAttachments,
   promptWithSelectedTextContexts,
   reconcileDailyThemeTrackingFromConversations,
@@ -66,6 +67,18 @@ describe('archive semantics', () => {
     expect(archivedConversations(state.conversations).map((item) => item.id)).toEqual(['conv-1']);
     expect(activeConversations(state.conversations).map((item) => item.id)).toEqual(['conv-2']);
     expect(state.currentConversationId).toBe('conv-2');
+  });
+
+  it('keeps live argument previews out of persisted conversation history', () => {
+    useChatStore.setState({ conversations: [conversation('conv-1', { messages: [textMessage('保留正文')],
+      gatewayActivity: { active: true, waitingRequests: 0, lastOutputAt: 1, observedAt: 1,
+        requestProgress: [{ id: 'main:a', subagent: false, kind: 'tool_input', characters: 3,
+          preview: '临时参数', updatedAt: 1 }] },
+    })] });
+    const saved = JSON.parse(JSON.stringify(persistedChatState(useChatStore.getState())));
+    expect(saved.conversations[0].gatewayActivity).toBeUndefined();
+    expect(saved.conversations[0].messages[0].blocks[0].content).toBe('保留正文');
+    expect(useChatStore.getState().conversations[0].gatewayActivity?.requestProgress?.[0].preview).toBe('临时参数');
   });
 
   it('can restore and permanently remove archived conversations', () => {

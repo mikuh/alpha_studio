@@ -32,7 +32,9 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
   if (event.type === 'activity' && event.title === 'gateway') {
     if (conversation.status !== 'streaming') return conversation;
     const raw = asRecord(event.raw);
-    const status = asRecord(raw?.status) ?? raw;
+    const incoming = asRecord(raw?.status) ?? (raw && !('status' in raw) ? raw : null);
+    const status = raw?.progressOnly === true && incoming
+      ? { ...conversation.gatewayActivity, ...incoming } : incoming;
     const legacyWaiting = /(?:另有\s*)?(\d+)\s*个请求排队/.exec(event.message ?? '');
     const active = status ? status.active === true : Boolean(event.message);
     const lastOutputAt = numericValue(status?.lastOutputAt) ?? 0;
@@ -48,7 +50,7 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
         maxParallelSubagents: numericValue(status?.maxParallelSubagents) ?? undefined,
         requestProgress: modelRequestProgress(status?.requestProgress),
       } : undefined,
-      // Queue changes and successful polling aren't evidence of model progress.
+      // Queue changes and connection heartbeats aren't evidence of model progress.
       updatedAt: hasNewOutput ? now : conversation.updatedAt,
     };
   }
@@ -211,14 +213,16 @@ export function applyCodexEventToConversation(conversation: Conversation, event:
 
 function modelRequestProgress(value: unknown): ModelRequestProgress[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, 3).flatMap(entry => {
+  return value.slice(0, 32).flatMap(entry => {
     const row = asRecord(entry);
     if (!row || typeof row.id !== 'string' || !['reply', 'tool_input', 'reasoning', 'search'].includes(String(row.kind))) return [];
     const subagent = row.subagent === true;
     return [{
       id: row.id, subagent, kind: row.kind as ModelRequestProgress['kind'],
       characters: Math.max(0, numericValue(row.characters) ?? 0),
-      preview: subagent && row.kind === 'reply' && typeof row.preview === 'string' ? row.preview.slice(-1800) : '',
+      preview: (row.kind === 'tool_input' || (subagent && row.kind === 'reply')) && typeof row.preview === 'string' ? Array.from(row.preview).slice(-900).join('') : '',
+      itemId: typeof row.itemId === 'string' ? row.itemId : undefined,
+      callId: typeof row.callId === 'string' ? row.callId : undefined,
       toolName: typeof row.toolName === 'string' ? row.toolName.slice(0, 100) : undefined,
       updatedAt: numericValue(row.updatedAt) ?? 0,
     }];

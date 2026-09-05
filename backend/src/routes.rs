@@ -68,6 +68,7 @@ fn gateway_request_wait_timeout(provider: &ProviderConfig) -> Duration {
     // (including its bounded retries and settlement) between queue advances.
     let retries = u64::from(provider.max_retries.min(5));
     Duration::from_millis(provider.request_timeout_ms.clamp(1_000, 900_000))
+        .max(crate::gateway::MAX_STREAM_DURATION)
         .saturating_mul((retries + 1) as u32)
         .saturating_add(gateway_admission::MAX_RETRY_WAIT)
         .saturating_add(Duration::from_secs(30))
@@ -2389,7 +2390,13 @@ pub async fn gateway_run_status(
 ) -> ApiResult<Json<Value>> {
     let claims = state.run_tokens.verify(bearer_token(&headers)?)?;
     ensure_gateway_run_available(&state.db, &claims).await?;
-    let mut status = serde_json::to_value(state.gateway_run_queue.status(&claims.run_id).await)
+    Ok(Json(
+        json!({ "status": gateway_status_snapshot(&state, &claims.run_id).await? }),
+    ))
+}
+
+async fn gateway_status_snapshot(state: &AppState, run_id: &str) -> ApiResult<Value> {
+    let mut status = serde_json::to_value(state.gateway_run_queue.status(run_id).await)
         .map_err(|error| ApiError::Internal(error.to_string()))?;
     let dispatched = sqlx::query(
         r#"
@@ -2403,7 +2410,7 @@ pub async fn gateway_run_status(
         where l.run_id=$1
         "#,
     )
-    .bind(&claims.run_id)
+    .bind(run_id)
     .fetch_one(&state.db)
     .await?;
     if dispatched.get::<i64, _>("total") > 0 || status.is_object() {
@@ -2419,7 +2426,67 @@ pub async fn gateway_run_status(
         status["cooldownUntil"] = json!(dispatched.get::<i64, _>("cooldown_until"));
         status["maxParallelSubagents"] = json!(gateway_admission::MAX_SUBAGENT_REQUESTS);
     }
-    Ok(Json(json!({ "status": status })))
+    Ok(status)
+}
+
+/// One authenticated stream for the lifetime of a task. Output notifications
+/// read only bounded in-memory previews; database queue metadata is refreshed
+/// on lifecycle changes and heartbeats, never for each model token.
+pub async fn gateway_run_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let claims = state.run_tokens.verify(bearer_token(&headers)?)?;
+    ensure_gateway_run_available(&state.db, &claims).await?;
+    let mut updates = state.gateway_run_queue.subscribe();
+    let initial = gateway_status_snapshot(&state, &claims.run_id).await?;
+    let stream = async_stream::stream! {
+        yield Ok::<Event, Infallible>(Event::default().event("status").data(json!({"status":initial}).to_string()));
+        let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_secs(10), Duration::from_secs(10));
+        loop {
+            let mut full = tokio::select! {
+                update = updates.recv() => match update {
+                    Ok(update) if update.run_id == claims.run_id => !update.output_only,
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(_) => break,
+                },
+                _ = heartbeat.tick() => {
+                    if state.run_tokens.verify(bearer_token(&headers).unwrap_or_default()).is_err()
+                        || ensure_gateway_run_available(&state.db, &claims).await.is_err() { break; }
+                    true
+                },
+            };
+            // Batch a burst without delaying the inference stream itself.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            loop {
+                match updates.try_recv() {
+                    Ok(update) if update.run_id == claims.run_id => full |= !update.output_only,
+                    Ok(_) => {},
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => full = true,
+                    Err(_) => break,
+                }
+            }
+            let status = if full {
+                match gateway_status_snapshot(&state, &claims.run_id).await { Ok(status) => status, Err(_) => break }
+            } else {
+                serde_json::to_value(state.gateway_run_queue.status(&claims.run_id).await).unwrap_or(Value::Null)
+            };
+            yield Ok(Event::default().event(if full {"status"} else {"progress"})
+                .data(json!({"status":status,"progressOnly":!full}).to_string()));
+        }
+    };
+    let mut response = Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
+        .into_response();
+    response
+        .headers_mut()
+        .insert("x-accel-buffering", "no".parse().unwrap());
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        "no-cache, no-transform".parse().unwrap(),
+    );
+    Ok(response)
 }
 
 pub async fn gateway_responses(
@@ -2700,8 +2767,37 @@ fn stream_upstream_response(
         let mut failure_message = None;
         let mut saw_done = false;
         let mut terminal_output = Vec::new();
+        let mut native_completed = false;
+        let idle_timeout = Duration::from_millis(request.request_timeout_ms);
+        let mut idle_deadline = tokio::time::Instant::now() + idle_timeout;
+        let mut heartbeat = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(10),
+        );
 
-        while let Some(chunk) = source.next().await {
+        loop {
+            let chunk = tokio::select! {
+                chunk = source.next() => {
+                    let Some(chunk) = chunk else { break; };
+                    idle_deadline = tokio::time::Instant::now() + idle_timeout;
+                    chunk
+                },
+                _ = tokio::time::sleep_until(idle_deadline) => {
+                    failed = true;
+                    let message = "模型响应长时间没有新数据，连接已结束。可以继续当前任务。";
+                    failure_message = Some(message.to_string());
+                    let output = if let Some(adapter) = adapter.as_mut() { adapter.fail(message) } else { native_stream_failure(message) };
+                    terminal_output.extend_from_slice(output.as_bytes());
+                    break;
+                },
+                _ = heartbeat.tick() => {
+                    if sender.send(Ok(Bytes::from_static(b": keepalive\n\n"))).await.is_err() {
+                        // Continue consuming the already dispatched request for
+                        // metering, but never issue a replacement model call.
+                    }
+                    continue;
+                },
+            };
             match chunk {
                 Ok(chunk) => {
                     let frames = decoder.push(&chunk);
@@ -2739,7 +2835,10 @@ fn stream_upstream_response(
                             if let Some(data) = frame.data.as_deref() {
                                 run_permit.record_model_data(data);
                                 match inspect_responses_stream_data(data) {
-                                    Some(NativeStreamEvent::Completed(value)) => usage = value,
+                                    Some(NativeStreamEvent::Completed(value)) => {
+                                        usage = value;
+                                        native_completed = true;
+                                    }
                                     Some(NativeStreamEvent::Failed) => failed = true,
                                     None => {}
                                 }
@@ -2768,11 +2867,16 @@ fn stream_upstream_response(
                 }
                 Err(error) => {
                     failed = true;
-                    failure_message = Some(error.to_string());
-                    let output = if let Some(adapter) = adapter.as_mut() {
-                        adapter.fail(&error.to_string())
+                    let message = if error.is_timeout() {
+                        "模型响应超时，连接已结束。可以继续当前任务。".to_string()
                     } else {
-                        native_stream_failure(&error.to_string())
+                        format!("模型连接中断：{}", error.without_url())
+                    };
+                    failure_message = Some(message.clone());
+                    let output = if let Some(adapter) = adapter.as_mut() {
+                        adapter.fail(&message)
+                    } else {
+                        native_stream_failure(&message)
                     };
                     terminal_output.extend_from_slice(output.as_bytes());
                     break;
@@ -2810,7 +2914,10 @@ fn stream_upstream_response(
                         run_permit.record_model_data(data);
                         if let Some(event) = inspect_responses_stream_data(data) {
                             match event {
-                                NativeStreamEvent::Completed(value) => usage = value,
+                                NativeStreamEvent::Completed(value) => {
+                                    usage = value;
+                                    native_completed = true;
+                                }
                                 NativeStreamEvent::Failed => failed = true,
                             }
                         }
@@ -2829,6 +2936,22 @@ fn stream_upstream_response(
             }
         }
 
+        if !failed
+            && ((adapter.is_none() && !native_completed)
+                || adapter.as_ref().is_some_and(|a| !a.can_finish()))
+        {
+            failed = true;
+            let message = "模型连接在响应完成前中断，已保留收到的内容。可以继续当前任务。";
+            failure_message = Some(message.to_string());
+            // A bare [DONE] is not evidence of a complete Responses item.
+            terminal_output.clear();
+            let output = if let Some(adapter) = adapter.as_mut() {
+                adapter.fail(message)
+            } else {
+                native_stream_failure(message)
+            };
+            terminal_output.extend_from_slice(output.as_bytes());
+        }
         if !failed {
             if let Some(adapter) = adapter.as_mut() {
                 terminal_output.extend_from_slice(adapter.finish().as_bytes());
@@ -2957,16 +3080,27 @@ async fn send_upstream_post(
             .post(&request.url)
             .header("content-type", "application/json")
             .header("idempotency-key", idempotency_key)
-            .timeout(
+            .timeout(if request.stream_response {
+                crate::gateway::MAX_STREAM_DURATION
+            } else {
                 Duration::from_millis(request.request_timeout_ms)
-                    .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
-            )
+                    .min(deadline.saturating_duration_since(tokio::time::Instant::now()))
+            })
             .query(&request.query_params)
             .json(body);
         for (name, value) in &request.headers {
             builder = builder.header(name, value);
         }
-        match builder.send().await {
+        let response = tokio::time::timeout(
+            Duration::from_millis(request.request_timeout_ms)
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+            builder.send(),
+        )
+        .await
+        .map_err(|_| {
+            UpstreamPostError::local("模型服务未在规定时间内开始响应".into(), true, false)
+        })?;
+        match response {
             Ok(response) if response.status().as_u16() == 429 => {
                 let headers = response.headers().clone();
                 let text = response.text().await.unwrap_or_default();
@@ -4987,12 +5121,12 @@ mod tests {
         };
         assert_eq!(
             super::gateway_request_wait_timeout(&provider),
-            Duration::from_secs(510)
+            Duration::from_secs(2010)
         );
         provider.max_retries = 2;
         assert_eq!(
             super::gateway_request_wait_timeout(&provider),
-            Duration::from_secs(1110)
+            Duration::from_secs(5610)
         );
     }
 

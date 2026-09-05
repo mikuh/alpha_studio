@@ -19,8 +19,10 @@ admin_status="$(curl --silent --show-error --output /dev/null --write-out '%{htt
 metrics_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 "$base_url/metrics")"
 [[ "$metrics_status" == "404" ]] || { echo "public metrics endpoint returned HTTP $metrics_status" >&2; exit 1; }
 
-run_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 "$base_url/v1/run-status")"
-[[ "$run_status" == "401" ]] || { echo "run-status auth check returned HTTP $run_status" >&2; exit 1; }
+for progress_endpoint in run-status run-events; do
+  progress_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 "$base_url/v1/$progress_endpoint")"
+  [[ "$progress_status" == "401" ]] || { echo "$progress_endpoint auth check returned HTTP $progress_status" >&2; exit 1; }
+done
 
 # Match the desktop WebSocket client's HTTP/1.1 Upgrade handshake. HTTP/2
 # removes these hop-by-hop headers and tests a different protocol instead.

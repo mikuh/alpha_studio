@@ -35,6 +35,12 @@
     reverse_proxy api:8080
   }
 
+  handle /v1/run-events {
+    reverse_proxy api:8080 {
+      flush_interval -1
+    }
+  }
+
   handle /healthz {
     reverse_proxy api:8080
   }

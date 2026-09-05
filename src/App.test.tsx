@@ -1660,17 +1660,38 @@ describe('right feature panel', () => {
     render(<App />);
     act(() => useChatStore.getState().handleCodexEvent({ type: 'activity', title: 'gateway', runId: 'run-live', raw: { status: {
       active: true, waitingRequests: 0, lastOutputAt: now, requestProgress: [
-        { id: 'main', subagent: false, kind: 'tool_input', toolName: 'apply_patch', characters: 1234, preview: 'private arguments', updatedAt: now },
+        { id: 'main', subagent: false, kind: 'tool_input', toolName: 'apply_patch', characters: 1234, preview: 'report.html', itemId: 'tool-item', callId: 'tool-call', updatedAt: now },
         { id: 'child-1', subagent: true, kind: 'reply', characters: 22, preview: '已找到三条公告，正在核对发布日期。', updatedAt: now },
       ],
     } } }));
     expect(screen.getByLabelText('子任务实时进展')).toHaveTextContent('已找到三条公告，正在核对发布日期。');
-    expect(screen.getByLabelText('工具准备进度')).toHaveTextContent('已生成 1,234 字符');
-    expect(screen.getByLabelText('工具准备进度')).toHaveTextContent('准备完成后才会执行');
-    expect(screen.getByRole('status', { name: '正在准备文件修改' })).toBeInTheDocument();
+    expect(screen.getByLabelText('工具准备进度')).toHaveTextContent('1,234 字符');
+    expect(screen.getByLabelText('工具准备进度')).toHaveTextContent('report.html');
+    expect(screen.getByLabelText('工具准备进度')).toHaveAttribute('title', '正在生成参数，尚未执行');
+    expect(screen.getByLabelText('工具准备进度')).toHaveTextContent('准备修改文件');
+    expect(screen.queryByRole('status', { name: '准备修改文件' })).not.toBeInTheDocument();
+    expect(screen.queryByText('apply_patch')).not.toBeInTheDocument();
     expect(screen.queryByText('private arguments')).not.toBeInTheDocument();
+    act(() => useChatStore.getState().handleCodexEvent({ type: 'tool_started', runId: 'run-live', itemId: 'tool-call', title: 'apply_patch', text: 'report.html' }));
+    expect(screen.queryByLabelText('工具准备进度')).not.toBeInTheDocument();
     act(() => useChatStore.getState().handleCodexEvent({ type: 'activity', title: 'gateway', runId: 'run-live', raw: { status: null } }));
     expect(screen.queryByLabelText('子任务实时进展')).not.toBeInTheDocument();
+  });
+
+  it('explains a truncated response and keeps its technical error collapsed', async () => {
+    const now = Date.now();
+    useChatStore.setState({ conversations: [conversation({ status: 'streaming', updatedAt: now, runId: 'run-error',
+      messages: [{ id: 'partial', role: 'assistant', timestamp: now, isStreaming: true, blocks: [{ type: 'text', content: '已收到的分析' }] }],
+    })] });
+    render(<App />);
+    const raw = 'stream disconnected before completion: error decoding response body';
+    act(() => useChatStore.getState().handleCodexEvent({ type: 'error', runId: 'run-error', message: raw }));
+    expect(screen.getByText('已收到的分析')).toBeVisible();
+    expect(screen.getByText('模型连接在响应完成前中断，已保留收到的内容。可以继续当前任务。')).toBeVisible();
+    const details = screen.getByText('技术详情').closest('details');
+    expect(details).not.toHaveAttribute('open');
+    expect(details).toHaveTextContent(raw);
+    expect(useChatStore.getState().conversations[0].status).toBe('error');
   });
 
   it('explains parallel subagent requests and a shared rate-limit cooldown', () => {

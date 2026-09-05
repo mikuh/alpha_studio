@@ -23,6 +23,23 @@ function baseConversation(): Conversation {
 }
 
 describe('applyCodexEventToConversation', () => {
+  it('merges streamed previews without losing admission metadata and clears them at idle', () => {
+    const event = { type: 'activity' as const, title: 'gateway', runId: 'run-1' };
+    const running = applyCodexEventToConversation(baseConversation(), { ...event, raw: { status: {
+      active: true, activeRequests: 3, activeSubagents: 2, cooldownUntil: 12345, maxParallelSubagents: 2,
+    } } });
+    const progress = applyCodexEventToConversation(running, { ...event, raw: { progressOnly: true, status: {
+      active: true, lastOutputAt: 123, requestProgress: [{ id: 'main:a', kind: 'tool_input',
+        itemId: 'a', callId: 'call-a', toolName: 'exec_command', preview: '生成🚀'.repeat(400), characters: 1200 }],
+    } } });
+    expect(progress.gatewayActivity).toMatchObject({ activeRequests: 3, activeSubagents: 2, cooldownUntil: 12345 });
+    expect(progress.gatewayActivity?.requestProgress?.[0]).toMatchObject({ itemId: 'a', callId: 'call-a', kind: 'tool_input' });
+    expect(Array.from(progress.gatewayActivity?.requestProgress?.[0].preview ?? '')).toHaveLength(900);
+    expect(progress.messages).toBe(running.messages);
+    const idle = applyCodexEventToConversation(progress, { ...event, raw: { status: null, progressOnly: true } });
+    expect(idle.gatewayActivity).toBeUndefined();
+  });
+
   it('separates queue heartbeats from real progress and clears telemetry at idle and completion', () => {
     const running = applyCodexEventToConversation(baseConversation(), { type: 'tool_started', runId: 'run-1', itemId: 'edit', title: 'fileChange' });
     const heartbeat = { type: 'activity' as const, runId: 'run-1', title: 'gateway', raw: { status: { active: true, waitingRequests: 3, lastOutputAt: 0 } } };

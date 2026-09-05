@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 300_000;
+// First-response/idle timeouts are separate from a bounded, active generation.
+pub const MAX_STREAM_DURATION: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 const DEFAULT_MAX_RETRIES: u32 = 2;
 const VOLCENGINE_RESPONSES_MAX_OUTPUT_TOKENS: u64 = 393_216;
 

@@ -9,7 +9,7 @@ use std::{
 
 use reqwest::Client;
 use sqlx::{PgPool, Row};
-use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{broadcast, watch, Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     config::AppConfig,
@@ -19,19 +19,46 @@ use crate::{
     tokens::{AdminTokenService, DeviceTokenService, RunTokenService},
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct GatewayRunQueue {
     gates: Arc<Mutex<HashMap<String, Weak<GatewayRunGate>>>>,
+    updates: broadcast::Sender<GatewayUpdate>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GatewayUpdate {
+    pub run_id: String,
+    pub output_only: bool,
+}
+
+impl Default for GatewayRunQueue {
+    fn default() -> Self {
+        Self {
+            gates: Arc::default(),
+            updates: broadcast::channel(256).0,
+        }
+    }
 }
 
 struct GatewayRunGate {
+    run_id: String,
+    updates: broadcast::Sender<GatewayUpdate>,
     lanes: Mutex<HashMap<String, Weak<Semaphore>>>,
     subagents: Arc<Semaphore>,
     progress: watch::Sender<u64>,
     waiting: AtomicUsize,
     active: AtomicUsize,
     last_output_at: AtomicI64,
-    output: StdMutex<HashMap<String, crate::gateway_output::RequestProgress>>,
+    output: StdMutex<HashMap<String, crate::gateway_output::RequestOutput>>,
+}
+
+impl GatewayRunGate {
+    fn notify(&self, output_only: bool) {
+        let _ = self.updates.send(GatewayUpdate {
+            run_id: self.run_id.clone(),
+            output_only,
+        });
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -48,6 +75,7 @@ pub struct GatewayWaiter(Arc<GatewayRunGate>);
 impl Drop for GatewayWaiter {
     fn drop(&mut self) {
         self.0.waiting.fetch_sub(1, Ordering::Relaxed);
+        self.0.notify(false);
     }
 }
 
@@ -62,7 +90,7 @@ impl GatewayRunPermit {
     pub fn record_model_data(&self, data: &str) {
         if let Ok(mut output) = self.gate.output.lock() {
             let progress = output.entry(self.lane_key.clone()).or_insert_with(|| {
-                crate::gateway_output::RequestProgress::new(self.lane_key.clone())
+                crate::gateway_output::RequestOutput::new(self.lane_key.clone())
             });
             if progress.observe(data) {
                 self.record_output();
@@ -80,6 +108,7 @@ impl GatewayRunPermit {
 
     pub fn waiting_for_admission(&self) -> GatewayWaiter {
         self.gate.waiting.fetch_add(1, Ordering::Relaxed);
+        self.gate.notify(false);
         GatewayWaiter(self.gate.clone())
     }
 
@@ -87,6 +116,7 @@ impl GatewayRunPermit {
         self.gate
             .last_output_at
             .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+        self.gate.notify(true);
     }
 }
 
@@ -103,10 +133,15 @@ impl Drop for GatewayRunPermit {
         self.gate
             .progress
             .send_modify(|generation| *generation += 1);
+        self.gate.notify(false);
     }
 }
 
 impl GatewayRunQueue {
+    pub fn subscribe(&self) -> broadcast::Receiver<GatewayUpdate> {
+        self.updates.subscribe()
+    }
+
     pub async fn status(&self, run_id: &str) -> Option<GatewayRunStatus> {
         let gate = self
             .gates
@@ -119,6 +154,7 @@ impl GatewayRunQueue {
             .lock()
             .ok()?
             .values()
+            .flat_map(|output| output.progress())
             .filter(|p| p.updated_at > 0)
             .cloned()
             .collect();
@@ -153,6 +189,8 @@ impl GatewayRunQueue {
                 gate
             } else {
                 let gate = Arc::new(GatewayRunGate {
+                    run_id: run_id.to_string(),
+                    updates: self.updates.clone(),
                     lanes: Mutex::new(HashMap::new()),
                     subagents: Arc::new(Semaphore::new(
                         crate::gateway_admission::MAX_SUBAGENT_REQUESTS,
@@ -169,6 +207,7 @@ impl GatewayRunQueue {
         };
 
         gate.waiting.fetch_add(1, Ordering::Relaxed);
+        gate.notify(false);
         let _waiter = GatewayWaiter(gate.clone());
         let mut progress = gate.progress.subscribe();
         let lane_gate = {
@@ -198,6 +237,7 @@ impl GatewayRunQueue {
                 permit = &mut acquisition => {
                     return permit.map(|(permit, subagent_permit)| {
                         if gate.active.fetch_add(1, Ordering::Relaxed) == 0 { gate.last_output_at.store(0, Ordering::Relaxed); }
+                        gate.notify(false);
                         GatewayRunPermit { permit: Some(permit), subagent_permit, gate: gate.clone(), lane_key: lane.key() }
                     });
                 }

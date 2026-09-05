@@ -170,6 +170,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/responses", post(routes::gateway_responses))
         .route("/v1/models", get(routes::gateway_models))
         .route("/v1/run-status", get(routes::gateway_run_status))
+        .route("/v1/run-events", get(routes::gateway_run_events))
         .with_state(state.clone())
         .layer(CompressionLayer::new())
         .layer(cors)

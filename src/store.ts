@@ -212,8 +212,9 @@ export interface PersistedChatState {
   conversationSort: ProjectSort;
 }
 
-function persistedChatState(state: ChatState): PersistedChatState {
-  const conversations = state.conversations.filter((conversation) => !conversation.ephemeral);
+export function persistedChatState(state: ChatState): PersistedChatState {
+  const conversations = state.conversations.filter((conversation) => !conversation.ephemeral)
+    .map(conversation => conversation.gatewayActivity ? { ...conversation, gatewayActivity: undefined } : conversation);
   const currentConversationId = conversations.some((conversation) => conversation.id === state.currentConversationId)
     ? state.currentConversationId
     : activeConversations(conversations)[0]?.id ?? null;

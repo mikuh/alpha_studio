@@ -144,6 +144,8 @@ enum StreamItem {
         name: String,
         arguments: String,
         custom: bool,
+        input_decoder: crate::stream_text::JsonStringField,
+        input_emitted: usize,
     },
 }
 
@@ -153,6 +155,7 @@ pub struct ResponsesStreamAdapter {
     model: Value,
     created: bool,
     finished: bool,
+    stop_received: bool,
     sequence: u64,
     items: Vec<StreamItem>,
     reasoning_index: Option<usize>,
@@ -189,6 +192,7 @@ impl ResponsesStreamAdapter {
             model: Value::Null,
             created: false,
             finished: false,
+            stop_received: false,
             sequence: 0,
             items: Vec::new(),
             reasoning_index: None,
@@ -217,6 +221,10 @@ impl ResponsesStreamAdapter {
                 Err("native Responses streams should be forwarded without an adapter".to_string())
             }
         }
+    }
+
+    pub fn can_finish(&self) -> bool {
+        self.finished || self.stop_received
     }
 
     pub fn finish(&mut self) -> String {
@@ -321,10 +329,13 @@ impl ResponsesStreamAdapter {
                     name,
                     arguments,
                     custom,
+                    input_emitted,
+                    ..
                 } => {
                     if custom {
                         let input = custom_tool_input(&arguments);
-                        if !input.is_empty() {
+                        let remaining = input.get(input_emitted..).unwrap_or_default();
+                        if !remaining.is_empty() {
                             self.emit(
                                 &mut output,
                                 "response.custom_tool_call_input.delta",
@@ -332,7 +343,7 @@ impl ResponsesStreamAdapter {
                                     "type": "response.custom_tool_call_input.delta",
                                     "item_id": id,
                                     "output_index": output_index,
-                                    "delta": input
+                                    "delta": remaining
                                 }),
                             );
                         }
@@ -459,6 +470,12 @@ impl ResponsesStreamAdapter {
             .into_iter()
             .flatten()
         {
+            if choice
+                .get("finish_reason")
+                .is_some_and(|reason| !reason.is_null())
+            {
+                self.stop_received = true;
+            }
             let Some(delta) = choice.get("delta") else {
                 continue;
             };
@@ -627,6 +644,12 @@ impl ResponsesStreamAdapter {
             .into_iter()
             .flatten()
         {
+            if candidate
+                .get("finishReason")
+                .is_some_and(|reason| !reason.is_null())
+            {
+                self.stop_received = true;
+            }
             for (part_index, part) in candidate
                 .get("content")
                 .and_then(|content| content.get("parts"))
@@ -835,6 +858,8 @@ impl ResponsesStreamAdapter {
                 name: restored_name.clone(),
                 arguments: String::new(),
                 custom,
+                input_decoder: crate::stream_text::JsonStringField::default(),
+                input_emitted: 0,
             });
             self.tools.insert(tool_index, item_index);
             self.emit(
@@ -853,13 +878,15 @@ impl ResponsesStreamAdapter {
             item_index
         };
 
-        let (id, custom) = match &mut self.items[item_index] {
+        let (id, custom, delta) = match &mut self.items[item_index] {
             StreamItem::Tool {
                 id,
                 call_id: stored_call_id,
                 name: stored_name,
                 arguments: stored_arguments,
                 custom,
+                input_decoder,
+                input_emitted,
             } => {
                 if let Some(call_id) = call_id.filter(|value| !value.is_empty()) {
                     *stored_call_id = call_id.to_string();
@@ -872,19 +899,32 @@ impl ResponsesStreamAdapter {
                         .unwrap_or_else(|| name.to_string());
                 }
                 stored_arguments.push_str(arguments);
-                (id.clone(), *custom)
+                let delta = if *custom {
+                    input_decoder.push(arguments, &["input"])
+                } else {
+                    arguments.to_string()
+                };
+                if *custom {
+                    *input_emitted += delta.len();
+                }
+                (id.clone(), *custom, delta)
             }
             _ => return,
         };
-        if !custom && !arguments.is_empty() {
+        if !delta.is_empty() {
+            let event = if custom {
+                "response.custom_tool_call_input.delta"
+            } else {
+                "response.function_call_arguments.delta"
+            };
             self.emit(
                 output,
-                "response.function_call_arguments.delta",
+                event,
                 json!({
-                    "type": "response.function_call_arguments.delta",
+                    "type": event,
                     "item_id": id,
                     "output_index": item_index,
-                    "delta": arguments
+                    "delta": delta
                 }),
             );
         }
@@ -1000,6 +1040,44 @@ fn usage_json(usage: &GatewayUsage) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_chat_finish_reason_can_arrive_without_a_delta() {
+        let mut adapter =
+            ResponsesStreamAdapter::new(UpstreamResponseFormat::ChatCompletions, &json!({}));
+        adapter
+            .ingest(r#"{"choices":[{"delta":{"content":"complete"}}]}"#)
+            .unwrap();
+        assert!(!adapter.can_finish());
+        adapter
+            .ingest(r#"{"choices":[{"finish_reason":"stop"}]}"#)
+            .unwrap();
+        assert!(adapter.can_finish());
+    }
+
+    #[test]
+    fn custom_tool_input_streams_early_and_is_not_duplicated_at_completion() {
+        use super::*;
+        let mut adapter = ResponsesStreamAdapter::new(
+            UpstreamResponseFormat::ChatCompletions,
+            &json!({"tools":[{"type":"custom","name":"exec"}]}),
+        );
+        let first = adapter.ingest(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"exec","arguments":"{\"input\":\"first\\n"}}]}}]}).to_string()).unwrap();
+        assert!(first.contains("response.custom_tool_call_input.delta"));
+        assert!(first.contains("first\\n"));
+        assert!(!first.contains("response.completed"));
+        let second = adapter.ingest(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"last\"}"}}]}}]}).to_string()).unwrap();
+        let done = adapter.ingest("[DONE]").unwrap();
+        let frames = SseDecoder::default().push(format!("{first}{second}{done}").as_bytes());
+        let deltas: String = frames
+            .into_iter()
+            .filter_map(|f| f.data)
+            .filter_map(|data| serde_json::from_str::<Value>(&data).ok())
+            .filter(|data| data["type"] == "response.custom_tool_call_input.delta")
+            .map(|data| data["delta"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(deltas, "first\nlast");
+        assert!(done.contains("response.custom_tool_call_input.done"));
+    }
     use super::*;
 
     #[test]

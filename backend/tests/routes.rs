@@ -235,8 +235,11 @@ async fn gateway_progress_requires_a_valid_task_token() {
         .connect_lazy("postgres://postgres:postgres@localhost/alpha_studio_test")
         .unwrap();
     let app = build_router(AppState::new(test_config(), pool, None));
-    for authorization in [None, Some("Bearer invalid-token")] {
-        let mut request = Request::builder().uri("/v1/run-status");
+    for (path, authorization) in ["/v1/run-status", "/v1/run-events"]
+        .into_iter()
+        .flat_map(|path| [None, Some("Bearer invalid-token")].map(|auth| (path, auth)))
+    {
+        let mut request = Request::builder().uri(path);
         if let Some(value) = authorization {
             request = request.header("authorization", value);
         }

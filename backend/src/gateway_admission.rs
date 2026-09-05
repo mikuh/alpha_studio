@@ -167,11 +167,12 @@ pub async fn acquire_dispatch(
             MAX_PROVIDER_REQUESTS
         };
         if !state.get::<bool, _>("cooling") && active < limit {
-            // HTTP request/body timeouts bound the entire dispatch. Keep a
+            // The stream's hard deadline bounds the entire dispatch. Keep a
             // settlement margin, then reclaim provider capacity after a crash;
             // never reclaim/replay the uncertain task's budget lease here.
             let lifetime = deadline
                 .saturating_duration_since(Instant::now())
+                .max(crate::gateway::MAX_STREAM_DURATION)
                 .as_secs_f64()
                 + 30.0;
             let changed = sqlx::query("update gateway_request_leases set dispatching=true, dispatch_expires_at=now()+($3::double precision * interval '1 second') where id=$1 and provider_key=$2 and not dispatching")
