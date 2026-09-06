@@ -1,3 +1,5 @@
+import { hasModule } from '../shared/productModules';
+import { useChatStore } from './store';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent, FormEvent } from 'react';
 import {
@@ -153,6 +155,11 @@ const FEATURE_META: Record<FeatureKind, { title: string; eyebrow: string; detail
   thesis: { title: '公司 Thesis', eyebrow: '版本化逻辑', detail: '持续维护核心逻辑、指标、估值、催化、风险和失效条件', prompt: '使用 $alpha-studio-company-thesis-tracker 为指定 A 股公司建立或更新 Thesis，引用证据 ID，输出 alpha.company_thesis.v1 结构化版本。', icon: Network },
   calibration: { title: '研究校准', eyebrow: '概率治理', detail: '用不可变日报和复盘结果检查概率高估、低估与样本偏差', prompt: '使用 $alpha-studio-research-calibration 审计 Alpha Studio 已有日报概率与复盘结果，说明 Brier 分数、可靠性分桶、样本限制和一个可检验的规则调整。', icon: Activity },
 };
+
+function researchFeatureAllowed(kind: FeatureKind, session = useChatStore.getState().clientLicenseSession): boolean {
+  const moduleId = ({ evidence: 'evidence-intelligence', thesis: 'company-thesis', calibration: 'research-calibration' } as Partial<Record<FeatureKind, string>>)[kind];
+  return !moduleId || hasModule(session, moduleId);
+}
 
 const CHAIN_PRESETS = [
   { name: 'AI 算力', sectors: ['半导体', '算力', '光通信', '通信设备', 'AI应用', '软件'] },
@@ -584,7 +591,7 @@ function AssetsHome({ state, summary, onRoute }: { state: ResearchState; summary
 }
 
 function DiscoverHome({ state, onRoute }: { state: ResearchState; onRoute: (route: MarketRoute) => void }) {
-  return <div className="market-root-page"><section className="market-discover-hero"><span><Sparkles size={15} /> Alpha Research</span><strong>从行情进入研究，而不是堆功能页</strong><p>每个入口都是独立二级页面；卡片也可以拖入旁边对话框继续分析。</p></section><section className="market-card"><SectionHeading title="研究工具" /><div className="market-discover-grid">{(Object.keys(FEATURE_META) as FeatureKind[]).map((kind) => { const item = FEATURE_META[kind]; const Icon = item.icon; return <button key={kind} type="button" draggable onDragStart={(event) => startResearchDrag(event, item.prompt)} onClick={() => onRoute({ kind: 'feature', feature: kind })}><i><Icon size={17} /></i><span><strong>{item.title}</strong><em>{item.eyebrow}</em></span></button>; })}</div></section><section className="market-card"><SectionHeading title="我的研究" /><div className="market-feature-list"><button type="button" onClick={() => onRoute({ kind: 'feature', feature: 'portfolio' })}><i><BriefcaseBusiness size={15} /></i><span><strong>观察组合</strong><em>{state.portfolios.length} 个组合</em></span><ChevronRight size={14} /></button><button type="button" onClick={() => insertIntoComposer('请根据当前自选、持仓、行情宽度和热门主题生成一份今日 A 股复盘。')}><i><Newspaper size={15} /></i><span><strong>生成市场复盘</strong><em>交给 Agent 汇总事实与风险</em></span><ChevronRight size={14} /></button></div></section></div>;
+  return <div className="market-root-page"><section className="market-discover-hero"><span><Sparkles size={15} /> Alpha Research</span><strong>从行情进入研究，而不是堆功能页</strong><p>每个入口都是独立二级页面；卡片也可以拖入旁边对话框继续分析。</p></section><section className="market-card"><SectionHeading title="研究工具" /><div className="market-discover-grid">{(Object.keys(FEATURE_META) as FeatureKind[]).filter((kind) => researchFeatureAllowed(kind)).map((kind) => { const item = FEATURE_META[kind]; const Icon = item.icon; return <button key={kind} type="button" draggable onDragStart={(event) => startResearchDrag(event, item.prompt)} onClick={() => onRoute({ kind: 'feature', feature: kind })}><i><Icon size={17} /></i><span><strong>{item.title}</strong><em>{item.eyebrow}</em></span></button>; })}</div></section><section className="market-card"><SectionHeading title="我的研究" /><div className="market-feature-list"><button type="button" onClick={() => onRoute({ kind: 'feature', feature: 'portfolio' })}><i><BriefcaseBusiness size={15} /></i><span><strong>观察组合</strong><em>{state.portfolios.length} 个组合</em></span><ChevronRight size={14} /></button><button type="button" onClick={() => insertIntoComposer('请根据当前自选、持仓、行情宽度和热门主题生成一份今日 A 股复盘。')}><i><Newspaper size={15} /></i><span><strong>生成市场复盘</strong><em>交给 Agent 汇总事实与风险</em></span><ChevronRight size={14} /></button></div></section></div>;
 }
 
 function SearchPage({ quotes, state, onStock, onToggle }: { quotes: ResearchQuote[]; state: ResearchState; onStock: (code: string) => void; onToggle: (quote: ResearchQuote) => void }) {
@@ -835,7 +842,7 @@ function StockPage({ quote, quotes, state, summary, onToggle, onTrade, onStock }
       <div className="stock-position-grid"><span><em>持股市值</em><strong>—</strong></span><span><em>持有数量</em><strong>{recordedHolding.quantity.toLocaleString('zh-CN')} 股</strong></span><span><em>摊薄成本</em><strong>{recordedHolding.avgCost.toFixed(2)}</strong></span><span><em>可卖数量</em><strong>{recordedHolding.quantity.toLocaleString('zh-CN')} 股</strong></span><span><em>当前价格</em><strong>—</strong></span><span><em>持仓占比</em><strong>—</strong></span></div>
     </section> : <section className="market-card stock-position-card" aria-label={`${quote.name}持仓信息`}><EmptyState title="暂无该股票持仓" detail="录入实盘买入记录后，这里会自动计算市值、持仓盈亏、今日盈亏和仓位占比。" action="记录买入" onAction={() => onTrade('buy', quote)} /></section>)}
     {tab === 'capital' && <><section className="market-card"><SectionHeading title="资金与活跃度" meta="行情快照" /><div className="stock-metric-grid stock-capital-metrics"><span><em>成交额</em><strong>{formatMoney(quoteTurnover(quote))}</strong></span><span><em>成交量</em><strong>{quote.volumeShares ? formatMoney(quote.volumeShares) : formatMoney(quote.volume * 1_000_000)}</strong></span><span><em>换手率</em><strong>{quote.turnoverRate === undefined ? '—' : formatPercent(quote.turnoverRate)}</strong></span><span><em>量比</em><strong>{quote.volumeRatio?.toFixed(2) ?? '—'}</strong></span></div></section><StockCapitalPanel quote={quote} holding={holding ? { quantity: holding.quantity, avgCost: holding.avgCost, pnlPct: holding.pnlPct } : undefined} /></>}
-    {tab === 'research' && <section className="market-card"><SectionHeading title="公司研究" meta="事实与观点分开" /><div className="stock-thesis"><strong>研究起点</strong><p>{quote.thesis || '从财务、行业、估值、催化和风险五个维度建立研究。'}</p></div><div className="market-feature-list">{(['evidence', 'thesis', 'earnings', 'dividend', 'calendar'] as FeatureKind[]).map((kind) => <button key={kind} type="button" onClick={() => insertIntoComposer(`${FEATURE_META[kind].prompt}\n重点研究：${quote.name}（${quote.code}）。`)}><span><strong>{FEATURE_META[kind].title}</strong><em>围绕 {quote.name} 深入核验</em></span><ChevronRight size={14} /></button>)}</div></section>}
+    {tab === 'research' && <section className="market-card"><SectionHeading title="公司研究" meta="事实与观点分开" /><div className="stock-thesis"><strong>研究起点</strong><p>{quote.thesis || '从财务、行业、估值、催化和风险五个维度建立研究。'}</p></div><div className="market-feature-list">{(['evidence', 'thesis', 'earnings', 'dividend', 'calendar'] as FeatureKind[]).filter((kind) => researchFeatureAllowed(kind)).map((kind) => <button key={kind} type="button" onClick={() => insertIntoComposer(`${FEATURE_META[kind].prompt}\n重点研究：${quote.name}（${quote.code}）。`)}><span><strong>{FEATURE_META[kind].title}</strong><em>围绕 {quote.name} 深入核验</em></span><ChevronRight size={14} /></button>)}</div></section>}
     <div className="stock-trade-bar"><button type="button" className="sell" onClick={() => onTrade('sell', quote)}>记录卖出</button><button type="button" className="buy" onClick={() => onTrade('buy', quote)}>记录买入</button></div>
   </div>;
 }
@@ -1327,6 +1334,8 @@ function CalibrationEntryPage() {
 }
 
 function FeaturePage({ kind, quotes, state, onStock, onCommit }: { kind: FeatureKind; quotes: ResearchQuote[]; state: ResearchState; onStock: (code: string) => void; onCommit: (state: ResearchState) => void }) {
+  const session = useChatStore((state) => state.clientLicenseSession);
+  if (!researchFeatureAllowed(kind, session)) return <EmptyState title="此模块未开通" detail="请联系管理员配置客户模块权限。" />;
   if (kind === 'evidence') return <EvidenceCenterPage />;
   if (kind === 'thesis') return <CompanyThesisPage />;
   if (kind === 'calibration') return <CalibrationEntryPage />;
@@ -1341,6 +1350,7 @@ function FeaturePage({ kind, quotes, state, onStock, onCommit }: { kind: Feature
 }
 
 export function ResearchWorkbenchPanel({ requestedStockCode, requestKey }: { requestedStockCode?: string; requestKey?: number } = {}) {
+  useChatStore((store) => store.clientLicenseSession);
   const [state, setState] = useState<ResearchState>(() => loadResearchState());
   const [primary, setPrimary] = useState<PrimarySection>('market');
   const [routes, setRoutes] = useState<MarketRoute[]>([{ kind: 'root' }]);

@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
+import { PRODUCT_MODULES, normalizeEnabledModules } from '../../shared/productModules';
 
 type Tab = 'overview' | 'tenants' | 'usage' | 'gateway' | 'codex' | 'skills' | 'audit';
 
@@ -13,6 +14,7 @@ interface Summary {
 }
 
 interface Tenant {
+  enabledModules?: string[];
   id: string;
   name: string;
   status: string;
@@ -240,6 +242,7 @@ const defaultSummary: Summary = {
 };
 
 const emptyTenantForm = {
+  enabledModules: [] as string[],
   id: '',
   name: '',
   status: 'active',
@@ -1427,6 +1430,24 @@ function TenantForm({ form, setForm, onSubmit, onCancel, loading }: {
         <Select label="GPT 套餐" value={form.codexSubscriptionPlan} onChange={(codexSubscriptionPlan) => setForm({ ...form, codexSubscriptionPlan })} options={['monthly', 'yearly']} />
         <Field label="GPT 到期时间" type="datetime-local" value={form.codexSubscriptionExpiresAt} onChange={(codexSubscriptionExpiresAt) => setForm({ ...form, codexSubscriptionExpiresAt })} />
       </div>
+      <section className="tenant-modules" aria-label="客户模块权限">
+        <div className="panel-subhead"><div><h3>模块权限</h3><span>仅勾选的模块对该客户开放，未勾选的功能不可使用。</span></div><strong>{form.enabledModules.length} / {PRODUCT_MODULES.length}</strong></div>
+        {(['sidebar', 'shortcut'] as const).map((group) => {
+          const items = PRODUCT_MODULES.filter((item) => item.group === group);
+          return <fieldset key={group} disabled={loading}>
+            <legend>{group === 'sidebar' ? '侧边功能' : '快捷卡片'}</legend>
+            <div className="module-group-actions">
+              <button type="button" className="secondary" onClick={() => setForm({ ...form, enabledModules: [...new Set([...form.enabledModules, ...items.map((item) => item.id)])] })}>全选{group === 'sidebar' ? '侧边功能' : '快捷卡片'}</button>
+              <button type="button" className="secondary" onClick={() => setForm({ ...form, enabledModules: form.enabledModules.filter((id) => !items.some((item) => item.id === id)) })}>清空{group === 'sidebar' ? '侧边功能' : '快捷卡片'}</button>
+            </div>
+            <div className="module-options">{items.map((item) => <label className={`module-option ${form.enabledModules.includes(item.id) ? 'selected' : ''}`} key={item.id}>
+              <input type="checkbox" aria-label={item.title} checked={form.enabledModules.includes(item.id)} onChange={(event) => setForm({ ...form, enabledModules: event.target.checked ? [...form.enabledModules, item.id] : form.enabledModules.filter((id) => id !== item.id) })} />
+              <span><strong>{item.title}</strong><small>{item.description}</small></span>
+            </label>)}</div>
+          </fieldset>;
+        })}
+        <p className="form-hint">保存后，在线客户端将在约一分钟内同步；重新打开客户端也会刷新。未开通任何模块时，客户仍可使用基础对话。</p>
+      </section>
       <div className="form-actions">
         <button type="button" className="secondary" onClick={onCancel} disabled={loading}>取消</button>
         <button type="submit" disabled={loading}>{loading ? '保存中...' : '保存客户'}</button>
@@ -2454,7 +2475,7 @@ function TenantTable({ tenants, onEdit, onDelete, onManageCodes, selectedTenantI
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr><th>客户</th><th>设备</th><th>余额</th><th>GPT</th><th>状态</th><th className="col-actions" /></tr></thead>
+        <thead><tr><th>客户</th><th>设备</th><th>余额</th><th>GPT</th><th>模块权限</th><th>状态</th><th className="col-actions" /></tr></thead>
         <tbody>
           {tenants.map((tenant) => (
             <tr className={tenant.id === selectedTenantId ? 'selected-row' : ''} key={tenant.id}>
@@ -2464,6 +2485,7 @@ function TenantTable({ tenants, onEdit, onDelete, onManageCodes, selectedTenantI
               <td className="nowrap">{tenant.codexSubscriptionEnabled
                 ? <><PlanBadge plan={tenant.codexSubscriptionPlan || 'monthly'} /><span>{formatDate(tenant.codexSubscriptionExpiresAt)}</span></>
                 : <span className="cell-muted">未启用</span>}</td>
+              <td className="nowrap" title={PRODUCT_MODULES.filter((item) => tenant.enabledModules?.includes(item.id)).map((item) => item.title).join("、")}>{normalizeEnabledModules(tenant.enabledModules).length} / {PRODUCT_MODULES.length} 已开通</td>
               <td><Status value={tenant.status} /></td>
               <td className="col-actions">
                 <div className="table-actions">
@@ -2472,6 +2494,7 @@ function TenantTable({ tenants, onEdit, onDelete, onManageCodes, selectedTenantI
                   )}
                   <button className="secondary" type="button" onClick={() => onEdit({
                     id: tenant.id,
+                    enabledModules: normalizeEnabledModules(tenant.enabledModules),
                     name: tenant.name,
                     status: tenant.status,
                     maxDevices: tenant.maxDevices,

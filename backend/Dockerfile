@@ -9,6 +9,7 @@ COPY backend/Cargo.toml backend/Cargo.lock ./
 COPY backend/src ./src
 COPY crates/agent-network /crates/agent-network
 COPY migrations /migrations
+COPY shared /shared
 RUN --mount=type=cache,id=alpha-studio-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=alpha-studio-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=alpha-studio-backend-target,target=/app/target,sharing=locked \

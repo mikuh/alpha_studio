@@ -1,3 +1,4 @@
+import { PRODUCT_MODULE_IDS } from '../shared/productModules';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
@@ -165,6 +166,7 @@ function seedClientLicenseSession(codexSubscriptionEnabled = true, leaseExpiresA
     tenant: {
       id: 'tenant_demo',
       name: 'Demo Fund',
+      enabledModules: [...PRODUCT_MODULE_IDS],
       maxDevices: 5,
       codexSubscriptionEnabled,
       codexSubscriptionPlan: codexSubscriptionEnabled ? 'monthly' : null,
@@ -346,6 +348,7 @@ describe('right feature panel', () => {
     seedClientLicenseSession();
     vi.stubGlobal('fetch', vi.fn((input?: RequestInfo | URL) => {
       const url = String(input ?? '');
+      if (url.includes('/api/client/modules/authorize')) return Promise.resolve(jsonResponse({ authorized: true }));
       if (url.includes('/api/market/capital-flow/')) {
         return Promise.resolve(jsonResponse(cloudCapitalFlowSnapshot(decodeURIComponent(url.split('/').pop() || '600519.XSHG'))));
       }
@@ -354,7 +357,7 @@ describe('right feature panel', () => {
         const codes = parsed.searchParams.get('codes')?.split(',').filter(Boolean);
         return Promise.resolve(jsonResponse(cloudMarketSnapshot(codes)));
       }
-      return Promise.resolve(jsonResponse({ leaseExpiresAt: futureIso() }));
+      return Promise.resolve(jsonResponse({ leaseExpiresAt: futureIso(), tenant: loadClientLicenseSession()?.tenant }));
     }));
     useChatStore.setState({
       conversations: [conversation()],
@@ -381,6 +384,39 @@ describe('right feature panel', () => {
     { id: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', isDefault: false, hidden: false, defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Fast' }, { reasoningEffort: 'medium', description: 'Balanced' }, { reasoningEffort: 'high', description: 'Thorough' }, { reasoningEffort: 'max', description: 'Maximum' }] },
     { id: 'gpt-5.6-luna', displayName: 'GPT-5.6 Luna', isDefault: false, hidden: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Fast' }, { reasoningEffort: 'medium', description: 'Balanced' }] },
   ];
+
+  it('shows only the modules granted to the current customer and closes revoked panels', async () => {
+    const session = loadClientLicenseSession()!;
+    useChatStore.setState({ conversations: [conversation({ messages: [] })] });
+    session.tenant.enabledModules = ['browser', 'daily-report'];
+    saveClientLicenseSession(session);
+    render(<App />);
+    expect(screen.queryByLabelText('打开 AI 同事面板')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /挖掘量化因子/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /生成今日报告/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('打开浏览器'));
+    await waitFor(() => expect(document.querySelector('.right-dock-workspace')).not.toBeNull());
+    await act(async () => {
+      const revoked = { ...session, tenant: { ...session.tenant, enabledModules: [] } };
+      saveClientLicenseSession(revoked);
+      useChatStore.getState().setClientLicenseSession(revoked);
+    });
+    expect(screen.queryByLabelText('打开浏览器')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /生成今日报告/ })).not.toBeInTheDocument();
+    expect(document.querySelector('.app-shell')).not.toHaveClass('right-panel-open');
+    expect(document.querySelector('.suggestion-row')).toBeNull();
+  });
+
+  it('treats legacy customer sessions without module grants as having no modules', async () => {
+    const session = loadClientLicenseSession()!;
+    useChatStore.setState({ conversations: [conversation({ messages: [] })] });
+    delete session.tenant.enabledModules;
+    saveClientLicenseSession(session);
+    render(<App />);
+    await screen.findByText('今天想研究什么？');
+    expect(screen.queryByLabelText('打开浏览器')).not.toBeInTheDocument();
+    expect(document.querySelector('.suggestion-row')).toBeNull();
+  });
 
   it('blocks the workspace until the client is activated', () => {
     clearClientLicenseSession();
@@ -1002,7 +1038,7 @@ describe('right feature panel', () => {
       if (url.includes('/api/market/snapshot')) {
         return Promise.resolve(jsonResponse({ ...cloudMarketSnapshot([]), quotes: [] }));
       }
-      return Promise.resolve(jsonResponse({ leaseExpiresAt: futureIso() }));
+      return Promise.resolve(jsonResponse({ leaseExpiresAt: futureIso(), tenant: loadClientLicenseSession()?.tenant }));
     });
     render(<App />);
 
@@ -4812,7 +4848,7 @@ describe('right feature panel', () => {
     expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.composer-toolbar\s*{[^}]*flex-wrap:\s*nowrap;[\s\S]*?\.approval-pill > span,[\s\S]*?\.approval-pill > \.lucide-chevron-down\s*{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.suggestion-row\s*{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(180px, 100%\), 1fr\)\);/s);
     expect(css).toMatch(/@container main-stage \(max-width:\s*520px\)\s*{[\s\S]*?\.suggestion-row\s*{[^}]*grid-template-columns:\s*1fr;/s);
-    expect(calmTheme).toMatch(/\.suggestion-row\s*{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0, 1fr\)\);[^}]*overflow-x:\s*visible;/s);
+    expect(calmTheme).toMatch(/\.suggestion-row\s*{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(150px, 100%\), 1fr\)\);[^}]*overflow-x:\s*visible;/s);
     expect(calmTheme).not.toMatch(/\.suggestion-row\s*{[^}]*overflow-x:\s*auto;/s);
     expect(css).not.toMatch(/\.suggestion-card:nth-child\(n \+ 2\)\s*{[^}]*display:\s*none;/s);
     expect(css).not.toContain('.model-pill-icon');

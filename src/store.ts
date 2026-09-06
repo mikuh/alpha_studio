@@ -1,3 +1,5 @@
+import { hasModule, moduleDeniedMessage, requiredModulesForTask } from '../shared/productModules';
+import { authorizeModuleTask } from './moduleAccess';
 import { create } from 'zustand';
 import { persist, type PersistStorage } from 'zustand/middleware';
 import { addScheduledAutomationTask, automationCreatedReply, detectAutomationIntent } from './automation';
@@ -408,14 +410,43 @@ export const useChatStore = create<ChatState>()(
         void startPreparedMessage(conversationId, next, next.id);
       };
 
+      const authorizeCurrentModuleTask = async (text: string, skillId?: string, coworkers = false) => {
+        const required = requiredModulesForTask(text, skillId, coworkers);
+        const session = get().clientLicenseSession;
+        await authorizeModuleTask(session, text, skillId, coworkers);
+        if (!required.length) return;
+        const current = get().clientLicenseSession;
+        if (!session || current?.tenant.id !== session.tenant.id || current.device.id !== session.device.id
+          || required.some((id) => !hasModule(current, id))) {
+          throw new Error('客户模块授权已变更，请重新发起任务。');
+        }
+      };
+
       const startPreparedMessage = async (
         conversationId: string,
         queuedMessage: QueuedChatMessage,
         queuedMessageId?: string,
       ) => {
-        const conversation = get().conversations.find((item) => item.id === conversationId);
+        let conversation = get().conversations.find((item) => item.id === conversationId);
         if (!conversation || conversation.status === 'streaming' || conversation.archivedAt) return;
 
+        if (requiredModulesForTask(queuedMessage.text, queuedMessage.selectedSkill?.id, Boolean(queuedMessage.coworkers?.length)).length) {
+          try {
+            await authorizeCurrentModuleTask(queuedMessage.text, queuedMessage.selectedSkill?.id, Boolean(queuedMessage.coworkers?.length));
+          } catch (error) {
+            set((state) => ({
+              error: error instanceof Error ? error.message : String(error),
+              conversations: state.conversations.map((item) => item.id === conversationId ? removeQueuedMessageFromConversation(item, queuedMessageId) : item),
+            }));
+            return;
+          }
+        }
+        conversation = get().conversations.find((item) => item.id === conversationId);
+        if (!conversation || conversation.archivedAt) return;
+        if (conversation.status === 'streaming') {
+          if (!queuedMessageId) enqueueMessage(conversationId, queuedMessage);
+          return;
+        }
         const trimmed = queuedMessage.text.trim();
         const attachmentList = queuedMessage.attachments && queuedMessage.attachments.length
           ? queuedMessage.attachments
@@ -1184,6 +1215,8 @@ export const useChatStore = create<ChatState>()(
         const conversation = get().conversations.find((item) => item.id === conversationId);
         if (!conversation || conversation.archivedAt) return;
 
+        const denied = requiredModulesForTask(text, selectedSkill?.id, Boolean(coworkerList?.length)).find((id) => !hasModule(get().clientLicenseSession, id));
+        if (denied) { set({ error: moduleDeniedMessage(denied) }); return; }
         const queuedMessage: QueuedChatMessage = {
           id: createId('queue'),
           text,
@@ -1258,6 +1291,9 @@ export const useChatStore = create<ChatState>()(
           let accepted = false;
           let started = false;
           try {
+            if (requiredModulesForTask(queuedMessage.text, queuedMessage.selectedSkill?.id, Boolean(queuedMessage.coworkers?.length)).length) {
+              await authorizeCurrentModuleTask(queuedMessage.text, queuedMessage.selectedSkill?.id, Boolean(queuedMessage.coworkers?.length));
+            }
             const runId = isTauriRuntime() ? await waitForSteeringRun(conversationId) : conversation.runId;
             const latest = get().conversations.find((item) => item.id === conversationId);
             if (!latest || latest.archivedAt || !latest.queuedMessages?.some((item) => item.id === queuedMessageId)) return;
@@ -1408,6 +1444,15 @@ export const useChatStore = create<ChatState>()(
         if (messageIndex < 0) return;
 
         const original = conversation.messages[messageIndex];
+        try {
+          if (requiredModulesForTask(trimmed, original.selectedSkill?.id, Boolean(original.coworkers?.length)).length) {
+            await authorizeCurrentModuleTask(trimmed, original.selectedSkill?.id, Boolean(original.coworkers?.length));
+            if (get().conversations.find((item) => item.id === conversationId) !== conversation) return;
+          }
+        } catch (error) {
+          set({ error: error instanceof Error ? error.message : String(error) });
+          return;
+        }
         // When the caller passes an explicit list we honor it (including clearing
         // to none); otherwise we keep whatever the original message carried so the
         // attached file/image context survives the edit.

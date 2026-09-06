@@ -1,3 +1,5 @@
+import { PRODUCT_MODULE_IDS } from '../shared/productModules';
+import { moduleTestSession } from './test/moduleLicense';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as codexBridge from './codexBridge';
 import { AUTOMATION_TASKS_KEY } from './automation';
@@ -42,6 +44,12 @@ function conversation(id: string, patch: Partial<Conversation> = {}): Conversati
     ...patch,
   };
 }
+
+beforeEach(() => {
+  useChatStore.setState({ clientLicenseSession: moduleTestSession(PRODUCT_MODULE_IDS) });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ authorized: true }) }));
+});
+afterEach(() => vi.unstubAllGlobals());
 
 describe('archive semantics', () => {
   beforeEach(() => {
@@ -623,7 +631,7 @@ describe('joint research phased handoff', () => {
     vi.useRealTimers();
   });
 
-  it('starts a separate visible ⑧ turn only after the ①⑦ evidence package passes validation', () => {
+  it('starts a separate visible ⑧ turn only after the ①⑦ evidence package passes validation', async () => {
     const evidence = `\`\`\`json\n${JSON.stringify({
       schema: JOINT_RESEARCH_EVIDENCE_SCHEMA,
       runId: 'joint-auto-close',
@@ -643,13 +651,14 @@ describe('joint research phased handoff', () => {
 
     useChatStore.getState().handleCodexEvent({ type: 'completed', runId: 'run-joint', conversationId: 'conv-joint' });
 
-    const current = useChatStore.getState().conversations[0];
     const decisionRun = loadDailyDecisionState().jointResearchRuns[0];
+    await vi.waitFor(() => expect(useChatStore.getState().conversations[0].status).toBe('streaming'));
+    const current = useChatStore.getState().conversations[0];
     expect(decisionRun).toMatchObject({ id: 'joint-auto-close', status: 'running', phase: 'pm_synthesis', evidenceSourceMessageId: 'assistant-joint' });
     expect(current.status).toBe('streaming');
     expect(current.messages).toHaveLength(4);
     expect(current.messages[2].blocks[0]).toMatchObject({ type: 'text', content: expect.stringContaining('⑧综合收口') });
-    expect(current.messages[2].coworkers).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'pm_deputy' })]));
+    expect(useChatStore.getState().conversations[0].messages[2].coworkers).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'pm_deputy' })]));
 
     vi.clearAllTimers();
     vi.useRealTimers();

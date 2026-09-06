@@ -149,6 +149,7 @@ pub async fn market_stream(
     Query(query): Query<MarketStreamQuery>,
 ) -> ApiResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     require_device(&state, &headers, &query.tenant_id, &query.device_id).await?;
+    crate::modules::require_market_access(&state.db, &query.tenant_id).await?;
     if !state.config.market_data_enabled {
         return Err(ApiError::Upstream(
             "cloud market feed is disabled".to_string(),
@@ -167,6 +168,8 @@ pub async fn market_stream(
         loop {
             match receiver.recv().await {
                 Ok(snapshot) => {
+                    if require_device(&state, &headers, &query.tenant_id, &query.device_id).await.is_err()
+                        || crate::modules::require_market_access(&state.db, &query.tenant_id).await.is_err() { break; }
                     if let Ok(event) = Event::default().event("snapshot").id(snapshot.sequence.to_string()).json_data(snapshot.as_ref()) {
                         yield Ok::<Event, Infallible>(event);
                     }
@@ -197,8 +200,8 @@ async fn ensure_market_header_identity(state: &AppState, headers: &HeaderMap) ->
         value("x-alpha-tenant-id")?,
         value("x-alpha-device-id")?,
     )
-    .await
-    .map(|_| ())
+    .await?;
+    crate::modules::require_market_access(&state.db, value("x-alpha-tenant-id")?).await
 }
 
 fn filter_market_snapshot(
@@ -346,7 +349,7 @@ pub async fn device_lease(
     .ok_or_else(|| ApiError::Forbidden("device is not active for this tenant".to_string()))?;
     let tenant_row = sqlx::query(
         r#"
-        select id, name, max_devices, codex_subscription_enabled,
+        select id, name, max_devices, enabled_modules, codex_subscription_enabled,
           codex_subscription_plan, codex_subscription_expires_at
         from tenants
         where id = $1
@@ -383,6 +386,7 @@ pub async fn device_lease(
             "id": tenant_row.get::<String, _>("id"),
             "name": tenant_row.get::<String, _>("name"),
             "maxDevices": tenant_row.get::<i32, _>("max_devices"),
+            "enabledModules": tenant_row.get::<Vec<String>, _>("enabled_modules"),
             "codexSubscriptionEnabled": subscription_enabled,
             "codexSubscriptionPlan": tenant_row.try_get::<Option<String>, _>("codex_subscription_plan").unwrap_or(None),
             "codexSubscriptionExpiresAt": codex_subscription_expires_at
@@ -390,6 +394,33 @@ pub async fn device_lease(
         "models": models,
         "codexAccounts": codex_accounts
     })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientModuleAuthorizationRequest {
+    tenant_id: String,
+    device_id: String,
+    module_ids: Vec<String>,
+}
+
+pub async fn client_authorize_modules(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ClientModuleAuthorizationRequest>,
+) -> ApiResult<Json<Value>> {
+    require_device(&state, &headers, &request.tenant_id, &request.device_id).await?;
+    let granted: Vec<String> = sqlx::query_scalar(
+        "select enabled_modules from tenants where id = $1 and status = 'active'",
+    )
+    .bind(&request.tenant_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::Forbidden("tenant is not active".into()))?;
+    crate::modules::check_grants(&granted, &request.module_ids)?;
+    Ok(Json(
+        json!({ "authorized": true, "enabledModules": granted }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -562,7 +593,7 @@ pub async fn client_billing_summary(
     let tenant_row = sqlx::query(
         r#"
         select
-          t.id, t.name, t.max_devices, t.billing_mode, t.balance_yuan,
+          t.id, t.name, t.max_devices, t.billing_mode, t.balance_yuan, t.enabled_modules,
           t.subscription_plan, t.subscription_expires_at,
           t.codex_subscription_enabled, t.codex_subscription_plan, t.codex_subscription_expires_at,
           (select count(*) from devices d where d.tenant_id = t.id and d.status = 'active')::bigint as active_devices
@@ -617,6 +648,7 @@ pub async fn client_billing_summary(
             "id": tenant_row.get::<String, _>("id"),
             "name": tenant_row.get::<String, _>("name"),
             "maxDevices": tenant_row.get::<i32, _>("max_devices"),
+            "enabledModules": tenant_row.get::<Vec<String>, _>("enabled_modules"),
             "billingMode": tenant_row.get::<String, _>("billing_mode"),
             "balanceYuan": decimal_json(tenant_row.get::<Decimal, _>("balance_yuan")),
             "subscriptionPlan": tenant_row.try_get::<Option<String>, _>("subscription_plan").unwrap_or(None),
@@ -1143,7 +1175,7 @@ pub async fn admin_list_tenants(
     let rows = sqlx::query(
         r#"
         select
-          t.id, t.name, t.status, t.max_devices, t.billing_mode, t.balance_yuan,
+          t.id, t.name, t.status, t.max_devices, t.billing_mode, t.balance_yuan, t.enabled_modules,
           t.subscription_plan, t.subscription_expires_at,
           t.codex_subscription_enabled, t.codex_subscription_plan, t.codex_subscription_expires_at,
           t.created_at,
@@ -1238,6 +1270,7 @@ pub async fn admin_tenant_billing(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TenantSaveRequest {
+    enabled_modules: Option<Vec<String>>,
     id: Option<String>,
     name: String,
     #[serde(default = "default_status")]
@@ -1274,9 +1307,9 @@ pub async fn admin_save_tenant(
         insert into tenants (
           id, name, company_key, status, max_devices, billing_mode, balance_yuan,
           subscription_plan, subscription_expires_at,
-          codex_subscription_enabled, codex_subscription_plan, codex_subscription_expires_at
+          codex_subscription_enabled, codex_subscription_plan, codex_subscription_expires_at, enabled_modules
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, coalesce($13, '{}'::text[]))
         on conflict (id) do update set
           name = excluded.name,
           company_key = excluded.company_key,
@@ -1288,6 +1321,7 @@ pub async fn admin_save_tenant(
           codex_subscription_enabled = excluded.codex_subscription_enabled,
           codex_subscription_plan = excluded.codex_subscription_plan,
           codex_subscription_expires_at = excluded.codex_subscription_expires_at,
+          enabled_modules = coalesce($13, tenants.enabled_modules),
           updated_at = now()
         "#,
     )
@@ -1303,13 +1337,14 @@ pub async fn admin_save_tenant(
     .bind(request.codex_subscription_enabled)
     .bind(&request.codex_subscription_plan)
     .bind(request.codex_subscription_expires_at)
+    .bind(&request.enabled_modules)
     .execute(&state.db)
     .await?;
     write_audit(
         &state.db,
         &tenant_id,
         "tenant.save",
-        json!({ "name": request.name, "maxDevices": request.max_devices }),
+        json!({ "name": request.name, "maxDevices": request.max_devices, "enabledModules": request.enabled_modules }),
     )
     .await?;
     Ok(Json(json!({ "tenantId": tenant_id })))
@@ -2250,7 +2285,7 @@ pub async fn client_activate(
     let code_hash = hash_authorization_code(&authorization_code);
     let row = sqlx::query(
         r#"
-        select t.id as tenant_id, t.name, t.max_devices, t.codex_subscription_enabled,
+        select t.id as tenant_id, t.name, t.max_devices, t.enabled_modules, t.codex_subscription_enabled,
           t.codex_subscription_plan, t.codex_subscription_expires_at,
           a.id as authorization_id, a.max_devices as code_max_devices
         from authorization_codes a
@@ -2344,6 +2379,7 @@ pub async fn client_activate(
             "id": tenant_id,
             "name": tenant_name,
             "maxDevices": max_devices,
+            "enabledModules": row.get::<Vec<String>, _>("enabled_modules"),
             "codexSubscriptionEnabled": subscription_enabled,
             "codexSubscriptionPlan": row.try_get::<Option<String>, _>("codex_subscription_plan").unwrap_or(None),
             "codexSubscriptionExpiresAt": row.try_get::<Option<chrono::DateTime<Utc>>, _>("codex_subscription_expires_at").unwrap_or(None)
@@ -4153,6 +4189,7 @@ fn tenant_json(row: sqlx::postgres::PgRow) -> Value {
         "name": row.get::<String, _>("name"),
         "status": row.get::<String, _>("status"),
         "maxDevices": row.get::<i32, _>("max_devices"),
+        "enabledModules": row.get::<Vec<String>, _>("enabled_modules"),
         "billingMode": row.get::<String, _>("billing_mode"),
         "balanceYuan": decimal_json(row.get::<Decimal, _>("balance_yuan")),
         "subscriptionPlan": row.try_get::<Option<String>, _>("subscription_plan").unwrap_or(None),
@@ -4879,6 +4916,9 @@ fn default_provider_max_retries() -> u32 {
 }
 
 fn validate_tenant_fields(request: &TenantSaveRequest) -> ApiResult<()> {
+    if let Some(ids) = &request.enabled_modules {
+        crate::modules::validate_modules(ids)?;
+    }
     if !(1..=10_000).contains(&request.max_devices) {
         return Err(ApiError::BadRequest(
             "maxDevices must be between 1 and 10000".to_string(),

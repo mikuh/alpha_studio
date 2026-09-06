@@ -517,3 +517,6 @@ async fn agent_tunnel_requires_device_auth_before_opening_a_destination() {
     }
     server.abort();
 }
+
+#[path = "support/module_permissions.rs"]
+mod module_permissions;

@@ -68,6 +68,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/client/devices", post(routes::client_devices))
         .route(
+            "/api/client/modules/authorize",
+            post(routes::client_authorize_modules),
+        )
+        .route(
             "/api/client/codex-authorization",
             post(routes::client_codex_authorization),
         )

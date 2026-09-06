@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
+import { moduleTestSession } from './test/moduleLicense';
 import { listCodexModels, startCodexChat, steerCodexChat, updateCodexCli } from './codexBridge';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 describe('Codex model catalog bridge', () => {
@@ -41,6 +42,16 @@ describe('Agent network credentials', () => {
       conversationId: 'c', prompt: 'Read public data', developerInstructions: 'Original instructions',
       agentDataRelay: { apiBaseUrl: 'https://service.example.com', tenantId: 'tenant', deviceId: 'device', accessToken: 'test-device-secret' },
     } });
+  });
+  it('restores permitted coworker definitions before a new native task', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    try {
+      localStorage.setItem('alpha:client-license-session', JSON.stringify(moduleTestSession(['coworkers'])));
+      await startCodexChat({ conversationId: 'c', prompt: 'hello' });
+      expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toEqual(['coworkers_sync', 'codex_chat_start']);
+    } finally {
+      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    }
   });
   it('keeps unactivated sessions working without a relay', async () => {
     await startCodexChat({ conversationId: 'c', prompt: 'hello' });

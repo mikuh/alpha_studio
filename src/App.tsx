@@ -1,3 +1,4 @@
+import { hasModule, moduleForPanel, moduleForSkill, moduleDeniedMessage } from '../shared/productModules';
 import { Children, Fragment, Suspense, createContext, isValidElement, lazy, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   AnchorHTMLAttributes,
@@ -1344,7 +1345,14 @@ export function App() {
   );
 }
 
+function canOpenModule(id: string | undefined): boolean {
+  if (!id || hasModule(useChatStore.getState().clientLicenseSession, id)) return true;
+  useChatStore.setState({ error: moduleDeniedMessage(id) });
+  return false;
+}
+
 function AppWorkspace() {
+  const moduleSession = useChatStore((state) => state.clientLicenseSession);
   const refreshCodexStatus = useChatStore((state) => state.refreshCodexStatus);
   const loadModelConfig = useChatStore((state) => state.loadModelConfig);
   const currentConversationId = useChatStore((state) => state.currentConversationId);
@@ -1559,8 +1567,8 @@ function AppWorkspace() {
   // Materialize the coworker catalog into Codex sub-agent definitions
   // (CODEX_HOME/agents/<id>.toml) so the main agent can spawn them.
   useEffect(() => {
-    void syncCoworkerAgents(coworkerAgentDefinitions()).catch(() => undefined);
-  }, []);
+    void syncCoworkerAgents(hasModule(moduleSession, 'coworkers') ? coworkerAgentDefinitions() : []).catch(() => undefined);
+  }, [moduleSession?.tenant.enabledModules]);
 
   useEffect(() => {
     const wasFocused = wasWindowFocusedRef.current;
@@ -1649,6 +1657,7 @@ function AppWorkspace() {
   }, []);
 
   const queueCoworkerTask = useCallback((coworker: CoworkerSelection | CoworkerSelection[], taskPrompt?: string) => {
+    if (!canOpenModule("coworkers")) return;
     const coworkers = Array.isArray(coworker) ? coworker : [coworker];
     setQueuedCoworkerTask({ coworkers, taskPrompt });
     setSettingsOpen(false);
@@ -1662,6 +1671,26 @@ function AppWorkspace() {
     [rightDockTabs, activeRightDockTabId],
   );
   const currentRightPanel: RightPanel = activeRightDockTab?.kind ?? rightPanel;
+  const currentPanelModule = moduleForPanel(currentRightPanel);
+  const currentPanelAllowed = !currentPanelModule || hasModule(moduleSession, currentPanelModule);
+  useEffect(() => {
+    setRightDockTabs((tabs) => {
+      const allowed = tabs.filter((tab) => !moduleForPanel(tab.kind) || hasModule(moduleSession, moduleForPanel(tab.kind)!));
+      return allowed.length === tabs.length ? tabs : allowed;
+    });
+    if (!currentPanelAllowed) {
+      setRightPanelVisible(false);
+      setRightDockMounted(false);
+      setRightDockExpanded(false);
+      setActiveRightDockTabId(null);
+      setRightPanel('features');
+    }
+    if (!hasModule(moduleSession, 'coworkers')) setQueuedCoworkerTask(null);
+    if (queuedSkill && moduleForSkill(queuedSkill.id) && !hasModule(moduleSession, moduleForSkill(queuedSkill.id)!)) {
+      setQueuedSkill(null);
+      setQueuedSkillPrompt(null);
+    }
+  }, [moduleSession, currentPanelAllowed, queuedSkill]);
 
   useEffect(() => {
     if (currentRightPanel === 'none' || currentRightPanel === 'coworkers') return;
@@ -1672,6 +1701,7 @@ function AppWorkspace() {
   }, [activeRightDockTabId, currentRightPanel]);
 
   const activateRightDockTab = useCallback((tab: RightDockTab) => {
+    if (!canOpenModule(moduleForPanel(tab.kind))) return;
     setActiveRightDockTabId(tab.id);
     setRightPanel(tab.kind);
     setRightDockMounted(true);
@@ -1679,6 +1709,7 @@ function AppWorkspace() {
   }, []);
 
   const addRightDockTab = useCallback((kind: RightDockKind, url?: string, selectedTextContexts?: SelectedTextContext[], stockCode?: string) => {
+    if (!canOpenModule(moduleForPanel(kind))) return;
     if (kind === 'daily-decision') {
       const existing = rightDockTabs.find((tab) => tab.kind === kind);
       if (existing) {
@@ -1891,6 +1922,7 @@ function AppWorkspace() {
   const browserOpen = rightPanelVisible && currentRightPanel === 'browser';
 
   const toggleCoworkersPanel = useCallback(() => {
+    if (!canOpenModule("coworkers")) return;
     if (coworkersPanelOpen) {
       setRightDockExpanded(false);
       setRightPanelVisible(false);
@@ -1955,7 +1987,7 @@ function AppWorkspace() {
             }
           : null;
   const skillRuntime = useMemo<SkillRuntimeContextValue>(() => ({
-    catalog: skillCatalog,
+    catalog: skillCatalog.filter((skill) => !moduleForSkill(skill.id) || hasModule(moduleSession, moduleForSkill(skill.id)!)),
     status: skillStatus,
     queuedSkill,
     queuedSkillPrompt,
@@ -1980,6 +2012,7 @@ function AppWorkspace() {
     consumeQueuedSkill,
     queueCoworkerTask,
     consumeQueuedCoworkerTask,
+    moduleSession,
   ]);
 
   return (
@@ -2070,7 +2103,7 @@ function AppWorkspace() {
                 onCommit={rightPanelResizer.onCommit}
               />
             )}
-            {rightDockMounted && (
+            {rightDockMounted && currentPanelAllowed && (
               <RightDockWorkspace
                 visible={rightPanelVisible}
                 mode={currentRightPanel}
@@ -3382,6 +3415,7 @@ function TopBar({
   onToggleBrowser: () => void;
   onOpenSideChat: () => void;
 }) {
+  const moduleSession = useChatStore((state) => state.clientLicenseSession);
   const conversationRevision = useChatStore((state) => {
     const conversation = state.conversations.find((item) => (
       item.id === state.currentConversationId && !item.archivedAt && !item.ephemeral
@@ -3550,8 +3584,8 @@ function TopBar({
       {!hidePanelActions && createPortal(
         <div className="top-bar-actions">
           <div className="top-bar-panel-actions">
-            <CoworkersToggleButton open={coworkersPanelOpen} onToggle={onToggleCoworkersPanel} />
-            {dailyDecisionAvailable && (
+            {hasModule(moduleSession, 'coworkers') && <CoworkersToggleButton open={coworkersPanelOpen} onToggle={onToggleCoworkersPanel} />}
+            {dailyDecisionAvailable && hasModule(moduleSession, 'daily-report') && (
               <DailyDecisionToggleButton
                 open={dailyDecisionOpen}
                 loading={dailyDecisionLoading}
@@ -3560,13 +3594,13 @@ function TopBar({
                 onToggle={onToggleDailyDecision}
               />
             )}
-            <RightDockToggleButton kind="files" open={filesPanelOpen} onToggle={onToggleFilesPanel} />
-            <RightDockToggleButton
+            {hasModule(moduleSession, 'files') && <RightDockToggleButton kind="files" open={filesPanelOpen} onToggle={onToggleFilesPanel} />}
+            {hasModule(moduleSession, 'research-workbench') && <RightDockToggleButton
               kind="research-workbench"
               open={researchWorkbenchOpen}
               onToggle={onToggleResearchWorkbench}
-            />
-            <RightDockToggleButton kind="browser" open={browserOpen} onToggle={onToggleBrowser} />
+            />}
+            {hasModule(moduleSession, 'browser') && <RightDockToggleButton kind="browser" open={browserOpen} onToggle={onToggleBrowser} />}
           </div>
         </div>,
         document.body,
@@ -4710,7 +4744,7 @@ function RightDockTabBar({
             <>
               <div className="right-dock-tab-menu-backdrop" onClick={() => setMenuOpen(false)} />
               <div className="right-dock-tab-menu">
-                {RIGHT_DOCK_ADD_MENU_KINDS.map((kind) => {
+                {RIGHT_DOCK_ADD_MENU_KINDS.filter((kind) => !moduleForPanel(kind) || hasModule(useChatStore.getState().clientLicenseSession, moduleForPanel(kind)!)).map((kind) => {
                   const meta = RIGHT_DOCK_META[kind];
                   return (
                     <button key={kind} type="button" onClick={() => add(kind)}>
@@ -7430,6 +7464,8 @@ function EmptyState({
   onRemoveSelectedTextContext: (id: string) => void;
   onConsumeSelectedTextContexts: () => void;
 }) {
+  const moduleSession = useChatStore((state) => state.clientLicenseSession);
+  const suggestions = domain.ui.suggestions.filter((suggestion) => hasModule(moduleSession, suggestion.id));
   const [prefillRequest, setPrefillRequest] = useState<ComposerPrefillRequest | null>(null);
   const prefillComposer = (text: string) => {
     setPrefillRequest((prev) => ({ id: (prev?.id ?? 0) + 1, text }));
@@ -7450,21 +7486,21 @@ function EmptyState({
         onRemoveSelectedTextContext={onRemoveSelectedTextContext}
         onConsumeSelectedTextContexts={onConsumeSelectedTextContexts}
       />
-      <div className="suggestion-row">
-        {domain.ui.suggestions.map((suggestion, index) => (
+      {suggestions.length > 0 && <div className="suggestion-row">
+        {suggestions.map((suggestion, index) => (
           <button
             key={suggestion.id}
             type="button"
             className="suggestion-card"
             data-index={String(index + 1).padStart(2, '0')}
-            onClick={() => prefillComposer(suggestion.prompt)}
+            onClick={() => { if (canOpenModule(suggestion.id)) prefillComposer(suggestion.prompt); }}
           >
             {domainSuggestionIcon(suggestion)}
             <strong>{suggestion.title}</strong>
             <span>{suggestion.prompt}</span>
           </button>
         ))}
-      </div>
+      </div>}
     </div>
   );
 }

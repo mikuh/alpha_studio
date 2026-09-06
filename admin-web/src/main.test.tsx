@@ -83,6 +83,7 @@ const models = [
 const tenants = [
   {
     id: 'tenant_alpha',
+    enabledModules: [] as string[],
     name: 'Alpha Fund',
     status: 'active',
     maxDevices: 3,
@@ -207,6 +208,38 @@ describe('admin model gateway', () => {
     localStorage.clear();
     vi.unstubAllGlobals();
     document.body.innerHTML = '';
+  });
+
+  it('defaults new customer modules to off and saves only the selected modules', async () => {
+    await import('./main');
+    fireEvent.click(await screen.findByRole('button', { name: '客户' }));
+    fireEvent.click(await screen.findByRole('button', { name: '新增客户' }));
+    const dialog = await screen.findByRole('dialog', { name: '新增客户' });
+    const modules = within(dialog).getByRole('region', { name: '客户模块权限' });
+    expect(within(modules).getAllByRole('checkbox')).toHaveLength(12);
+    expect(within(modules).getAllByRole('checkbox').every((box) => !(box as HTMLInputElement).checked)).toBe(true);
+    fireEvent.change(within(dialog).getByLabelText('公司名称'), { target: { value: 'Module Customer' } });
+    fireEvent.click(within(modules).getByRole('checkbox', { name: '文件' }));
+    fireEvent.click(within(modules).getByRole('checkbox', { name: '生成今日报告' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存客户' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/admin/tenants', expect.objectContaining({ method: 'POST', body: expect.stringContaining('"enabledModules":["files","daily-report"]') })));
+  });
+
+  it('edits each customer independently and supports revoking all modules', async () => {
+    currentTenants = [{ ...tenants[0], enabledModules: ['browser'] }, { ...betaTenant, enabledModules: ['files'] }];
+    await import('./main');
+    fireEvent.click(await screen.findByRole('button', { name: '客户' }));
+    const betaRow = (await screen.findByText('Beta Fund')).closest('tr')!;
+    fireEvent.click(within(betaRow).getByRole('button', { name: '编辑' }));
+    const dialog = await screen.findByRole('dialog', { name: '编辑客户' });
+    expect(within(dialog).getByRole('checkbox', { name: '文件' })).toBeChecked();
+    expect(within(dialog).getByRole('checkbox', { name: '浏览器' })).not.toBeChecked();
+    fireEvent.click(within(dialog).getByRole('button', { name: '清空侧边功能' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存客户' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/admin/tenants', expect.objectContaining({ method: 'POST', body: expect.stringContaining('"enabledModules":[]') })));
+    const body = JSON.parse(fetchMock.mock.calls.find(([url, init]) => url === '/api/admin/tenants' && init?.method === 'POST')![1].body);
+    expect(body.id).toBe('tenant_beta');
+    expect(currentTenants[0].enabledModules).toEqual(['browser']);
   });
 
   it('nests model routes under the selected provider', async () => {

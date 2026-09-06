@@ -24,10 +24,10 @@ use tokio_tungstenite::{
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayConfig {
-    api_base_url: String,
-    tenant_id: String,
-    device_id: String,
-    access_token: String,
+    pub(crate) api_base_url: String,
+    pub(crate) tenant_id: String,
+    pub(crate) device_id: String,
+    pub(crate) access_token: String,
 }
 
 impl fmt::Debug for RelayConfig {

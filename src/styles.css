@@ -21339,12 +21339,13 @@ select {
 }
 
 .empty-heading::before {
-  content: "✳";
-  color: var(--accent);
-  font-family: var(--font-ui);
-  font-size: 0.92em;
-  font-weight: 400;
-  line-height: 1;
+  content: "";
+  flex: 0 0 0.92em;
+  width: 0.92em;
+  height: 0.92em;
+  background-color: var(--accent);
+  -webkit-mask: url('/neostream-mark.png') center / contain no-repeat;
+  mask: url('/neostream-mark.png') center / contain no-repeat;
 }
 
 .empty-intro > p {
@@ -21453,7 +21454,7 @@ select {
 .suggestion-row {
   width: min(680px, calc(100% - 40px));
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
   gap: 8px;
   margin-top: 2px;
   border: 0;
@@ -21907,7 +21908,7 @@ details[open] > .event-summary,
 
   .suggestion-row {
     width: calc(100% - 28px);
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
   }
 
   .suggestion-card {

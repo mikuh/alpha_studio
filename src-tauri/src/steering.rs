@@ -33,6 +33,7 @@ pub struct SteerCommand {
 
 #[derive(Clone)]
 pub struct SteerSession {
+    pub module_identity: Option<super::agent_network::RelayConfig>,
     pub conversation_id: String,
     pub sender: mpsc::Sender<SteerCommand>,
 }

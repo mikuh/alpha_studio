@@ -8,6 +8,7 @@ import {
   type ModelProfile,
 } from './models';
 import type { ClientAgreementAcceptance } from './legal';
+import { normalizeEnabledModules } from '../shared/productModules';
 
 const SESSION_KEY = 'alpha:client-license-session';
 const DEVICE_FINGERPRINT_KEY = 'alpha:device-fingerprint';
@@ -16,6 +17,7 @@ export const ENTERPRISE_AUTHORIZATION_CHECK_INTERVAL_MS = 5 * 24 * 60 * 60 * 100
 export const CLIENT_MODEL_CATALOG_SYNC_INTERVAL_MS = 60 * 1000;
 
 export interface ClientTenant {
+  enabledModules?: string[];
   id: string;
   name: string;
   maxDevices: number;
@@ -273,7 +275,7 @@ export async function renewClientLease(session: ClientLicenseSession): Promise<C
       accessToken: data.accessToken || session.device.accessToken,
       leaseExpiresAt: data.leaseExpiresAt,
     },
-    tenant: data.tenant ? { ...session.tenant, ...data.tenant } : session.tenant,
+    tenant: { ...session.tenant, ...data.tenant, enabledModules: normalizeEnabledModules(data.tenant?.enabledModules) },
     models: Array.isArray(data.models) ? data.models : session.models,
     codexAccounts: Array.isArray(data.codexAccounts) ? data.codexAccounts : session.codexAccounts,
   };
@@ -554,7 +556,7 @@ function normalizeClientLicenseSession(value: unknown): ClientLicenseSession | n
   return {
     ...parsed,
     apiBaseUrl: normalizeApiBaseUrl(parsed.apiBaseUrl),
-    tenant: parsed.tenant,
+    tenant: { ...parsed.tenant, enabledModules: normalizeEnabledModules(parsed.tenant.enabledModules) },
     user: parsed.user,
     device: parsed.device,
     models: Array.isArray(parsed.models) ? parsed.models : [],
@@ -591,4 +593,15 @@ function apiErrorMessage(text: string): string {
 
 function normalizeApiBaseUrl(value: string): string {
   return value.trim().replace(/\/+$/, '');
+}
+
+// Module operations always consult the server; cached UI visibility is not authorization.
+export async function authorizeClientModules(session: ClientLicenseSession, moduleIds: string[]): Promise<void> {
+  if (!moduleIds.length) return;
+  const result = await alphaFetch<{ authorized: boolean }>(session.apiBaseUrl, '/api/client/modules/authorize', {
+    method: 'POST',
+    headers: deviceAuthorizationHeaders(session),
+    body: JSON.stringify({ tenantId: session.tenant.id, deviceId: session.device.id, moduleIds }),
+  });
+  if (result.authorized !== true) throw new Error('模块权限校验失败，请刷新授权后重试。');
 }

@@ -11,6 +11,7 @@ pub mod gateway_output;
 pub mod gateway_stream;
 pub mod license;
 pub mod market;
+pub mod modules;
 pub mod money;
 pub mod observability;
 pub mod routes;

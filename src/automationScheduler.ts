@@ -1,3 +1,4 @@
+import { hasModule, requiredModulesForTask } from '../shared/productModules';
 import { useEffect } from 'react';
 import {
   isScheduledAutomationTaskDue,
@@ -30,6 +31,7 @@ export function useAutomationScheduler(): void {
           );
           if (!conversation || conversation.status !== 'idle') continue;
 
+          if (requiredModulesForTask(scheduledAutomationRunPrompt(task), task.skillId).some((id) => !hasModule(state.clientLicenseSession, id))) continue;
           updateScheduledAutomationTask(task.id, { lastRunAt: now.getTime() });
           const selectedSkill = task.skillId
             ? {

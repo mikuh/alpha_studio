@@ -1,3 +1,5 @@
+import { hasModule } from '../shared/productModules';
+import { useChatStore } from './store';
 // 盘中触发自动记录引擎。
 // 只要应用在运行、处于 A 股交易时段，就每 30 秒对"今日"全部结构化日报做一次
 // 规则评估并把状态变化写入跟踪事件流 —— 不依赖日报跟踪面板是否打开。
@@ -184,6 +186,7 @@ export async function runTrackingTick(options: { force?: boolean } = {}): Promis
 export function useThemeTrackingEngine(intervalMs = 30_000): void {
   useEffect(() => {
     const tick = () => {
+      if (!hasModule(useChatStore.getState().clientLicenseSession, 'intraday-monitor')) return;
       void runTrackingTick().catch(() => undefined);
     };
     tick();

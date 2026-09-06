@@ -1,0 +1,85 @@
+[
+  {
+    "id": "coworkers",
+    "title": "AI 同事",
+    "group": "sidebar",
+    "description": "召集投研同事并使用协作工作流"
+  },
+  {
+    "id": "files",
+    "title": "文件",
+    "group": "sidebar",
+    "description": "在侧栏浏览研究目录与文件"
+  },
+  {
+    "id": "research-workbench",
+    "title": "投研工作台",
+    "group": "sidebar",
+    "description": "行情、自选、实盘与研究工具",
+    "marketData": true
+  },
+  {
+    "id": "browser",
+    "title": "浏览器",
+    "group": "sidebar",
+    "description": "在应用内打开网页与研究资料"
+  },
+  {
+    "id": "daily-report",
+    "title": "生成今日报告",
+    "group": "shortcut",
+    "description": "生成每日主题研究报告与决策面板",
+    "skillId": "alpha-studio-daily-theme-research",
+    "marketData": true
+  },
+  {
+    "id": "mainline-trend-report",
+    "title": "产业主线早报",
+    "group": "shortcut",
+    "description": "跟踪产业主线与趋势变化",
+    "skillId": "alpha-studio-mainline-trend-research"
+  },
+  {
+    "id": "intraday-monitor",
+    "title": "盘中监控",
+    "group": "shortcut",
+    "description": "检查报告的盘中触发与失效条件",
+    "skillId": "alpha-studio-intraday-monitor",
+    "marketData": true
+  },
+  {
+    "id": "evening-review",
+    "title": "晚间复盘",
+    "group": "shortcut",
+    "description": "复核当日研究结果与偏差",
+    "skillId": "alpha-studio-report-review"
+  },
+  {
+    "id": "evidence-intelligence",
+    "title": "核验研究证据",
+    "group": "shortcut",
+    "description": "核验来源、事实与研究命题",
+    "skillId": "alpha-studio-evidence-intelligence"
+  },
+  {
+    "id": "company-thesis",
+    "title": "公司 Thesis",
+    "group": "shortcut",
+    "description": "建立并维护公司投资逻辑",
+    "skillId": "alpha-studio-company-thesis-tracker"
+  },
+  {
+    "id": "research-calibration",
+    "title": "研究校准",
+    "group": "shortcut",
+    "description": "审计研究概率与复盘结果",
+    "skillId": "alpha-studio-research-calibration"
+  },
+  {
+    "id": "factor-mining",
+    "title": "挖掘量化因子",
+    "group": "shortcut",
+    "description": "生成并验证候选量化因子",
+    "skillId": "alpha-studio-a-share-factor-mining"
+  }
+]

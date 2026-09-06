@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { CoworkerAgentDefinition } from './coworkers';
+import { coworkerAgentDefinitions, type CoworkerAgentDefinition } from './coworkers';
+import { hasModule } from '../shared/productModules';
 import type { ModelProfile } from './models';
 import { loadClientLicenseSession, type ClientLicenseSession } from './license';
 import type {
@@ -181,6 +182,9 @@ export async function fetchCodexSubscriptionUsage(): Promise<CodexSubscriptionUs
 
 export async function startCodexChat(request: CodexChatStartRequest): Promise<CodexChatStartResult> {
   const session = loadClientLicenseSession();
+  // A previous offline or revoked run may have removed the managed agent
+  // definitions. Restore the catalog before native code checks live grants.
+  if (hasModule(session, 'coworkers')) await syncCoworkerAgents(coworkerAgentDefinitions());
   // Keep service credentials on the native side, outside prompts and tool arguments.
   const agentDataRelay = session?.device.accessToken ? {
     apiBaseUrl: session.apiBaseUrl,

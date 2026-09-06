@@ -138,6 +138,7 @@ The admin app now covers the commercial operating loop:
 
 - create and update customer tenants, subscription dates, and machine limits; balances change only through immutable usage and offline-receipt ledger records
 - generate customer authorization codes for first-device activation by company name
+- configure per-customer sidebar modules and shortcut/Skill permissions (default off); see [Customer module permissions](./docs/customer-modules.md)
 - configure provider presets, upstream protocols/auth, discover models, and manage aliases, prices, and markup
 - assign GPT subscription accounts to customers for monthly or yearly subscription access
 - inspect audit logs and usage-ledger totals

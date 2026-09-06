@@ -26,6 +26,7 @@ mod gateway_progress;
 mod keychain;
 mod local_store;
 mod managed_skills;
+mod module_permissions;
 mod report_branding;
 mod skill_codec;
 mod steering;
@@ -994,6 +995,16 @@ async fn codex_chat_start(
     state: State<'_, CodexProcessState>,
     request: CodexChatRequest,
 ) -> Result<CodexChatStartResult, String> {
+    let granted_modules = module_permissions::authorize_task(
+        request.agent_data_relay.as_ref(),
+        &request.prompt,
+        request
+            .selected_skill
+            .as_ref()
+            .map(|skill| skill.id.as_str()),
+        request.developer_instructions.as_deref(),
+    )
+    .await?;
     let mut provider_config = sanitize_model_provider(&request)?;
     let check = check_codex(Some(&app));
     if !check.installed {
@@ -1010,6 +1021,7 @@ async fn codex_chat_start(
     let run_id = generate_run_id();
     let cwd = resolve_cwd(request.cwd.as_deref())?;
     let codex_home = prepare_alpha_studio_codex_home(Some(&app))?;
+    module_permissions::filter_runtime_modules(&codex_home, &granted_modules)?;
     let runtime_skills_root = codex_home.join("skills").to_string_lossy().into_owned();
     let report_branding_instructions = report_branding::instructions()?;
     let sandbox_mode = sanitize_sandbox_mode(request.sandbox_mode.as_deref());
@@ -1118,6 +1130,7 @@ async fn codex_chat_start(
     state.steering.lock().await.insert(
         run_id.clone(),
         steering::SteerSession {
+            module_identity: request.agent_data_relay.clone(),
             conversation_id: request.conversation_id.clone(),
             sender: steer_sender,
         },
@@ -2481,6 +2494,16 @@ async fn codex_chat_steer(
     if session.conversation_id != request.conversation_id {
         return Err("引导消息与当前运行的对话不匹配。".to_string());
     }
+    module_permissions::authorize_task(
+        session.module_identity.as_ref(),
+        &request.prompt,
+        request
+            .selected_skill
+            .as_ref()
+            .map(|skill| skill.id.as_str()),
+        None,
+    )
+    .await?;
     let (reply, response) = oneshot::channel();
     if session
         .sender
